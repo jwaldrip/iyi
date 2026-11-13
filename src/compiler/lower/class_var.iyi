@@ -2,7 +2,7 @@ module compiler/lower/class_var
 
 # The port of `src/compiler/iyi/codegen/class_var.cr` (the hosted `CodeGenVisitor`'s class variables), for a
 # class variable declared in a plain top-level class. Ported:
-#   - a literal initialiser (Bool, Char, integer or float), which the hosted code stores in the global at its
+#   - a literal initialiser (Bool, Char, integer, float or Symbol), which the hosted code stores in the global at its
 #     declaration with no function and no flag (`simple_initializer`): the global's initializer is the literal,
 #     and every read is a load of the global;
 #   - a non-literal initialiser that the class body declares before any read (`initialize_class_var` on the
@@ -18,7 +18,6 @@ module compiler/lower/class_var
 #   - a read before the declaration when `__iyi_once` is not declared (hosted `run_once`, once.cr:22);
 #   - a class variable declared without an initialiser, unless it is a nilable reference (its global starts as null);
 #   - a class variable whose owner is in a namespace, is generic, or is not a class (its hosted `llvm_name`);
-#   - a symbol or nil initialiser, whose global is initialised by an init function or by `initialize_simple_constants`;
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
 # Thread-local class variables: a `@[ThreadLocal]` variable's global is local-exec (hosted `declare_thread_local`,
 # class_var.cr:27-34), the model every non-Windows target uses, and `declare_cvar_global` sets it from the variable's
@@ -30,7 +29,7 @@ module compiler/lower/class_var
 # address through it, and the caller loads that address. Refused by name: the thread-pointer form the hosted code uses
 # under the iyi prelude on Linux, and the Windows general-dynamic model.
 
-import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, CharLiteral, ClassDef, NilLiteral, NumberLiteral, TypeDeclaration}
+import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, CharLiteral, ClassDef, NilLiteral, NumberLiteral, SymbolLiteral, TypeDeclaration}
 import compiler/ir/values::{Value}
 import compiler/ir/inst::{Attribute, Inst, Op, CallConv}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel}
@@ -42,6 +41,7 @@ import compiler/lower/globals::{ClassVarState}
 import compiler/lower/const::{const_scope, literal_node_value, literal_of_type, run_once}
 import compiler/lower/fun::{block_ended?}
 import compiler/lower/cast::{assign, nilable_reference_type?}
+import compiler/lower/symbols::{symbol_index}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type}
 import compiler/types/types::{NilableProcType}
 
@@ -192,10 +192,10 @@ pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
 end
 
 # A literal initialiser the hosted code stores at the declaration with no function (`simple_literal?` with a
-# primitive value): a Bool, Char, integer or float literal. A float is a number whose text has a point
-# (hosted `initialize_class_var`, the discard branch: the global's initializer is the constant, no function).
+# primitive value): a Bool, Char, number or symbol literal. The hosted initializer discards the function
+# when the value is constant and the node is a simple literal (class_var.cr:169-188).
 pub def simple_literal?(node : ASTNode) : Bool
-  if node.is_a?(BoolLiteral) || node.is_a?(CharLiteral)
+  if node.is_a?(BoolLiteral) || node.is_a?(CharLiteral) || node.is_a?(SymbolLiteral)
     return true
   end
   node.is_a?(NumberLiteral)
@@ -302,7 +302,9 @@ pub def simple_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir 
     return g.as(Global)
   end
   value = nil
-  if declared = cvar.type?
+  if node.is_a?(SymbolLiteral)
+    value = low.builder.const_int(ir, symbol_index(low, node.as(SymbolLiteral).value).to_i64)
+  elsif declared = cvar.type?
     value = literal_of_type(low, node, declared)
   end
   if value.nil?
