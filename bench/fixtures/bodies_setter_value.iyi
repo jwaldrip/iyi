@@ -1,0 +1,11 @@
+class Fiber
+  property next_run : Fiber?
+end
+
+def assign_nil(fiber : Fiber) : Nil
+  fiber.next_run = nil
+end
+
+def assign_fiber(fiber : Fiber, next_run : Fiber) : Nil
+  fiber.next_run = next_run
+end

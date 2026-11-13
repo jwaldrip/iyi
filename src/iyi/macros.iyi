@@ -53,7 +53,7 @@ class Object
           @{{ name.var.id }}
         end
 
-        def {{ name.var.id }}=(value : {{ name.type }}) : {{ name.type }}
+        def {{ name.var.id }}=(value : {{ name.type }})
           @{{ name.var.id }} = value
         end
       {% else %}
