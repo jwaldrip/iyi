@@ -1026,8 +1026,8 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
-  # `__FILE__` and `__DIR__` are Strings, `__LINE__` and `__END_LINE__` Int32 (hosted: the call site
-  # rewrites them to literals; a default argument types as the literal it will be).
+  # An unexpanded default still types here. A call expands the default to a literal
+  # first and types that literal through its ordinary visitor.
   def visit(node : MagicConstant) : Bool
     if node.name == TokenKind::MAGIC_LINE || node.name == TokenKind::MAGIC_END_LINE
       set_type(node, @program.int32_type)
@@ -3318,16 +3318,10 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # Hosted codegen expands an omitted magic default at the call, not at the def.
-  # The literal keeps the type visit(MagicConstant) assigned, so a mutation of
-  # that visit still changes the argument the typed dump records.
+  # The literal is this call's coordinates, typed as the literal it is.
   def materialized_magic(node : Call, magic : MagicConstant) : ASTNode
-    magic.accept(self)
     literal = magic.expand_node(node.location, node.end_location).at(node)
-    if mt = child_type(magic)
-      set_type(literal, mt)
-    else
-      literal.accept(self)
-    end
+    literal.accept(self)
     literal
   end
 
