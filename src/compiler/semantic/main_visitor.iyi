@@ -2779,7 +2779,6 @@ pub class MainVisitor < TypeNodeHost
       param_type : Type? = nil
       splat_index = target_def.splat_index
       if splat_index && i == splat_index.as(Int32)
-        # Hosted call.cr binds the splat local to a tuple, including the empty tuple.
         elements = [] of Type
         suffix = target_def.args.size - i - 1
         end_index = args.size - suffix
@@ -3202,8 +3201,17 @@ pub class MainVisitor < TypeNodeHost
     # default expression in the caller's scope. Cache against the original
     # definition and the arguments supplied by the caller.
     dkey = def_instance_key(target_def, rec_type, node)
-    if node.named_args.nil? && node.args.size < target_def.args.size && DefaultArguments.supported?(target_def, node.args, nil)
-      expanded = DefaultArguments.expand_for_call(target_def, node.args.size, nil)
+    if node.named_args.nil? && (target_def.splat_index || (node.args.size < target_def.args.size && DefaultArguments.supported?(target_def, node.args, nil)))
+      splat_names = [] of String
+      if splat_index = target_def.splat_index
+        count = node.args.size - splat_index
+        names = NormalizerProgram.new
+        while count > 0
+          splat_names << names.new_temp_var_name("$splat_")
+          count -= 1
+        end
+      end
+      expanded = DefaultArguments.expand_for_call(target_def, node.args.size, nil, splat_names)
       if expanded.is_a?(String)
         refuse_call(node, expanded)
         return false
