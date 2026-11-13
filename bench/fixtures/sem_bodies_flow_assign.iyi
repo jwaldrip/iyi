@@ -84,3 +84,26 @@ b = flow_while(nil)
 c = flow_and(nil)
 d = flow_unless(nil)
 e = holder.read_ivar
+input = flow_step(FlowItem.new)
+result = if found = input
+           copied = found
+           if copied.ready?
+             flow_take(copied)
+           else
+             found.score
+           end
+         elsif other = holder.item
+           other.score
+         else
+           flow_take_nil(other)
+         end
+result2 = if (found = input) && found.ready?
+            found.score
+          else
+            0
+          end
+result3 = unless found = input
+  flow_take_nil(found)
+else
+  found.score
+end
