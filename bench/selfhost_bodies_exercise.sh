@@ -232,6 +232,9 @@ prove_mutation "a union restriction is not instantiated from its members" "$MAIN
 prove_mutation "pointer_set types the assigned value" "$MAIN_VISITOR" \
   "set_type(node, pst)" \
   "set_type(node, @program.nil_type)" -- bodies_at_floor || status=1
+prove_mutation "a Nil return annotation discards the body value" "$MAIN_VISITOR" \
+  "unless declared_ret.nil_type? || bt.subtype_of?(declared_ret)" \
+  "unless bt.subtype_of?(declared_ret)" -- bodies_at_floor || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"

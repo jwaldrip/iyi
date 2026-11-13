@@ -2650,12 +2650,19 @@ pub class MainVisitor < TypeNodeHost
 
     if rt = target_def.return_type
       declared_ret = lookup_under(rt, rec_type)
-      unless bt.subtype_of?(declared_ret)
+      # A Nil annotation discards the body's value; a body that never returns
+      # still gives the def NoReturn (hosted bindings.cr Def#map_type).
+      if declared_ret.nil_type? && bt.is_a?(NoReturnType)
+        set_type(target_def, bt)
+        remember_def_instance(cache_key, target_def, bt)
+        return bt
+      end
+      unless declared_ret.nil_type? || bt.subtype_of?(declared_ret)
         mismatch = "type mismatch for return type: expected #{declared_ret.full_name}, got #{bt.full_name}"
         if s = site
           refuse(s, mismatch)
         else
-          raise(mismatch) unless @total
+          refuse(body.as(ASTNode), mismatch)
         end
         return nil
       end
