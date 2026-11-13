@@ -549,6 +549,27 @@ end
 # precede inferred ones for that owner, before moving to a subclass (hosted
 # type_declaration_processor.cr:245-264).
 pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
+  # A bare declarations-only load has not installed the type system yet. Its
+  # generic declarations previously recorded the base type first, then kept
+  # the written restriction for resolution when its arguments became visible.
+  # Preserve that record before installing the hook; strict lookup after the
+  # hook would otherwise reject a bare file's unavailable generic arguments.
+  previous = {} of String => MetaTypeVar
+  saved_imports = program.current_imports
+  if program.merge_hook.nil?
+    program.pending_ivars.each do |pi|
+      if pi.restriction.is_a?(Generic) && !pi.owner.instance_vars[pi.name]?
+        if imports = pi.imports
+          program.current_imports = imports
+        else
+          program.current_imports = saved_imports
+        end
+        bare = program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
+        previous["#{pi.owner.full_name} #{pi.name}"] = MetaTypeVar.new(pi.name, bare, pi.initializer)
+      end
+    end
+    program.current_imports = saved_imports
+  end
   # The hosted pass declares instance variables with a type system already
   # installed, so `@resolved_modules : Array(ModuleInfo)` is `Array(ModuleInfo)`.
   # This pass records the unbound generic until one is installed
@@ -558,7 +579,7 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
   re_resolve_explicit_ivars(program)
   # During the transition finish may already have installed these records.
   # Remove only those records, then install them in hierarchy order below.
-  previous = {} of String => MetaTypeVar
+  # Existing records take precedence over the pre-hook bare records above.
   program.pending_ivars.each do |pi|
     if existing = pi.owner.instance_vars[pi.name]?
       previous["#{pi.owner.full_name} #{pi.name}"] = existing
@@ -571,7 +592,6 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
   program.declared_ivars.clear
   retained.each { |di| program.declared_ivars << di }
   owners = [] of OwnerGuesses
-  saved_imports = program.current_imports
   program.pending_ivars.each do |pi|
     owner_guesses_for(owners, pi.owner)
   end
