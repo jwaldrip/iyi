@@ -2643,7 +2643,9 @@ pub class MainVisitor < TypeNodeHost
               @program.current_imports = saved_imports
               @program.current_import_defs = saved_import_defs
               if bt = block_type
-                set_type(blk, bt)
+                # The captured proc carries the result; its Block node is not
+                # bound to that result (hosted call.cr 1336-1445).
+                set_type(blk, @program.no_return_type)
                 if output = notation.output
                   if free_names = target_def.free_vars
                     bound = @def_free_types[target_def]? || Hash(String, Type).new

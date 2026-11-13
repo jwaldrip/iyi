@@ -111,9 +111,16 @@ end
 # the arguments the visitor has typed. nil when the base or an argument is not typed.
 pub def generic_of_typed_args(visitor : TypeNodeHost, node : Generic) : Type?
   ts = type_node_system(visitor.program)
-  base = TypeLookup.new(ts.instances).lookup(visitor.current_type, node.name)
-  return nil if base.is_a?(LookupError)
-  base_type = base.as(Type)
+  # The name was already visited in its file's lexical scope, including imports
+  # (hosted path_lookup.cr 118-192). TypeLookup alone cannot see those imports.
+  base_type : Type
+  if typed_base = visitor.child_type(node.name)
+    base_type = visitor.program.remove_alias(TypeQueries.instance_type(typed_base))
+  else
+    base = TypeLookup.new(ts.instances).lookup(visitor.current_type, node.name)
+    return nil if base.is_a?(LookupError)
+    base_type = base.as(Type)
+  end
   return nil unless base_type.is_a?(GenericClassType)
   args = [] of Type
   node.type_vars.each do |arg|
