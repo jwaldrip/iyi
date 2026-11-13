@@ -1,6 +1,6 @@
 module compiler/types/indirection
 
-import compiler/semantic/top_level::{AliasType, GenericClassType, NonGenericModuleType, Type, UnionType}
+import compiler/semantic/top_level::{AliasType, GenericClassType, NonGenericModuleType, TraitType, Type, UnionType}
 import compiler/types/types::{GenericModuleInstanceType, VirtualType}
 import compiler/types/intersect::{TypeIntersect}
 
@@ -26,7 +26,7 @@ pub class TypeIndirection
     if type.is_a?(AliasType)
       return remove_indirection(type.as(AliasType).process_value)
     end
-    if type.is_a?(NonGenericModuleType) || type.is_a?(GenericClassType) || type.is_a?(GenericModuleInstanceType)
+    if type.is_a?(NonGenericModuleType) || type.is_a?(TraitType) || type.is_a?(GenericClassType) || type.is_a?(GenericModuleInstanceType)
       if including = TypeIntersect.including_union(type.program, type)
         return including
       end

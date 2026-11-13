@@ -1,0 +1,39 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+trait Greet
+  abstract def greet : Int32
+end
+
+struct User
+  def greet : Int32
+    7
+  end
+end
+
+struct Robot
+  def greet : Int32
+    9
+  end
+end
+
+impl Greet for User
+  def greet : Int32
+    7
+  end
+end
+
+impl Greet for Robot
+  def greet : Int32
+    9
+  end
+end
+
+def store_user : Nil
+  value : Greet = User.new
+  nil
+end
+
+store_user
+LibC.exit(7)
