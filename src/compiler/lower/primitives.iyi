@@ -268,12 +268,13 @@ pub def lower_atomic_cmpxchg(low : Lowerer, node : Call) : Nil
   slot = low.alloca(tuple_ir, "")
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   one = low.builder.const_int(low.module.types.int32, 1_i64)
-  first_ptr = low.builder.gep(tuple_ir, slot, [zero, zero] of Value)
   first = low.builder.extract_value(result, 0)
   first_value = is_bool ? low.builder.trunc(first, low.module.types.int1) : first
+  first_ptr = low.builder.inbounds_gep(tuple_ir, slot, [zero, zero] of Value)
   store_aligned(low, first_value, first_ptr)
-  second_ptr = low.builder.gep(tuple_ir, slot, [zero, one] of Value)
-  store_aligned(low, low.builder.extract_value(result, 1), second_ptr)
+  second = low.builder.extract_value(result, 1)
+  second_ptr = low.builder.inbounds_gep(tuple_ir, slot, [zero, one] of Value)
+  store_aligned(low, second, second_ptr)
   low.last = slot
 end
 
