@@ -5,6 +5,7 @@ import compiler/syntax/ast::{ASTNode, Arg, Assign, BoolLiteral, CharLiteral, Cal
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
+import compiler/semantic/type_nodes::{type_node_system}
 
 # Instance variables typed only by assignment, as the hosted front end declares
 # them in its type declaration processor (`type_guess_visitor.cr` guesses each
@@ -448,11 +449,27 @@ def declare_guessed(program : SemanticProgram, owners : Array(OwnerGuesses), og 
   nil
 end
 
+# The hosted pass declares instance variables with a type system already
+# installed. This pass records a generic as its unbound form until one is
+# installed (`resolve_declared_types`). Installing it here, after the visit,
+# is what turns `@resolved_modules : Array(ModuleInfo)` into `Array(ModuleInfo)`
+# instead of the unbound `Array(T)`.
+def re_resolve_explicit_ivars(program : SemanticProgram) : Nil
+  type_node_system(program)
+end
+
 # Guesses and declares the instance variables of every class body the program's
 # top-level pass recorded, in hierarchy order. Explicit declarations must already
 # be in place: the pass runs after the top-level visit and its pending
 # declarations are resolved.
 pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
+  # The hosted pass declares instance variables with a type system already
+  # installed, so `@resolved_modules : Array(ModuleInfo)` is `Array(ModuleInfo)`.
+  # This pass records the unbound generic until one is installed
+  # (`resolve_declared_types`). Callers that dump after this function, including
+  # the lowered-types own-source load, get that re-resolution here. Installing
+  # the type system before the visit takes hook paths that are not ported.
+  re_resolve_explicit_ivars(program)
   owners = [] of OwnerGuesses
   program.type_bodies.each do |body|
     owner = owner_guesses_for(owners, body.type)

@@ -390,8 +390,12 @@ pub abstract class ModuleType < NamedType
       i = 0
       while i < l.size
         if same_def_signature?(l[i], a_def)
+          old = l[i]
+          a_def.previous = old
+          old.next = a_def
           l[i] = a_def
           replaced = true
+          break
         end
         i = i + 1
       end
@@ -400,6 +404,12 @@ pub abstract class ModuleType < NamedType
   end
 
   def same_def_signature?(a : Def, b : Def) : Bool
+    # A splat is a different overload: `push(value)` does not replace `push(*values)`.
+    # Hosted compare_strictness keeps both. Text of the restriction is not enough.
+    return false unless a.splat_index == b.splat_index
+    a_double = a.double_splat
+    b_double = b.double_splat
+    return false if a_double.nil? != b_double.nil?
     return false unless a.args.size == b.args.size
     i = 0
     while i < a.args.size
@@ -1312,27 +1322,42 @@ pub class SemanticProgram < NonGenericModuleType
         if node = f.node
           if imports = f.imports
             @current_imports = imports
-            f.arg_types.clear
+            # A name the bare program cannot see (Set, with no prelude loaded) keeps the
+            # type finish already stored. Raising here turns a measured file into a refusal.
+            resolved_args = [] of Type
+            failed = false
             node.args.each do |arg|
               if restriction = arg.restriction
-                f.arg_types << lookup_type_node(restriction, owner)
+                if found = lookup_type_node?(restriction, owner)
+                  resolved_args << found
+                else
+                  failed = true
+                end
               end
             end
-            if rt = node.return_type
-              f.resolved_return = lookup_type_node(rt, owner)
+            unless failed
+              f.arg_types.clear
+              resolved_args.each { |arg_type| f.arg_types << arg_type }
+              if rt = node.return_type
+                if found = lookup_type_node?(rt, owner)
+                  f.resolved_return = found
+                end
+              end
             end
           end
         end
       end
     end
     # The explicit instance variables are typed again through the type system: a generic type
-    # keeps its arguments, and a class with subclasses is typed by its virtual type.
+    # keeps its arguments, and a class with subclasses is typed by its virtual type. A name
+    # this program cannot see keeps the type already recorded.
     @declared_ivars.each do |di|
       @current_imports = di.imports
-      t = declared_ivar_type(di.restriction, di.owner, di.virtual)
-      mv = MetaTypeVar.new(di.name, t, di.initializer)
-      mv.owner = di.owner
-      di.owner.instance_vars[di.name] = mv
+      if t = declared_ivar_type?(di.restriction, di.owner, di.virtual)
+        mv = MetaTypeVar.new(di.name, t, di.initializer)
+        mv.owner = di.owner
+        di.owner.instance_vars[di.name] = mv
+      end
     end
     @current_imports = saved
     nil
@@ -1350,6 +1375,20 @@ pub class SemanticProgram < NonGenericModuleType
       return resolved
     end
     remove_alias(lookup_type_node(restriction, owner))
+  end
+
+  # The same lookup, or nil when a name is not in this program. Re-resolution uses it so a bare
+  # file that names a prelude type keeps the type it already recorded instead of refusing.
+  def declared_ivar_type?(restriction : ASTNode, owner : ModuleType, virtual : Bool) : Type?
+    found = lookup_type_node?(restriction, owner)
+    return nil unless found
+    resolved = remove_alias(found)
+    if virtual
+      if hook = @merge_hook
+        return hook.virtual_of(resolved)
+      end
+    end
+    resolved
   end
 
   # The type an alias names, through any chain of aliases (hosted Type#remove_alias): a declared
@@ -2581,6 +2620,19 @@ pub class TopLevelVisitor < Visitor
         none_def = Def.new("none?", return_type: Path.new("Bool"))
         none_def.location = node.location
         enum_type.add_def(none_def)
+      elsif user_none = enum_type.defs["none?"]?
+        # Hosted generates none? first. The user's def then replaces it and
+        # add_def keeps the generated def as previous. The body was visited
+        # first here, so link that generated def onto the one already recorded.
+        generated_none = Def.new("none?", return_type: Path.new("Bool"))
+        generated_none.location = node.location
+        i = 0
+        while i < user_none.size
+          user = user_none[i]
+          user.previous = generated_none
+          generated_none.next = user
+          i = i + 1
+        end
       end
       if enum_type.members["All"]?.nil?
         all_value = 0_i64
@@ -2597,6 +2649,18 @@ pub class TopLevelVisitor < Visitor
         predicate = Def.new(pname, return_type: Path.new("Bool"))
         predicate.location = node.location
         enum_type.add_def(predicate)
+      else
+        if user_preds = enum_type.defs[pname]?
+          generated = Def.new(pname, return_type: Path.new("Bool"))
+          generated.location = node.location
+          i = 0
+          while i < user_preds.size
+            user = user_preds[i]
+            user.previous = generated
+            generated.next = user
+            i = i + 1
+          end
+        end
       end
     end
 
@@ -3229,6 +3293,9 @@ pub def dump_def(d : Def, io : String::Builder, indent : String) : Nil
               "nil"
             end
   io << indent << "  return_type: " << ret_str << "\n"
+  if prev = d.previous
+    io << indent << "  previous: " << prev.name << "\n"
+  end
 end
 
 pub def dump_lib_fun(f : LibFun, io : String::Builder, indent : String) : Nil

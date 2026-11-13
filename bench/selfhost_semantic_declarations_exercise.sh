@@ -637,6 +637,11 @@ prove_mutation "a generic class's guessed instance variables are not declared on
   "if owner.owner.is_a?(NonGenericClassType)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an explicit generic instance variable keeps the unbound generic" "$MUT_IVARS" \
+  "  type_node_system(program)" \
+  "  nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
   "di.owner.instance_vars[di.name] = mv" \
   "nil" \
@@ -738,6 +743,16 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic instance's declared variable keeps its parameter type" "$MUT_TYPES" \
   "            mv = MetaTypeVar.new(name, TypeQueries.replace_type_parameters(source_type, @type_vars))" \
   "            mv = MetaTypeVar.new(name, source_type)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a nilable pointer prints without its element type" "$MUT_TYPES" \
+  'Pointer(#{@element_type.full_name})' \
+  'Pointer' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a replaced def is not reachable from the def that replaced it" "$MUT_SEM" \
+  "          a_def.previous = old" \
+  "          a_def.previous = nil" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
