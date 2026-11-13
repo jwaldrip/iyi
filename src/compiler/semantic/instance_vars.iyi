@@ -217,9 +217,21 @@ class GuessVisitor < Visitor
     end
     if node.is_a?(Var)
       name = node.as(Var).name
-      return @og.owner if name == "self"
+      if name == "self"
+        if hook = @program.merge_hook
+          return hook.virtual_of(@og.owner)
+        end
+        return @og.owner
+      end
       if restriction = @args[name]?
-        return @program.lookup_type_node?(restriction, @og.owner)
+        if t = @program.lookup_type_node?(restriction, @og.owner)
+          resolved = @program.remove_alias(t)
+          if hook = @program.merge_hook
+            return hook.virtual_of(resolved)
+          end
+          return resolved
+        end
+        return nil
       end
       return nil
     end
