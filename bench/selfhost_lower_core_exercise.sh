@@ -210,7 +210,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
-CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union"
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -461,6 +461,57 @@ generic_ivar_check() {
 prove_mutation "a generic class instance has no instance variables" "$REPO/src/compiler/lower/instance_var.iyi" \
   "  if owner.is_a?(GenericClassInstanceType)" \
   "  if false" -- generic_ivar_check || status=1
+pointerof_ivar_check() {
+  "$IYI" build -o "$WORK/port-pivar" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/pivar.build.log" 2>&1 || return 1
+  "$WORK/port-pivar" lower "$REPO/bench/fixtures/lower_pointerof_ivar.iyi" "$WORK/lower_pointerof_ivar.oracle.ll" > "$WORK/pivar.out" 2> "$WORK/pivar.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/pivar.out"
+}
+prove_mutation "pointerof of an instance variable returns self" "$REPO/src/compiler/lower/instance_var.iyi" \
+  "  low.last = instance_var_pointer(low, owner.as(Type), node.name, self_var.as(LowerVar).pointer)" \
+  "  low.last = self_var.as(LowerVar).pointer" -- pointerof_ivar_check || status=1
+bare_return_check() {
+  "$IYI" build -o "$WORK/port-return" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/return.build.log" 2>&1 || return 1
+  "$WORK/port-return" lower "$REPO/bench/fixtures/lower_return_bare.iyi" "$WORK/lower_return_bare.oracle.ll" > "$WORK/return.out" 2> "$WORK/return.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/return.out"
+}
+if bare_return_check; then
+  prove_mutation "a bare return skips the Nil upcast" "$REPO/src/compiler/lower/lower.iyi" \
+    "    returned = upcast(low, llvm_nil(low), nil_type, ret_type.as(Type))" \
+    "    returned = llvm_nil(low)" -- bare_return_check || status=1
+else
+  echo "FAIL: unmutated bare return does not match the hosted module"
+  status=1
+fi
+visibility_check() {
+  "$IYI" build -o "$WORK/port-vis" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/vis.build.log" 2>&1 || return 1
+  "$WORK/port-vis" lower "$REPO/bench/fixtures/lower_visibility.iyi" "$WORK/lower_visibility.oracle.ll" > "$WORK/vis.out" 2> "$WORK/vis.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/vis.out"
+}
+if visibility_check; then
+  prove_mutation "visibility wrappers do not visit their expression" "$REPO/src/compiler/lower/lower.iyi" \
+    '    codegen_node(low, node.as(VisibilityModifier).exp)' \
+    '    pending_visit_node("visibility wrapper")' -- visibility_check || status=1
+else
+  echo "FAIL: visibility wrapper fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/vis.err" "$WORK/vis.out" "$WORK/vis.build.log"
+  status=1
+fi
+visibility_macro_check() {
+  "$IYI" build -o "$WORK/port-vis-macro" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/vis-macro.build.log" 2>&1 || return 1
+  "$WORK/port-vis-macro" lower "$REPO/bench/fixtures/lower_visibility_macro.iyi" "$WORK/lower_visibility_macro.oracle.ll" > "$WORK/vis-macro.out" 2> "$WORK/vis-macro.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/vis-macro.out"
+}
+if visibility_macro_check; then
+  prove_mutation "an expanded declaration macro is lowered as a call" "$REPO/src/compiler/lower/lower.iyi" \
+    '      codegen_node(low, expanded)' \
+    '      codegen_call_node(low, node.as(Call))' -- visibility_macro_check || status=1
+else
+  echo "FAIL: wrapped macro fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/vis-macro.err" "$WORK/vis-macro.out" "$WORK/vis-macro.build.log"
+  status=1
+fi
+
+
 
 # naming lane (mangled_name)
 # The program-level lower of lower_name_owner waits: call.iyi refuses a call inherited

@@ -166,6 +166,21 @@ pub def codegen_instance_var_read(low : Lowerer, node : Compiler::Syntax::Ast::I
   low.last = read_instance_var(low, node_t.as(Type), owner.as(Type), node.name, self_var.as(LowerVar).pointer)
 end
 
+# The hosted `visit(PointerOf)` for an instance variable (codegen.cr:1005-1006): the field's
+# address, the same pointer a read would load from. A union or virtual owner is refused by
+# `instance_var_type` (hosted instance_var_ptr, that owner is a later increment).
+pub def codegen_pointerof_instance_var(low : Lowerer, node : Compiler::Syntax::Ast::InstanceVar) : Nil
+  owner = low.current_context.type
+  if owner.nil?
+    pending_visit_node("pointerof of an instance variable outside a class or struct (hosted visit(PointerOf), context.type)")
+  end
+  self_var = low.current_context.vars["self"]?
+  if self_var.nil?
+    raise "BUG: pointerof(#{node.name}) with no self (hosted llvm_self_ptr)"
+  end
+  low.last = instance_var_pointer(low, owner.as(Type), node.name, self_var.as(LowerVar).pointer)
+end
+
 # The store to an instance variable of the self being lowered (the hosted `codegen_assign` for an
 # `InstanceVar` target): a value of the variable's own type is stored as it is, a nil stores nothing,
 # and another type goes through `assign`. The value is already evaluated.
