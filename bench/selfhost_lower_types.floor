@@ -17,7 +17,7 @@ src/compiler/foundation/location.iyi 4
 src/compiler/foundation/string_pool.iyi 4
 src/compiler/ir/builder.iyi 2
 src/compiler/ir/function.iyi 7
-src/compiler/ir/inst.iyi 16
+src/compiler/ir/inst.iyi 17
 src/compiler/ir/intrinsics.iyi 3
 src/compiler/ir/layout.iyi 3
 src/compiler/ir/module.iyi 1
@@ -43,7 +43,7 @@ src/compiler/lower/call.iyi 1
 src/compiler/lower/cast.iyi 1
 src/compiler/lower/cond.iyi 1
 src/compiler/lower/const.iyi 1
-src/compiler/lower/context.iyi 0
+src/compiler/lower/context.iyi 6
 src/compiler/lower/fun.iyi 1
 src/compiler/lower/globals.iyi 4
 src/compiler/lower/headed.iyi 1
@@ -126,7 +126,7 @@ src/compiler/semantic/restrictions.iyi 3
 src/compiler/semantic/top_level.iyi 12
 src/compiler/semantic/type_node_host.iyi 2
 src/compiler/semantic/type_nodes.iyi 1
-src/compiler/semantic/typed.iyi 0
+src/compiler/semantic/typed.iyi 4
 src/compiler/stage1.iyi 2
 src/compiler/syntax/ast.iyi 99
 src/compiler/syntax/lexer.iyi 2

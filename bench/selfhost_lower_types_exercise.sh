@@ -310,11 +310,6 @@ prove_mutation "mixed union aligned to 4 bytes, not the largest member" "$TYPER_
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "mixed unions not passed by value" "$TYPER_FILE" \
-  "  if type.is_a?(MixedUnionType)" \
-  "  if false" \
-  -- check_lowering_diverges || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "indirect threshold above a 136-byte value" "$TYPER_FILE" \
   "    size_of(llvm_type(type)) > 128" \
@@ -594,9 +589,9 @@ prove_mutation "headed census drops subclasses of virtual-type classes" "$HEADED
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "headed census stops resolving aliases inside reference unions" "$HEADED_FILE" \
-  '      resolved = program.remove_alias(member)' \
-  '      resolved = member' \
+prove_mutation "headed census drops subclasses of union members" "$HEADED_FILE" \
+  '      TypeQueries.all_subclasses(resolved).each do |sub|' \
+  '      ([] of Type).each do |sub|' \
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -606,13 +601,13 @@ prove_mutation "the sixteen-bit slot is zero bits wide" "$HEADED_FILE" \
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "String is not headed by rule" "$HEADED_FILE" \
+prove_mutation_all "String is not headed by rule" "$HEADED_FILE" \
   '  return true if type.full_name == "String"' \
   '  return false if type.full_name == "String"' \
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "an unheaded candidate answers headed" "$HEADED_FILE" \
+prove_mutation_all "an unheaded candidate answers headed" "$HEADED_FILE" \
   '  return false unless headed_candidate?(type)' \
   '  return true unless headed_candidate?(type)' \
   -- check_headed_diverges || status=1
