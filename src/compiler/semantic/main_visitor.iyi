@@ -298,6 +298,7 @@ pub class MainVisitor < TypeNodeHost
   # The analysed signature of each fun, keyed by its FunDef node: argument types
   # in declared order and the declared return type. The lowering reads them.
   property fun_arg_types_by_node : NodeMap(Array(Type)) = NodeMap(Array(Type)).new
+  property matched_call_args : NodeMap(Array(Type)) = NodeMap(Array(Type)).new
   property fun_return_types_by_node : NodeMap(Type) = NodeMap(Type).new
 
   def record_fun_signature(node : FunDef, arg_types : Array(Type), return_type : Type?) : Nil
@@ -2573,71 +2574,23 @@ pub class MainVisitor < TypeNodeHost
       return most_specific.first
     end
 
-    # A resolved restriction can still contain a free variable, as in
-    # Pointer(T). Let the calls matcher bind it before reporting a mismatch.
-    if count_matches.any? { |d| !d.free_vars.nil? }
-      if matched = match_splat_with_calls(rec_type, name, args, call_node)
-        return matched
+    # The shared matcher handles splats, free variables and numeric widening
+    # for both number literals and typed integers.
+    arg_types = [] of Type
+    args.each { |arg| arg_types << type_of(arg) }
+    signature = CallSignature.new(name, arg_types, nil, call_node.block != nil)
+    widened = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args)
+    if widened.error.nil? && widened.definition
+      @matched_call_args[call_node] = widened.arg_types
+      return widened.definition
+    end
+    if message = widened.error
+      if message.starts_with?("ambiguous call")
+        return refuse_call(call_node, message)
       end
     end
-
     if ur = unresolved_restriction
-      if rescued = match_splat_with_calls(rec_type, name, args, call_node)
-        return rescued
-      end
       return refuse_call(call_node, ur)
-    end
-
-    # 3. Check autocast matches for literals
-    has_literal_arg = args.any? { |a| a.is_a?(NumberLiteral) }
-    if has_literal_arg
-      autocast_matches = [] of Def
-      autocast_types = [] of String
-      count_matches.each do |d|
-        all_match = true
-        matched_t_name = ""
-        i = 0
-        while i < args.size
-          arg = args[i]
-          arg_t = type_of(arg)
-          param = d.args[i]
-          if r = param.restriction
-            expected_t = lookup_under(r, rec_type)
-            if arg_t.subtype_of?(expected_t)
-              # exact subtype match
-            elsif arg.is_a?(NumberLiteral) && number_literal_matches_type?(arg.as(NumberLiteral), expected_t)
-              matched_t_name = expected_t.full_name
-            else
-              all_match = false
-              break
-            end
-          end
-          i = i + 1
-        end
-        if all_match
-          autocast_matches << d
-          autocast_types << matched_t_name
-        end
-      end
-
-      if autocast_matches.size > 1
-        lit_val = ""
-        args.each do |a|
-          if a.is_a?(NumberLiteral)
-            lit_val = a.as(NumberLiteral).value
-            break
-          end
-        end
-        uniq_types = [] of String
-        autocast_types.each do |tn|
-          unless tn.empty? || uniq_types.includes?(tn)
-            uniq_types << tn
-          end
-        end
-        return refuse_call(call_node, "ambiguous call, implicit cast of #{lit_val} matches all of #{uniq_types.join(", ")}")
-      elsif autocast_matches.size == 1
-        return autocast_matches.first
-      end
     end
 
     # 4. Error reporting for no matching overload
@@ -3040,6 +2993,11 @@ pub class MainVisitor < TypeNodeHost
         param_type = child_type(args[arg_index]) if arg_index >= 0 && arg_index < args.size
       elsif i < args.size
         param_type = child_type(args[i])
+        if call_node
+          if matched = @matched_call_args[call_node]?
+            param_type = matched[i] if i < matched.size
+          end
+        end
       elsif dv = param.default_value
         dv.accept(self)
         param_type = child_type(dv)
