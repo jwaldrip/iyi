@@ -1,5 +1,5 @@
 # selfhost pipeline table floor: <root> <defs reached by the body typer> <defs typed with no refusal> <defs lowered with no refusal>. A count may only rise. Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh.
-# Distinct instantiations. Raised on the bodies merge 91d973013 (pipeline gate exit 0, ALL CHECKS PASSED). The earlier compile_native drop 725 to 714 was 11 labels that are not hosted functions (Array/Pointer of a metaclass, plus Array(Int32)#count); losing those was a correction.
-hello 794 653 293
-parse 2090 1630 497
-compile_native 840 689 293
+# Distinct instantiations. Raised on the declarations merge 78faad7e3 (pipeline gate exit 0, ALL CHECKS PASSED). Previous raise was bodies 91d973013: hello 794 653 293, parse 2090 1630 497, compile_native 840 689 293.
+hello 829 753 320
+parse 2104 1740 551
+compile_native 1078 951 371
