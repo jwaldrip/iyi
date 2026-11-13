@@ -1,5 +1,5 @@
-# selfhost pipeline table floor: <root> <defs reached> <defs typed with no refusal> <defs lowered with no refusal>. Distinct instantiations. A count on this measure may only rise.
-# compile_native reached 725 to 714 and typed-clean 576 to 565 on a0a16fc2b are 11 labels that are not hosted functions. Hosted-filtered compile_native reached stayed 348 (0 labels unmapped). The 11: Array(Module.class)#count, Array(Module.class)#each, Array(ObjectFile.class)#count, Array(ObjectFile.class)#each, Array(Int32)#count, Pointer(Module.class) and Pointer(ObjectFile.class) #+ #[] #value. Hosted name list has 0 of those names.
-hello 440 353 174
-parse 552 443 218
-compile_native 714 565 231
+# selfhost pipeline table floor: <root> <defs reached by the body typer> <defs typed with no refusal> <defs lowered with no refusal>. A count may only rise. Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh.
+# Distinct instantiations. Raised on the bodies merge 91d973013 (pipeline gate exit 0, ALL CHECKS PASSED). The earlier compile_native drop 725 to 714 was 11 labels that are not hosted functions (Array/Pointer of a metaclass, plus Array(Int32)#count); losing those was a correction.
+hello 794 653 293
+parse 2090 1630 497
+compile_native 840 689 293
