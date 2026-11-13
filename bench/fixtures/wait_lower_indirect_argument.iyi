@@ -46,8 +46,8 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-def consume(value : Large) : Int64
-  value.value
+def consume(value : Large) : Int32
+  value.value == 7_i64 ? 7 : 1
 end
 
-LibC.exit(consume(Large.new(7_i64)).to_i32)
+LibC.exit(consume(Large.new(7_i64)))
