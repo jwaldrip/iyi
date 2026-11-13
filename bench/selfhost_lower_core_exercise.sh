@@ -81,12 +81,10 @@ fi
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
 passed=0
-# Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed (the
-# port numbers String 31, the hosted module 1: the typer slice's LowerTypeIds numbering). They are waiting
-# by name, and the gate fails if one of them starts to match, so this list is kept honest.
-# lower_fun_main: the port lowers the argv parameter of `fun main(argc, argv : UInt8**)` to i1, not ptr (the record's
-# argument type for UInt8** comes from the type nodes, not from this emitter). Waiting by name until that is fixed.
-KNOWN_DIVERGED="lower_string lower_string_nonascii lower_fun_main"
+# Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed. The port numbers
+# String 31 and the hosted module 1 for lower_string and lower_string_nonascii (the typer slice's LowerTypeIds
+# numbering, NEEDS.md row 16). They wait by name; the gate fails if one starts to match, so this list is kept honest.
+KNOWN_DIVERGED="lower_string lower_string_nonascii"
 e2e=""
 module_same=0
 module_differ=0
@@ -207,7 +205,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
-CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi"
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -311,6 +309,10 @@ prove_mutation "the oracle rewriter reads a quoted callee name to its first pare
   'if (substr(s, i, 1) == "\"") return i' 'if (substr(s, i, 1) == "\"") return index(s, "(") - 1' -- quoted_callee_check || status=1
 prove_mutation "an asm-referenced runtime fun is internal, not external" "$REPO/src/compiler/lower/lower.iyi" \
   'if asm_referenced_fun?(name) || name == "__iyi_new"' 'if name == "__iyi_new"' -- lower_core_check || status=1
+prove_mutation "a UInt64 literal past Int64 max is read with to_i64, not its bit pattern" "$REPO/src/compiler/lower/lower.iyi" \
+  "const_int(ir, uint64_bits(node.value.to_u64))" "const_int(ir, node.value.to_i64)" -- lower_core_check || status=1
+prove_mutation "a proc literal's name uses the file as given, not relative to the working directory" "$REPO/src/compiler/lower/proc.iyi" \
+  'symbol_text(relative_filename(loc.filename))' 'symbol_text(loc.filename)' -- lower_core_check || status=1
 
 # The module-level count: how many CORE_CHECK_FIXTURES match the hosted module in every item, module-level included.
 # A patch that changes only module-level text lowers the count, and this check catches it.

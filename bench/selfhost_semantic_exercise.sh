@@ -236,6 +236,7 @@ begin
   end
 
   program = Iyi::Program.new
+  program.filename = filename
   initial_types = program.types.keys.to_set
   visitor = Iyi::TopLevelVisitor.new(program)
   node.accept(visitor)
@@ -312,13 +313,14 @@ total_matched_declarations=0
 for fixture in "$REPO"/bench/fixtures/sem_*.iyi; do
   case "$(basename "$fixture")" in
     sem_err_*|sem_expr_*) continue ;;
-    # Typed-body fixtures whose declaration dump differs for reasons owned by other lanes (OWNERS.md): an Ivar line the front end does not print (agent://S1bIvars3), a lib kind (LibC (lib)) with a duplicated abs (agent://S1b10Declarations), and an empty body's Expressions (agent://S1b10Declarations). Each is printed as WAITING with its owner; the bodies gate compares their typing.
-    sem_bodies_ivar_read*) echo "  $(basename "$fixture"): WAITING (owner agent://S1bIvars3: an Ivar line the front end does not print); declarations not compared, the bodies gate compares its typing"; continue ;;
-    sem_bodies_libcall*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b10Declarations: lib kind LibC (lib) and a duplicated abs); declarations not compared, the bodies gate compares its typing"; continue ;;
-    sem_bodies_self_return*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b10Declarations: an empty body's Expressions is not printed); declarations not compared, the bodies gate compares its typing"; continue ;;
-    sem_bodies_generic_ivar*) echo "  $(basename "$fixture"): WAITING (owner agent://S1bIvars3: a generic class's declared Ivar line Box#@value, which the oracle does not print); declarations not compared, the bodies gate compares its typing"; continue ;;
-    sem_bodies_global_fun*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b10Declarations: a top-level fun's declaration line real_name and varargs, which the front end does not print); declarations not compared, the bodies gate compares its typing"; continue ;;
-    sem_bodies_import_scope*|sem_bodies_import_later*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b10Declarations: the declaration dump does not resolve an imported sibling module from the fixture's directory on either side); declarations not compared, the bodies gate compares its typing"; continue ;;
+    # Typed-body fixtures whose declaration dump differs for reasons owned by other lanes (OWNERS.md): an Ivar line the front end does not print (agent://S1bIvars10), a lib kind (LibC (lib)) with a duplicated abs (agent://S1b19Declarations), and an empty body's Expressions (agent://S1b19Declarations). Each is printed as WAITING with its owner; the bodies gate compares their typing.
+    sem_bodies_ivar_read*) echo "  $(basename "$fixture"): WAITING (owner agent://S1bIvars10: an Ivar line the front end does not print); declarations not compared, the bodies gate compares its typing"; continue ;;
+    sem_bodies_libcall*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b19Declarations: lib kind LibC (lib) and a duplicated abs); declarations not compared, the bodies gate compares its typing"; continue ;;
+    sem_bodies_self_return*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b19Declarations: an empty body's Expressions is not printed); declarations not compared, the bodies gate compares its typing"; continue ;;
+    sem_bodies_generic_ivar*) echo "  $(basename "$fixture"): WAITING (owner agent://S1bIvars10: a generic class's declared Ivar line Box#@value, which the oracle does not print); declarations not compared, the bodies gate compares its typing"; continue ;;
+    sem_bodies_global_fun*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b19Declarations: a top-level fun's declaration lines real_name and varargs, which the oracle does not print and the port does); declarations not compared, the bodies gate compares its typing"; continue ;;
+    sem_bodies_fun_splice*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b19Declarations: a top-level fun's declaration lines real_name and varargs, which the oracle does not print and the port does); declarations not compared, the bodies gate compares its typing"; continue ;;
+    sem_bodies_import_scope*|sem_bodies_import_later*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b19Declarations: the declaration dump does not resolve an imported sibling module from the fixture's directory on either side); declarations not compared, the bodies gate compares its typing"; continue ;;
   esac
   fixture_name="bench/fixtures/$(basename "$fixture")"
   "$WORK/exercise" "$fixture" > "$WORK/iyi.ast"
@@ -484,8 +486,10 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "while loop condition type analysis is bypassed" "$SEM_MAIN" \
   "node.cond.accept(self)
-    # A " \
-  "# A " \
+      @needs_type_filters = @needs_type_filters - 1
+      cond_type_filters = @type_filters" \
+  "@needs_type_filters = @needs_type_filters - 1
+      cond_type_filters = @type_filters" \
   -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

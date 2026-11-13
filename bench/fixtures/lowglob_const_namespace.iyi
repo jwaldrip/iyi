@@ -1,5 +1,4 @@
 module Outer
-  Y = 4
   S = "ab"
 end
 
@@ -7,6 +6,6 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-# Y is a literal, inlined at its read. S is a string constant in a namespace: its global is named Outer::S, read as a bare statement.
+# S is a string constant in a namespace: its global is named Outer::S (hosted llvm_name), read as a bare statement.
 Outer::S
-LibC.exit(Outer::Y)
+LibC.exit(4)

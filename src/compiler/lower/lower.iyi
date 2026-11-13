@@ -44,8 +44,11 @@ import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_cl
 import compiler/lower/instance_var::{codegen_instance_var_read, store_instance_var}
 import compiler/syntax/ast::{FunDef}
 import compiler/syntax/ast::{Annotation}
+import compiler/syntax/ast::{Asm}
+import compiler/lower/asm::{codegen_asm}
 import compiler/semantic/top_level::{LibFun}
 import compiler/ir/inst::{Attribute}
+import compiler/syntax/token::{NumberKind}
 import compiler/lower/fun::{codegen_fun}
 import compiler/semantic/top_level::{NoReturnType}
 
@@ -416,6 +419,14 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     low.last = llvm_nil(low)
     return
   end
+  if node.is_a?(Annotation) && node.as(Annotation).path.names.last == "ThreadLocal"
+    # A `@[ThreadLocal]` annotation is lowered just before the class variable it marks, which takes the mark
+    # (class_var.iyi take_thread_local_annotation). The local-exec global (hosted class_var.cr declare_thread_local)
+    # exists only when the analysis flagged that variable, so an untyped declaration is refused there, by name.
+    low.globals.thread_local_pending = true
+    low.last = llvm_nil(low)
+    return
+  end
   if node.is_a?(Alias) || node.is_a?(Macro) || node.is_a?(Annotation)
     # The hosted `visit(Alias)` and `visit(Macro)`: nothing is emitted and the value is nil. The hosted
     # `visit(Annotation)` (codegen.cr:838) emits nothing and returns without setting `@last`; the value is
@@ -450,6 +461,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     # own site (primitives.iyi). A def with this body that the probe lowers alone is refused here by name, where
     # `node_class_name` has no name for the class and would answer the generic `ASTNode`.
     pending_visit_node("Primitive (a def body; hosted codegen_call lowers it at the call site)")
+  end
+  # --- asm ---
+  if node.is_a?(Asm)
+    codegen_asm(low, node.as(Asm)); return
   end
   pending_visit_node(node_class_name(node))
 end
@@ -524,9 +539,23 @@ pub def codegen_number(low : Lowerer, node : NumberLiteral) : Nil
   ir = low.typer.llvm_type(t.as(Type))
   if node.value.includes?(".")
     low.last = low.builder.const_float(ir, node.value.to_f)
+  elsif node.kind == NumberKind::U64
+    low.last = low.builder.const_int(ir, uint64_bits(node.value.to_u64))
   else
     low.last = low.builder.const_int(ir, node.value.to_i64)
   end
+end
+
+# The hosted `visit(NumberLiteral)` for a UInt64 literal (codegen.cr:924-925, `int64(node.value.to_u64)`): the
+# value's 64 bits as an Int64. A value past Int64 max is the bit pattern, so the value less 2**63 is the Int64
+# part and the top bit is the Int64 minimum added back. Checked arithmetic only; no conversion can overflow.
+pub def uint64_bits(value : UInt64) : Int64
+  half = 1_u64.unsafe_shl(63_u64)
+  if value >= half
+    rest = (value - half).to_i64
+    return rest + (0_i64 - 9223372036854775807_i64 - 1_i64)
+  end
+  value.to_i64
 end
 
 # The hosted `visit(CharLiteral)`: the code point, as an integer of the type the analysis gave
