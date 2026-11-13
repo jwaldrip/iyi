@@ -6,7 +6,7 @@ import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/semantic/method_lookup::{MethodLookup, Matches}
 import compiler/semantic/match::{CallSignature, Match}
 import compiler/semantic/restrictions::{ArgRestriction}
-import compiler/semantic/call::{CallReceiver, CallRecalculation}
+import compiler/semantic/call::{CallReceiver, CallRecalculation, CallTarget}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument}
 import compiler/semantic/default_arguments::{DefaultArguments}
 
@@ -21,7 +21,8 @@ import compiler/semantic/default_arguments::{DefaultArguments}
 # (bench/selfhost_semantic_calls_oracle.cr) prints. The receiver rule and the result
 # formats are the oracle's header. `# call` lines print the lookup's matches;
 # `# error` lines run CallRecalculation.recalculate and print `ok` when the call has
-# a target, or its error line.
+# a target, or its error line. `# defining` lines print the found-on type and the
+# receiver, which differ when the method is inherited.
 module BenchSelfhostSemanticCallsExercise
   def self.search_path : Array(String)
     text = ENV["IYI_PATH"]? || ""
@@ -65,7 +66,7 @@ module BenchSelfhostSemanticCallsExercise
     end
     arg_types = [] of Type
     call.args.each do |arg|
-      typed = CallReceiver.argument_type(prog, arg)
+      typed = typed_argument(prog, ts, arg)
       if typed.nil?
         return "argument is not a literal"
       end
@@ -77,6 +78,39 @@ module BenchSelfhostSemanticCallsExercise
     end
     signature = CallSignature.new(call.name, arg_types, named_types, call.block != nil)
     MethodLookup.lookup_with_autocast(scope.as(Type), ts, signature, call.args)
+  end
+
+  # A literal, or `instance(T)` where T is any written type (a path or a generic).
+  # CallReceiver types only a path. A generic instance is resolved here so a
+  # restriction written with free variables can be given Range(Int32, Nil).
+  def self.typed_argument(prog : SemanticProgram, ts : TypeSystem, node : ASTNode) : Type?
+    typed = CallReceiver.argument_type(prog, node)
+    return typed if typed
+    return nil unless node.is_a?(Call)
+    call = node.as(Call)
+    return nil unless call.obj.nil? && call.name == "instance" && call.args.size == 1
+    found = TypeLookup.new(ts.instances).lookup(prog, call.args[0])
+    return nil if found.is_a?(LookupError)
+    found.as(Type)
+  end
+
+  # `# bound` line: the free variables the one match bound, or `matched` / `none`.
+  def self.evaluate_bound(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
+    node = Parser.new(expr, "call").parse
+    return "error: not a call" unless node.is_a?(Call)
+    found = lookup(prog, ts, node.as(Call))
+    return "error: #{found.as(String)}" if found.is_a?(String)
+    matches = found.as(Matches)
+    return "error: #{matches.error.to_s}" if matches.error
+    return "none" if matches.empty?
+    bound = matches.matches[0].bound
+    return "matched" if bound.size == 0
+    names = bound.keys.sorted
+    parts = [] of String
+    names.each do |name|
+      parts << "#{name}=#{bound[name].to_s}"
+    end
+    parts.join(",")
   end
 
   # `# expand` line: the argument list of the one def the call matches, with its
@@ -262,6 +296,38 @@ module BenchSelfhostSemanticCallsExercise
     "ok"
   end
 
+  # `defining=<found-on> owner=<receiver>` for the one target, or the error line.
+  # The found-on type is CallTarget.defining, which is not the receiver when the
+  # method is inherited.
+  def self.evaluate_defining(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
+    node = Parser.new(expr, "call").parse
+    if !node.is_a?(Call)
+      return "error: not a call"
+    end
+    call = node.as(Call)
+    scope = CallReceiver.scope(prog, ts, call.obj)
+    if scope.nil?
+      return "error: receiver is not resolvable"
+    end
+    target = CallRecalculation.recalculate(scope.as(Type), ts, prog, call.name, call.args, call.named_args, call.block != nil, call.obj != nil)
+    if target.error
+      return "error: #{target.error.to_s}"
+    end
+    "defining=#{defining_text(target)} owner=#{owner_text(target)}"
+  end
+
+  def self.defining_text(target : CallTarget) : String
+    defining = target.defining
+    return "nil" if defining.nil?
+    defining.as(ModuleType).to_s
+  end
+
+  def self.owner_text(target : CallTarget) : String
+    owner = target.owner
+    return "nil" if owner.nil?
+    owner.as(Type).to_s
+  end
+
   def self.run(src : String, filename : String) : String
     prog = SemanticProgram.new
     prog.search_path = search_path
@@ -279,9 +345,15 @@ module BenchSelfhostSemanticCallsExercise
       if line.starts_with?("# call ")
         expr = line[7, line.bytesize - 7].strip
         out << "#{expr} => #{evaluate(prog, ts, expr)}"
+      elsif line.starts_with?("# bound ")
+        expr = line[8, line.bytesize - 8].strip
+        out << "#{expr} => #{evaluate_bound(prog, ts, expr)}"
       elsif line.starts_with?("# error ")
         expr = line[8, line.bytesize - 8].strip
         out << "#{expr} => #{evaluate_error(prog, ts, expr)}"
+      elsif line.starts_with?("# defining ")
+        expr = line[11, line.bytesize - 11].strip
+        out << "#{expr} => #{evaluate_defining(prog, ts, expr)}"
       elsif line.starts_with?("# expand ")
         expr = line[9, line.bytesize - 9].strip
         out << "#{expr} => #{evaluate_expand(prog, ts, expr)}"

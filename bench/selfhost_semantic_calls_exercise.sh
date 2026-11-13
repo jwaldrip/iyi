@@ -344,6 +344,24 @@ prove_mutation "a number literal is not matched when its value fits" "$MATCH_FIL
   '      return false' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an inherited method's target forgets the type it was found on" "$CALL_FILE" \
+  'return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, single.defining)' \
+  'return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, nil)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# matching lane (match.iyi, restrictions.iyi)
+prove_mutation "a generic restriction does not bind free vars from the instance type arguments" "$RESTRICT_FILE" \
+  '    return RestrictResult.no_match if base_type.full_name != inst.generic_type.full_name' \
+  '    return RestrictResult.no_match if true' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic owner's type parameter is not bound in a pointer restriction" "$RESTRICT_FILE" \
+  '          bound = instance.type_vars[names[0]]?' \
+  '          bound = nil' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 
