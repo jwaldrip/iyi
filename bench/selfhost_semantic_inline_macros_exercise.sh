@@ -474,6 +474,13 @@ check_refusals() {
   return "$fail"
 }
 
+check_body_lowering() {
+  local tool="$1" output="$WORK/body_lower"
+  rm -f "$output"
+  "$tool" "$REPO/bench/fixtures/seminl_reach/body_lower_if.iyi" -o "$output" --pipeline typed --probe-phase > "$WORK/body_lower.log" 2>&1 || return 1
+  [ -x "$output" ] && "$output" > "$WORK/body_lower.out" 2>&1
+}
+
 # The check the single-node mutations must fail: the refusal ceilings through a pipeline tool built from the tree as it is.
 check_body_fixture() {
   local RAISE=0 probe="$WORK/mut_body_tool"
@@ -485,17 +492,19 @@ check_body_fixture() {
     cat "$WORK/mut_body_build.log"
     return 0
   fi
-  check_refusals "$probe" > "$WORK/mut_body.txt" 2>&1
+  check_refusals "$probe" > "$WORK/mut_body.txt" 2>&1 || return 1
+  check_body_lowering "$probe"
 }
 
 if [ -x "$WORK/reach_tool" ]; then
   check_refusals "$WORK/reach_tool" || status=1
+  check_body_lowering "$WORK/reach_tool" || { echo "  FAIL: single macro body did not lower and run"; status=1; }
 else
   status=1
 fi
 
 if [ "$COMPARE_REACH" -eq 1 ]; then
-prove_mutation "a single macro node body is returned unchanged, so the typer refuses its macro node" "$MUT_INL" \
+prove_mutation "a single macro node body is left unspliced and cannot be lowered" "$MUT_INL" \
   "return body unless body.is_a?(MacroIf) || body.is_a?(MacroFor) || body.is_a?(MacroExpression)" \
   "return body" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -507,8 +516,8 @@ prove_mutation "a single macro node body loses its expansion: the wrapper is emp
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 
-# A constant whose value is one macro node is expanded where the typer reads it (main_visitor.iyi splice_const_value).
-prove_mutation "a constant whose value is one macro node is typed unexpanded, so the typer refuses its macro node" "$MUT_MAIN" \
+# The constant's macro is evaluated in its declaration namespace, not the reader's scope.
+prove_mutation "a constant macro expands in the reader's scope instead of its declaration namespace" "$MUT_MAIN" \
   "spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType))" \
   "spliced = Expressions.new([value] of ASTNode)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
