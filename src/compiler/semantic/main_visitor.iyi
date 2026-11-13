@@ -20,7 +20,7 @@ import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_n
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/lookup::{LookupError}
-import compiler/semantic/restrictions::{ArgRestriction}
+import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature}
 import compiler/semantic/call::{CallRecalculation}
 import compiler/semantic/new::{define_new_methods}
@@ -938,6 +938,7 @@ pub class MainVisitor < TypeNodeHost
     all_defs = [] of Def
     visited = Set(String).new
     collect_candidate_defs(rec_type, node.name, all_defs, visited)
+    collect_scope_defs(rec_type, node.name, all_defs, visited) if all_defs.empty?
     zero_arg = all_defs.find { |d| d.args.empty? || (d.args.first.default_value != nil) }
     if zero_arg
       call = Call.new(nil, node.name).at(node)
@@ -1981,6 +1982,20 @@ pub class MainVisitor < TypeNodeHost
   # defs its file imported by name (`import a/b::{parse}`), then the program's own (hosted
   # Call#lookup_matches: `lookup_matches_in_type(program)` after the scope).
   def collect_scope_defs(rec_type : Type, name : String, result : Array(Def), visited : Set(String)) : Nil
+    # The hosted call lookup walks lexical unit owners before imported and top-level defs.
+    lexical : Type? = @current_type
+    while lexical
+      current = lexical.as(Type)
+      break unless current.is_a?(ModuleType)
+      mod = current.as(ModuleType)
+      if mod.iyi_unit
+        collect_candidate_defs(mod, name, result, Set(String).new)
+        break unless result.empty?
+      end
+      break if mod.is_a?(SemanticProgram)
+      lexical = mod.namespace
+    end
+    return nil unless result.empty?
     if imported = @program.current_import_defs[name]?
       imported.each { |d| result << d }
     end
@@ -2026,18 +2041,31 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def def_more_specific?(d1 : Def, d2 : Def, args : Array(ASTNode), owner : Type) : Bool
+    # Hosted restrictions.cr:393-414 orders non-splat overloads ahead of splats.
+    return false if d1.splat_index && !d2.splat_index
+    return true if d2.splat_index && !d1.splat_index
+    if a = d1.splat_index
+      if b = d2.splat_index
+        return a.as(Int32) > b.as(Int32) if a != b
+      end
+    end
+    arg_types = [] of Type
+    args.each { |arg| arg_types << type_of(arg) }
+    bound1 = FreeBindings.of_def(d1, arg_types, type_node_system(@program))
+    bound2 = FreeBindings.of_def(d2, arg_types, type_node_system(@program))
     has_strict = false
     i = 0
-    while i < args.size
+    while i < args.size && i < d1.args.size && i < d2.args.size
+      break if d1.splat_index == i || d2.splat_index == i
       p1 = d1.args[i]
       p2 = d2.args[i]
       t1 = if r1 = p1.restriction
-             lookup_under(r1, owner)
+             comparison_restriction(r1, owner, bound1)
            else
              @program.object_type
            end
       t2 = if r2 = p2.restriction
-             lookup_under(r2, owner)
+             comparison_restriction(r2, owner, bound2)
            else
              @program.object_type
            end
@@ -2051,6 +2079,14 @@ pub class MainVisitor < TypeNodeHost
       i = i + 1
     end
     has_strict
+  end
+
+  def comparison_restriction(node : ASTNode, owner : Type, bound : Hash(String, Type)?) : Type
+    if bound
+      found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)
+      return found.as(Type) unless found.is_a?(LookupError)
+    end
+    @program.object_type
   end
 
   def filter_most_specific_overloads(candidates : Array(Def), args : Array(ASTNode), owner : Type) : Array(Def)
@@ -2208,6 +2244,10 @@ pub class MainVisitor < TypeNodeHost
       # in `File.chmod(path : String | Path)` is that file's import.
       old_imports = @program.current_imports
       old_import_defs = @program.current_import_defs
+      old_candidate_type = @current_type
+      if owner = @program.def_owner(d)
+        @current_type = owner if owner.iyi_unit
+      end
       enter_file_scope(d)
       all_args_match = true
       i = 0
@@ -2228,6 +2268,7 @@ pub class MainVisitor < TypeNodeHost
         end
         i = i + 1
       end
+      @current_type = old_candidate_type
       @program.current_imports = old_imports
       @program.current_import_defs = old_import_defs
       if all_args_match
@@ -2439,8 +2480,12 @@ pub class MainVisitor < TypeNodeHost
     old_import_defs = @program.current_import_defs
     enter_file_scope(target_def)
     old_current_type = @current_type
-    enter_owner_scope(rec_type)
-    result = type_method_body_in_file(target_def, rec_type, args, block, site, cache_key)
+    body_receiver = rec_type
+    if owner = @program.def_owner(target_def)
+      body_receiver = owner if owner.iyi_unit
+    end
+    enter_owner_scope(body_receiver)
+    result = type_method_body_in_file(target_def, body_receiver, args, block, site, cache_key)
     @current_type = old_current_type
     @program.current_imports = old_imports
     @program.current_import_defs = old_import_defs
@@ -2551,7 +2596,26 @@ pub class MainVisitor < TypeNodeHost
     while i < target_def.args.size
       param = target_def.args[i]
       param_type : Type? = nil
-      if i < args.size
+      splat_index = target_def.splat_index
+      if splat_index && i == splat_index.as(Int32)
+        # Hosted call.cr binds the splat local to a tuple, including the empty tuple.
+        elements = [] of Type
+        suffix = target_def.args.size - i - 1
+        end_index = args.size - suffix
+        j = i
+        while j < end_index
+          if element_type = child_type(args[j])
+            elements << element_type
+          else
+            params_typed = false
+          end
+          j = j + 1
+        end
+        param_type = tuple_type_of(@program, elements)
+      elsif splat_index && i > splat_index.as(Int32)
+        arg_index = args.size - (target_def.args.size - i)
+        param_type = child_type(args[arg_index]) if arg_index >= 0 && arg_index < args.size
+      elsif i < args.size
         param_type = child_type(args[i])
       elsif dv = param.default_value
         dv.accept(self)
@@ -2874,6 +2938,7 @@ pub class MainVisitor < TypeNodeHost
         target_def = lookup_method_matching(ut, node.name, node.args, node)
         return false if target_def.nil?
         instantiated_def = target_def.clone
+        @program.copy_def_owner(target_def, instantiated_def)
         dkey = def_instance_key(target_def, ut, node)
         ret_t : Type? = nil
         if hit = cached_instance(dkey)
@@ -2928,6 +2993,7 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     instantiated_def = target_def.clone
+    @program.copy_def_owner(target_def, instantiated_def)
     dkey = def_instance_key(target_def, rec_type, node)
     body_ret : Type? = nil
     if hit = cached_instance(dkey)
