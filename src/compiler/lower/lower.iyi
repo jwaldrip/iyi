@@ -21,7 +21,7 @@ import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, StringInterpolati
 import compiler/syntax/ast::{NamedTupleLiteral}
 import compiler/syntax/ast::{ImplDef, TraitDef}
 import compiler/types/types::{NamedTupleInstanceType}
-import compiler/syntax/ast::{TupleLiteral, Splat}
+import compiler/syntax/ast::{TupleLiteral, Splat, Generic}
 import compiler/syntax/ast::{ExceptionHandler, Case}
 import compiler/types/types::{TupleInstanceType}
 import compiler/lower/helpers::{build_string_constant}
@@ -46,7 +46,7 @@ import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun, c
 import compiler/ir/verifier::{verify_function}
 import compiler/lower/primitives::{define_headed_bytes}
 import compiler/lower/proc::{lower_proc_literal}
-import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, union_temp, upcast}
+import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, type_id_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants, path_const}
@@ -444,6 +444,12 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   end
   if node.is_a?(Path)
     codegen_path(low, node.as(Path))
+    return
+  end
+  if node.is_a?(Generic)
+    typ = low.analysed.type_of?(node)
+    raise "BUG: the analysed program has no type for a generic expression (hosted codegen.cr: visit(Generic))" if typ.nil?
+    low.last = type_id_value(low, typ.as(Type))
     return
   end
   if node.is_a?(ClassVar)
