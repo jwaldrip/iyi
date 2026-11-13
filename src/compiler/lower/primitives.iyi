@@ -204,7 +204,7 @@ pub def codegen_primitive_proc_call(low : Lowerer, node : Call, receiver_type : 
   arg_types.each_with_index do |arg_type, index|
     expected = proc_type.arg_types[index]
     arg = upcast(low, values[index + 1], arg_type, expected)
-    args << to_rhs(low, arg, expected)
+    args << (arg.type.pointer? ? to_rhs(low, arg, expected) : arg)
     params << low.typer.llvm_type(expected)
   end
   fun_ptr = low.builder.extract_value(values[0], 0)
@@ -280,6 +280,11 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
   end
   raise "BUG: tuple indexer receiver left no value" if value.nil?
   tuple_ir = low.typer.llvm_type(typ)
+  tuple_pointer = value.as(Value)
+  unless tuple_pointer.type.pointer?
+    tuple_pointer = low.alloca(tuple_ir, "")
+    store_aligned(low, value.as(Value), tuple_pointer)
+  end
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   first = primitive.tuple_index
   if node.args.size == 1 && node.args[0].is_a?(RangeLiteral)
@@ -291,7 +296,7 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
     while index <= primitive.tuple_last
       field = low.builder.const_int(low.module.types.int32, index.to_i64)
       dst_index = low.builder.const_int(low.module.types.int32, (index - first).to_i64)
-      ptr = low.builder.inbounds_gep(tuple_ir, value.as(Value), [zero, field] of Value)
+      ptr = low.builder.inbounds_gep(tuple_ir, tuple_pointer, [zero, field] of Value)
       destination = low.builder.inbounds_gep(result_ir, result, [zero, dst_index] of Value)
       store_pointer_value(low, destination, to_lhs(low, ptr, elements[index]), elements[index])
       index = index + 1
@@ -300,7 +305,7 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
     return
   end
   field = low.builder.const_int(low.module.types.int32, first.to_i64)
-  ptr = low.builder.inbounds_gep(tuple_ir, value.as(Value), [zero, field] of Value)
+  ptr = low.builder.inbounds_gep(tuple_ir, tuple_pointer, [zero, field] of Value)
   low.last = to_lhs(low, ptr, elements[first])
 end
 
