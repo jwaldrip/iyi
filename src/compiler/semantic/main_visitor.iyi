@@ -448,8 +448,8 @@ pub class MainVisitor < TypeNodeHost
   # generic written with those names (`Pointer(T)`) is instantiated, as the hosted
   # MatchContext does. Anything else is the lexical lookup from the current type.
   def lookup_under(node : ASTNode, owner : Type?) : Type
-    if receiver_instance(owner)
-      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)
+    if instance = receiver_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)
       return found.as(Type) unless found.is_a?(LookupError)
     end
     if node.is_a?(Self)
@@ -458,9 +458,9 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     if quiet = @program.lookup_type_node?(node, @current_type)
-      return quiet
+      return TypeQueries.virtual_type(quiet)
     end
-    @program.lookup_type_node(node, @current_type)
+    TypeQueries.virtual_type(@program.lookup_type_node(node, @current_type))
   end
 
   # iyi: a class variable that is replaced keeps the @[ThreadLocal] flag of the one it replaces
@@ -778,15 +778,12 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     if node.name == "pointer_set"
-      if sc = @scope
-        if sc.is_a?(PointerInstanceType)
-          if vt = @vars["value"]?
-            set_type(node, vt)
-            return false
-          end
-        end
+      if pst = pointer_set_type
+        set_type(node, pst)
+        return false
       end
     end
+
     if node.name == "class"
       if sc = @scope
         if sc.is_a?(ModuleType)
@@ -797,6 +794,40 @@ pub class MainVisitor < TypeNodeHost
     end
     untyped(node, "primitive #{node.name} without a declared return type")
     false
+  end
+
+  # Hosted visit_pointer_set (main_visitor.cr 3023-3035): a Void element types
+  # the primitive as Nil; otherwise the type is the def's `value` argument.
+  # A Pointer instance that is not a PointerInstanceType still has that argument.
+  def pointer_set_type : Type?
+    element = pointer_element(@scope)
+    if element && element.is_a?(VoidType)
+      return @program.nil_type
+    end
+    if vt = @vars["value"]?
+      return vt
+    end
+    element
+  end
+
+  def pointer_element(scope : Type?) : Type?
+    return nil if scope.nil?
+    sc : Type = scope.as(Type)
+    if sc.is_a?(MetaclassType)
+      sc = sc.as(MetaclassType).instance_type
+    end
+    if sc.is_a?(PointerInstanceType)
+      return sc.as(PointerInstanceType).element_type
+    end
+    if sc.is_a?(GenericClassInstanceType)
+      inst = sc.as(GenericClassInstanceType)
+      base = inst.generic_type
+      if base.is_a?(GenericClassType) && base.as(GenericClassType).name == "Pointer"
+        args = inst.type_args
+        return args[0] if args.size == 1
+      end
+    end
+    nil
   end
 
   # `obj.responds_to?(:name)` is typed Bool. Its value depends on the obj's type and is
@@ -1205,7 +1236,10 @@ pub class MainVisitor < TypeNodeHost
     if t.const?
       c = t.as(Const)
       c.used = true
-      if c_type = type_of?(c.value)
+      if enum_type = c.enum_value_type
+        set_type(c.value, enum_type)
+        set_type(node, enum_type)
+      elsif c_type = type_of?(c.value)
         set_type(node, c_type)
       else
         splice_const_value(c)
@@ -1902,12 +1936,9 @@ pub class MainVisitor < TypeNodeHost
     if owner.is_a?(MetaclassType)
       owner = owner.as(MetaclassType).instance_type
     end
-    if receiver_instance(owner)
-      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)
-      return found.as(Type) unless found.is_a?(LookupError)
-      return nil
-    end
-    @program.lookup_type_node?(restriction, @current_type)
+    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)
+    return found.as(Type) unless found.is_a?(LookupError)
+    nil
   end
 
   # Each member of a union restriction, bound under the receiver, merged. A
@@ -2619,12 +2650,19 @@ pub class MainVisitor < TypeNodeHost
 
     if rt = target_def.return_type
       declared_ret = lookup_under(rt, rec_type)
-      unless bt.subtype_of?(declared_ret)
+      # A Nil annotation discards the body's value; a body that never returns
+      # still gives the def NoReturn (hosted bindings.cr Def#map_type).
+      if declared_ret.nil_type? && bt.is_a?(NoReturnType)
+        set_type(target_def, bt)
+        remember_def_instance(cache_key, target_def, bt)
+        return bt
+      end
+      unless declared_ret.nil_type? || bt.subtype_of?(declared_ret)
         mismatch = "type mismatch for return type: expected #{declared_ret.full_name}, got #{bt.full_name}"
         if s = site
           refuse(s, mismatch)
         else
-          raise(mismatch) unless @total
+          refuse(body.as(ASTNode), mismatch)
         end
         return nil
       end
@@ -2800,10 +2838,6 @@ pub class MainVisitor < TypeNodeHost
 
     saved_call_ntf = @needs_type_filters
     @needs_type_filters = 0
-    node.args.each do |arg|
-      arg.accept(self)
-    end
-
     rec_type : Type
     if obj = node.obj
       obj.accept(self)
@@ -2816,6 +2850,9 @@ pub class MainVisitor < TypeNodeHost
       end
     else
       rec_type = @scope || @current_type
+    end
+    node.args.each do |arg|
+      arg.accept(self)
     end
     @needs_type_filters = saved_call_ntf
     if rec_type.is_a?(LibType)
@@ -3027,7 +3064,7 @@ pub class MainVisitor < TypeNodeHost
   # `->(x : T) { body }` is typed `Proc(T, R)`, as the hosted pass types a ProcLiteral (main_visitor.cr
   # 1373-1433 and ProcLiteral#update, bindings.cr 604-619). Its parameters are locals of its body; R is the
   # declared return type, or else the body's type. Not ported: the closure analysis, the Proc argument
-  # check, force_nil, and the body's scope (the body is typed in the program's scope, not the literal's).
+  # check, and force_nil.
   def visit(node : ProcLiteral) : Bool
     return false if type_of?(node)
     def_node = node.def
@@ -3049,7 +3086,10 @@ pub class MainVisitor < TypeNodeHost
     end
     declared = proc_literal_return(def_node)
     body = def_node.body
-    inner = sub_visitor(fun_vars)
+    inner = sub_visitor(fun_vars).as(MainVisitor)
+    # Unlike a fun body, the literal's body inherits its enclosing scope
+    # (hosted main_visitor.cr 1416-1423).
+    inner.scope = @scope
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(node)
