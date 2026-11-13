@@ -144,11 +144,6 @@ pub class CallMatch
       maybe_bound = FreeBindings.of_def(definition, signature.arg_types, ts)
       return MatchAttempt.none if maybe_bound.nil?
       bound = maybe_bound.as(Hash(String, Type))
-      j = 0
-      while j < free_names.size
-        return MatchAttempt.failed("undefined constant #{free_names[j]}") if bound[free_names[j]]?.nil?
-        j += 1
-      end
     end
 
     mandatory = [] of Bool
@@ -167,6 +162,20 @@ pub class CallMatch
     while i < given && i < prefix
       arg = definition.args[i]
       arg_type = signature.arg_types[i]
+      written = arg.restriction
+      if written && FreeBindings.mentions?(written.as(ASTNode), free_names)
+        answer = ArgRestriction.restrict_argument(ts, defining, written.as(ASTNode), arg_type, owner, free_names, bound)
+        if answer.error
+          return MatchAttempt.failed(answer.error.to_s)
+        end
+        return MatchAttempt.none if answer.type.nil?
+        matched << answer.type.as(Type)
+        exact = false if answer.type.as(Type) != arg_type
+        mandatory[i] = true
+        declared << answer.type.as(Type)
+        i += 1
+        next
+      end
       restriction = ArgRestriction.of_bound(ts, defining, arg, owner, bound)
       if restriction.error
         return MatchAttempt.failed(restriction.error.to_s)
@@ -267,6 +276,17 @@ pub class CallMatch
       k += 1
     end
 
+    # A free variable the arguments never bound is the hosted "undefined constant",
+    # and only after every written restriction matched. A generic that does not
+    # match the argument is no match, not that error (restrict returns nil).
+    if free_names.size > 0
+      j = 0
+      while j < free_names.size
+        return MatchAttempt.failed("undefined constant #{free_names[j]}") if bound[free_names[j]]?.nil?
+        j += 1
+      end
+    end
+
     # A successful numeric autocast is a covering match: the hosted second pass
     # treats a partial number match as compatible, which sets cover_all.
     exact = true if signature.autocast_nodes
@@ -304,11 +324,10 @@ pub class NumericAutocast
     false
   end
 
-  # A number literal always may. A typed integer may when its kind is at most
-  # 64 bits. A typed Float32 may. The harness writes a typed value as instance(T).
+  # A number literal always may. Other typed numeric expressions may when their
+  # integer range is supported, or when their type is Float32.
   def self.supports?(node : ASTNode, type : Type) : Bool
     return true if node.is_a?(NumberLiteral)
-    return false unless NumericAutocast.instance_call?(node)
     bits = NumericAutocast.integer_bits(type)
     return bits > 0 && bits <= 64 if bits > 0
     type.full_name == "Float32"
@@ -321,16 +340,10 @@ pub class NumericAutocast
     if node.is_a?(NumberLiteral)
       return NumericAutocast.value_fits?(node.as(NumberLiteral), target)
     end
-    if NumericAutocast.instance_call?(node)
+    if NumericAutocast.supports?(node, type)
       return NumericAutocast.range_subset?(type, target)
     end
     false
-  end
-
-  def self.instance_call?(node : ASTNode) : Bool
-    return false unless node.is_a?(Call)
-    call = node.as(Call)
-    call.obj.nil? && call.name == "instance"
   end
 
   def self.integer_bits(type : Type) : Int32

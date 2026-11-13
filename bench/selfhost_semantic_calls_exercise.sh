@@ -370,6 +370,37 @@ prove_mutation "a virtual dispatch target loses its defining owner" "$CALL_FILE"
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# matching lane (match.iyi, restrictions.iyi)
+prove_mutation "a generic restriction does not bind free vars from the instance type arguments" "$RESTRICT_FILE" \
+  '    return RestrictResult.no_match if base_type.full_name != inst.generic_type.full_name' \
+  '    return RestrictResult.no_match if true' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic owner's type parameter is not bound in a pointer restriction" "$RESTRICT_FILE" \
+  '          bound = instance.type_vars[names[0]]?' \
+  '          bound = nil' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a Proc does not bind its argument tuple as T" "$REPO/src/compiler/types/types.iyi" \
+  '    vars["T"] = TupleInstanceType.new(program, @arg_types)' \
+  '    vars["T"] = TupleInstanceType.new(program, [] of Type)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic owner's superclass restriction rejects subclasses" "$MATCH_FILE" \
+  '        restricted = ts.restrict(arg_type, allowed.as(Type))' \
+  '        restricted = arg_type == allowed.as(Type) ? arg_type : nil' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a typed integer expression is not eligible for autocast" "$MATCH_FILE" \
+  '    bits = NumericAutocast.integer_bits(type)' \
+  '    return false if node.is_a?(Call) && node.as(Call).obj'$'\n''    bits = NumericAutocast.integer_bits(type)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

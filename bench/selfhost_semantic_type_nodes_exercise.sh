@@ -123,8 +123,8 @@ prove_mutation "a generic in a type argument is typed as its metaclass" "$TYPE_N
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "generic instance metaclass drops the generic class's class methods" "$TYPES_FILE" \
-  "generic_instance_type.generic_type.as(GenericClassType).metaclass.defs" \
-  "Hash(String, Array(Def)).new" \
+  $'    parents << instance_type.generic_type.as(ModuleType).metaclass\n  end\n\n  def generic_instance_type : GenericClassInstanceType\n    @instance_type.as(GenericClassInstanceType)\n  end\n\n  # The class methods of a generic instance are the generic class\'s own (hosted\n  # `delegate defs, macros, to: generic_type`, types.cr 3400).\n  def defs : Hash(String, Array(Def))\n    generic_instance_type.generic_type.as(GenericClassType).metaclass.defs' \
+  $'    nil\n  end\n\n  def generic_instance_type : GenericClassInstanceType\n    @instance_type.as(GenericClassInstanceType)\n  end\n\n  # The class methods of a generic instance are the generic class\'s own (hosted\n  # `delegate defs, macros, to: generic_type`, types.cr 3400).\n  def defs : Hash(String, Array(Def))\n    Hash(String, Array(Def)).new' \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -155,6 +155,13 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "enum members are not walked before the enum is typed" "$TYPE_NODES" \
   "    member.accept(visitor)" \
   "    member.to_s" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a fun's declared types are read before the type system resolves them" "$TYPE_NODES" \
+  "  type_node_system(visitor.program)
+  fun_record = visitor.program.lib_fun_of(node)" \
+  "  fun_record = visitor.program.lib_fun_of(node)" \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

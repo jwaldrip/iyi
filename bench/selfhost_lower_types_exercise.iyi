@@ -10,6 +10,7 @@ import compiler/ir/layout::{DataLayout, LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper, passed_by_value?, primitive_kind}
 import compiler/lower/type_id::{LowerTypeIds}
+import compiler/lower/headed::{headed?}
 import compiler/lower/layouts::{GcLayouts}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
@@ -17,6 +18,7 @@ import compiler/syntax/ast::{ASTNode, ClassDef, Expressions, ModuleHeader}
 import compiler/semantic/top_level::{ModuleType}
 import compiler/semantic/top_level::{dir_of, normalize_path, declared_in?, NamedType, EnumType, Const}
 import compiler/types/rendering::{TypeRenderer}
+import compiler/semantic/type_nodes::{type_node_system}
 
 # Lowering-types driver for bench/selfhost_lower_types_exercise.sh.
 #
@@ -209,6 +211,13 @@ module BenchSelfhostLowerTypesExercise
     out
   end
 
+  # The `headed` mode's block: the `:headed` byte of headed.iyi, `-` where the census would decide it.
+  def self.headed_block(expr : String, ids : LowerTypeIds, t : Type) : String
+    h = headed?(t, ids)
+    word = h.nil? ? "-" : (h.as(Bool) ? "1" : "0")
+    "== #{expr}\nheaded: #{word}\n"
+  end
+
   def self.run(src : String, filename : String, triple : String, mode : String) : String
     parser = Parser.new(src, filename)
     node = parser.parse
@@ -249,6 +258,8 @@ module BenchSelfhostLowerTypesExercise
     while i < exprs.size
       if mode == "ids"
         out = out + ids_block(exprs[i], ids, types[i])
+      elsif mode == "headed"
+        out = out + headed_block(exprs[i], ids, types[i])
       else
         out = out + block_text(exprs[i], typer, types[i])
       end
@@ -300,6 +311,12 @@ module BenchSelfhostLowerTypesExercise
     end
     node.accept(visitor)
     visitor.finish
+    # S2B_TYPE_SYSTEM=1 installs the program's type system (type_node_system), so generic instance
+    # type arguments are looked up with the full lookup. Off by default: the gate measures the
+    # simplified path (NEEDS.md row 3, the Generic drop in lookup_type_node).
+    if ENV["S2B_TYPE_SYSTEM"]? == "1"
+      type_node_system(prog)
+    end
     declare_guessed_instance_vars(prog)
     {prog, entry}
   end
