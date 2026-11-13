@@ -94,10 +94,26 @@ pub class TypeLookup
   # `lookup_path_node` reports it as a private constant.
   def find_path(scope : ModuleType, path : Path, include_private : Bool) : Type?
     root : ModuleType = scope
+    curr : Type? = nil
     if path.global
       root = program
+      curr = find_item(root, path.names[0], true, true)
+    else
+      # Hosted path_lookup.cr:121-170: local types and parents precede the
+      # importing file's names, which in turn precede enclosing namespaces.
+      name = path.names[0]
+      curr = find_item(root, name, true, false)
+      if found = curr
+        curr = program.imported_over_shell(found, name)
+      else
+        curr = program.current_imports[name]?
+      end
+      if curr.nil?
+        if ns = root.namespace
+          curr = find_item(ns, name, false, true)
+        end
+      end
     end
-    curr : Type? = find_item(root, path.names[0], true, true)
     i = 1
     while i < path.names.size
       owner = curr

@@ -193,7 +193,7 @@ prove_mutation "a return from an inlined def drops its value" "$REPO/src/compile
 prove_mutation "a method's receiver is not passed to the call" "$REPO/src/compiler/lower/call.iyi" \
   "    out << sv.as(Value)" "    out.size" -- lower_calls_check || status=1
 prove_mutation "a method's mangled name has no owner" "$REPO/src/compiler/lower/fun.iyi" \
-  'text = text + st.full_name + "#"' 'text = text + "#"' -- lower_calls_check || status=1
+  'text = text + owner_segment(st, name, false) + "#"' 'text = text + "#"' -- lower_calls_check || status=1
 prove_mutation "a block call does not bind self in the inlined def" "$REPO/src/compiler/lower/call.iyi" \
   '      frame.vars["self"] = LowerVar.new(sv.as(Value), st, !self_by_pointer?(st))' '      frame.vars.size' -- lower_calls_check || status=1
 prove_mutation "a method's self is not the first parameter" "$REPO/src/compiler/lower/fun.iyi" \
@@ -207,7 +207,7 @@ prove_mutation "a lib call's function type returns nil" "$REPO/src/compiler/lowe
 prove_mutation "a lib call's result is declared as an integer (a pointer result is caught)" "$REPO/src/compiler/lower/call.iyi" \
   'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)' 'fn_type = low.module.types.func(params, low.module.types.int32, lib_fun.varargs?)' -- lower_calls_check || status=1
 prove_mutation "a class method is named with the instance separator (# not ::)" "$REPO/src/compiler/lower/fun.iyi" \
-  'text = text + co.full_name + "::"' 'text = text + co.full_name + "#"' -- lower_calls_check || status=1
+  'text = text + owner_segment(co, name, true) + "::"' 'text = text + owner_segment(co, name, true) + "#"' -- lower_calls_check || status=1
 prove_mutation "a stored struct receiver is loaded, not passed by its address" "$REPO/src/compiler/lower/call.iyi" \
   'return nil if lv.already_loaded' 'return nil if true' -- lower_calls_check || status=1
 prove_mutation "an empty (Nop) body is not inlined" "$REPO/src/compiler/lower/call.iyi" \
@@ -234,6 +234,19 @@ prove_mutation "a restriction the argument implements is refused (the nil argume
   'unless at.implements?(restricted.as(Type))' 'if at.implements?(restricted.as(Type))' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'values << (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))' 'values << value.as(Value)' -- lower_calls_check || status=1
+prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
+  '          class_owner = ct' '          class_owner = nil' -- lower_calls_check || status=1
+prove_mutation "a generic metaclass call passes no self type id" "$REPO/src/compiler/lower/call.iyi" \
+  '      self_value = type_id_value(low, recv_type)' '      self_value = nil' -- lower_calls_check || status=1
+prove_mutation "an implicit generic metaclass call loses its self" "$REPO/src/compiler/lower/call.iyi" \
+  '  if defines_method?(ct, node.name)
+    return ct' '  if defines_method?(ct, node.name)
+    return nil if ct.is_a?(GenericClassInstanceMetaclassType)
+    return ct' -- lower_calls_check || status=1
+prove_mutation "a builtin metaclass receiver is refused" "$REPO/src/compiler/lower/call.iyi" \
+  '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)' '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""' -- lower_calls_check || status=1
+prove_mutation "an implicit builtin class call is refused" "$REPO/src/compiler/lower/call.iyi" \
+  '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)' '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

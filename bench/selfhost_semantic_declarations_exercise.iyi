@@ -1,9 +1,9 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader, Path}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, dump_program_declarations, dump_type, dir_of, normalize_path, declared_in?}
+import compiler/syntax/ast::{ASTNode, Def, Expressions, ModuleHeader, Path, Primitive}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, EnumType, AnnotationType, dump_program_declarations, dump_type, dir_of, normalize_path, declared_in?}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/type_nodes::{type_node_system}
-import compiler/types/types::{GenericClassInstanceType}
+import compiler/types/types::{GenericClassInstanceType, VirtualType}
 
 # Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
 #
@@ -266,6 +266,30 @@ elsif Program.args[0] == "--scope-lookup"
   scope = prog.types[Program.args[2]].as(ModuleType).metaclass
   found = prog.lookup_type_path(Path.new(Program.args[3]), scope)
   print "#{found.full_name}\n"
+elsif Program.args[0] == "--def-owner"
+  prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_program(Program.args[1])
+  base = prog.types["OwnerBase"].as(ModuleType)
+  instance_def = base.defs["inherited"][0]
+  class_def = base.metaclass.defs["class_method"][0]
+  print "instance #{prog.def_owner(instance_def).as(ModuleType).full_name}\n"
+  print "class #{prog.def_owner(class_def).as(ModuleType).full_name}\n"
+  copy = instance_def.clone.as(Def)
+  prog.copy_def_owner(instance_def, copy)
+  raise "definition clone lost its owner" unless prog.def_owner(copy) == base
+elsif Program.args[0] == "--virtual-subtype"
+  prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_typed_program(Program.args[1])
+  base = prog.types["SubtypeNode"].as(ClassType)
+  leaf = prog.types["SubtypeLeaf"].as(ClassType)
+  other = prog.types["SubtypeOther"].as(ClassType)
+  virtual = type_node_system(prog).virtual_of(base)
+  virtual_meta = virtual.as(VirtualType).metaclass
+  print "leaf virtual #{leaf.subtype_of?(virtual)}\n"
+  print "base virtual #{base.subtype_of?(virtual)}\n"
+  print "other virtual #{other.subtype_of?(virtual)}\n"
+  print "virtual leaf #{virtual.subtype_of?(leaf)}\n"
+  print "leaf meta virtual #{leaf.metaclass.subtype_of?(virtual_meta)}\n"
+  print "other meta virtual #{other.metaclass.subtype_of?(virtual_meta)}\n"
+  print "virtual meta leaf #{virtual_meta.subtype_of?(leaf.metaclass)}\n"
 elsif Program.args[0] == "--typed"
   print BenchSelfhostSemanticDeclarationsExercise.dump_file_typed(Program.args[1])
 elsif Program.args[0] == "--typed-reresolve"
@@ -283,6 +307,57 @@ elsif Program.args[0] == "--lib-types"
         print "lib #{name}.#{f.name}: #{f.arg_types.map(&.full_name).join(", ")} -> #{BenchSelfhostSemanticDeclarationsExercise.return_name(f)}\n"
       end
     end
+  end
+elsif Program.args[0] == "--classvar-generic"
+  prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_program(Program.args[1])
+  type_node_system(prog)
+  holder = prog.types["ClassVarGeneric"].as(ModuleType)
+  resolver = holder.class_vars["@@resolver"].type.full_name
+  pointer = holder.class_vars["@@pointer"].type.full_name
+  maybe = holder.class_vars["@@maybe"].type.full_name
+  raise "resolver lost generic arguments: #{resolver}" unless resolver.includes?("Proc(") && resolver.includes?("Pointer(") && resolver.includes?("Int32")
+  raise "pointer lost its argument: #{pointer}" unless pointer == "Pointer(Int32)"
+  raise "nilable pointer lost its argument: #{maybe}" unless maybe.includes?("Pointer(Int32)") && maybe.includes?("Nil")
+  print "class variable generic arguments retained\n"
+elsif Program.args[0] == "--primitive-annotations"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  arithmetic = prog.types["Arithmetic"].as(ModuleType)
+  ["first", "second", "third"].each do |name|
+    body = arithmetic.defs[name][0].body
+    if body.is_a?(Primitive)
+      print "#{name} #{body.as(Primitive).name}\n"
+    else
+      print "#{name} not-primitive\n"
+    end
+  end
+elsif Program.args[0] == "--enum-annotations"
+  prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_program(Program.args[1])
+  flags = prog.types["Flags"].as(AnnotationType)
+  ["MarkedEnum", "PlainEnum"].each do |name|
+    enum_type = prog.types[name].as(EnumType)
+    print "#{name} Flags=#{!enum_type.annotation(flags).nil?}\n"
+  end
+elsif Program.args[0] == "--enum-primitives"
+  prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_program(Program.args[1])
+  ["SmallEnum", "WideEnum"].each do |name|
+    enum_type = prog.types[name].as(EnumType)
+    [enum_type.defs["value"][0], enum_type.metaclass.defs["new"][0]].each do |definition|
+      primitive = definition.body.as(Primitive)
+      result = prog.primitive_return_type(definition).as(Type)
+      copy = definition.clone.as(Def)
+      prog.copy_def_owner(definition, copy)
+      raise "primitive result lost on clone" unless prog.primitive_return_type(copy) == result
+      restriction = definition.args.empty? ? "-" : definition.args[0].restriction.to_s
+      print "#{name} #{definition.name} #{primitive.name} #{result.full_name} #{restriction}\n"
+    end
+  end
+elsif Program.args[0] == "--enum-member-type"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  member = prog.types["E"].as(EnumType).members["B"]
+  if enum_type = member.enum_value_type
+    print "E::B #{enum_type.full_name}\n"
+  else
+    print "E::B untyped\n"
   end
 elsif Program.args[0] == "--const-facts"
   prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])

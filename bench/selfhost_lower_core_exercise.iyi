@@ -338,6 +338,32 @@ def run_probe_reuse(fixture : String) : Nil
   puts "callee-clean=0"
 end
 
+# Analyse the required unit separately from the entry, then lower the checked def
+# alone into a fresh module, as the per-function census does.
+def run_probe_required(runtime : String, entry : String, oracle : String) : Nil
+  normalizer = NormalizerProgram.new
+  normalizer.iyi_prelude = false
+  required_root = normalizer.normalize(Parser.new(File.read(runtime), runtime).parse)
+  entry_root = normalizer.normalize(Parser.new(File.read(entry), entry).parse)
+  prog = SemanticProgram.new
+  ts = TypeSystem.new(prog)
+  tl = TopLevelVisitor.new(prog)
+  required_root.accept(tl)
+  entry_root.accept(tl)
+  tl.finish
+  mv = MainVisitor.new(prog)
+  stand_in_primitive_types(entry_root, prog, mv)
+  required_root.accept(mv)
+  entry_root.accept(mv)
+  RecursiveStructChecker.new(prog).run
+  analysis = Analysis.new(entry_root, mv, true)
+  m = ir_module(triple_of(File.read(oracle)))
+  typer = LowerTyper.new(m.types, m.layout, true)
+  error = probe_message(analysis, typer, m, "checked_sum")
+  raise error.as(String) unless error.nil?
+  puts print(m)
+end
+
 def run : Nil
   args = Program.args
   if args.empty?
@@ -355,6 +381,8 @@ def run : Nil
     check_context
   elsif mode == "probe-reuse"
     run_probe_reuse(args[1])
+  elsif mode == "probe-required"
+    run_probe_required(args[1], args[2], args[3])
   else
     raise "unknown mode #{mode}"
   end

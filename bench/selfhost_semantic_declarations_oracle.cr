@@ -291,6 +291,81 @@ if ARGV[0]? == "--link-annotations"
   exit 0
 end
 
+if ARGV[0]? == "--lib-starstar"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  Iyi::TypeDeclarationProcessor.new(program).process(node)
+  library = program.types["LibBytes"].as(Iyi::LibType)
+  ["raw", "wrapped"].each do |name|
+    external = library.defs.not_nil![name].first.def
+    puts "lib LibBytes.#{name}: #{external.args.map(&.type).join(", ")} -> #{external.type}"
+  end
+  exit 0
+end
+
+if ARGV[0]? == "--enum-annotations"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  ["MarkedEnum", "PlainEnum"].each do |name|
+    enum_type = program.types[name].as(Iyi::EnumType)
+    puts "#{name} Flags=#{!enum_type.annotation(program.flags_annotation).nil?}"
+  end
+  exit 0
+end
+
+if ARGV[0]? == "--enum-primitives"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  ["SmallEnum", "WideEnum"].each do |name|
+    enum_type = program.types[name].as(Iyi::EnumType)
+    [enum_type.defs.not_nil!["value"].first.def, enum_type.metaclass.as(Iyi::ModuleType).defs.not_nil!["new"].first.def].each do |definition|
+      primitive = definition.body.as(Iyi::Primitive)
+      restriction = definition.args.empty? ? "-" : definition.args[0].restriction.to_s
+      puts "#{name} #{definition.name} #{primitive.name} #{primitive.type} #{restriction}"
+    end
+  end
+  exit 0
+end
+
+if ARGV[0]? == "--def-owner"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  base = program.types["OwnerBase"].as(Iyi::ModuleType)
+  instance_def = base.defs.not_nil!["inherited"].first.def
+  class_def = base.metaclass.as(Iyi::ModuleType).defs.not_nil!["class_method"].first.def
+  puts "instance #{instance_def.owner}"
+  puts "class #{class_def.owner}"
+  exit 0
+end
+
+if ARGV[0]? == "--virtual-subtype"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  base = program.types["SubtypeNode"].as(Iyi::ClassType)
+  leaf = program.types["SubtypeLeaf"].as(Iyi::ClassType)
+  other = program.types["SubtypeOther"].as(Iyi::ClassType)
+  virtual = base.virtual_type
+  virtual_meta = virtual.metaclass
+  puts "leaf virtual #{leaf.implements?(virtual)}"
+  puts "base virtual #{base.implements?(virtual)}"
+  puts "other virtual #{other.implements?(virtual)}"
+  puts "virtual leaf #{virtual.implements?(leaf)}"
+  puts "leaf meta virtual #{leaf.metaclass.implements?(virtual_meta)}"
+  puts "other meta virtual #{other.metaclass.implements?(virtual_meta)}"
+  puts "virtual meta leaf #{virtual_meta.implements?(leaf.metaclass)}"
+  exit 0
+end
+
 typed_mode = ARGV[0]? == "--typed"
 path = (typed_mode ? ARGV[1]? : ARGV[0]?) || abort("usage: selfhost_semantic_declarations_oracle [--typed] <file.iyi>")
 entry = File.expand_path(path)

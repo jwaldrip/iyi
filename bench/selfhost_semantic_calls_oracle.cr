@@ -56,6 +56,14 @@ class Iyi::Compiler
     program.semantic_after_top_level(node, processor, cleanup: false)
     program
   end
+
+  def typed_node(source : Iyi::Compiler::Source) : Iyi::ASTNode
+    program = new_program([source])
+    node = parse(program, [source])
+    node, processor = program.top_level_semantic(node)
+    program.semantic_after_top_level(node, processor, cleanup: false)
+    node
+  end
 end
 
 # A compiler configured the way the typed oracle configures it, with the prelude.
@@ -81,6 +89,9 @@ def literal_type(program : Iyi::Program, node : Iyi::ASTNode) : Iyi::Type
   end
   if node.is_a?(Iyi::NilLiteral)
     return program.types["Nil"].as(Iyi::Type)
+  end
+  if node.is_a?(Iyi::Call) && node.name == "abs" && node.args.empty? && node.obj
+    return literal_type(program, node.obj.not_nil!)
   end
   if node.is_a?(Iyi::Call) && node.as(Iyi::Call).name == "instance" && node.as(Iyi::Call).obj.nil?
     call = node.as(Iyi::Call)
@@ -133,7 +144,7 @@ end
 # is not this increment.
 def numeric_autocast?(program : Iyi::Program, node : Iyi::ASTNode) : Bool
   return true if node.is_a?(Iyi::NumberLiteral)
-  return false unless node.is_a?(Iyi::Call) && node.as(Iyi::Call).name == "instance" && node.as(Iyi::Call).obj.nil?
+  return false unless node.is_a?(Iyi::Call)
   t = literal_type(program, node)
   if t.is_a?(Iyi::IntegerType)
     return t.kind.bytesize <= 64
@@ -252,6 +263,24 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
+# The instantiated argument types of the target after the hosted call pass.
+# Its inferred return type belongs to the body typing gate.
+def instance_text(path : String, fixture : String, expr : String) : String
+  node = new_compiler.typed_node(Iyi::Compiler::Source.new(path, fixture + "\n" + expr + "\n"))
+  current = node
+  while current.is_a?(Iyi::Expressions)
+    exps = current.as(Iyi::Expressions).expressions
+    raise "empty file" if exps.empty?
+    current = exps.last
+  end
+  raise "not a call: #{expr}" unless current.is_a?(Iyi::Call)
+  td = current.as(Iyi::Call).target_def
+  parts = td.args.map { |arg| arg.type.to_s }
+  "args=#{parts.join(",")} body=pending"
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 def evaluate(program : Iyi::Program, expr : String) : String
   node = Iyi::Parser.new(expr).parse
   raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
@@ -343,7 +372,7 @@ def wrapper_text(program : Iyi::Program, expr : String) : String
   expansion.body.as(Iyi::Expressions).expressions.each do |item|
     assign = item
     assign = item.as(Iyi::AssignWithRestriction).assign if item.is_a?(Iyi::AssignWithRestriction)
-    statements << assign.to_s
+    statements << (assign.is_a?(Iyi::Expressions) ? "generated body" : assign.to_s)
   end
   "#{expansion.name}(#{names.join(", ")}) { #{statements.join("; ")} }"
 rescue ex : Exception
@@ -378,6 +407,25 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
+def tuple_text(path : String, fixture : String, expr : String) : String
+  node = new_compiler.typed_node(Iyi::Compiler::Source.new(path, fixture + "\n" + expr + "\n"))
+  while node.is_a?(Iyi::Expressions)
+    node = node.expressions.last
+  end
+  body = node.as(Iyi::Call).target_def.body
+  return "nil" if body.is_a?(Iyi::NilLiteral)
+  return "normal" unless body.is_a?(Iyi::TupleIndexer)
+  index = body.index
+  if index.is_a?(Range)
+    last = index.end - (index.excludes_end? ? 1 : 0)
+    "index=#{index.begin},#{last}"
+  else
+    "index=#{index},#{index}"
+  end
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 begin
   path = ARGV[0]? || abort("usage: selfhost_semantic_calls_oracle <fixture.iyi>")
   source = File.read(path)
@@ -395,6 +443,12 @@ begin
     elsif line.starts_with?("# defining ")
       expr = line[11..].strip
       puts "#{expr} => #{defining_text(program, expr)}"
+    elsif line.starts_with?("# instance ")
+      expr = line[11..].strip
+      puts "#{expr} => #{instance_text(path, source, expr)}"
+    elsif line.starts_with?("# tuple ")
+      expr = line[8..].strip
+      puts "#{expr} => #{tuple_text(path, source, expr)}"
     elsif line.starts_with?("# expand ")
       expr = line[9..].strip
       puts "#{expr} => #{expand_text(program, expr)}"

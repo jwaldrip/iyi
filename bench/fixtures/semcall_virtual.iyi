@@ -43,6 +43,7 @@ end
 # call virtual(Base).other(true)
 # call virtual(Base).leafy(1)
 # call virtual(Derived).name(1)
+# call virtual(Base).other(false)
 # call virtual(Derived).other(true)
 # call virtual(Leaf).name(1)
 # call virtual(Leaf).leafy(1)

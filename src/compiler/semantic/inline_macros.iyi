@@ -5,6 +5,8 @@ import compiler/syntax/parser::{Parser}
 import compiler/semantic/normalizer::{Normalizer}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
+import compiler/macros/interpreter::{MacroFreeBinding}
+import compiler/macros/type_facts::{MacroTypeFacts}
 
 # One inline macro site the declarations pass visited: the file it is written in,
 # its kind and place, and why the engine refused it (nil when it expanded, an empty
@@ -56,8 +58,11 @@ end
 # `locals` are the names the body declares before the site, in the order its statements are read.
 # The expansion is parsed knowing them, as the hosted parser reads it in the body's own scope: a
 # later reference to such a local is a variable, not a call.
-pub def expand_inline_macro(site : ASTNode, scope_name : String, filename : String, in_lib : Bool, locals : Array(String) = [] of String) : ASTNode?
-  report = MacroEngine.new.site_report(site, scope_name)
+#
+# `bindings` are the type parameters a site in a def body sees (macro_bindings.iyi): the receiver's
+# and the def's free variables. A site at the top level or in a type body has none.
+pub def expand_inline_macro(site : ASTNode, scope_name : String, filename : String, in_lib : Bool, locals : Array(String) = [] of String, bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil) : ASTNode?
+  report = MacroEngine.new.site_report(site, scope_name, bindings, facts)
   first = report.sites.first
   kind = first.kind
   line = first.line
@@ -155,7 +160,7 @@ end
 # the tree, so the pass that reads it refuses it too; an empty expansion is removed. The ledger
 # tells the two apart. `locals` names what is declared before the first node, and grows with each
 # node that declares one.
-pub def splice_inline_sites(nodes : Array(ASTNode), scope_name : String, filename : String, in_lib : Bool, locals : Array(String) = [] of String) : Array(ASTNode)
+pub def splice_inline_sites(nodes : Array(ASTNode), scope_name : String, filename : String, in_lib : Bool, locals : Array(String) = [] of String, bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil) : Array(ASTNode)
   out = [] of ASTNode
   nodes.each do |n|
     unless n.is_a?(MacroIf) || n.is_a?(MacroFor) || n.is_a?(MacroExpression)
@@ -163,7 +168,7 @@ pub def splice_inline_sites(nodes : Array(ASTNode), scope_name : String, filenam
       out << n
       next
     end
-    expanded = expand_inline_macro(n, scope_name, filename, in_lib, locals)
+    expanded = expand_inline_macro(n, scope_name, filename, in_lib, locals, bindings, facts)
     if expanded.nil?
       sites = InlineMacroLedger.sites
       last = sites[sites.size - 1]
@@ -174,7 +179,7 @@ pub def splice_inline_sites(nodes : Array(ASTNode), scope_name : String, filenam
     if expanded.is_a?(Expressions)
       inner = expanded.as(Expressions).expressions
     end
-    out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals))
+    out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts))
   end
   out
 end
@@ -182,9 +187,9 @@ end
 # A body that is one inline macro node (a class, module or lib body) has no Expressions around it,
 # so splice_inline_sites is never asked about it. Wrap it in an Expressions and splice it as a body
 # of several nodes is spliced. A site the engine refuses stays.
-pub def splice_body_node(body : ASTNode, scope_name : String, filename : String, in_lib : Bool, locals : Array(String) = [] of String) : ASTNode
+pub def splice_body_node(body : ASTNode, scope_name : String, filename : String, in_lib : Bool, locals : Array(String) = [] of String, bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil) : ASTNode
   return body unless body.is_a?(MacroIf) || body.is_a?(MacroFor) || body.is_a?(MacroExpression)
-  Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals))
+  Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals, bindings, facts))
 end
 
 # A fun's body is spliced in place, as a def's is (main_visitor.iyi splice_def_inline_sites), with
