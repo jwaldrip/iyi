@@ -334,6 +334,16 @@ prove_mutation "a splat free variable is not bound to the splat tuple" "$RESTRIC
   '        return nil if false' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a typed integer is not matched when its range fits a wider integer" "$MATCH_FILE" \
+  '      return NumericAutocast.range_subset?(type, target)' \
+  '      return false' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a number literal is not matched when its value fits" "$MATCH_FILE" \
+  '      return NumericAutocast.value_fits?(node.as(NumberLiteral), target)' \
+  '      return false' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 
