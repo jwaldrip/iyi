@@ -262,6 +262,9 @@ pub class ClosureWalk < Visitor
 
   def visit(node : Block) : Bool
     if literal = node.fun_literal
+      if @visitor.type_of?(node) || @visitor.type_of?(node.body)
+        @facts.add_frame(FrameKind::Block, node, @frame).finish
+      end
       literal.accept(self)
       return false
     end
@@ -321,6 +324,11 @@ pub class ClosureFacts
         frame.bindings << ClosureBinding.new(ClosureVar.new(arg.name, type))
       end
     end
+    if block_arg = def_node.block_arg
+      if type = @visitor.type_of?(block_arg)
+        frame.bindings << ClosureBinding.new(ClosureVar.new(block_arg.name, type))
+      end
+    end
     def_node.body.accept(ClosureWalk.new(self, @visitor, frame))
     frame.finish
     frame
@@ -359,6 +367,10 @@ pub class ClosureFacts
 
   def dump_lines(file : String) : Array(String)
     lines = [] of String
+    roots = [] of Tuple(ClosureFrame, String)
+    @ordered.each do |frame|
+      roots << {frame, "top"} if frame.kind == FrameKind::Program
+    end
     @visitor.typed_instances.each do |instance|
       root = analyse_def(instance.definition, instance.self_type)
       owner = if @visitor.program.def_owner(instance.definition).is_a?(SemanticProgram)
@@ -370,12 +382,17 @@ pub class ClosureFacts
               end
       types = instance.arg_types.map { |type| type.full_name }.join(",")
       label = "#{owner}##{instance.definition.name}(#{types})"
+      roots << {root, label}
+    end
+    roots.each do |entry|
+      root, label = entry
       @ordered.each do |frame|
         enclosing = frame
         while parent = enclosing.parent
           enclosing = parent
         end
         next unless enclosing.node.node_id == root.node.node_id
+        next if frame.kind == FrameKind::Program
         loc = frame.node.location
         next unless loc && loc.filename == file
         kind = if frame.kind == FrameKind::Def
