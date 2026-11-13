@@ -98,6 +98,10 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     lower_atomic_rmw(low, node)
     return
   end
+  if name == "cmpxchg"
+    lower_atomic_cmpxchg(low, node)
+    return
+  end
   if name == "pointer_malloc" || name == "pointer_new" || name == "pointer_realloc" || name == "pointer_diff" || name == "pointer_get" || name == "pointer_set" || name == "pointer_add" || name == "pointer_address"
     lower_pointer_primitive(low, node, name.as(String))
     return
@@ -224,6 +228,53 @@ pub def lower_atomic_rmw(low : Lowerer, node : Call) : Nil
   inst = low.builder.atomicrmw(op, ptr.as(Value), value, ordering, flag.as(BoolLiteral).value)
   inst.alignment = is_bool ? 1 : low.typer.align_of(value.type)
   low.last = is_bool ? low.builder.trunc(inst, low.module.types.int1) : inst
+end
+
+# Hosted codegen_primitive_cmpxchg: spill the old value and success bit to the tuple.
+pub def lower_atomic_cmpxchg(low : Lowerer, node : Call) : Nil
+  raise "BUG: cmpxchg needs five arguments" unless node.args.size == 5
+  success = atomic_ordering(node.args[3])
+  failure = atomic_ordering(node.args[4])
+  if success == Ordering::NotAtomic || success == Ordering::Unordered || failure == Ordering::NotAtomic || failure == Ordering::Unordered || failure == Ordering::Release || failure == Ordering::AcqRel
+    raise "BUG: invalid cmpxchg ordering"
+  end
+  pointer_type = low.analysed.type_of?(node.args[0])
+  raise "BUG: atomic pointer has no analysed type" if pointer_type.nil?
+  elem = pointer_element_of(pointer_type.as(Type))
+  tuple = low.analysed.type_of?(node)
+  raise "BUG: cmpxchg has no analysed result type" if tuple.nil?
+  wants = low.needs_value
+  low.needs_value = true
+  values = [] of Value
+  i = 0
+  while i < 3
+    visit_node(low, node.args[i])
+    v = low.last
+    raise "BUG: cmpxchg operand has no value" if v.nil?
+    values << v.as(Value)
+    i += 1
+  end
+  low.needs_value = wants
+  is_bool = primitive_kind(elem) == "bool"
+  compare = values[1]
+  replacement = values[2]
+  if is_bool
+    compare = low.builder.zext(compare, low.module.types.int8)
+    replacement = low.builder.zext(replacement, low.module.types.int8)
+  end
+  result = low.builder.cmpxchg(values[0], compare, replacement, success, failure)
+  result.alignment = is_bool ? 1 : low.typer.align_of(compare.type)
+  tuple_ir = low.typer.llvm_type(tuple.as(Type))
+  slot = low.alloca(tuple_ir, "")
+  zero = low.builder.const_int(low.module.types.int32, 0_i64)
+  one = low.builder.const_int(low.module.types.int32, 1_i64)
+  first_ptr = low.builder.gep(tuple_ir, slot, [zero, zero] of Value)
+  first = low.builder.extract_value(result, 0)
+  first_value = is_bool ? low.builder.trunc(first, low.module.types.int1) : first
+  store_aligned(low, first_value, first_ptr)
+  second_ptr = low.builder.gep(tuple_ir, slot, [zero, one] of Value)
+  store_aligned(low, low.builder.extract_value(result, 1), second_ptr)
+  low.last = slot
 end
 
 pub def atomic_ordering(node : ASTNode) : Ordering
