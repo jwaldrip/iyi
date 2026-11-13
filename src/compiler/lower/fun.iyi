@@ -28,7 +28,7 @@ import compiler/ir/inst::{Attribute, Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/ir/module::{Module}
-import compiler/lower/cast::{assign, upcast}
+import compiler/lower/cast::{assign, to_rhs, upcast}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
 import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/instance_var::{self_by_pointer?}
@@ -331,7 +331,8 @@ pub def codegen_fun_return(low : Lowerer, ret_ir : IrType, body : ASTNode) : Nil
   raise "BUG: the function body has no analysed type (hosted codegen_return)" if body_type.nil?
   return_type = low.current_context.return_type
   raise "BUG: the function has no analysed return type (hosted codegen_return)" if return_type.nil?
-  low.builder.ret(upcast(low, value.as(Value), body_type.as(Type), return_type.as(Type)))
+  converted = upcast(low, value.as(Value), body_type.as(Type), return_type.as(Type))
+  low.builder.ret(to_rhs(low, converted, return_type.as(Type)))
 end
 
 # The unwind table kind of a function with a body (hosted fun.cr:437-441): sync on aarch64,
