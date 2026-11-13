@@ -242,6 +242,7 @@ pub class MainVisitor < TypeNodeHost
   property type_filters : TypeFilters? = nil
   property needs_type_filters : Int32 = 0
   property unreachable : Bool = false
+  property while_break_vars : Array(Array(Hash(String, Type))) = [] of Array(Hash(String, Type))
 
   def needs_type_filters? : Bool
     @needs_type_filters > 0
@@ -725,7 +726,10 @@ pub class MainVisitor < TypeNodeHost
     end
     if bts = @break_types
       bts << value_t
+    elsif !@while_break_vars.empty?
+      @while_break_vars.last << @vars.dup
     end
+    @unreachable = true
     set_type(node, @program.no_return_type)
     false
   end
@@ -1439,17 +1443,154 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  def endless_while_cond?(cond : ASTNode) : Bool
+    c = cond
+    while c.is_a?(Expressions)
+      exps = c.as(Expressions).expressions
+      return false unless exps.size == 1
+      c = exps[0]
+    end
+    c.is_a?(BoolLiteral) && c.as(BoolLiteral).value
+  end
+
+  def merge_while_vars(endless : Bool, before_cond_vars : Hash(String, Type), after_cond_vars : Hash(String, Type), body_vars : Hash(String, Type), break_vars_list : Array(Hash(String, Type))) : Nil
+    after_while = Hash(String, Type).new
+    if endless
+      if !break_vars_list.empty?
+        keys = [] of String
+        break_vars_list.each do |bv|
+          bv.each_key { |k| keys << k unless keys.includes?(k) }
+        end
+        keys.each do |name|
+          merged : Type? = nil
+          all_have = true
+          break_vars_list.each do |bv|
+            if bt = bv[name]?
+              merged = merged ? @program.type_merge(merged.as(Type), bt) : bt
+            else
+              all_have = false
+            end
+          end
+          if mt = merged
+            unless all_have || before_cond_vars.has_key?(name)
+              mt = @program.type_merge(mt, @program.nil_type)
+              if old_u = @var_unions[name]?
+                @var_unions[name] = @program.type_merge(old_u, @program.nil_type)
+              end
+            end
+            after_while[name] = mt
+          end
+        end
+      end
+    else
+      keys = [] of String
+      before_cond_vars.each_key { |k| keys << k unless keys.includes?(k) }
+      after_cond_vars.each_key { |k| keys << k unless keys.includes?(k) }
+      body_vars.each_key { |k| keys << k unless keys.includes?(k) }
+      keys.each do |name|
+        bcv = before_cond_vars[name]?
+        acv = after_cond_vars[name]?
+        wv = body_vars[name]?
+        if acv && bcv != acv
+          after_while[name] = acv
+        elsif bcv && wv
+          after_while[name] = bcv == wv ? bcv : @program.type_merge(bcv, wv)
+        elsif bcv
+          after_while[name] = bcv
+        elsif wv
+          merged_new = @program.type_merge(wv, @program.nil_type)
+          after_while[name] = merged_new
+          if old_u = @var_unions[name]?
+            @var_unions[name] = @program.type_merge(old_u, @program.nil_type)
+          end
+        end
+      end
+      break_vars_list.each do |bv|
+        bv.each do |name, bt|
+          if existing = after_while[name]?
+            after_while[name] = @program.type_merge(existing, bt) unless existing == bt
+          else
+            after_while[name] = @program.type_merge(bt, @program.nil_type)
+          end
+        end
+      end
+    end
+    @vars = after_while
+    nil
+  end
+
   def visit(node : While) : Bool
-    node.cond.accept(self)
-    # A `break` or `next` in the loop leaves the loop, so its values are not the block's.
+    before_cond_vars_copy = @vars.dup
+    before_cond_untyped = @untyped_locals.dup
     old_break_types = @break_types
     old_next_types = @next_types
+    old_while_unreachable = @unreachable
     @break_types = nil
     @next_types = nil
     node.body = splice_def_body(node.body)
-    node.body.accept(self)
+
+    cond_type_filters : TypeFilters? = nil
+    after_cond_vars = before_cond_vars_copy
+    body_vars = before_cond_vars_copy
+    break_vars_list = [] of Hash(String, Type)
+
+    pass = 0
+    while pass < 3
+      pass = pass + 1
+      pass_start_vars = @vars.dup
+      @type_filters = nil
+      @needs_type_filters = @needs_type_filters + 1
+      node.cond.accept(self)
+      @needs_type_filters = @needs_type_filters - 1
+      cond_type_filters = @type_filters
+      after_cond_vars = @vars.dup
+
+      filter_vars(cond_type_filters)
+      @type_filters = nil
+      @unreachable = false
+      @while_break_vars.push([] of Hash(String, Type))
+      node.body.accept(self)
+      body_vars = @vars
+      break_vars_list = @while_break_vars.pop
+
+      changed = false
+      next_vars = Hash(String, Type).new
+      pass_start_vars.each do |name, start_t|
+        if end_t = body_vars[name]?
+          if end_t != start_t
+            merged_t = @program.type_merge(start_t, end_t)
+            if merged_t != start_t
+              changed = true
+            end
+            next_vars[name] = merged_t
+          else
+            next_vars[name] = start_t
+          end
+        else
+          next_vars[name] = start_t
+        end
+      end
+      break unless changed
+      @vars = next_vars
+      @untyped_locals = before_cond_untyped.dup
+    end
+
     @break_types = old_break_types
     @next_types = old_next_types
+    @type_filters = nil
+    @unreachable = old_while_unreachable
+
+    endless_while = endless_while_cond?(node.cond)
+    merge_while_vars(endless_while, before_cond_vars_copy, after_cond_vars, body_vars, break_vars_list)
+
+    if break_vars_list.empty?
+      if endless_while
+        set_type(node, @program.no_return_type)
+        @unreachable = true
+        return false
+      end
+      filter_vars(TypeFilters.invert(cond_type_filters))
+    end
     set_type(node, @program.nil_type)
     false
   end
@@ -2222,6 +2363,8 @@ pub class MainVisitor < TypeNodeHost
     @type_filters = nil
     @needs_type_filters = 0
     @unreachable = false
+    old_while_break_vars = @while_break_vars
+    @while_break_vars = [] of Array(Hash(String, Type))
     @break_types = nil
     @next_types = nil
     @return_types = [] of Type?
@@ -2328,6 +2471,7 @@ pub class MainVisitor < TypeNodeHost
     @type_filters = old_type_filters
     @needs_type_filters = old_needs_type_filters
     @unreachable = old_unreachable
+    @while_break_vars = old_while_break_vars
     @typing_stack.pop
 
     return nil unless params_typed
