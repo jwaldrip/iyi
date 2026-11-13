@@ -1150,6 +1150,7 @@ pub class SemanticProgram < NonGenericModuleType
   property merge_hook : TypeHook?
   # The explicit instance variables the top-level passes declared, for `resolve_declared_types`.
   getter declared_ivars : Array(DeclaredIvar)
+  getter declared_cvars : Array(DeclaredIvar)
   # iyi: the typed dump's mode. Strict (the default) refuses a name the program
   # cannot resolve, as it always has; total mode records it and goes on.
   property total_mode : Bool = false
@@ -1459,6 +1460,16 @@ pub class SemanticProgram < NonGenericModuleType
         di.owner.instance_vars[di.name] = mv
       end
     end
+    # Class variables use the same written-type resolution, but retain their existing
+    # record so annotations, owner and initializer survive installation of the type system.
+    @declared_cvars.each do |dc|
+      @current_imports = dc.imports
+      if t = declared_ivar_type?(dc.restriction, dc.owner, true)
+        if mv = dc.owner.class_vars[dc.name]?
+          mv.var_type = t
+        end
+      end
+    end
     @current_imports = saved
     nil
   end
@@ -1518,6 +1529,7 @@ pub class SemanticProgram < NonGenericModuleType
     @primitive_return_types = Hash(UInt64, Type).new
     @unions = Hash(Array(UInt64), Type).new
     @declared_ivars = [] of DeclaredIvar
+    @declared_cvars = [] of DeclaredIvar
     @current_imports = Hash(String, Type).new
     @current_import_defs = Hash(String, Array(Def)).new
     @project_root = nil
@@ -3183,6 +3195,7 @@ pub class TopLevelVisitor < Visitor
         mv.thread_local = true if ann.path.names.last == "ThreadLocal"
       end
       @current_type.class_vars[cvar_name] = mv
+      @program.declared_cvars << DeclaredIvar.new(@current_type, cvar_name, node.declared_type, node.value, true, @program.current_imports)
     end
     false
   end
