@@ -55,7 +55,7 @@ import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/helpers::{int1}
-import compiler/semantic/top_level::{ClassType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, Type, UnionType, VoidType}
+import compiler/semantic/top_level::{ClassType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, TraitType, Type, UnionType, VoidType}
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
@@ -384,6 +384,9 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
       pending_visit_node("a class method #{node.name} inherited from a superclass of #{owner.full_name} (hosted call.cr: target_def.owner is the defining type)")
     end
     return owner
+  end
+  if owner.is_a?(TraitType)
+    pending_visit_node("a call on trait #{owner.full_name} (hosted call.cr: trait dispatch)")
   end
   if owner.is_a?(UnionType) || owner.is_a?(MixedUnionType) || owner.is_a?(VirtualType) || owner.is_a?(NilableType) || owner.is_a?(NilableReferenceUnionType) || owner.is_a?(NilableProcType) || owner.is_a?(NilType)
     pending_visit_node("a call on a receiver of type #{owner.full_name} (hosted call.cr: prepare_call_args, owner is not a class or struct)")
