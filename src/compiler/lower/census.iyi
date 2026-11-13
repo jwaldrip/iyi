@@ -38,8 +38,9 @@ class ParsedHostedName
   getter owner_text : String
   getter method_name : String
   getter arg_texts : Array(String)
+  getter named_labels : Array(String)
 
-  def initialize(@kind : String, @owner_text : String, @method_name : String, @arg_texts : Array(String))
+  def initialize(@kind : String, @owner_text : String, @method_name : String, @arg_texts : Array(String), @named_labels : Array(String))
   end
 end
 
@@ -50,7 +51,10 @@ pub def split_hosted_name(full : String) : ParsedHostedName | String
   return "not a hosted def name" unless full.starts_with?("*")
   s = full[1, full.size - 1]
 
-  # 1. Strip trailing `:Ret` outside `()` and `{}` (`::` is a path separator, not `:Ret`).
+  # 1. The return separator is the last single colon outside `()` and `{}`.
+  # A named-argument label (`#parse_macro_if:is_unless<...>`) also uses a
+  # single colon, so the first one is not the return type. `::` is a path
+  # separator, not either of those.
   dp = 0
   db = 0
   ret_colon = -1
@@ -71,7 +75,6 @@ pub def split_hosted_name(full : String) : ParsedHostedName | String
         next
       elsif ch == ':'
         ret_colon = i
-        break
       end
     end
     i += 1
@@ -157,8 +160,31 @@ pub def split_hosted_name(full : String) : ParsedHostedName | String
     method_name = head[last_dbl + 2, head.size - last_dbl - 2]
   end
 
+  named_labels = [] of String
+  if method_name.includes?(':')
+    parts = [] of String
+    start = 0
+    k = 0
+    while k < method_name.size
+      if method_name[k] == ':'
+        parts << method_name[start, k - start]
+        start = k + 1
+      end
+      k += 1
+    end
+    parts << method_name[start, method_name.size - start]
+    return "empty method name" if parts[0].empty?
+    method_name = parts[0]
+    li = 1
+    while li < parts.size
+      label = parts[li]
+      return "empty named-argument label" if label.empty?
+      named_labels << label
+      li += 1
+    end
+  end
+
   return "empty method name" if method_name.empty?
-  return "empty owner name" if kind != "top" && owner_text.empty?
 
   # 4. Strip `^DefiningOwner` suffix from generic or inherited owners.
   if owner_text.includes?("^")
@@ -211,7 +237,8 @@ pub def split_hosted_name(full : String) : ParsedHostedName | String
     arg_texts << last_piece unless last_piece.empty?
   end
 
-  ParsedHostedName.new(kind, owner_text, method_name, arg_texts)
+  return "more named labels than argument types" if named_labels.size > arg_texts.size
+  ParsedHostedName.new(kind, owner_text, method_name, arg_texts, named_labels)
 end
 
 # Strips `+` virtual-type markers so the port's parser can parse the written type expression.
@@ -448,6 +475,28 @@ pub def run_census(typed : TypedProgram, census_path : String, refused : Array(S
       next
     end
     spec = parsed.as(ParsedHostedName)
+    if spec.named_labels.size > 0
+      # Body typing's lookup_method_matching and def_instance_key see only
+      # positional arguments (main_visitor.iyi). Passing the named labels as
+      # positional arguments would instantiate a different call. Record the
+      # defect as a refusal, not a scaffold miss.
+      n_named = spec.named_labels.size
+      n_pos = spec.arg_texts.size - n_named
+      reason = String.build do |sb|
+        sb << "named argument '"
+        n = 0
+        while n < n_named
+          sb << ", " if n > 0
+          sb << spec.named_labels[n]
+          sb << ": "
+          sb << spec.arg_texts[n_pos + n]
+          n += 1
+        end
+        sb << "' is not passed into matching (body typing visits only positional arguments)"
+      end
+      refused << "instance-body\t#{line}\tbodies\t#{reason}"
+      next
+    end
 
     synth_vars = Hash(String, Type).new
     recv_node : ASTNode? = nil

@@ -528,6 +528,68 @@ def parse_expected(reason: str) -> tuple[str, str, str] | None:
         return ("type", got, type_kind(got))
     return None
 
+def has_named_label(name: str) -> bool:
+    """True when the method token carries a `:label` before the return colon."""
+    s = name[1:] if name.startswith("*") else name
+    depth_paren = 0
+    depth_brace = 0
+    ret = -1
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch == "(":
+            depth_paren += 1
+        elif ch == ")":
+            depth_paren = max(0, depth_paren - 1)
+        elif ch == "{":
+            depth_brace += 1
+        elif ch == "}":
+            depth_brace = max(0, depth_brace - 1)
+        elif depth_paren == 0 and depth_brace == 0 and ch == ":":
+            if i + 1 < len(s) and s[i + 1] == ":":
+                i += 2
+                continue
+            ret = i
+        i += 1
+    head = s[:ret] if ret >= 0 else s
+    lt = head.rfind("<")
+    if lt >= 0 and head.endswith(">"):
+        head = head[:lt]
+    if "#" in head:
+        method = head.rsplit("#", 1)[1]
+    elif "::" in head:
+        method = head.rsplit("::", 1)[1]
+    else:
+        method = head
+    return ":" in method
+
+
+def reclassify_census(name: str, reason: str) -> tuple[str, str] | None:
+    """A census row that is a port rule, not a failure to build the probe.
+
+    Restriction text, virtual lookup, alias mismatch, and arity are calls
+    typing (argument matching is the match lane). A named-argument label in
+    the hosted name is body typing. An undefined constant is declarations.
+    A metaclass the probe could not build stays a scaffold miss.
+    """
+    if has_named_label(name):
+        return (
+            "bodies",
+            "named argument is not passed into matching (body typing visits only positional arguments)",
+        )
+    if reason.startswith((
+        "expected type, got ",
+        "expected argument ",
+        "undefined method ",
+        "no overload matches ",
+        "wrong number of arguments ",
+    )):
+        return ("calls", reason)
+    if reason.startswith("undefined constant "):
+        return ("declarations", reason)
+    return None
+
+
 
 def _note_pair(bucket, examples, key, hosted: str, reason: str) -> None:
     bucket[key].add(hosted)
@@ -857,11 +919,15 @@ def cmd_report(args: argparse.Namespace) -> int:
             continue
         if h in census_failures:
             reason = census_failures[h]
-            scaffold_failed.append((h, reason))
-            note_verbatim_pairs(h, reason, undef_funcs, undef_ex, expect_funcs, expect_ex)
-            verbatim_rows.append(f"{h}\tscaffold\t{reason}\t{reason}")
-            by_fn_rows.append(f"{h}\tscaffold\t{normalize_reason(reason)}\t")
-            continue
+            moved = reclassify_census(h, reason)
+            if moved is None:
+                scaffold_failed.append((h, reason))
+                note_verbatim_pairs(h, reason, undef_funcs, undef_ex, expect_funcs, expect_ex)
+                verbatim_rows.append(f"{h}\tscaffold\t{reason}\t{reason}")
+                by_fn_rows.append(f"{h}\tscaffold\t{normalize_reason(reason)}\t")
+                continue
+            owner, raw = moved
+            refusals_by_instance[h].append(("reclass", owner, raw))
         if h in prerequisites:
             owner, reason = prerequisites[h]
             verbatim_rows.append(f"{h}\tprerequisite\t{reason}\t{reason}")
@@ -946,6 +1012,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     if scaffold_failed:
         lines.append("")
         lines.append("== Scaffold failures by reason ==")
+        lines.append("These are names the census could not construct. Restriction, virtual lookup, arity, and undefined-constant rows are refusals.")
         categories: collections.Counter[str] = collections.Counter()
         for h, reason in scaffold_failed:
             if reason.startswith("expected type, got "):
