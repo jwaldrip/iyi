@@ -43,7 +43,7 @@ import compiler/lower/cast::{type_id_value}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
-import compiler/lower/context::{Lowerer}
+import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/fun::{visit_node}
 import compiler/lower/helpers::{int1}
 import compiler/lower/pending::{pending_visit_node}
@@ -91,14 +91,24 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     return
   end
   obj = node.obj
-  raise "BUG: a primitive call has no receiver (hosted call.cr: codegen_primitive)" if obj.nil?
   wants = low.needs_value
   low.needs_value = true
-  visit_node(low, obj.as(ASTNode))
-  recv = low.last
-  raise "BUG: the receiver of a primitive left no value (hosted call.cr: prepare_call_args)" if recv.nil?
-  t1 = receiver_type(low, obj.as(ASTNode))
-  values = [recv.as(Value)] of Value
+  if obj.nil?
+    # Hosted prepare_call_args (call.cr 84-96): no receiver and the owner is
+    # passed as self means llvm_self. allocate with a nil receiver is handled
+    # in call.iyi before this. A class method has no self variable.
+    sv = low.current_context.vars["self"]?
+    raise "BUG: a primitive call has no receiver (hosted call.cr: codegen_primitive)" if sv.nil?
+    recv = sv.as(LowerVar).pointer
+    t1 = sv.as(LowerVar).type
+  else
+    visit_node(low, obj.as(ASTNode))
+    got = low.last
+    raise "BUG: the receiver of a primitive left no value (hosted call.cr: prepare_call_args)" if got.nil?
+    recv = got.as(Value)
+    t1 = receiver_type(low, obj.as(ASTNode))
+  end
+  values = [recv] of Value
   arg_types = [] of Type
   node.args.each do |arg_node|
     arg_type = low.analysed.type_of?(arg_node)
