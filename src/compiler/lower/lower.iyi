@@ -17,7 +17,7 @@ module compiler/lower/lower
 # `next` in the same sequence is refused by name.
 
 import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, Cast, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NilableCast, NumberLiteral, Or, Path, PointerOf, Primitive, ProcLiteral, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, UninitializedVar, Var, While, IsA, Yield}
-import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral}
+import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, StringInterpolation}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -276,6 +276,13 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   if node.is_a?(ArrayLiteral)
     # The hosted expander lowers [] of T to Array(T).new and populated arrays
     # to unsafe_build and indexed stores (literal_expander.cr:43-108).
+    if expanded = low.analysed.expansions[node]?
+      codegen_node(low, expanded)
+      return
+    end
+  end
+  if node.is_a?(StringInterpolation)
+    # The literal expander's typed result is the node the hosted cleanup lowers.
     if expanded = low.analysed.expansions[node]?
       codegen_node(low, expanded)
       return

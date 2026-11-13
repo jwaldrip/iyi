@@ -81,12 +81,11 @@ fi
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
 passed=0
-# Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed. The port numbers
-# String 31 and the hosted module 1 for lower_string and lower_string_nonascii (the typer slice's LowerTypeIds
-# numbering, NEEDS.md row 16). They wait by name; the gate fails if one starts to match, so this list is kept honest.
+# Fixtures whose modules differ from the hosted one for reasons named in NEEDS.md
+# wait by name; the gate fails if one starts to match.
 # The pointer-union fixture's allocator also differs in its metaclass type-id load;
 # its hosted symbol and the naming mutation are checked independently below.
-KNOWN_DIVERGED="lower_string lower_string_nonascii lower_pointer_malloc lower_name_pointer_union"
+KNOWN_DIVERGED="lower_string_nonascii lower_pointer_malloc lower_name_pointer_union"
 e2e=""
 module_same=0
 module_differ=0
@@ -538,6 +537,20 @@ if array_expansion_check; then
 else
   echo "FAIL: array expansion fixture does not match the hosted module"
   awk 'NR<=8' "$WORK/array.err" "$WORK/array.out" "$WORK/array.build.log"
+  status=1
+fi
+interpolation_check() {
+  "$IYI" build -o "$WORK/port-interpolation" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/interpolation.build.log" 2>&1 || return 1
+  "$WORK/port-interpolation" lower "$REPO/bench/fixtures/lower_interpolation.iyi" "$WORK/lower_interpolation.oracle.ll" > "$WORK/interpolation.out" 2> "$WORK/interpolation.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/interpolation.out"
+}
+if interpolation_check; then
+  prove_mutation "an interpolation ignores its typed expansion" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if node.is_a?(StringInterpolation)' \
+    '  if false' -- interpolation_check || status=1
+else
+  echo "FAIL: interpolation fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/interpolation.err" "$WORK/interpolation.out" "$WORK/interpolation.build.log"
   status=1
 fi
 
