@@ -131,10 +131,10 @@ end
 # prepare_call_args does. `pointer_new` is a class method: its call's receiver (the metaclass) is not
 # lowered, and its argument is the address. `pointer_malloc` is a class method too: its argument is the count. Ported: `pointer_address` (ptr2int to Int64), `pointer_add` (a
 # gep of the element type, the hosted non-inbounds gep), `pointer_new` (int2ptr to the node's pointer type),
-# and `pointer_get` and `pointer_set` of an integer, Char or Float element (a load and a store aligned to
+# and `pointer_get` of any element (hosted to_lhs: a by-value aggregate is the pointer, anything else is loaded) and `pointer_set` of an integer, Char, Float or Bool element (a store aligned to
 # the element). `pointer_malloc` is ported for a program without its own malloc (pointer_malloc_value). Refused by name: `pointer_realloc` and `pointer_diff` (the realloc and
-# diff helpers of codegen.cr), `pointer_malloc` of a program with its own malloc (refuse_program_malloc), and `pointer_get`/`pointer_set` of a Bool, a pointer or a struct
-# element (the hosted to_lhs and assign of those).
+# diff helpers of codegen.cr), `pointer_malloc` of a program with its own malloc (refuse_program_malloc), and `pointer_set` of a pointer or a struct
+# element (the hosted assign of those, copy_value).
 pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   if name == "pointer_realloc" || name == "pointer_diff"
     pending_visit_node("primitive #{name} (hosted codegen_primitive_#{name}, primitives.cr 905-965: its helper is not ported)")
@@ -197,6 +197,14 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
     if elem_kind == "int" || elem_kind == "char" || elem_kind == "float"
       store_aligned(low, values[1], values[0])
       low.last = values[1]
+      return
+    end
+    # Hosted assign/store_value (primitives.cr 927, codegen.cr 3323-3328): Bool is not passed
+    # by value, so to_rhs is the i1 itself. Store it and return it.
+    if elem_kind == "bool"
+      bool_stored = values[1]
+      store_aligned(low, bool_stored, values[0])
+      low.last = bool_stored
       return
     end
     pending_visit_node("pointer_set of #{elem.full_name} (hosted assign, primitives.cr 927)")

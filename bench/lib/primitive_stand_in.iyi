@@ -45,6 +45,9 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
   value = Def.new("value", [] of Arg, nil, nil, nil, Path.new("T"))
   value.free_vars = ["# primitive: pointer_get"] of String
   pointer.add_def(value)
+  setter = Def.new("value=", [Arg.new("v", nil, Path.new("T"))] of Arg, nil, nil, nil, Path.new("T"))
+  setter.free_vars = ["# primitive: pointer_set"] of String
+  pointer.add_def(setter)
   bool = prog.lookup_type_node(Path.new("Bool"), prog).as(NonGenericClassType)
   ["==", "!="].each do |op|
     bool.add_def(binary_def(op, "Bool", "Bool"))
