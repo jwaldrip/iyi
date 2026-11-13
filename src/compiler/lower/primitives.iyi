@@ -16,17 +16,22 @@ module compiler/lower/primitives
 #     one signedness at any widths and of mixed signedness for `+` and `-` (the bias of
 #     hosted codegen_addsub_with_overflow). A checked `+` of an unsigned operand wider than
 #     the other needs the range check of the hosted codegen (refused by name).
-#   - `binary` on two operands of one integer type: the wrapping `&+`, `&-`, `&*`, the bitwise
-#     `|`, `&`, `^`, the unchecked shifts and divisions, and the comparisons `==`, `!=`, `<`,
-#     `<=`, `>`, `>=` (signed or unsigned as the type is); Bool and Symbol equality; Char
-#     equality and order (unsigned code points).
+#   - `binary` on two integers of any widths and signedness: the wrapping `&+`, `&-`,
+#     `&*`, the bitwise `|`, `&`, `^`, the unchecked shifts and divisions (`/`, `%`,
+#     `unsafe_div`, `unsafe_mod`), and the comparisons `==`, `!=`, `<`, `<=`, `>`, `>=`.
+#     The narrower operand is widened by its own signedness (hosted codegen_binary_extend_int,
+#     primitives.cr 295-307); a mixed-sign comparison uses the hosted predicate (the sign
+#     check, then the signed or unsigned compare). An arithmetic result is truncated back
+#     to the left operand when that one was narrower (codegen_trunc_binary_op_result).
+#     Bool and Symbol equality; Char equality and order (unsigned code points).
 #   - `convert` and `unchecked_convert` from an integer to an integer: the same width is the
 #     value, a wider type extends (sign extension for a signed source), a narrower truncates
 #     (hosted codegen_convert, integer overloads); Char to an integer zero-extends
 #     (`Char#ord`); Symbol to an integer is the value (`Symbol#to_i`).
-# Refused by name, at the primitive that reaches them: mixed-type operands other than the
-# checked `+` and `-` (codegen_binary_extend_int), a multiplication of mixed signedness, the
-# range checks of the checked conversions and of a checked widening, every other primitive.
+# Refused by name, at the primitive that reaches them: a float paired with an integer or
+# another float (hosted codegen_binary_op for FloatType, not the integer extend), a
+# multiplication of mixed signedness, the range checks of the checked conversions and of a
+# checked widening, every other primitive.
 #
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
@@ -281,20 +286,48 @@ pub def codegen_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 :
   p1
 end
 
-# The hosted integer `codegen_binary_op` for two integer operands. The checked `+` and `-`
-# and the `*` are the overflow forms; the other operators need one type on both sides.
+# The hosted integer `codegen_binary_op` (primitives.cr 128-160). Checked `+`, `-` and `*`
+# stay the overflow forms. Comparisons are the lt/lte/gt/gte/eq/ne overloads, which extend
+# a same-sign pair and pick a predicate for a mixed-sign pair. Every other operator extends
+# the narrower operand, operates at that width with the left operand's signedness, and
+# truncates back when the left operand was the narrower one.
 pub def codegen_int_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 : Value, p2 : Value) : Value
+  s1 = int_shape(low, t1)
+  s2 = int_shape(low, t2)
   if op == "+" || op == "-"
-    return addsub_with_overflow(low, op, int_shape(low, t1), int_shape(low, t2), p1, p2)
+    return addsub_with_overflow(low, op, s1, s2, p1, p2)
   end
   if op == "*"
-    return mul_with_overflow(low, int_shape(low, t1), int_shape(low, t2), p1, p2)
+    return mul_with_overflow(low, s1, s2, p1, p2)
   end
-  if t1.full_name != t2.full_name
-    pending_visit_node("binary #{op} on #{t1.full_name} and #{t2.full_name} (mixed operands, hosted codegen_binary_extend_int)")
-    return p1
+  if op == "<"
+    return codegen_binary_op_lt(low, s1, s2, p1, p2)
   end
-  int_binary_op(low, op, t1, p1, p2)
+  if op == "<="
+    return codegen_binary_op_lte(low, s1, s2, p1, p2)
+  end
+  if op == ">"
+    return codegen_binary_op_gt(low, s1, s2, p1, p2)
+  end
+  if op == ">="
+    return codegen_binary_op_gte(low, s1, s2, p1, p2)
+  end
+  if op == "=="
+    return codegen_binary_op_eq(low, s1, s2, p1, p2)
+  end
+  if op == "!="
+    return codegen_binary_op_ne(low, s1, s2, p1, p2)
+  end
+  arith = op
+  if op == "/"
+    arith = "unsafe_div"
+  end
+  if op == "%"
+    arith = "unsafe_mod"
+  end
+  extended = codegen_binary_extend_int(low, s1, s2, p1, p2)
+  result = int_binary_op(low, arith, t1, extended.left, extended.right)
+  trunc_binary_op_result(low, s1, s2, result)
 end
 
 # The hosted integer overloads of `codegen_binary_op` for operands of one type, where the
@@ -401,12 +434,211 @@ pub def unsigned_max_value(bytes : Int32) : Int64
   1_i64.unsafe_shl((bytes * 8).to_i64) &- 1_i64
 end
 
-# The hosted `extend_int`: a source of its own signedness, widened to the target's IR type.
+# The hosted `extend_int` (llvm_builder_helper.cr 187-189): a source of its own signedness,
+# widened to the target's IR type. A same-width pair (Int32 and UInt32 share an IR type) emits
+# nothing: the hosted sext or zext to the same type is not an instruction.
 pub def extend_int(low : Lowerer, from : IntShape, to : IntShape, value : Value) : Value
+  if from.bytes == to.bytes
+    return value
+  end
   if from.signed
     return low.builder.sext(value, to.ir)
   end
   low.builder.zext(value, to.ir)
+end
+
+# The two operands after `codegen_binary_extend_int`, and the type the operation ran in.
+pub class ExtendedInts
+  getter tmax : IntShape
+  getter left : Value
+  getter right : Value
+
+  def initialize(@tmax : IntShape, @left : Value, @right : Value)
+  end
+end
+
+# The hosted `codegen_binary_extend_int` (primitives.cr 295-307). Equal widths (the same
+# normal_rank, signed or not) are left as they are. Otherwise the narrower operand, which
+# always has the smaller rank, is widened to the wider one by its own signedness.
+pub def codegen_binary_extend_int(low : Lowerer, t1 : IntShape, t2 : IntShape, p1 : Value, p2 : Value) : ExtendedInts
+  if t1.bytes == t2.bytes
+    return ExtendedInts.new(t1, p1, p2)
+  end
+  if t1.bytes < t2.bytes
+    return ExtendedInts.new(t2, extend_int(low, t1, t2, p1), p2)
+  end
+  ExtendedInts.new(t1, p1, extend_int(low, t2, t1, p2))
+end
+
+# The hosted `codegen_trunc_binary_op_result` (primitives.cr 312-318): the result is the
+# left operand's type when the operation ran in the wider right operand's type.
+pub def trunc_binary_op_result(low : Lowerer, t1 : IntShape, t2 : IntShape, result : Value) : Value
+  if t1.bytes != t2.bytes && t1.bytes < t2.bytes
+    return trunc_to(low, result, t1.ir)
+  end
+  result
+end
+
+# The hosted `codegen_binary_op_lt` (primitives.cr 532-568).
+pub def codegen_binary_op_lt(low : Lowerer, t1 : IntShape, t2 : IntShape, p1 : Value, p2 : Value) : Value
+  if t1.signed == t2.signed
+    extended = codegen_binary_extend_int(low, t1, t2, p1, p2)
+    return low.builder.icmp(signed_pred(t1.signed, IntPredicate::SLT, IntPredicate::ULT), extended.left, extended.right)
+  end
+  if t1.signed && !t2.signed
+    if t1.bytes > t2.bytes
+      # x < 0 || x < x.class.new(y)
+      negative = low.builder.icmp(IntPredicate::SLT, p1, int_const(low, 0_i64, t1))
+      widened = low.builder.icmp(IntPredicate::SLT, p1, extend_int(low, t2, t1, p2))
+      return low.builder.build_or(negative, widened)
+    end
+    # x < 0 || y.class.new(x) < y
+    negative = low.builder.icmp(IntPredicate::SLT, p1, int_const(low, 0_i64, t1))
+    widened = low.builder.icmp(IntPredicate::ULT, extend_int(low, t1, t2, p1), p2)
+    return low.builder.build_or(negative, widened)
+  end
+  # t1 unsigned, t2 signed
+  if t1.bytes < t2.bytes
+    # y >= 0 && y.class.new(x) < y
+    non_negative = low.builder.icmp(IntPredicate::SGE, p2, int_const(low, 0_i64, t2))
+    widened = low.builder.icmp(IntPredicate::SLT, extend_int(low, t1, t2, p1), p2)
+    return low.builder.build_and(non_negative, widened)
+  end
+  # y >= 0 && x < x.class.new(y)
+  non_negative = low.builder.icmp(IntPredicate::SGE, p2, int_const(low, 0_i64, t2))
+  widened = low.builder.icmp(IntPredicate::ULT, p1, extend_int(low, t2, t1, p2))
+  low.builder.build_and(non_negative, widened)
+end
+
+# The hosted `codegen_binary_op_lte` (primitives.cr 570-606).
+pub def codegen_binary_op_lte(low : Lowerer, t1 : IntShape, t2 : IntShape, p1 : Value, p2 : Value) : Value
+  if t1.signed == t2.signed
+    extended = codegen_binary_extend_int(low, t1, t2, p1, p2)
+    return low.builder.icmp(signed_pred(t1.signed, IntPredicate::SLE, IntPredicate::ULE), extended.left, extended.right)
+  end
+  if t1.signed && !t2.signed
+    if t1.bytes > t2.bytes
+      # x <= 0 || x <= x.class.new(y)
+      negative = low.builder.icmp(IntPredicate::SLE, p1, int_const(low, 0_i64, t1))
+      widened = low.builder.icmp(IntPredicate::SLE, p1, extend_int(low, t2, t1, p2))
+      return low.builder.build_or(negative, widened)
+    end
+    # x <= 0 || y.class.new(x) <= y
+    negative = low.builder.icmp(IntPredicate::SLE, p1, int_const(low, 0_i64, t1))
+    widened = low.builder.icmp(IntPredicate::ULE, extend_int(low, t1, t2, p1), p2)
+    return low.builder.build_or(negative, widened)
+  end
+  if t1.bytes < t2.bytes
+    # y >= 0 && y.class.new(x) <= y
+    non_negative = low.builder.icmp(IntPredicate::SGE, p2, int_const(low, 0_i64, t2))
+    widened = low.builder.icmp(IntPredicate::SLE, extend_int(low, t1, t2, p1), p2)
+    return low.builder.build_and(non_negative, widened)
+  end
+  # y >= 0 && x <= x.class.new(y)
+  non_negative = low.builder.icmp(IntPredicate::SGE, p2, int_const(low, 0_i64, t2))
+  widened = low.builder.icmp(IntPredicate::ULE, p1, extend_int(low, t2, t1, p2))
+  low.builder.build_and(non_negative, widened)
+end
+
+# The hosted `codegen_binary_op_gt` (primitives.cr 608-644).
+pub def codegen_binary_op_gt(low : Lowerer, t1 : IntShape, t2 : IntShape, p1 : Value, p2 : Value) : Value
+  if t1.signed == t2.signed
+    extended = codegen_binary_extend_int(low, t1, t2, p1, p2)
+    return low.builder.icmp(signed_pred(t1.signed, IntPredicate::SGT, IntPredicate::UGT), extended.left, extended.right)
+  end
+  if t1.signed && !t2.signed
+    if t1.bytes > t2.bytes
+      # x >= 0 && x > x.class.new(y)
+      non_negative = low.builder.icmp(IntPredicate::SGE, p1, int_const(low, 0_i64, t1))
+      widened = low.builder.icmp(IntPredicate::SGT, p1, extend_int(low, t2, t1, p2))
+      return low.builder.build_and(non_negative, widened)
+    end
+    # x >= 0 && y.class.new(x) > y
+    non_negative = low.builder.icmp(IntPredicate::SGE, p1, int_const(low, 0_i64, t1))
+    widened = low.builder.icmp(IntPredicate::UGT, extend_int(low, t1, t2, p1), p2)
+    return low.builder.build_and(non_negative, widened)
+  end
+  if t1.bytes < t2.bytes
+    # y < 0 || y.class.new(x) > y
+    negative = low.builder.icmp(IntPredicate::SLT, p2, int_const(low, 0_i64, t2))
+    widened = low.builder.icmp(IntPredicate::SGT, extend_int(low, t1, t2, p1), p2)
+    return low.builder.build_or(negative, widened)
+  end
+  # y < 0 || x > x.class.new(y)
+  negative = low.builder.icmp(IntPredicate::SLT, p2, int_const(low, 0_i64, t2))
+  widened = low.builder.icmp(IntPredicate::UGT, p1, extend_int(low, t2, t1, p2))
+  low.builder.build_or(negative, widened)
+end
+
+# The hosted `codegen_binary_op_gte` (primitives.cr 646-682).
+pub def codegen_binary_op_gte(low : Lowerer, t1 : IntShape, t2 : IntShape, p1 : Value, p2 : Value) : Value
+  if t1.signed == t2.signed
+    extended = codegen_binary_extend_int(low, t1, t2, p1, p2)
+    return low.builder.icmp(signed_pred(t1.signed, IntPredicate::SGE, IntPredicate::UGE), extended.left, extended.right)
+  end
+  if t1.signed && !t2.signed
+    if t1.bytes > t2.bytes
+      # x >= 0 && x >= x.class.new(y)
+      non_negative = low.builder.icmp(IntPredicate::SGE, p1, int_const(low, 0_i64, t1))
+      widened = low.builder.icmp(IntPredicate::SGE, p1, extend_int(low, t2, t1, p2))
+      return low.builder.build_and(non_negative, widened)
+    end
+    # x >= 0 && y.class.new(x) >= y
+    non_negative = low.builder.icmp(IntPredicate::SGE, p1, int_const(low, 0_i64, t1))
+    widened = low.builder.icmp(IntPredicate::UGE, extend_int(low, t1, t2, p1), p2)
+    return low.builder.build_and(non_negative, widened)
+  end
+  if t1.bytes < t2.bytes
+    # y <= 0 || y.class.new(x) >= y
+    negative = low.builder.icmp(IntPredicate::SLE, p2, int_const(low, 0_i64, t2))
+    widened = low.builder.icmp(IntPredicate::SGE, extend_int(low, t1, t2, p1), p2)
+    return low.builder.build_or(negative, widened)
+  end
+  # y <= 0 || x >= x.class.new(y)
+  negative = low.builder.icmp(IntPredicate::SLE, p2, int_const(low, 0_i64, t2))
+  widened = low.builder.icmp(IntPredicate::UGE, p1, extend_int(low, t2, t1, p2))
+  low.builder.build_or(negative, widened)
+end
+
+# The hosted `codegen_binary_op_eq` (primitives.cr 684-702). Equality has no signedness in
+# the instruction, so a mixed-sign pair is equal only when the signed operand is not negative.
+pub def codegen_binary_op_eq(low : Lowerer, t1 : IntShape, t2 : IntShape, p1 : Value, p2 : Value) : Value
+  extended = codegen_binary_extend_int(low, t1, t2, p1, p2)
+  left = extended.left
+  right = extended.right
+  if t1.signed == t2.signed
+    return low.builder.icmp(IntPredicate::EQ, left, right)
+  end
+  if t1.signed && !t2.signed
+    # x >= 0 && x == y
+    non_negative = low.builder.icmp(IntPredicate::SGE, left, low.builder.const_int(left.type, 0_i64))
+    same = low.builder.icmp(IntPredicate::EQ, left, right)
+    return low.builder.build_and(non_negative, same)
+  end
+  # y >= 0 && x == y
+  non_negative = low.builder.icmp(IntPredicate::SGE, right, low.builder.const_int(right.type, 0_i64))
+  same = low.builder.icmp(IntPredicate::EQ, left, right)
+  low.builder.build_and(non_negative, same)
+end
+
+# The hosted `codegen_binary_op_ne` (primitives.cr 704-722).
+pub def codegen_binary_op_ne(low : Lowerer, t1 : IntShape, t2 : IntShape, p1 : Value, p2 : Value) : Value
+  extended = codegen_binary_extend_int(low, t1, t2, p1, p2)
+  left = extended.left
+  right = extended.right
+  if t1.signed == t2.signed
+    return low.builder.icmp(IntPredicate::NE, left, right)
+  end
+  if t1.signed && !t2.signed
+    # x < 0 || x != y
+    negative = low.builder.icmp(IntPredicate::SLT, left, low.builder.const_int(left.type, 0_i64))
+    differ = low.builder.icmp(IntPredicate::NE, left, right)
+    return low.builder.build_or(negative, differ)
+  end
+  # y < 0 || x != y
+  negative = low.builder.icmp(IntPredicate::SLT, right, low.builder.const_int(right.type, 0_i64))
+  differ = low.builder.icmp(IntPredicate::NE, left, right)
+  low.builder.build_or(negative, differ)
 end
 
 # A truncation to `ir`, and the value itself when it already has that type (hosted `trunc`

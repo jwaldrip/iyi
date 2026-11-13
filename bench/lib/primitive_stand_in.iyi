@@ -29,6 +29,17 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
     ["==", "!=", "<", "<=", ">", ">="].each do |op|
       owner.add_def(binary_def(op, tn, "Bool"))
     end
+    # The hosted primitives.cr declares every integer pair, not only matching widths.
+    # A same-type call still matches the def added above: a different width is not a subtype.
+    int_names.each do |other|
+      next if other == tn
+      ["&+", "&-", "&*", "|", "&", "^", "unsafe_shl", "unsafe_shr", "unsafe_div", "unsafe_mod"].each do |op|
+        owner.add_def(binary_def(op, other, tn))
+      end
+      ["==", "!=", "<", "<=", ">", ">="].each do |op|
+        owner.add_def(binary_def(op, other, "Bool"))
+      end
+    end
   end
   bool = prog.lookup_type_node(Path.new("Bool"), prog).as(NonGenericClassType)
   ["==", "!="].each do |op|
