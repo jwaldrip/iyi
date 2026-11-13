@@ -19,7 +19,7 @@ module bench/selfhost_lower_core_exercise
 import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
-import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/main_visitor::{MainVisitor, TypedInstance}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/ir/module::{Module}
@@ -29,9 +29,12 @@ import compiler/ir/printer::{print}
 import compiler/ir/types::{IrType}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
-import compiler/lower/lower::{codegen_program}
+import compiler/lower/lower::{codegen_program, lower_def_probe}
+import compiler/ir/function::{Function}
 import compiler/lower/context::{Lowerer}
 import bench/lib/lower_gate::{attach_attrs, oracle_attr_map, printed_attr_map}
+import bench/lib/primitive_stand_in::{stand_in_primitive_types}
+import compiler/types/type_system::{TypeSystem}
 
 # The parsed and analysed fixture: the tree and the semantic pass that typed it.
 pub class Analysis
@@ -51,10 +54,12 @@ def analyse(source : String, filename : String) : Analysis
   normalizer.iyi_prelude = false
   root = normalizer.normalize(root)
   prog = SemanticProgram.new
+  ts = TypeSystem.new(prog)
   tl = TopLevelVisitor.new(prog)
   root.accept(tl)
   tl.finish
   mv = MainVisitor.new(prog)
+  stand_in_primitive_types(root, prog, mv)
   root.accept(mv)
   RecursiveStructChecker.new(prog).run
   Analysis.new(root, mv)
@@ -208,7 +213,8 @@ def run_lower(fixture : String, oracle_path : String) : Nil
 
   analysis = analyse(File.read(fixture), fixture)
   m = ir_module(triple)
-  typer = LowerTyper.new(m.types, m.layout, true)
+  # The fixtures are built with --prelude empty, which has no iyi header word: the typer lays out Crystal's types.
+  typer = LowerTyper.new(m.types, m.layout, false)
   codegen_program(analysis.root, analysis.visitor, typer, m)
   port_text = print(m)
   port = attach_attrs(normalised_lines(port_text, builds), printed_attr_map(port_text))
@@ -223,7 +229,7 @@ end
 def check_context : Nil
   analysis = analyse("nil\n", "context_check.iyi")
   m = ir_module("aarch64-apple-darwin27.0.0")
-  typer = LowerTyper.new(m.types, m.layout, true)
+  typer = LowerTyper.new(m.types, m.layout, false)
   low = Lowerer.new(m, typer, analysis.visitor)
   void_fn_type = m.types.func([] of IrType, m.types.void)
 
@@ -249,7 +255,7 @@ def run_emit(fixture : String, oracle_path : String) : Nil
   triple = triple_of(File.read(oracle_path))
   analysis = analyse(File.read(fixture), fixture)
   m = ir_module(triple)
-  typer = LowerTyper.new(m.types, m.layout, true)
+  typer = LowerTyper.new(m.types, m.layout, false)
   codegen_program(analysis.root, analysis.visitor, typer, m)
   puts print(m)
 end
@@ -281,6 +287,56 @@ def build_constant?(stripped : String, builds : Array(String)) : Bool
   false
 end
 
+# Two defs share one module. The first fails after declaring a callee. The leftover is the
+# form a verifier accepts (a declaration). The second calls that callee. The callee is clean
+# only when a later probe reuses the unfinished function.
+def probe_message(analysis : Analysis, typer : LowerTyper, m : Module, name : String) : String?
+  found : TypedInstance? = nil
+  analysis.visitor.typed_instances.each do |row|
+    found = row if row.definition.name == name
+  end
+  raise "no typed instance of #{name}" if found.nil?
+  row = found.as(TypedInstance)
+  outcome = group do |g|
+    task = g.spawn do
+      lower_def_probe(row.definition, row.self_type, row.arg_types, analysis.visitor, typer, m)
+    end
+    task.value
+  end
+  return outcome.as(Panicked).message if outcome.is_a?(Panicked)
+  return outcome.as(String) if outcome.is_a?(String)
+  nil
+end
+
+def leave_declaration(m : Module, fragment : String) : Nil
+  found : Function? = nil
+  m.functions.each do |fn|
+    found = fn if fn.name.includes?(fragment)
+  end
+  raise "the first probe left no function named #{fragment}" if found.nil?
+  fn = found.as(Function)
+  fn_type = fn.fn_type
+  kept = fn.name
+  m.remove_function(fn)
+  m.define_function(kept, fn_type)
+end
+
+def run_probe_reuse(fixture : String) : Nil
+  analysis = analyse(File.read(fixture), fixture)
+  m = ir_module("aarch64-apple-darwin27.0.0")
+  typer = LowerTyper.new(m.types, m.layout, false)
+  first = probe_message(analysis, typer, m, "first")
+  raise "first did not fail after declaring the callee" if first.nil?
+  leave_declaration(m, "callee")
+  probe_message(analysis, typer, m, "second")
+  callee = probe_message(analysis, typer, m, "callee")
+  if callee.nil?
+    puts "callee-clean=1"
+    raise "the callee was recorded clean"
+  end
+  puts "callee-clean=0"
+end
+
 def run : Nil
   args = Program.args
   if args.empty?
@@ -296,6 +352,8 @@ def run : Nil
     run_emit(args[1], args[2])
   elsif mode == "context"
     check_context
+  elsif mode == "probe-reuse"
+    run_probe_reuse(args[1])
   else
     raise "unknown mode #{mode}"
   end

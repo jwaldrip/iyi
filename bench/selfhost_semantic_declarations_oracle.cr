@@ -167,7 +167,7 @@ def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String
   end
 end
 
-def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entry : String?)
+def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entry : String?, typed : Bool = false)
   initial_types = Iyi::Program.new.types.keys.to_set
   visitor = Iyi::TopLevelVisitor.new(program)
   node.accept(visitor)
@@ -190,6 +190,37 @@ def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entr
   user_types = program.types
   user_types.keys.sort.each do |name|
     dump_type(user_types[name], io, "", entry)
+  end
+  if typed
+    dump_instances(program, io, initial_types, entry)
+  end
+end
+
+# The instances of the program's own generic classes, with their instance variables, in the
+# typed mode only: the hosted pass always makes them, the port's untyped pass does not, so the
+# gate asks for them with `--typed` on the typed fixtures alone. Each instance is a record of its
+# own, sorted by its name, as the port's driver prints them. A generic is the entry's only when
+# declared_in? says so, the same test dump_type uses, so a prelude or imported generic's
+# instances are not records of this file.
+def dump_instances(program : Iyi::Program, io : IO, initial_types : Set(String), entry : String?)
+  program.types.keys.sort.each do |name|
+    next if initial_types.includes?(name)
+    generic = program.types[name]
+    next unless generic.is_a?(Iyi::GenericClassType)
+    next unless declared_in?(generic.locations, entry)
+    generic.instantiated_types.sort_by(&.to_s).each do |inst|
+      next unless inst.is_a?(Iyi::GenericClassInstanceType)
+      full = inst.to_s
+      io << "Type: " << full << " (instance)\n"
+      ivars = inst.instance_vars
+      ivars.keys.each do |ivar_name|
+        io << "  Ivar: " << full << "#" << ivar_name << "\n"
+        io << "    type: " << ivars[ivar_name].type.to_s << "\n"
+      end
+      unless ivars.empty?
+        io << "  IvarOrder: [" << ivars.keys.join(", ") << "]\n"
+      end
+    end
   end
 end
 
@@ -240,13 +271,31 @@ if ARGV[0]? == "--chain"
   exit 0
 end
 
-path = ARGV[0]? || abort("usage: selfhost_semantic_declarations_oracle <file.iyi>")
+# `--link-annotations` loads the file the way the dump does, then prints the `@[Link]`
+# annotations the lib named LibA records, one line each, in the order they were recorded.
+# The port's `--link-annotations` pin prints the same lines.
+if ARGV[0]? == "--link-annotations"
+  link_path = ARGV[1]? || abort("usage: selfhost_semantic_declarations_oracle --link-annotations <file.iyi>")
+  link_entry = File.expand_path(link_path)
+  link_compiler = Iyi::Compiler.new
+  link_program, link_node = link_compiler.declarations_program(Iyi::Compiler::Source.new(link_entry, File.read(link_entry)))
+  link_node.accept(Iyi::TopLevelVisitor.new(link_program))
+  if (link_lib = link_program.types["LibA"]?) && link_lib.is_a?(Iyi::LibType)
+    (link_lib.link_annotations || [] of Iyi::LinkAnnotation).each do |rec|
+      print "link lib=#{rec.lib || "-"} ldflags=#{rec.ldflags || "-"} static=#{rec.static?} framework=#{rec.framework || "-"} pkg_config=#{rec.pkg_config || "-"} dll=#{rec.dll || "-"}\n"
+    end
+  end
+  exit 0
+end
+
+typed_mode = ARGV[0]? == "--typed"
+path = (typed_mode ? ARGV[1]? : ARGV[0]?) || abort("usage: selfhost_semantic_declarations_oracle [--typed] <file.iyi>")
 entry = File.expand_path(path)
 buffer = IO::Memory.new
 begin
   compiler = Iyi::Compiler.new
   program, node = compiler.declarations_program(Iyi::Compiler::Source.new(entry, File.read(entry)))
-  dump_declarations(node, buffer, program, entry)
+  dump_declarations(node, buffer, program, entry, typed_mode)
 rescue ex : Exception
   first_line = ex.message.to_s.lines.first? || ""
   STDERR.puts "ERROR: #{first_line}"

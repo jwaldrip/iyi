@@ -47,14 +47,14 @@ waiting=0
 # taken off this list, so a wait cannot outlive its cause unnoticed.
 waiting_on() {
   case "$1" in
-    lowprim_ptr) echo "the generic metaclass resolves its receiver now (S1c, 17bc4d2f8), but the bare analysis declares no Pointer primitives, so Pointer(Int32).malloc is undefined: the hosted oracle needs the prelude, and the bare dump has none (NEEDS.md row 19; the Pointer primitives are increment 2)" ;;
   esac
 }
 
 # Fixtures that lower with a known divergence, named, not yet fixed. The gate fails if one starts to match,
-# so the list stays honest. None now.
+# so the list stays honest.
 known_divergence() {
   case "$1" in
+    lowprim_ptr) echo "generic instance metaclass type_id (@\"Pointer(Int32).class:type_id\", NEEDS.md row 17)" ;;
   esac
 }
 # Fixtures identical to the hosted module whose native executable waits by name. None now: defs are emitted Iyi

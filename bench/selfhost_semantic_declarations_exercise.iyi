@@ -1,8 +1,9 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader, Path}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, dump_program_declarations, dump_type, dir_of, normalize_path}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, dump_program_declarations, dump_type, dir_of, normalize_path, declared_in?}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/type_nodes::{type_node_system}
+import compiler/types/types::{GenericClassInstanceType}
 
 # Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
 #
@@ -72,10 +73,83 @@ module BenchSelfhostSemanticDeclarationsExercise
   # The declarations pass with the type system installed (`type_node_system`, as the lib-types
   # mode does): an explicit instance variable keeps its generic arguments and a class with
   # subclasses its virtual type, as the hosted declaration pass gives them.
+  # Loads a file and its closure with the type system and prelude installed, in strict mode
+  # (type_node_system before the prelude, matching the hosted prelude-first declaration pass).
+  def self.load_typed_program(path : String) : {SemanticProgram, String}
+    cwd = ENV["PWD"]? || "."
+    absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
+    entry = normalize_path(absolute)
+    src = File.read(entry)
+    parser = Parser.new(src, entry)
+    node = parser.parse
+    prog = SemanticProgram.new
+    prog.loaded_files.add(entry)
+    prog.search_path = search_path
+    prog.project_root = project_root(node, entry)
+    type_node_system(prog)
+    prelude = TopLevelVisitor.new(prog)
+    prelude_file = prelude.import_file("iyi/prelude")
+    if prelude_file
+      prelude.load_file(prelude_file.as(String))
+      # The file that reads the prelude finishes its pending instance variables, as
+      # load_file hands them up and never resolves them itself. That instantiates the
+      # prelude generics (Channel(T), IyiSendNode(T)). dump_instances then keeps only
+      # a generic declared in the entry file.
+      prelude.finish
+    end
+    prog.entry_dir = dir_of(entry)
+    visitor = TopLevelVisitor.new(prog, entry)
+    node.accept(visitor)
+    visitor.finish
+    {prog, entry}
+  end
+
   def self.dump_file_typed(path : String) : String
+    prog, entry = load_typed_program(path)
+    type_node_system(prog)
+    declare_guessed_instance_vars(prog)
+    dump_program_declarations(prog, entry) + dump_instances(prog, entry)
+  end
+
+  # The post-declaration re-resolution path: load bare without the type system, then install it
+  # so `resolve_declared_types` re-resolves explicit instance variables.
+  def self.dump_file_reresolved(path : String) : String
     prog, entry = load_program(path)
     type_node_system(prog)
-    dump_program_declarations(prog, entry)
+    dump_program_declarations(prog, entry) + dump_instances(prog, entry)
+  end
+
+  # The instances of the program's own generic classes with their instance variables, in the
+  # typed mode only (the oracle prints the same with its --typed flag). Each instance is a record
+  # of its own, sorted by name, as the oracle prints them; the built-in types are left out.
+  # A generic the prelude or an import declared is not the entry's: the oracle's typed dump is
+  # bare, and it prints a type only when declared_in? says the entry owns it. The same test
+  # keeps Channel(T) and an imported generic's instances out of this dump.
+  def self.dump_instances(prog : SemanticProgram, entry : String) : String
+    sb = String::Builder.new
+    initial = SemanticProgram.new.types.keys.to_set
+    prog.types.keys.sorted.each do |name|
+      next if initial.includes?(name)
+      generic = prog.types[name]
+      next unless generic.is_a?(GenericClassType)
+      next unless declared_in?(generic.locations, entry)
+      insts = generic.as(GenericClassType).instantiated_types.select { |i| i.is_a?(GenericClassInstanceType) }
+      insts.sorted_by { |i| i.full_name }.each do |inst|
+        full = inst.full_name
+        sb << "Type: " << full << " (instance)\n"
+        ivars = inst.as(GenericClassInstanceType).instance_vars
+        ivars.keys.each do |ivar_name|
+          sb << "  Ivar: " << full << "#" << ivar_name << "\n"
+          sb << "    type: " << ivars[ivar_name].type.to_s << "\n"
+        end
+        unless ivars.empty?
+          names = [] of String
+          ivars.keys.each { |n| names << n }
+          sb << "  IvarOrder: [" << names.join(", ") << "]\n"
+        end
+      end
+    end
+    sb.to_s
   end
 
   # The whole-program load: the file and its import closure, with the prelude loaded
@@ -194,6 +268,8 @@ elsif Program.args[0] == "--scope-lookup"
   print "#{found.full_name}\n"
 elsif Program.args[0] == "--typed"
   print BenchSelfhostSemanticDeclarationsExercise.dump_file_typed(Program.args[1])
+elsif Program.args[0] == "--typed-reresolve"
+  print BenchSelfhostSemanticDeclarationsExercise.dump_file_reresolved(Program.args[1])
 elsif Program.args[0] == "--lib-types"
   prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
   type_node_system(prog)
@@ -226,10 +302,17 @@ elsif Program.args[0] == "--const-facts"
   if holder = prog.types["Holder"]?
     holder.as(ModuleType).class_vars.each_value do |mv|
       if owner = mv.owner
-        print "cvar #{mv.name} owner #{owner.full_name}\n"
+        print "cvar #{mv.name} owner #{owner.full_name} thread_local=#{mv.thread_local}\n"
       else
-        print "cvar #{mv.name} owner none\n"
+        print "cvar #{mv.name} owner none thread_local=#{mv.thread_local}\n"
       end
+    end
+  end
+elsif Program.args[0] == "--link-annotations"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  if link_lib = prog.types["LibA"]?
+    link_lib.as(LibType).link_annotations.each do |rec|
+      print "link lib=#{rec.library || "-"} ldflags=#{rec.ldflags || "-"} static=#{rec.is_static} framework=#{rec.framework || "-"} pkg_config=#{rec.pkg_config || "-"} dll=#{rec.dll || "-"}\n"
     end
   end
 else

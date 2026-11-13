@@ -30,11 +30,27 @@ function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w
   n = split_top(args, parts)
   types = ""
   for (i = 1; i <= n; i++) {
-    split(parts[i], w, " ")
-    types = types (i > 1 ? ", " : "") w[1]
+    types = types (i > 1 ? ", " : "") arg_type(parts[i])
   }
   if (name ~ /^@"[*~]/) ret = "iyicc " ret
   return head ret " (" types ") " name "(" args ")" tail
+}
+function arg_type(s,   i, c, depth, open_c, close_c, w) {
+  if (substr(s, 1, 2) == "%\"") {
+    for (i = 3; i <= length(s); i++) if (substr(s, i, 1) == "\"") return substr(s, 1, i)
+  }
+  open_c = substr(s, 1, 1)
+  if (open_c == "{" || open_c == "[") {
+    close_c = (open_c == "{") ? "}" : "]"
+    depth = 0
+    for (i = 1; i <= length(s); i++) {
+      c = substr(s, i, 1)
+      if (c == open_c) depth++
+      else if (c == close_c) { depth--; if (depth == 0) return substr(s, 1, i) }
+    }
+  }
+  split(s, w, " ")
+  return w[1]
 }
 # The last character of the callee name that starts `s` (`@name` or `@"quoted name"`), or 0. A quoted
 # name holds parentheses of its own (`@"*Box(Int32)^Box(T)::new<Int32>:Box(Int32)"`), which are not the call.
@@ -105,13 +121,20 @@ function intrinsic_line(line,   p, lhs, rest, ret, after, op, k, cl, name, args,
 }
 # A def is `Iyi` (import.iyi convention_of: a name starting with `*` or `~`). The hosted text writes every
 # function `ccc`, so the defs of the oracle get the `iyicc` word of the port here, before the return type.
-function cc_define(line,   at, head, n, w, i, out) {
+function cc_define(line,   at, head, p, rest, sp, kw) {
   at = index(line, " @\"")
   head = substr(line, 1, at - 1)
-  n = split(head, w, " ")
-  out = ""
-  for (i = 1; i < n; i++) out = out w[i] " "
-  return out "iyicc " w[n] substr(line, at)
+  p = index(head, " ")
+  if (p == 0) return line
+  rest = substr(head, p + 1)
+  sp = index(rest, " ")
+  if (sp > 0) {
+    kw = substr(rest, 1, sp - 1)
+    if (kw ~ /^(internal|external|private|linkonce_odr|weak_odr|common|appending|available_externally|dso_local|unnamed_addr)$/) {
+      return substr(head, 1, p) kw " iyicc " substr(rest, sp + 1) substr(line, at)
+    }
+  }
+  return substr(head, 1, p) "iyicc " rest substr(line, at)
 }
 {
   if ($0 ~ /^define .* @"[*~]/) $0 = cc_define($0)

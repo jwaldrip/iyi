@@ -23,7 +23,7 @@ module compiler/lower/program
 #   - the funs of each `lib`, registered in the lib as bodiless defs, so a call through a lib types the way
 #     the hosted analysis does (NEEDS.md, lowering calls row 31). Same as bench/lib/lower_gate.iyi.
 
-import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral}
+import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral, InstanceVar}
 import compiler/semantic/top_level::{LibType, MetaclassType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
 import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance}
 import compiler/syntax/visitor::{Visitor}
@@ -36,7 +36,7 @@ import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program, lower_def_probe}
 import compiler/lower/primitives::{primitive_name}
-import compiler/lower/fun::{mangled_name}
+import compiler/lower/fun::{mangled_name, discard_probe_functions}
 import compiler/native/driver::{compile_module}
 import compiler/native/obj/object::{ObjectFile}
 import compiler/native/link/link::{link, LinkOptions, LinkedImage, LinkError}
@@ -96,6 +96,10 @@ end
 # The declarations phase: every unit declared in initialiser order (dependencies first, the entry last), the
 # guessed instance variables, then the root and the body visitor. The stand-ins apply when no prelude is loaded.
 pub def declare_program(classes : Array(ClassDef), libs : Array(LibDef), defs : Array(Def), funs : Array(FunDef), top_level : Array(ASTNode), links : Array(String), stand_in : Bool, prog : SemanticProgram, units : Array(ModuleInfo)) : TypedProgram
+  # Every unit's tree is registered before any unit is declared: a require that reaches a unit early reads this tree.
+  units.each do |mod_info|
+    prog.unit_trees[normalize_path(mod_info.filename)] = mod_info.ast
+  end
   units.each do |mod_info|
     declare_unit(prog, mod_info.filename, mod_info.ast)
   end
@@ -360,6 +364,8 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
     # neither probes it nor counts it, so it is no refusal row and no clean def.
     next unless primitive_name(d.body).nil?
+    before = [] of String
+    m.functions.each { |fn| before << fn.name }
     outcome = group do |g|
       task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m) }
       task.value
@@ -387,12 +393,16 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
           end
         end
         name = mangled_name(d.name, self_for, inst.arg_types, body_t.as(Type), class_owner)
+        # A body that is one instance variable is read where the call stands (hosted try_inline_call, call.cr 614; the
+        # port's call.iyi 207): the lowering defines its function here only to lower it alone, and no call emits it.
+        # Counted as lowered clean above, but not as a function the program defines.
         if fn = m.get_function?(name)
-          names << name unless fn.declaration?
+          names << name unless fn.declaration? || d.body.is_a?(InstanceVar)
         end
       end
     end
     if failed
+      discard_probe_functions(m, before)
       bad[d.node_id] = true
       reason = first_line(message)
       key = "#{d.node_id}|#{reason}"

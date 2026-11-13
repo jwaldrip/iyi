@@ -39,22 +39,22 @@ pub class TypeRenderer
 
     if type.is_a?(TupleInstanceType)
       tup = type.as(TupleInstanceType)
-      elements = tup.tuple_types.map { |t| render(t, skip_union_parens: false, generic_args: generic_args, codegen: codegen) }
+      elements = tup.tuple_types.map { |t| render(shown(t, codegen), skip_union_parens: true, generic_args: generic_args, codegen: codegen) }
       return "Tuple(#{elements.join(", ")})"
     end
 
     if type.is_a?(NamedTupleInstanceType)
       nt = type.as(NamedTupleInstanceType)
       entries = nt.entries.map do |e|
-        "#{e.name}: #{render(e.type, skip_union_parens: false, generic_args: generic_args, codegen: codegen)}"
+        "#{e.name}: #{render(shown(e.type, codegen), skip_union_parens: true, generic_args: generic_args, codegen: codegen)}"
       end
       return "NamedTuple(#{entries.join(", ")})"
     end
 
     if type.is_a?(ProcInstanceType)
       proc_t = type.as(ProcInstanceType)
-      parts = proc_t.arg_types.map { |a| render(a, skip_union_parens: false, generic_args: generic_args, codegen: codegen) }
-      parts << render(proc_t.return_type, skip_union_parens: false, generic_args: generic_args, codegen: codegen)
+      parts = proc_t.arg_types.map { |a| render(shown(a, codegen), skip_union_parens: false, generic_args: generic_args, codegen: codegen) }
+      parts << render(shown(proc_t.return_type, codegen), skip_union_parens: false, generic_args: generic_args, codegen: codegen)
       return "Proc(#{parts.join(", ")})"
     end
 
@@ -72,8 +72,26 @@ pub class TypeRenderer
       gi = type.as(GenericInstanceType)
       base_name = gi.generic_type.full_name
       if generic_args
-        args_s = gi.type_args.map { |a| render(a, skip_union_parens: false, generic_args: true, codegen: codegen) }.join(", ")
-        return "#{base_name}(#{args_s})"
+        parts = [] of String
+        splat : Int32? = nil
+        if gi.generic_type.is_a?(GenericClassType)
+          splat = gi.generic_type.as(GenericClassType).splat_index
+        elsif gi.generic_type.is_a?(GenericModuleType)
+          splat = gi.generic_type.as(GenericModuleType).splat_index
+        end
+        i = 0
+        while i < gi.type_args.size
+          arg = gi.type_args[i]
+          if splat && splat == i && arg.is_a?(TupleInstanceType)
+            arg.as(TupleInstanceType).tuple_types.each do |tuple_type|
+              parts << render(shown(tuple_type, codegen), skip_union_parens: false, generic_args: true, codegen: codegen)
+            end
+          else
+            parts << render(shown(arg, codegen), skip_union_parens: true, generic_args: true, codegen: codegen)
+          end
+          i = i + 1
+        end
+        return "#{base_name}(#{parts.join(", ")})"
       else
         return base_name
       end
@@ -117,6 +135,14 @@ pub class TypeRenderer
     type.full_name
   end
 
+  # Hosted `x = x.devirtualize unless codegen` (types.cr). An IR name keeps the wrapper.
+  def self.shown(type : Type, codegen : Bool) : Type
+    if codegen
+      return type
+    end
+    type.devirtualize
+  end
+
   private def self.render_union(union : UnionType, skip_union_parens : Bool, generic_args : Bool, codegen : Bool) : String
     non_nil_rendered = [] of String
     has_nil = false
@@ -128,9 +154,7 @@ pub class TypeRenderer
     while i < flat.size
       t = flat[i]
       # The hosted printer devirtualizes a union member: `(Vehicle | Nil)`, not `(Vehicle+ | Nil)`.
-      if !codegen && t.is_a?(VirtualType)
-        t = t.as(VirtualType).base_type
-      end
+      t = shown(t, codegen)
       if t.full_name == "Nil"
         has_nil = true
       else
