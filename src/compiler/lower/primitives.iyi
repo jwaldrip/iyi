@@ -39,7 +39,7 @@ module compiler/lower/primitives
 import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, Generic, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallAux, CallConv, Ordering}
-import compiler/lower/cast::{type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
+import compiler/lower/cast::{assign, type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -55,6 +55,7 @@ import compiler/lower/typer::{passed_by_value?}
 import compiler/lower/headed::{headed?, headed_candidate?}
 import compiler/lower/layouts::{has_inner_pointers?}
 import compiler/lower/phi::{LowerPhi}
+import compiler/types/indirection::{TypeIndirection}
 
 # An integer operand as the hosted codegen reads it: its width in bytes, its signedness and
 # its IR type. A mixed-signedness operation biases one operand to the other signedness at the
@@ -518,6 +519,15 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
     return
   end
   if name == "pointer_set"
+    argument_type = low.analysed.type_of?(node.args[0])
+    raise "BUG: pointer assignment argument has no analysed type" if argument_type.nil?
+    actual = argument_type.as(Type)
+    target = TypeIndirection.remove_indirection(elem)
+    if target.full_name != TypeIndirection.remove_indirection(actual).full_name
+      assign(low, values[0], target, actual, values[1])
+      low.last = values[1]
+      return
+    end
     if elem_kind == "int" || elem_kind == "char" || elem_kind == "float"
       store_aligned(low, values[1], values[0])
       low.last = values[1]

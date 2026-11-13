@@ -104,6 +104,8 @@ end
 pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type, value : Value) : Nil
   # Hosted cast.cr 73-85: an ended block or NoReturn value produces no store.
   return if at_terminator?(low) || TypeQueries.no_return?(value_type)
+  target = TypeIndirection.remove_indirection(target)
+  value_type = TypeIndirection.remove_indirection(value_type)
   if target.full_name == value_type.full_name
     store_aligned(low, value, pointer)
     return
@@ -224,6 +226,18 @@ pub def store_in_union(low : Lowerer, union_type : Type, union_pointer : Value, 
   end
   if value_type.is_a?(PointerInstanceType) || TypeQueries.reference_like?(value_type)
     store_aligned(low, value, field)
+    return
+  end
+  if value_type.struct? && passed_by_value?(value_type)
+    if low.typer.passed_indirectly?(value_type)
+      pending_visit_node("store of indirectly passed #{value_type.full_name} in #{union_type.full_name} (hosted store_value, copy_value)")
+      return
+    end
+    stored = value
+    if value.type == low.module.types.ptr(0)
+      stored = load_aligned(low, low.typer.llvm_embedded_type(value_type), value)
+    end
+    store_aligned(low, stored, field)
     return
   end
   pending_visit_node("store of #{value_type.full_name} in #{union_type.full_name} (hosted store_value, not ported)")
