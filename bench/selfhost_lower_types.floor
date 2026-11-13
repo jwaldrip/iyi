@@ -54,7 +54,7 @@ src/compiler/lower/layouts.iyi 3
 src/compiler/lower/lower.iyi 2
 src/compiler/lower/pending.iyi 3
 src/compiler/lower/phi.iyi 2
-src/compiler/lower/primitives.iyi 2
+src/compiler/lower/primitives.iyi 3
 src/compiler/lower/proc.iyi 2
 src/compiler/lower/program.iyi 3
 src/compiler/lower/symbols.iyi 2
