@@ -115,6 +115,19 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     # still bootstrapped from, and requires the normalised trees identical.
     # The other language is what is being compared against, so it is named.
     (r"^bench/selfhost_parser_exercise\.sh$", "the frontend the selfhost parser is checked against"),
+    # The self-hosting normalizer's oracle, for the same reason as the
+    # parser's: it normalises each fixture with the iyi normalizer and with
+    # the frontend iyi is still bootstrapped from, and requires the dumped
+    # trees identical. The other language is the thing being compared against.
+    (r"^bench/selfhost_normalizer_exercise\.sh$", "the frontend the selfhost normalizer is checked against"),
+    # The self-hosting semantic visitor's oracle. It verifies type and method
+    # declaration tables against the frontend iyi is still bootstrapped from,
+    # requiring identical declarations for every fixture.
+    (r"^bench/selfhost_semantic_exercise\.sh$", "the frontend the selfhost semantic visitor is checked against"),
+    # The self-hosting macro engine's oracle. It verifies macro expansion
+    # ASTs against the frontend iyi is still bootstrapped from, requiring
+    # identical expanded ASTs for every fixture.
+    (r"^bench/selfhost_macros_exercise\.sh$", "the frontend the selfhost macro engine is checked against"),
 ]
 
 # Lines that name Crystal legitimately inside a file that is otherwise iyi's.

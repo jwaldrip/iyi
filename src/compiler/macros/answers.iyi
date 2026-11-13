@@ -30,7 +30,7 @@ pub class MacroAnswers
   end
 
   def self.receiverless_names : String
-    "compare_versions debug env flag? host_flag? parse_type puts print p pp p! pp! skip_file system ` raise warning file_exists? read_file read_file? run ecr_process ecr_process_string"
+    "compare_versions debug env flag? host_flag? parse_type puts print p pp p! pp! skip_file system ` raise warning file_exists? read_file read_file? run"
   end
 
   # The hosted compiler's name for a node's class (`class_desc`). The most specific
