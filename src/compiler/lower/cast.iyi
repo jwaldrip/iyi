@@ -143,6 +143,11 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
     assign_mixed_union(low, pointer, target, value_type, value)
     return
   end
+  # Hosted assign_distinct(ProcInstanceType, ProcInstanceType) (cast.cr:279-283): a non-void proc stored as a void proc.
+  if target.is_a?(ProcInstanceType) && value_type.is_a?(ProcInstanceType)
+    store_aligned(low, to_rhs(low, value, target), pointer)
+    return
+  end
   pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (hosted assign_distinct, not ported)")
 end
 

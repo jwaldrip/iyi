@@ -42,11 +42,10 @@ else
   status=1
 fi
 
-# lowcast_proc_result waits on S1d24Bodies' Proc(Nil) freeze. It must keep
-# refusing by this exact text. lowcast_proc_noreturn already types and lowers.
+# lowcast_proc_result types after s1d-bodies 5c5075083 and must pass.
+# lowcast_struct_union waits on the union-in-generic type-id spelling.
 waiting_on() {
   case "$1" in
-    lowcast_proc_result) echo "typing expected type Proc(Nil), got Proc(Int32) (S1d24Bodies)" ;;
     lowcast_struct_union) echo "Pointer((Robot | User)).class:type_id vs hosted Pointer(Robot | User).class:type_id (S1b29Declarations renderer 063610ce)" ;;
   esac
 }
