@@ -1027,6 +1027,12 @@ pub def codegen_not(low : Lowerer, node : Not) : Nil
   low.last = low.builder.bitwise_xor(v, int1(low, 1_i64))
 end
 
+# Jump targets currently come from the lowering context. Once typing records
+# targets on the nodes, this is the single place that will cross-check them.
+pub def jump_target(node : ASTNode, lexical : ASTNode?) : ASTNode?
+  lexical
+end
+
 # The hosted `visit(While)`. The `while` block tests the condition, the `body` runs and branches
 # back, and `fail` is where the loop leaves. A `break` makes the `exit` block (created at the first
 # break), which `fail` then branches to. `next` branches to the `while` block. The value of a while
@@ -1035,13 +1041,38 @@ pub def codegen_while(low : Lowerer, node : While) : Nil
   set_ensure_exception_handler(low, node)
   saved_target = low.loop_target
   low.loop_target = node
+  saved_next = low.loop_next
+  saved_break = low.loop_break
+  cond = node.cond
+  if cond.is_a?(Expressions) && cond.as(Expressions).expressions.size == 1
+    cond = cond.as(Expressions).expressions[0]
+  end
+  if cond.is_a?(BoolLiteral) && cond.as(BoolLiteral).value
+    # Hosted codegen.cr:1374-1391 omits the conditional and fail blocks.
+    while_block = low.new_block("while")
+    low.loop_next = while_block
+    low.loop_break = nil
+    low.builder.br(while_block)
+    low.builder.position_at_end(while_block)
+    low.needs_value = false
+    codegen_node(low, node.body)
+    unless at_terminator?(low)
+      low.builder.br(while_block)
+    end
+    if exit_block = low.loop_break
+      low.builder.position_at_end(exit_block.as(Block))
+    end
+    low.last = llvm_nil(low)
+    low.loop_next = saved_next
+    low.loop_break = saved_break
+    low.loop_target = saved_target
+    return
+  end
   blocks = low.new_blocks(["while", "body", "fail"])
   while_block = blocks[0]
   body_block = blocks[1]
   fail_block = blocks[2]
 
-  saved_next = low.loop_next
-  saved_break = low.loop_break
   low.loop_next = while_block
   low.loop_break = nil
 
@@ -1079,13 +1110,13 @@ pub def codegen_break(low : Lowerer, node : Break) : Nil
     if block_phi.nil?
       pending_visit_node("break outside a while or a block (hosted codegen.cr: visit(Break))")
     end
-    branch_to_phi(low, block_phi.as(BranchPhi), node.exp, low.current_context.break_target)
+    branch_to_phi(low, block_phi.as(BranchPhi), node.exp, jump_target(node, low.current_context.break_target))
     return
   end
   if node.exp
     pending_visit_node("break with a value in a while (hosted codegen.cr: visit(Break))")
   end
-  execute_ensures_until(low, low.loop_target, nil)
+  execute_ensures_until(low, jump_target(node, low.loop_target), nil)
   return if block_ended?(low)
   target = low.loop_break
   if target.nil?
@@ -1117,13 +1148,13 @@ pub def codegen_next(low : Lowerer, node : Next) : Nil
     if yield_phi.nil?
       pending_visit_node("next outside a while or a block (hosted codegen.cr: visit(Next))")
     end
-    branch_to_phi(low, yield_phi.as(BranchPhi), node.exp, low.current_context.next_target)
+    branch_to_phi(low, yield_phi.as(BranchPhi), node.exp, jump_target(node, low.current_context.next_target))
     return
   end
   if node.exp
     pending_visit_node("next with a value in a while (hosted codegen.cr: visit(Next))")
   end
-  execute_ensures_until(low, low.loop_target, nil)
+  execute_ensures_until(low, jump_target(node, low.loop_target), nil)
   return if block_ended?(low)
   target = low.loop_next
   if target.nil?
@@ -1155,14 +1186,14 @@ pub def codegen_return_node(low : Lowerer, node : Return) : Nil
     pending_visit_node("return at the top level (hosted codegen.cr: visit(Return), node.target is not a Def)")
   end
   if rp = low.current_context.return_phi
-    branch_to_phi(low, rp.as(BranchPhi), node.exp, low.current_context.return_target)
+    branch_to_phi(low, rp.as(BranchPhi), node.exp, jump_target(node, low.current_context.return_target))
     return
   end
   ret_ir = low.current_context.fun_type.return_type
   exp = node.exp
   if exp.nil?
     low.last = llvm_nil(low)
-    execute_ensures_until(low, low.current_context.return_target, nil)
+    execute_ensures_until(low, jump_target(node, low.current_context.return_target), nil)
     return if block_ended?(low)
     if ret_ir.void?
       low.builder.ret_void
@@ -1182,7 +1213,7 @@ pub def codegen_return_node(low : Lowerer, node : Return) : Nil
   return if block_ended?(low)
   exp_t = low.analysed.type_of?(exp.as(ASTNode))
   raise "BUG: the analysed program has no type for a return's value (hosted codegen.cr: visit(Return))" if exp_t.nil?
-  execute_ensures_until(low, low.current_context.return_target, exp_t)
+  execute_ensures_until(low, jump_target(node, low.current_context.return_target), exp_t)
   return if block_ended?(low)
   if ret_ir.void?
     low.builder.ret_void
