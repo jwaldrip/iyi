@@ -102,11 +102,24 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     (r"^bench/(machine_probe|dependency_floor|build_tool_floor|build_tool_scan)", "measures the compatibility binary, its libraries, and build tools"),
     (r"^spec/compiler/util_spec\.cr$", "specs Crystal's own util module"),
     (r"^samples/iyi/", "programs whose comments compare iyi with Crystal"),
+    # The self-hosting platform support oracle. It verifies target triple parsing,
+    # flags, naming, and linker command generation against the frontend iyi is
+    # still bootstrapped from.
+    (r"^bench/selfhost_platform_exercise\.sh$", "the frontend the selfhost platform support is checked against"),
+    # The self-hosting command driver's oracle. It verifies dispatch, exit
+    # codes, and usage output against the frontend iyi is still bootstrapped
+    # from, requiring identical observables for every command vector.
+    (r"^bench/selfhost_command_exercise\.sh$", "the frontend the selfhost command driver is checked against"),
+    # The self-hosting build daemon's oracle. It verifies socket path selection,
+    # over-limit refusal, candidate search order, and error text against the
+    # frontend iyi is still bootstrapped from.
+    (r"^bench/selfhost_daemon_exercise\.sh$", "the frontend the selfhost build daemon is checked against"),
 ]
 
 # Lines that name Crystal legitimately inside a file that is otherwise iyi's.
 ALLOWED_LINES: list[tuple[str, str]] = [
     (r"--crystal", "the compatibility mode's own flag"),
+    (r"crystal_prelude", "the flag recording a build against Crystal's standard library"),
     # `bench/std_dependency_floor.sh` fails when a standard library module
     # reaches an ancestor dependency, and the failure has to say where the
     # reachable bindings are. They are Crystal's, under src/openssl, src/yaml,
@@ -266,6 +279,9 @@ ALLOWED_LINES: list[tuple[str, str]] = [
     (r"share/crystal|doc/crystal|DATADIR\)/doc", "where Crystal's library and docs install"),
     (r"CRYSTAL \?=|previous crystal compiler", "the bootstrap compiler the build reads"),
     # Crystal's own API, called from a compiler that is a Crystal program.
+    # The command driver's language mode split: the compatibility binary
+    # names Crystal in its banners and usage, and stage one names iyi.
+    (r'@@program_name == "crystal" \? "Crystal" : "iyi"', "the line that picks the command driver's language name"),
     (r"Crystal::(Digest|System|Macros|Repl)", "Crystal's stdlib API"),
     (r'require "crystal/', "a require of Crystal's stdlib"),
     (r"crystal_(malloc|realloc|raise|type_id|instance_type_id)", "Crystal's runtime ABI symbols"),
