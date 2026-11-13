@@ -112,6 +112,7 @@ end
 
 # The `ids` mode's block: the type id and the id range the hosted LLVMId gives the type, or `-`.
 def ids_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
+  program.llvm_id.type_id(type)
   mm = program.llvm_id.min_max_type_id(type)
   String.build do |io|
     io << "== " << name << "\n"

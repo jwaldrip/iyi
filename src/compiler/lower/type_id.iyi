@@ -16,8 +16,8 @@ module compiler/lower/type_id
 # `type.subclasses` does; the id walk leaves generic instance subclasses out
 # (`subclasses_of`), as the hosted `subclasses_of` does.
 
-import compiler/semantic/top_level::{Type, ClassType, NilType, NonGenericClassType, GenericClassType}
-import compiler/types/types::{GenericInstanceType, GenericClassInstanceType, TypeQueries}
+import compiler/semantic/top_level::{Type, ClassType, NilType, NonGenericClassType, GenericClassType, TypeDefType}
+import compiler/types/types::{GenericInstanceType, GenericClassInstanceType, TypeQueries, VirtualType, VirtualMetaclassType}
 import compiler/lower/typer::{primitive_kind}
 
 pub class LowerTypeIds
@@ -48,11 +48,21 @@ pub class LowerTypeIds
     @ids[type.full_name]?
   end
 
-  # The hosted `type_id(type)`: the max of the type's pair.
+  # The hosted `type_id` (llvm_id.cr:50-66): typedefs delegate, virtual types are
+  # refused, and an unnumbered type takes a new leaf id on its first request.
   def type_id(type : Type) : Int32
-    pair = min_max(type)
-    raise "BUG: #{type.full_name} has no type id (not reachable from Object)" if pair.nil?
-    pair[1]
+    if type.is_a?(TypeDefType)
+      return type_id(type.as(TypeDefType).typedef)
+    end
+    if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
+      raise "BUG: called type_id for #{type.full_name} (virtual type)"
+    end
+    if pair = min_max(type)
+      return pair[1]
+    end
+    id = next_id
+    put(type, id, id)
+    id
   end
 
   # The hosted `id_to_metaclass[type_id(type)]`: the id of the type's metaclass, or nil when the
