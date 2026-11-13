@@ -73,13 +73,12 @@ for name in fallthrough value return break next block_break block_next boundary 
     status=1
     continue
   fi
-  if ! "$WORK/bridge" drop-unwind "$WORK/${name}.host.ll" > "$WORK/${name}.host.ir" 2> "$WORK/${name}.bridge.log"; then
+  if ! "$WORK/bridge" drop-unwind "$WORK/${name}.ll" > "$WORK/${name}.host.ir" 2> "$WORK/${name}.bridge.log"; then
     echo "  FAIL: $name unwind legalization"
     awk 'NR <= 8 { print }' "$WORK/${name}.bridge.log"
     status=1
     continue
   fi
-  cp "$WORK/${name}.host.ll" "$WORK/${name}.ll"
   if check_fixture "$name"; then
     echo "  $name: identical and native output/status match"
     passed=$((passed + 1))
