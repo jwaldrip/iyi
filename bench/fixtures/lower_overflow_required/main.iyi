@@ -1,3 +1,4 @@
+@[Unsafe("the fixture exits through a C runtime function")]
 require "./runtime"
 
 def checked_sum(a : Int32, b : Int32) : Int32
