@@ -1009,6 +1009,8 @@ pub class MainVisitor < TypeNodeHost
       return false
     end
     node.value.accept(self)
+    value_type_filters = @type_filters
+    @type_filters = nil
     vt = child_type(node.value)
     if vt.nil?
       # The local is declared; its reads report why its value has no type.
@@ -1032,6 +1034,9 @@ pub class MainVisitor < TypeNodeHost
       @vars[v.name] = val_type
       set_type(v, val_type)
       set_type(node, val_type)
+      if needs_type_filters?
+        @type_filters = TypeFilters.assign_var(value_type_filters, v.name)
+      end
       if old_u = @var_unions[v.name]?
         @var_unions[v.name] = @program.type_merge(old_u, val_type)
       else
