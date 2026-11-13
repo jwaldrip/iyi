@@ -2,6 +2,9 @@ abstract class Node
 end
 
 class Leaf < Node
+  def value : Int32
+    7
+  end
 end
 
 class Single
@@ -16,9 +19,13 @@ class Walker
     Single.new
   end
 
-  def check : Bool
+  def check : Int32
     item = base
-    item.is_a?(Leaf)
+    if item.is_a?(Leaf)
+      item.value
+    else
+      0
+    end
   end
 end
 
