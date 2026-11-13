@@ -1027,9 +1027,21 @@ pub def codegen_not(low : Lowerer, node : Not) : Nil
   low.last = low.builder.bitwise_xor(v, int1(low, 1_i64))
 end
 
-# Jump targets currently come from the lowering context. Once typing records
-# targets on the nodes, this is the single place that will cross-check them.
+# Typing records the target by node identity. Until that pass supplies it, use
+# the lexical target; disagreement would run the wrong pending cleanups.
 pub def jump_target(node : ASTNode, lexical : ASTNode?) : ASTNode?
+  typed : ASTNode? = case node
+  when Return then node.target
+  when Break  then node.target
+  when Next   then node.target
+  else             nil
+  end
+  if typed
+    if lexical && typed.object_id != lexical.object_id
+      raise "lower: typed jump target disagrees with lexical target (hosted execute_ensures_until)"
+    end
+    return typed
+  end
   lexical
 end
 
