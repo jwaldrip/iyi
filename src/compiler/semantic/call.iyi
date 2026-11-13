@@ -185,6 +185,7 @@ pub class CallRecalculation
     end
     first = 0
     last = 0
+    is_range = false
     if instance.is_a?(TupleInstanceType)
       size = instance.as(TupleInstanceType).size
       if arg.is_a?(NumberLiteral) && arg.as(NumberLiteral).kind == NumberKind::I32
@@ -199,6 +200,7 @@ pub class CallRecalculation
         end
         last = first
       elsif arg.is_a?(RangeLiteral)
+        is_range = true
         range = arg.as(RangeLiteral)
         from = range.from
         if from.is_a?(NumberLiteral) && from.as(NumberLiteral).kind == NumberKind::I32
@@ -250,7 +252,7 @@ pub class CallRecalculation
       return "missing key '#{key}' for named tuple #{owner}" if first == -1 && name == "[]"
       last = first
     end
-    cache_key = "#{meta}:#{first}:#{last}"
+    cache_key = "#{meta}:#{first}:#{last}:#{is_range}"
     cache = if instance.is_a?(TupleInstanceType)
               instance.as(TupleInstanceType).tuple_indexers
             else
@@ -259,7 +261,7 @@ pub class CallRecalculation
     if existing = cache[cache_key]?
       return existing
     end
-    body : ASTNode = first == -1 ? NilLiteral.new : Primitive.tuple_indexer(first, last)
+    body : ASTNode = first == -1 ? NilLiteral.new : Primitive.tuple_indexer(first, last, is_range)
     definition = Def.new("[]", [Arg.new("index")], body)
     cache[cache_key] = definition
     definition
