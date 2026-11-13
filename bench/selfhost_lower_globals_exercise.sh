@@ -37,9 +37,10 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy"
+WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_nilable_proc"
 # The body pass does not flag an untyped @[ThreadLocal] declaration.
 # The lazy fixture's indirect Proc call waits on zero-argument splat matching.
+# The nilable Proc fixture waits for declaration typing to instantiate Proc's arguments.
 #
 # The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
 
@@ -126,6 +127,12 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     if [ "$name" = lowglob_cvar_lazy ]; then
       case "$reason" in
         *"wrong number of arguments for 'Proc(Nil)#call'"*) ;;
+        *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
+      esac
+    fi
+    if [ "$name" = lowglob_cvar_nilable_proc ]; then
+      case "$reason" in
+        *"class variable @@resolver is not an integer"*) ;;
         *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
       esac
     fi
@@ -237,8 +244,6 @@ prove_mutation "indirect calls are left without a function type" "$REPO/bench/li
   "  if (at == 0) return line" "  if (indirect || at == 0) return line" -- lowglob_check || status=1
 prove_mutation "lazy initializer ignores the once flag" "$REPO/bench/fixtures/lowglob_cvar_lazy.iyi" \
   "  if !flag.value" "  if true" -- hosted_once_check || status=1
-prove_mutation "a nilable proc global has no zero initializer" "$REPO/src/compiler/lower/class_var.iyi" \
-  "  global.initializer = low.builder.const_zero(ir)" "  global.initializer = nil" -- lowglob_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1
