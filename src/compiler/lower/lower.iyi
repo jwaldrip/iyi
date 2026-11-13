@@ -21,6 +21,7 @@ import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, StringInterpolati
 import compiler/syntax/ast::{NamedTupleLiteral}
 import compiler/types/types::{NamedTupleInstanceType}
 import compiler/syntax/ast::{TupleLiteral, Splat}
+import compiler/syntax/ast::{Case}
 import compiler/types/types::{TupleInstanceType}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
@@ -363,6 +364,17 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   if node.is_a?(NamedTupleLiteral)
     codegen_named_tuple(low, node.as(NamedTupleLiteral))
     return
+  end
+  if node.is_a?(Case)
+    # Hosted cleanup transforms the recorded expansion (cleanup_transformer.cr:323-335).
+    # Exhaustive cases also need its unreachable replacement, not yet ported here.
+    if node.as(Case).exhaustive
+      pending_visit_node("an exhaustive case (hosted cleanup_transformer.cr: replace_unreachable_if_needed)")
+    end
+    if expanded = low.analysed.expansions[node]?
+      codegen_node(low, expanded)
+      return
+    end
   end
   if node.is_a?(ArrayLiteral)
     # The hosted expander lowers [] of T to Array(T).new and populated arrays

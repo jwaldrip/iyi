@@ -598,6 +598,19 @@ else
   awk 'NR<=8' "$WORK/named-tuple.err" "$WORK/named-tuple.out" "$WORK/named-tuple.build.log"
   status=1
 fi
+case_expansion_check() {
+  "$IYI" build -o "$WORK/port-case" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/case.build.log" 2>&1 || return 1
+  "$WORK/port-case" lower "$REPO/bench/fixtures/lower_case.iyi" "$WORK/lower_case.oracle.ll" > "$WORK/case.out" 2> "$WORK/case.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/case.out"
+}
+if case_expansion_check; then
+  prove_mutation "case expansion is not visited" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if node.is_a?(Case)' '  if false && node.is_a?(Case)' -- case_expansion_check || status=1
+else
+  echo "FAIL: case fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/case.err" "$WORK/case.out" "$WORK/case.build.log"
+  status=1
+fi
 tuple_literal_check() {
   "$IYI" build -o "$WORK/port-tuple" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple.build.log" 2>&1 || return 1
   "$WORK/port-tuple" lower "$REPO/bench/fixtures/lower_tuple_literal.iyi" "$WORK/lower_tuple_literal.oracle.ll" > "$WORK/tuple.out" 2> "$WORK/tuple.err" || return 1
