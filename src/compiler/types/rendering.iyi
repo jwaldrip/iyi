@@ -7,6 +7,16 @@ import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, Gen
 import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType}
 
 pub class TypeRenderer
+  # Hosted generic argument printers devirtualize unless emitting codegen names
+  # (types.cr 2459-2479, 2782-2791, 2904-2909, 3026-3038).
+  def self.render_argument(type : Type, generic_args : Bool, codegen : Bool, skip_union_parens : Bool = false) : String
+    value = type
+    if !codegen && value.is_a?(VirtualType)
+      value = value.as(VirtualType).base_type
+    end
+    render(value, skip_union_parens: skip_union_parens, generic_args: generic_args, codegen: codegen)
+  end
+
   def self.render(type : Type, skip_union_parens : Bool = false, generic_args : Bool = true, codegen : Bool = false) : String
     if type.is_a?(UnionType)
       return render_union(type.as(UnionType), skip_union_parens, generic_args, codegen)
@@ -39,40 +49,40 @@ pub class TypeRenderer
 
     if type.is_a?(TupleInstanceType)
       tup = type.as(TupleInstanceType)
-      elements = tup.tuple_types.map { |t| render(t, skip_union_parens: false, generic_args: generic_args, codegen: codegen) }
+      elements = tup.tuple_types.map { |t| render_argument(t, generic_args, codegen, true) }
       return "Tuple(#{elements.join(", ")})"
     end
 
     if type.is_a?(NamedTupleInstanceType)
       nt = type.as(NamedTupleInstanceType)
       entries = nt.entries.map do |e|
-        "#{e.name}: #{render(e.type, skip_union_parens: false, generic_args: generic_args, codegen: codegen)}"
+        "#{e.name}: #{render_argument(e.type, generic_args, codegen, true)}"
       end
       return "NamedTuple(#{entries.join(", ")})"
     end
 
     if type.is_a?(ProcInstanceType)
       proc_t = type.as(ProcInstanceType)
-      parts = proc_t.arg_types.map { |a| render(a, skip_union_parens: false, generic_args: generic_args, codegen: codegen) }
-      parts << render(proc_t.return_type, skip_union_parens: false, generic_args: generic_args, codegen: codegen)
+      parts = proc_t.arg_types.map { |a| render_argument(a, generic_args, codegen) }
+      parts << render_argument(proc_t.return_type, generic_args, codegen)
       return "Proc(#{parts.join(", ")})"
     end
 
     if type.is_a?(PointerInstanceType)
       ptr = type.as(PointerInstanceType)
-      return "Pointer(#{render(ptr.element_type, skip_union_parens: false, generic_args: generic_args, codegen: codegen)})"
+      return "Pointer(#{render_argument(ptr.element_type, generic_args, codegen, true)})"
     end
 
     if type.is_a?(StaticArrayInstanceType)
       sary = type.as(StaticArrayInstanceType)
-      return "StaticArray(#{render(sary.element_type, skip_union_parens: false, generic_args: generic_args, codegen: codegen)}, #{sary.size_int})"
+      return "StaticArray(#{render_argument(sary.element_type, generic_args, codegen, true)}, #{sary.size_int})"
     end
 
     if type.is_a?(GenericInstanceType)
       gi = type.as(GenericInstanceType)
       base_name = gi.generic_type.full_name
       if generic_args
-        args_s = gi.type_args.map { |a| render(a, skip_union_parens: false, generic_args: true, codegen: codegen) }.join(", ")
+        args_s = gi.type_args.map { |a| render_argument(a, true, codegen, true) }.join(", ")
         return "#{base_name}(#{args_s})"
       else
         return base_name

@@ -467,7 +467,7 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # The own-source probes: files whose floors a mutation of the namespace or struct rules must
 # lower below. A probe fails the check when the mutated port's identical count drops below its
 # floor, when the mutated driver does not build, or when the port fails the file.
-OWN_PROBES="src/compiler/foundation/location.iyi src/compiler/platform/target.iyi src/compiler/syntax/ast.iyi"
+OWN_PROBES="src/compiler/foundation/location.iyi src/compiler/platform/target.iyi src/compiler/syntax/ast.iyi src/compiler/lower/type_id.iyi"
 check_own_diverges() {
   "$IYI" build -o "$WORK/mut_port" "$REPO/bench/selfhost_lower_types_exercise.iyi" > /dev/null 2>&1 || return 1
   for probe in $OWN_PROBES; do
@@ -633,6 +633,12 @@ prove_mutation "untyped union in passed_by_value? answered false instead of chec
     return false
   end' \
   -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "generic type arguments retain virtual marker outside codegen" "$REPO/src/compiler/types/rendering.iyi" \
+  '    if !codegen && value.is_a?(VirtualType)' \
+  '    if false && value.is_a?(VirtualType)' \
+  -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
