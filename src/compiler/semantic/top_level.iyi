@@ -1662,7 +1662,15 @@ pub class SemanticProgram < NonGenericModuleType
       base_type
     elsif node.is_a?(Union)
       u = node.as(Union)
-      types = u.types.map { |t| lookup_type_node(t, current_type) }
+      # Hosted type_lookup.cr:217-229 virtualizes each member before merging.
+      types = u.types.map do |t|
+        member = lookup_type_node(t, current_type)
+        if hook = @merge_hook
+          hook.virtual_of(member)
+        else
+          member
+        end
+      end
       type_merge(types)
     elsif node.is_a?(Metaclass)
       m = node.as(Metaclass)
@@ -1739,7 +1747,11 @@ pub class SemanticProgram < NonGenericModuleType
       u.types.each do |subnode|
         t = lookup_type_node?(subnode, current_type)
         return nil if t.nil?
-        resolved << t
+        if hook = @merge_hook
+          resolved << hook.virtual_of(t)
+        else
+          resolved << t
+        end
       end
       type_merge(resolved)
     elsif node.is_a?(Metaclass)

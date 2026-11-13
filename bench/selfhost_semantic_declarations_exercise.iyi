@@ -271,7 +271,7 @@ elsif Program.args[0] == "--virtual-subtype"
   base = prog.types["SubtypeNode"].as(ClassType)
   leaf = prog.types["SubtypeLeaf"].as(ClassType)
   other = prog.types["SubtypeOther"].as(ClassType)
-  virtual = base.program.merge_hook.not_nil!.virtual_of(base)
+  virtual = type_node_system(prog).virtual_of(base)
   virtual_meta = virtual.as(VirtualType).metaclass
   print "leaf virtual #{leaf.subtype_of?(virtual)}\n"
   print "base virtual #{base.subtype_of?(virtual)}\n"
