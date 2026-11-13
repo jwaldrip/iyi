@@ -29,7 +29,7 @@ module compiler/lower/class_var
 # address through it, and the caller loads that address. Refused by name: the thread-pointer form the hosted code uses
 # under the iyi prelude on Linux, and the Windows general-dynamic model.
 
-import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, CharLiteral, ClassDef, NilLiteral, NumberLiteral, SymbolLiteral, TypeDeclaration}
+import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, CharLiteral, ClassDef, ModuleDef, NilLiteral, NumberLiteral, SymbolLiteral, TypeDeclaration}
 import compiler/ir/values::{Value}
 import compiler/ir/inst::{Attribute, Inst, Op, CallConv}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel}
@@ -78,6 +78,16 @@ end
 # The hosted `visit(ClassDef)` enters the class: its body is lowered with the class as the scope. Answers whether
 # a scope was entered, which `class_body_leave` needs.
 pub def class_body_enter(low : Lowerer, node : ClassDef) : Bool
+  t = low.analysed.program.lookup_type_path(node.name, const_scope(low))
+  if t.is_a?(ModuleType)
+    low.globals.enter_class_body(t.as(ModuleType))
+    return true
+  end
+  false
+end
+
+# The hosted `visit(ModuleDef)` enters the module exactly as a class body.
+pub def module_body_enter(low : Lowerer, node : ModuleDef) : Bool
   t = low.analysed.program.lookup_type_path(node.name, const_scope(low))
   if t.is_a?(ModuleType)
     low.globals.enter_class_body(t.as(ModuleType))

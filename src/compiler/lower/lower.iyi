@@ -590,7 +590,9 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     # The hosted `visit(ModuleDef)`: the same as a class.
     wants = low.needs_value
     low.needs_value = false
+    entered = module_body_enter(low, node.as(ModuleDef))
     codegen_node(low, node.as(ModuleDef).body)
+    class_body_leave(low, entered)
     low.needs_value = wants
     low.last = llvm_nil(low)
     return
