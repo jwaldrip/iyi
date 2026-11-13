@@ -40,7 +40,7 @@ import compiler/lower/pending::{refuse_port}
 import compiler/lower/globals::{ClassVarState}
 import compiler/lower/const::{const_scope, literal_node_value, literal_of_type, run_once}
 import compiler/lower/fun::{block_ended?}
-import compiler/lower/cast::{assign, nilable_reference_type?}
+import compiler/lower/cast::{assign, nilable_reference_type?, to_lhs}
 import compiler/lower/symbols::{symbol_index}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type, UnionType}
 import compiler/types/types::{MixedUnionType, NilableProcType}
@@ -524,11 +524,11 @@ pub def thread_local_accessor(low : Lowerer, name : String, global : Global) : F
   fn
 end
 
-# The hosted `read_class_var` (class_var.cr:200-203): a load of the variable's global.
+# The hosted `read_class_var` (class_var.cr:200-203) keeps aggregate values as
+# pointers and loads scalar values through `to_lhs`.
 pub def codegen_class_var_read(low : Lowerer, node : Compiler::Syntax::Ast::ClassVar) : Nil
   cvar = class_var_of(low, node)
-  ir = cvar_ir_type(low, cvar)
-  low.last = load_aligned(low, ir, class_var_pointer(low, cvar))
+  low.last = to_lhs(low, class_var_pointer(low, cvar), cvar.type)
 end
 
 # The hosted `visit(PointerOf)` of a class variable (codegen.cr:1007-1021): initialise it if it has an

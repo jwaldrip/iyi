@@ -283,7 +283,7 @@ prove_mutation "a read of an initialised constant is not a load" "$REPO/src/comp
 prove_mutation "the constant initialiser has the C convention, not iyi" "$REPO/src/compiler/lower/const.iyi" \
   "  fn.call_convention = CallConv::Iyi" "  fn.call_convention = CallConv::C" -- lowglob_check || status=1
 prove_mutation "a class variable read is not a load of its global" "$REPO/src/compiler/lower/class_var.iyi" \
-  "  low.last = load_aligned(low, ir, class_var_pointer(low, cvar))" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
+  "  low.last = to_lhs(low, class_var_pointer(low, cvar), cvar.type)" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
 prove_mutation "a literal class variable is initialised by a function, not stored at its declaration" "$REPO/src/compiler/lower/class_var.iyi" \
   "  if simple_literal?(node)" "  if false" -- lowglob_check || status=1
 prove_mutation "a string constant's global is not emitted at the program's start" "$REPO/src/compiler/lower/const.iyi" \
