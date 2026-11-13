@@ -196,7 +196,7 @@ src/compiler/types/to_restriction.iyi 0
 src/compiler/types/type_system.iyi 0
 src/compiler/types/types.iyi 0
 src/compiler/types/unification.iyi 0
-src/iyi/array.iyi 101
+src/iyi/array.iyi 103
 src/iyi/atomic.iyi 11
 src/iyi/chaos.iyi 40
 src/iyi/chaos_points.iyi 7

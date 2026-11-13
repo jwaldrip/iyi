@@ -404,6 +404,12 @@ pub abstract class ModuleType < NamedType
   end
 
   def same_def_signature?(a : Def, b : Def) : Bool
+    # A splat is a different overload: `push(value)` does not replace `push(*values)`.
+    # Hosted compare_strictness keeps both. Text of the restriction is not enough.
+    return false unless a.splat_index == b.splat_index
+    a_double = a.double_splat
+    b_double = b.double_splat
+    return false if a_double.nil? != b_double.nil?
     return false unless a.args.size == b.args.size
     i = 0
     while i < a.args.size
@@ -2585,6 +2591,19 @@ pub class TopLevelVisitor < Visitor
         none_def = Def.new("none?", return_type: Path.new("Bool"))
         none_def.location = node.location
         enum_type.add_def(none_def)
+      elsif user_none = enum_type.defs["none?"]?
+        # Hosted generates none? first. The user's def then replaces it and
+        # add_def keeps the generated def as previous. The body was visited
+        # first here, so link that generated def onto the one already recorded.
+        generated_none = Def.new("none?", return_type: Path.new("Bool"))
+        generated_none.location = node.location
+        i = 0
+        while i < user_none.size
+          user = user_none[i]
+          user.previous = generated_none
+          generated_none.next = user
+          i = i + 1
+        end
       end
       if enum_type.members["All"]?.nil?
         all_value = 0_i64
@@ -2601,6 +2620,18 @@ pub class TopLevelVisitor < Visitor
         predicate = Def.new(pname, return_type: Path.new("Bool"))
         predicate.location = node.location
         enum_type.add_def(predicate)
+      else
+        if user_preds = enum_type.defs[pname]?
+          generated = Def.new(pname, return_type: Path.new("Bool"))
+          generated.location = node.location
+          i = 0
+          while i < user_preds.size
+            user = user_preds[i]
+            user.previous = generated
+            generated.next = user
+            i = i + 1
+          end
+        end
       end
     end
 
