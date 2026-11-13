@@ -67,6 +67,7 @@ run_gate() {
 
 echo "== 1. Running the native gates in order (logs: $LOGDIR)"
 run_gate native_ir any bench/native_ir_exercise.sh
+run_gate native_obj any bench/native_obj_exercise.sh
 
 echo
 echo "== 2. Verdicts"
