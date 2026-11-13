@@ -1,0 +1,10 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def pick : Int32
+  values = {3, 7}
+  values[1]
+end
+
+LibC.exit(pick)
