@@ -1802,7 +1802,7 @@ pub class MainVisitor < TypeNodeHost
       if cd = @current_def
         if rt = cd.return_type
           expected_ret = lookup_under(rt, @scope)
-          unless value_t.as(Type).subtype_of?(expected_ret)
+          unless expected_ret.nil_type? || value_t.as(Type).subtype_of?(expected_ret)
             @unreachable = true
             return refuse(node, "type mismatch for return type: expected #{expected_ret.full_name}, got #{value_t.as(Type).full_name}")
           end
