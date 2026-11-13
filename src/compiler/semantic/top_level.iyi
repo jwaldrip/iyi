@@ -2149,31 +2149,6 @@ pub class TopLevelVisitor < Visitor
       pi.imports = saved if pi.imports.nil?
       @program.pending_ivars << pi
     end
-    # An explicit `@x : T` decides the type of `@x`. An inferred record for the same name (an
-    # initialize argument's restriction) does not replace it, as the hosted pass skips a guess for a
-    # variable that exists.
-    explicit = [] of String
-    @pending_ivars.each do |found|
-      explicit << "#{found.owner.full_name} #{found.name}" if found.explicit
-    end
-    # The hosted processor declares explicit variables before guessed ones for each owner.
-    [true, false].each do |explicit_pass|
-      @pending_ivars.each do |pi|
-        next if pi.explicit != explicit_pass
-        next if !pi.explicit && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
-        if imports = pi.imports
-          @program.current_imports = imports
-        else
-          @program.current_imports = saved
-        end
-        arg_type = @program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
-        mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
-        mv.owner = pi.owner
-        pi.owner.instance_vars[pi.name] = mv
-        @program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)
-      end
-    end
-    @program.current_imports = saved
     @pending_ivars.clear
   end
 
