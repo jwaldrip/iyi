@@ -19,10 +19,16 @@
 #     "    NOT RUN (MUTATION_SKIP=1, ...): <label>", returns 1. A gate run that
 #     way shows its fixtures quickly and always ends red.
 #
-# The check runs as a background job in its own process group. The file is
-# restored, and the copy aside removed, through traps on EXIT, INT and TERM,
-# so an interrupt never leaves a mutated source behind. The traps that were
-# set before the call (for example a WORK cleanup) are put back afterwards.
+# The check runs as a background job in its own process group, so an interrupt
+# reaches everything it started. Job control is switched on for that one job and
+# for nothing else: with it on, bash also gave the two small commands before the
+# job (the copy onto the file, the removal of the patch) a process group each,
+# and when one of them lost the race for its own group bash printed
+# `child setpgid (N to N): Operation not permitted` into the gate's log, beside
+# a proof it had nothing to do with. The file is restored, and the copy aside
+# removed, through traps on EXIT, INT and TERM, so an interrupt never leaves a
+# mutated source behind. The traps that were set before the call (for example a
+# WORK cleanup) are put back afterwards.
 #
 # The check is a command or a shell function. It must return non-zero when
 # the mutated file is detected. A check that cannot run also counts as caught,
@@ -142,21 +148,21 @@ _prove_mutation_run() {
   cp "$file" "$backup"
   log="$(mktemp)"
 
-  case $- in *m*) monitor_was_on=1 ;; esac
-  set -m
-  _PM_MONITOR=1
   _prove_mutation_arm "$file" "$backup"
   cat "$patched" > "$file"
   rm -f "$patched"
 
+  case $- in *m*) monitor_was_on=1 ;; esac
+  set -m
+  _PM_MONITOR=1
   { "$@" > "$log" 2>&1 & } 2>/dev/null
   _PM_CHILD=$!
   wait "$_PM_CHILD" || rc=$?
   _PM_CHILD=""
-
-  _prove_mutation_disarm
   [ "$monitor_was_on" -eq 1 ] || set +m
   _PM_MONITOR=0
+
+  _prove_mutation_disarm
 
   if [ "$rc" -ne 0 ]; then
     rm -f "$log"
