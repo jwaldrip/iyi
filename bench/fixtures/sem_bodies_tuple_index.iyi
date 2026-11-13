@@ -24,6 +24,10 @@ members = {1, "s"}
 single = members[0]
 singleton = members[0..0]
 empty = members[1...1]
+last = members[-1]
+absent = members[4]?
+named = {a: 1, b: "s"}
+named_value = named[:a]
 
 probe = TupleIndexProbe.new
 scalar = probe.scalar
