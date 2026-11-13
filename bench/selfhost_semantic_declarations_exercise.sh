@@ -707,7 +707,7 @@ prove_mutation "a typed argument's instance variable takes its restriction type"
   "mv = MetaTypeVar.new(pi.name, program.nil_type, pi.initializer)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
+prove_mutation_all "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
   "return hook.virtual_of(resolved)" \
   "return resolved" \
   -- check_decl_fixtures_diverge || status=1
@@ -767,8 +767,8 @@ prove_mutation "a declared instance variable is not re-resolved once the type sy
   "nil" \
   -- check_reresolve_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "an explicit instance variable is not recorded for re-resolution" "$MUT_SEM" \
-  "@program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)" \
+prove_mutation "an explicit instance variable is not recorded for re-resolution" "$MUT_IVARS" \
+  "program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, program.current_imports)" \
   "nil" \
   -- check_reresolve_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -870,9 +870,9 @@ prove_mutation "a generic instance copies no instance variable the first time" "
   -- check_decl_fixtures_diverge || status=1
 
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "a declared instance variable keeps its alias: the hook path takes the alias itself" "$MUT_SEM" \
-  "      resolved = remove_alias(lookup_type_node(restriction, owner))" \
-  "      resolved = lookup_type_node(restriction, owner)" \
+prove_mutation "a declared instance variable keeps its alias: the optional path takes the alias itself" "$MUT_SEM" \
+  "    resolved = remove_alias(found)" \
+  "    resolved = found" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic instance's declared variable keeps its parameter type" "$MUT_TYPES" \
