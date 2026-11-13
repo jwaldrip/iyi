@@ -17,7 +17,7 @@ module compiler/lower/context
 # alloca block with allocas branches to the entry block.
 
 import compiler/ir/module::{Module}
-import compiler/ir/function::{Function, Global}
+import compiler/ir/function::{Function}
 import compiler/syntax/ast::{ASTNode, ExceptionHandler, FunDef}
 import compiler/ir/inst::{Block, Inst}
 import compiler/ir/values::{Value}
@@ -135,8 +135,9 @@ pub class Lowerer
   property loop_next : Block?
   property loop_break : Block?
   property loop_target : ASTNode?
-  # The hosted `@strings`: the string constants of the module, by text.
-  property strings : Hash(String, Global)
+  # The hosted `@strings`: the program's pointer to each literal, by text. Under iyi's
+  # layout that pointer is the object past the header word, not the global.
+  property strings : Hash(String, Value)
   # The hosted `@symbols_by_index`: the program's symbol names in index order (a symbol literal is its index).
   property symbol_names : Array(String)
   # The type id of String, which its constants carry first (the hosted `llvm_id.type_id(program.string)`).
@@ -186,7 +187,7 @@ pub class Lowerer
     @loop_next = nil
     @loop_break = nil
     @loop_target = nil
-    @strings = Hash(String, Global).new
+    @strings = Hash(String, Value).new
     @symbol_names = [] of String
     @string_type_id = 0
     @type_ids = LowerTypeIds.new
