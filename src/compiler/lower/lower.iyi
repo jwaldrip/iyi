@@ -645,7 +645,7 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
   target = node.target.as(Var)
   if param = low.current_context.vars[target.name]?
     if param.as(LowerVar).already_loaded
-      pending_visit_node("Assign to a parameter (hosted fun.cr, create_local_copy_of_arg)")
+      raise "BUG: Assign to already_loaded parameter #{target.name} (hosted fun.cr: create_local_copy_of_arg)"
     end
   end
   # The hosted codegen_assign declares the variable before it visits the value, so its alloca comes first.
@@ -838,6 +838,14 @@ pub def branch_value(low : Lowerer, phi : LowerPhi, branch : ASTNode, merged : T
     phi.add(low, ptr, last)
     return
   end
+  if phi.needs_value && !union_join && !merged.nil? && !at_terminator?(low) && !low.last.nil?
+    bt = low.analysed.type_of?(branch)
+    m = merged.as(Type)
+    if !bt.nil? && bt.as(Type).full_name != m.full_name
+      phi.add(low, upcast(low, low.last.as(Value), bt.as(Type), m), last)
+      return
+    end
+  end
   phi.add(low, low.last, last)
 end
 
@@ -1012,34 +1020,38 @@ end
 # virtual or union restriction (the hosted match_any_type_id range, not ported yet).
 pub def codegen_is_a(low : Lowerer, node : IsA) : Nil
   wants = low.needs_value
-  codegen_node(low, node.obj)
+  obj_t = low.analysed.type_of?(node.obj)
+  if obj_t.nil?
+    codegen_node(low, node.obj)
+    pending_visit_node("IsA of an object with no analysed type (hosted codegen.cr: codegen_type_filter)")
+    return
+  end
+  ot = TypeIndirection.remove_indirection(obj_t.as(Type))
+  val_opt = eval_cast_operand(low, node.obj, ot)
+  return if val_opt.nil?
   if !wants
     return
   end
-  obj_t = low.analysed.type_of?(node.obj)
-  if obj_t.nil?
-    pending_visit_node("IsA of an object with no analysed type (hosted codegen.cr: codegen_type_filter)")
-  end
-  ot = obj_t.as(Type)
-  if ot.is_a?(MixedUnionType) || ot.is_a?(ReferenceUnionType) || ot.is_a?(NilableType) || ot.is_a?(NilableReferenceUnionType) || ot.is_a?(NilableProcType) || ot.is_a?(VirtualType)
-    refuse_port("lower: is_a? of #{ot.full_name} reads the union's or virtual type's id word (hosted match_type_id), not ported yet (slice S2c3)")
-  end
+  obj_val = val_opt.as(Value)
   const_t = low.analysed.type_of?(node.const)
   if const_t.nil?
     refuse_port("lower: is_a? of #{ot.full_name}: the restriction has no analysed type (hosted codegen.cr: codegen_type_filter)")
   end
-  ct = const_t.as(Type)
+  ct = TypeIndirection.remove_indirection(const_t.as(Type))
   if ct.is_a?(MetaclassType)
     ct = ct.as(MetaclassType).instance_type
   end
-  if ct.is_a?(VirtualType) || ct.is_a?(UnionType)
-    refuse_port("lower: is_a? of #{ot.full_name} against #{ct.full_name}: a virtual or union restriction is a range of type ids (hosted match_any_type_id), not ported yet")
+  is_union_or_virtual = ot.is_a?(MixedUnionType) || ot.is_a?(ReferenceUnionType) || ot.is_a?(NilableType) || ot.is_a?(NilableReferenceUnionType) || ot.is_a?(NilableProcType) || ot.is_a?(VirtualType)
+  if !is_union_or_virtual && !ct.is_a?(VirtualType) && !ct.is_a?(UnionType)
+    if low.type_ids.type_id(ct) == low.type_ids.type_id(ot)
+      low.last = int1(low, 1_i64)
+    else
+      low.last = int1(low, 0_i64)
+    end
+    return
   end
-  if low.type_ids.type_id(ct) == low.type_ids.type_id(ot)
-    low.last = int1(low, 1_i64)
-  else
-    low.last = int1(low, 0_i64)
-  end
+  tid = type_id_of_value(low, node.obj, obj_val, ot)
+  low.last = match_type_id(low, ot, ct, tid)
 end
 
 # Evaluates a cast's operand. For a stored by-value union variable, returns its storage pointer

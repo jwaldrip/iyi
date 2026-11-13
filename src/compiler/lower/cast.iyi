@@ -25,8 +25,8 @@ module compiler/lower/cast
 # a tuple or named tuple store, a virtual type, a proc, a pointer (their helpers are later
 # increments); downcast from any other union, and downcast of a nilable or virtual type.
 
-import compiler/ir/function::{Global, Linkage}
-import compiler/ir/inst::{Inst, IntPredicate, Op}
+import compiler/ir/function::{Function, Global, Linkage}
+import compiler/ir/inst::{CallConv, Inst, IntPredicate, Op}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerVar}
@@ -380,10 +380,38 @@ end
 # The hosted `match_type_id` / `match_any_type_id` (match.cr:4-53) for a concrete or union restriction.
 pub def match_type_id(low : Lowerer, obj_type : Type, restriction : Type, tid : Value) : Value
   r = TypeIndirection.remove_indirection(restriction)
-  if r.is_a?(UnionType)
+  if r.is_a?(UnionType) || r.is_a?(VirtualType) || r.is_a?(VirtualMetaclassType)
+    return match_any_type_id(low, r, tid)
+  end
+  low.builder.icmp(IntPredicate::EQ, type_id_value(low, r), tid)
+end
+
+pub def match_any_type_id(low : Lowerer, type : Type, tid : Value) : Value
+  r = TypeIndirection.remove_indirection(type)
+  if r.is_a?(UnionType) || r.is_a?(VirtualType) || r.is_a?(VirtualMetaclassType)
+    return match_any_type_id_with_function(low, r, tid)
+  end
+  low.builder.icmp(IntPredicate::EQ, type_id_value(low, r), tid)
+end
+
+private def match_any_type_id_with_function(low : Lowerer, type : Type, tid : Value) : Value
+  if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
+    pending_visit_node("match_type_id against #{type.full_name} (hosted match.cr: VirtualType range)")
+    return low.builder.const_int(low.module.types.int1, 0_i64)
+  end
+  name = "~match<#{type.full_name}>"
+  existing = low.module.get_function?(name)
+  fn : Function? = existing
+  if fn.nil?
+    fn_type = low.module.types.func([low.module.types.int32] of IrType, low.module.types.int1)
+    saved = low.enter_main
+    created = low.begin_main_function(name, fn_type, false)
+    created.call_convention = CallConv::Iyi
+    created.linkage = Linkage::Internal
+    param_tid = created.param(0)
     acc : Value? = nil
-    r.as(UnionType).union_types.each do |member|
-      cond = match_type_id(low, obj_type, member, tid)
+    type.as(UnionType).union_types.each do |sub_type|
+      cond = match_any_type_id(low, sub_type, param_tid)
       if cur = acc
         acc = low.builder.bitwise_or(cur, cond)
       else
@@ -391,11 +419,11 @@ pub def match_type_id(low : Lowerer, obj_type : Type, restriction : Type, tid : 
       end
     end
     raise "BUG: empty union restriction in match_type_id" if acc.nil?
-    return acc.as(Value)
+    low.builder.ret(acc.as(Value))
+    low.finish_main_function
+    low.leave_main(saved)
+    fn = created
   end
-  if r.is_a?(VirtualType) || r.is_a?(VirtualMetaclassType)
-    pending_visit_node("match_type_id against #{r.full_name} (hosted match.cr: match_any_type_id)")
-    return low.builder.const_int(low.module.types.int1, 0_i64)
-  end
-  low.builder.icmp(IntPredicate::EQ, type_id_value(low, r), tid)
+  f = fn.as(Function)
+  low.builder.call(f.fn_type, f, [tid] of Value, "")
 end

@@ -30,11 +30,27 @@ function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w
   n = split_top(args, parts)
   types = ""
   for (i = 1; i <= n; i++) {
-    split(parts[i], w, " ")
-    types = types (i > 1 ? ", " : "") w[1]
+    types = types (i > 1 ? ", " : "") arg_type(parts[i])
   }
   if (name ~ /^@"[*~]/) ret = "iyicc " ret
   return head ret " (" types ") " name "(" args ")" tail
+}
+function arg_type(s,   i, c, depth, open_c, close_c, w) {
+  if (substr(s, 1, 2) == "%\"") {
+    for (i = 3; i <= length(s); i++) if (substr(s, i, 1) == "\"") return substr(s, 1, i)
+  }
+  open_c = substr(s, 1, 1)
+  if (open_c == "{" || open_c == "[") {
+    close_c = (open_c == "{") ? "}" : "]"
+    depth = 0
+    for (i = 1; i <= length(s); i++) {
+      c = substr(s, i, 1)
+      if (c == open_c) depth++
+      else if (c == close_c) { depth--; if (depth == 0) return substr(s, 1, i) }
+    }
+  }
+  split(s, w, " ")
+  return w[1]
 }
 # The last character of the callee name that starts `s` (`@name` or `@"quoted name"`), or 0. A quoted
 # name holds parentheses of its own (`@"*Box(Int32)^Box(T)::new<Int32>:Box(Int32)"`), which are not the call.

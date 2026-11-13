@@ -205,7 +205,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
-CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new"
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -330,6 +330,16 @@ prove_mutation "an uninitialized variable's value is the slot itself, not a load
   "low.last = to_lhs(low, slot.pointer, nt)" "low.last = slot.pointer" -- lower_core_check || status=1
 prove_mutation "Pointer#malloc refuses a UInt64 count by inverting the size_t check" "$REPO/src/compiler/lower/primitives.iyi" \
   "  if count.type != low.typer.size_t" "  if count.type == low.typer.size_t" -- pointer_malloc_check || status=1
+prove_mutation "Cast nil to Pointer emits llvm_nil instead of null pointer" "$REPO/src/compiler/lower/lower.iyi" \
+  "      low.last = low.builder.const_null(low.typer.llvm_type(to_type))" "      low.last = llvm_nil(low)" -- lower_core_check || status=1
+prove_mutation "NilableCast branches swap matches and doesnt_match" "$REPO/src/compiler/lower/lower.iyi" \
+  "    low.builder.cond_br(cmp, matches_block, doesnt_match_block)" "    low.builder.cond_br(cmp, doesnt_match_block, matches_block)" -- lower_core_check || status=1
+prove_mutation "Assign to a parameter skips the local copy" "$REPO/src/compiler/lower/fun.iyi" \
+  "  needs_copy = assigned_to || var_type.full_name != arg_type.full_name" "  needs_copy = false || var_type.full_name != arg_type.full_name" -- lower_core_check || status=1
+prove_mutation "is_a? on NilableType tests non-null instead of null" "$REPO/src/compiler/lower/cast.iyi" \
+  "    is_null = low.builder.icmp(IntPredicate::EQ, value, low.builder.const_null_pointer)" "    is_null = low.builder.icmp(IntPredicate::NE, value, low.builder.const_null_pointer)" -- lower_core_check || status=1
+prove_mutation "union match function combines members with AND instead of OR" "$REPO/src/compiler/lower/cast.iyi" \
+  "        acc = low.builder.bitwise_or(cur, cond)" "        acc = low.builder.bitwise_and(cur, cond)" -- lower_core_check || status=1
 
 # The module-level count: how many CORE_CHECK_FIXTURES match the hosted module in every item, module-level included.
 # A patch that changes only module-level text lowers the count, and this check catches it.
