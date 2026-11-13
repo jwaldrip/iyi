@@ -230,10 +230,10 @@ prove_mutation "a top-level fun with a body is emitted with the iyi calling conv
   "  CallConv::C
 end" "  CallConv::Iyi
 end" -- lower_calls_check || status=1
-prove_mutation "a restriction the argument implements is refused (the nil argument into Fiber | Nil)" "$REPO/src/compiler/lower/call.iyi" \
-  'unless at.implements?(restricted.as(Type))' 'if at.implements?(restricted.as(Type))' -- lower_calls_check || status=1
+prove_mutation "an instantiated generic parameter is resolved in program scope" "$REPO/src/compiler/lower/call.iyi" \
+  '    param_type = low.analysed.type_of?(def_node.args[i])' '    param_type = def_node.args[i].restriction ? low.analysed.program.lookup_type_node(def_node.args[i].restriction.as(ASTNode), low.analysed.program) : low.analysed.type_of?(def_node.args[i])' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
-  'values << (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))' 'values << value.as(Value)' -- lower_calls_check || status=1
+  'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
   '          class_owner = ct' '          class_owner = nil' -- lower_calls_check || status=1
 prove_mutation "a generic metaclass call passes no self type id" "$REPO/src/compiler/lower/call.iyi" \
