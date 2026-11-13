@@ -305,6 +305,10 @@ class GuessVisitor < Visitor
     if node.name == "new" && obj && obj.is_a?(Path)
       found = @program.lookup_type_node?(obj, @og.owner)
       if found && found.is_a?(NonGenericClassType)
+        if hook = @program.merge_hook
+          return hook.virtual_of(found)
+        end
+        return nil unless found.as(NonGenericClassType).subclasses.empty?
         return found
       end
     end
