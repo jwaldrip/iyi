@@ -27,10 +27,10 @@ build_port() {
   "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/port.log" 2>&1
 }
 
-# Fixture functions reference no globals. Extract the complete function including
-# its signature, blocks and closing brace from both printed modules identically.
+# Fixture functions reference no globals. As in the core headed fixture, compare
+# the complete function body without the prelude-dependent signature attributes.
 extract_work() {
-  awk '/^define / && index($0, "*work") { active = 1 } active { print } active && /^}$/ { found = 1; exit } END { if (!found) exit 1 }' "$1" > "$2"
+  awk '/^define / && index($0, "*work") { active = 1; next } active { print } active && /^}$/ { found = 1; exit } END { if (!found) exit 1 }' "$1" > "$2"
 }
 
 check_fixture() {
