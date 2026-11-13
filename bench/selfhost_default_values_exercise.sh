@@ -26,13 +26,9 @@ cmp "$WORK/hosted.out" "$WORK/native.out"
 echo 'magic call-site literals and executable output match'
 fixture="$REPO/bench/fixtures/bodies_union_magic_mismatch.iyi"
 "$IYI" build -o "$WORK/typed" "$REPO/src/compiler/tools/typed_dump.iyi"
-if "$WORK/typed" "$fixture" "$REPO/src" > "$WORK/union-typed.log" 2>&1; then
-  echo "union magic defaults now type: remove this named waiting case"
-  cat "$WORK/union-typed.log"
-  exit 1
-fi
-if ! grep -F 'not ported: differing union call-site defaults' "$WORK/union-typed.log"; then
-  echo "union magic defaults refused for a different reason:"
+"$WORK/typed" "$fixture" "$REPO/src" > "$WORK/union-typed.log" 2>&1 || true
+if ! grep -F 'untyped: not ported: differing union call-site defaults' "$WORK/union-typed.log"; then
+  echo "union magic defaults changed reason or started typing:"
   cat "$WORK/union-typed.log"
   exit 1
 fi
