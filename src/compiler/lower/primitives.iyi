@@ -36,7 +36,7 @@ module compiler/lower/primitives
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, Generic, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallAux, CallConv, Ordering}
 import compiler/lower/cast::{type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
@@ -240,6 +240,16 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
   receiver = obj.as(ASTNode)
   typ = receiver_type(low, receiver)
   if typ.is_a?(MetaclassType)
+    # Hosted prepare_call_args evaluates the metaclass receiver even though the
+    # tuple indexer uses only its static type.
+    if receiver.is_a?(Generic)
+      type_id_value(low, typ)
+    else
+      wants = low.needs_value
+      low.needs_value = true
+      visit_node(low, receiver)
+      low.needs_value = wants
+    end
     result = low.analysed.type_of?(node)
     raise "BUG: tuple metaclass index has no result type" if result.nil?
     low.last = type_id_value(low, result.as(Type))
