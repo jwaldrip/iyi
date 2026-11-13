@@ -1,0 +1,12 @@
+# Both instantiated owners bind the callee's forall T independently.
+u = Atomic(UInt64).new(1_u64)
+u_read = u.get
+u.set(2_u64)
+u_old = u.add(3_u64)
+u_exchange = u.compare_and_set(5_u64, 6_u64)
+
+i = Atomic(Int64).new(1_i64)
+i_read = i.get
+i.set(2_i64)
+i_old = i.add(3_i64)
+i_exchange = i.compare_and_set(5_i64, 6_i64)
