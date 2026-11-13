@@ -323,6 +323,7 @@ src/compiler/lower/cast.iyi 40
 src/compiler/lower/cond.iyi 18
 src/compiler/lower/const.iyi 42
 src/compiler/lower/context.iyi 53
+src/compiler/lower/ensure.iyi 0
 src/compiler/lower/fun.iyi 33
 src/compiler/lower/globals.iyi 0
 src/compiler/lower/helpers.iyi 23
