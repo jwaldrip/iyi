@@ -792,8 +792,8 @@ prove_mutation "total mode raises on an unresolved superclass instead of carryin
   -- check_pins_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a metaclass scope does not look names up in its instance type" "$MUT_SEM" \
-  "        return lookup_type_path(path, instance.as(ModuleType))" \
-  "        return refuse_constant(path)" \
+  "        return lookup_type_path?(path, instance.as(ModuleType))" \
+  "        return nil" \
   -- check_pins_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUT_TYPES="$REPO/src/compiler/types/types.iyi"
