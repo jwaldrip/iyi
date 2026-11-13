@@ -205,7 +205,10 @@ pub def lower_atomic_rmw(low : Lowerer, node : Call) : Nil
   op_node = node.args[0]
   raise "BUG: atomicrmw operation must be a symbol literal" unless op_node.is_a?(SymbolLiteral)
   op = op_node.as(SymbolLiteral).value
-  unless ["xchg", "add", "sub", "and", "nand", "or", "xor", "max", "min", "umax", "umin", "fadd", "fsub"].includes?(op)
+  case op
+  when "xchg", "add", "sub", "and", "nand", "or", "xor", "max", "min", "umax", "umin", "fadd", "fsub"
+    nil
+  else
     raise "BUG: unknown atomicrmw operation #{op}"
   end
   ordering = atomic_ordering(node.args[3])
@@ -245,24 +248,24 @@ pub def lower_atomic_cmpxchg(low : Lowerer, node : Call) : Nil
   raise "BUG: cmpxchg has no analysed result type" if tuple.nil?
   wants = low.needs_value
   low.needs_value = true
-  values = [] of Value
-  i = 0
-  while i < 3
-    visit_node(low, node.args[i])
-    v = low.last
-    raise "BUG: cmpxchg operand has no value" if v.nil?
-    values << v.as(Value)
-    i += 1
-  end
+  visit_node(low, node.args[0])
+  ptr = low.last
+  raise "BUG: cmpxchg pointer has no value" if ptr.nil?
+  visit_node(low, node.args[1])
+  expected = low.last
+  raise "BUG: cmpxchg expected value is missing" if expected.nil?
+  visit_node(low, node.args[2])
+  desired = low.last
+  raise "BUG: cmpxchg desired value is missing" if desired.nil?
   low.needs_value = wants
   is_bool = primitive_kind(elem) == "bool"
-  compare = values[1]
-  replacement = values[2]
+  compare = expected.as(Value)
+  replacement = desired.as(Value)
   if is_bool
     compare = low.builder.zext(compare, low.module.types.int8)
     replacement = low.builder.zext(replacement, low.module.types.int8)
   end
-  result = low.builder.cmpxchg(values[0], compare, replacement, success, failure)
+  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, failure)
   result.alignment = is_bool ? 1 : low.typer.align_of(compare.type)
   tuple_ir = low.typer.llvm_type(tuple.as(Type))
   slot = low.alloca(tuple_ir, "")
