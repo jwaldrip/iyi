@@ -83,6 +83,11 @@ prove_mutation 'uninitialized declarations do not introduce bindings' "$REPO/src
         @frame.bindings << ClosureBinding.new(ClosureVar.new(variable.name, type))' \
   'if type = @visitor.type_of?(variable)
         nil' -- mutation_check || status=1
+prove_mutation 'out arguments do not introduce bindings' "$REPO/src/compiler/semantic/closures.iyi" \
+  'if type = @visitor.type_of?(variable)
+          @frame.bindings << ClosureBinding.new(ClosureVar.new(variable.name, type))' \
+  'if type = @visitor.type_of?(variable)
+          nil' -- mutation_check || status=1
 prove_mutation 'blocks are independent closure contexts' "$REPO/src/compiler/semantic/closures.iyi" \
   'while current.kind == FrameKind::Block' 'while false && current.kind == FrameKind::Block' -- mutation_check || status=1
 prove_mutation 'instance variable does not capture self' "$REPO/src/compiler/semantic/closures.iyi" \

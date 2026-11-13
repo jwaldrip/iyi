@@ -1,0 +1,15 @@
+@[Unsafe("declares a foreign output argument")]
+lib LibC
+  fun get_value(value : Int32*) : Int32
+end
+
+def consume(p : Proc(Int32)) : Int32
+  0
+end
+
+def outer : Int32
+  LibC.get_value(out value)
+  consume(-> { value })
+end
+
+outer
