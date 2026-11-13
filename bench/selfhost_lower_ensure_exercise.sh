@@ -96,6 +96,8 @@ echo '== 3. Mutation proofs'
 if [ "$passed" -eq 13 ]; then
   file="$REPO/src/compiler/lower/ensure.iyi"
   prove_mutation 'fallthrough cleanup' "$file" 'visit_node(low, cleanup.as(ASTNode))' 'low.last = value' -- mutation_check fallthrough || status=1
+  prove_mutation 'fallthrough cleanup runs twice' "$file" '    visit_node(low, cleanup.as(ASTNode))' '    visit_node(low, cleanup.as(ASTNode)); visit_node(low, cleanup.as(ASTNode))' -- mutation_check fallthrough || status=1
+  prove_mutation 'exit phi preserves body value' "$file" '  phi.add(low, low.last, false)' '  phi.add(low, llvm_nil(low), false)' -- mutation_check value || status=1
   prove_mutation 'body value survives cleanup' "$file" '    low.last = value' '    low.last = low.last' -- mutation_check value || status=1
   prove_mutation 'return cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check return || status=1
   prove_mutation 'break cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check break || status=1
