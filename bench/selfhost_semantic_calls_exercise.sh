@@ -80,6 +80,9 @@ check_calls_diverge() {
   "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_semantic_calls_exercise.iyi" >/dev/null 2>&1 || return 1
   local fixture
   for fixture in "$REPO"/bench/fixtures/semcall_*.iyi; do
+    if [ "$#" -gt 0 ] && [ "$fixture" != "$REPO/$1" ]; then
+      continue
+    fi
     "$WORK/port_m" "$fixture" > "$WORK/pm.out" 2>/dev/null || return 1
     "$WORK/oracle" "$fixture" > "$WORK/om.out" 2>/dev/null || return 1
     diff -q "$WORK/pm.out" "$WORK/om.out" >/dev/null || return 1
@@ -390,6 +393,29 @@ prove_mutation "a generic owner's superclass restriction rejects subclasses" "$M
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a typed integer expression is not eligible for autocast" "$MATCH_FILE" \
+  '    bits = NumericAutocast.integer_bits(type)' \
+  '    return false if node.is_a?(Call) && node.as(Call).obj'$'\n''    bits = NumericAutocast.integer_bits(type)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a union restriction drops its generic member" "$RESTRICT_FILE" \
+  '      members << member.as(Type)' \
+  '      members << member.as(Type) unless member.as(Type).is_a?(GenericInstanceType)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a nilable restriction drops Nil" "$RESTRICT_FILE" \
+  '      members << member.as(Type)' \
+  '      members << member.as(Type) unless member.as(Type).full_name == "Nil"' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "an imported type is not found during restriction lookup" "$REPO/src/compiler/types/lookup.iyi" \
+  '        curr = program.current_imports[name]?' \
+  '        curr = nil' \
+  -- check_calls_diverge bench/fixtures/semcall_match_import.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

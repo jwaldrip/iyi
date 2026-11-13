@@ -90,6 +90,9 @@ def literal_type(program : Iyi::Program, node : Iyi::ASTNode) : Iyi::Type
   if node.is_a?(Iyi::NilLiteral)
     return program.types["Nil"].as(Iyi::Type)
   end
+  if node.is_a?(Iyi::Call) && node.name == "abs" && node.args.empty? && node.obj
+    return literal_type(program, node.obj.not_nil!)
+  end
   if node.is_a?(Iyi::Call) && node.as(Iyi::Call).name == "instance" && node.as(Iyi::Call).obj.nil?
     call = node.as(Iyi::Call)
     if call.args.size == 1
@@ -141,7 +144,7 @@ end
 # is not this increment.
 def numeric_autocast?(program : Iyi::Program, node : Iyi::ASTNode) : Bool
   return true if node.is_a?(Iyi::NumberLiteral)
-  return false unless node.is_a?(Iyi::Call) && node.as(Iyi::Call).name == "instance" && node.as(Iyi::Call).obj.nil?
+  return false unless node.is_a?(Iyi::Call)
   t = literal_type(program, node)
   if t.is_a?(Iyi::IntegerType)
     return t.kind.bytesize <= 64
