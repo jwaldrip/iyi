@@ -2306,6 +2306,40 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # --- asm: begin ---
+  # Hosted visit(node : Asm) (main_visitor.cr 3605-3620). Each output is typed
+  # through `pointerof` of its expression, each input expression is typed, and
+  # the node is Void. The hosted compiler's other-language mode, the removed
+  # interpreter, and exception typing beyond refusing `rescue` are not branches of this method.
+  def visit(node : Asm) : Bool
+    if outputs = node.outputs
+      outputs.each do |output|
+        ptrof = PointerOf.new(output.exp).at(output.exp)
+        ptrof.accept(self)
+      end
+    end
+    if inputs = node.inputs
+      inputs.each do |input|
+        input.exp.accept(self)
+      end
+    end
+    if vt = @program.types["Void"]?
+      set_type(node, vt)
+    end
+    false
+  end
+
+  # visit(Asm) returns false, as the hosted visit does, so an operand is not
+  # walked from there. A walk that reaches the operand types its expression.
+  def visit(node : AsmOperand) : Bool
+    node.exp.accept(self)
+    if et = child_type(node.exp)
+      set_type(node, et)
+    end
+    false
+  end
+  # --- asm: end ---
+
   # --- type nodes: begin ---
   # The type-argument bracket the type-node functions use (hosted `@in_type_args`).
   def bracket_type_args(delta : Int32) : Nil

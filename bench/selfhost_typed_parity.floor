@@ -316,6 +316,7 @@ src/compiler/semantic/call_nodes.iyi 6
 src/compiler/semantic/instance_vars.iyi 45
 src/compiler/native/const_expr.iyi 0
 src/compiler/lower/abi/aarch64.iyi 0
+src/compiler/lower/asm.iyi 0
 src/compiler/lower/block.iyi 0
 src/compiler/lower/call.iyi 0
 src/compiler/lower/cast.iyi 0
