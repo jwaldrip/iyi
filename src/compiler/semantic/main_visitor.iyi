@@ -797,6 +797,10 @@ pub class MainVisitor < TypeNodeHost
       return refuse(node, "unsupported TupleIndexer scope")
     end
     if cd = @current_def
+      if primitive_type = @program.primitive_return_type(cd)
+        set_type(node, primitive_type)
+        return false
+      end
       if rt = cd.return_type
         set_type(node, lookup_under(rt, @scope))
         return false
@@ -2956,9 +2960,29 @@ pub class MainVisitor < TypeNodeHost
         end
         return nil
       end
-      set_type(target_def, declared_ret)
-      remember_def_instance(cache_key, target_def, declared_ret)
-      declared_ret
+      result : Type = bt
+      if declared_ret.is_a?(NoReturnType)
+        result = declared_ret
+      elsif declared_ret.nil_type?
+        result = declared_ret
+      elsif loc = target_def.location
+        if loc.filename.ends_with?(".iyi")
+          if error_trait = @program.lookup_type("Error")
+            members = [] of Type
+            if declared_ret.is_a?(UnionType)
+              members = declared_ret.as(UnionType).union_types
+            else
+              members << declared_ret
+            end
+            if members.any? { |member| member.implements?(error_trait) }
+              result = TypeQueries.virtual_type(declared_ret)
+            end
+          end
+        end
+      end
+      set_type(target_def, result)
+      remember_def_instance(cache_key, target_def, result)
+      result
     else
       set_type(target_def, bt)
       remember_def_instance(cache_key, target_def, bt)
@@ -3424,6 +3448,27 @@ pub class MainVisitor < TypeNodeHost
     exp = node.exp
     if exp.is_a?(ClassVar) || exp.is_a?(InstanceVar)
       return pointerof_variable(node, exp)
+    end
+    if exp.is_a?(Call)
+      call = exp.as(Call)
+      if call.args.empty? && call.named_args.nil? && call.block.nil? && call.block_arg.nil?
+        if obj = call.obj
+          obj.accept(self)
+          if owner = child_type(obj)
+            if owner.is_a?(LibType)
+              if external = owner.as(LibType).lookup_fun(call.name)
+                if external.external_var && external.primitive == "external_var_get"
+                  if var_type = external.resolved_return
+                    set_type(call, var_type)
+                    set_type(node, type_node_system(@program).pointer_of(var_type))
+                    return false
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
     end
     if exp.is_a?(Path)
       exp.accept(self)
