@@ -54,6 +54,23 @@ else
   exit 1
 fi
 
+# The shared oracle normalizer must add the function type for an indirect call,
+# but must not guess the type of an aggregate argument.
+oracle_call_checks() {
+  awk "$CALL_TYPES" "$REPO/bench/fixtures/lowglob_indirect.ll" > "$WORK/indirect.ir"
+  "$1" oracle "$WORK/indirect.ir" > "$WORK/indirect.out" 2>&1 || return 1
+  awk "$CALL_TYPES" "$REPO/bench/fixtures/lowglob_indirect_aggregate.ll" > "$WORK/aggregate.ir"
+  cmp -s "$REPO/bench/fixtures/lowglob_indirect_aggregate.ll" "$WORK/aggregate.ir" || return 1
+  "$1" oracle "$WORK/aggregate.ir" > "$WORK/aggregate.out" 2>&1 && return 1
+  awk '/expected `\(` but found/ { found = 1 } END { exit !found }' "$WORK/aggregate.out"
+}
+if oracle_call_checks "$WORK/port"; then
+  echo "  indirect oracle call parses; multiword argument is unchanged and refused"
+else
+  echo "  FAIL: indirect oracle normalization"
+  status=1
+fi
+
 
 # A lazily initialised class variable needs the hosted compiler to look up __iyi_once. A prelude
 # named empty leaves iyi_prelude? false, so that fixture is built against a prelude whose require
@@ -171,6 +188,7 @@ echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 lowglob_check() {
   "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port_m.build.log" 2>&1 || return 1
   "$WORK/port_m" normalizer-check > /dev/null 2>&1 || return 1
+  ( . "$REPO/bench/lib/lower_oracle.sh"; oracle_call_checks "$WORK/port_m" ) || return 1
   for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     name="$(basename "$fixture" .iyi)"
     case " $WAITING_FIXTURES " in *" $name "*) "$WORK/port_m" lower "$fixture" "$WORK/$name.oracle.ll" > /dev/null 2>&1 && return 1; continue ;; esac
@@ -191,6 +209,8 @@ else
 fi
 prove_mutation "a program global is incorrectly stripped as a build constant" "$REPO/bench/lib/lower_gate.iyi" \
   "        if destination.starts_with?(prefix) && identity_names.includes?(destination[prefix.size..-1])" "        if destination.includes?(marker)" -- lowglob_check || status=1
+prove_mutation "indirect calls are left without a function type" "$REPO/bench/lib/lower_oracle.sh" \
+  "  if (at == 0) return line" "  if (indirect || at == 0) return line" -- lowglob_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1

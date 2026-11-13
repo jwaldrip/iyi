@@ -2,23 +2,26 @@
 # text the port's IR parser reads. Sourced, not run.
 #
 # CALL_TYPES is an awk program. It writes the forms LLVM 22 leaves out and the port's
-# text form requires, into a printed LLVM module: the function type of each direct call,
-# from the types of its arguments (`call T @f(A, B)` becomes `call T (typeA, typeB) @f(A,
-# B)`), the `label` keyword before each block of a phi's incoming pairs, and drops the
-# call-site attribute group `#N`. A call through a value, or one with an argument whose
-# type is more than one word, is left as LLVM printed it, and the port then refuses the
-# module by name.
+# text form requires, into a printed LLVM module: the function type of each direct or
+# indirect call from its argument types, the `label` keyword before each block of a
+# phi's incoming pairs, and drops the call-site attribute group `#N`. Indirect calls
+# whose argument type takes more than one word are left unchanged and refused.
 CALL_TYPES='
-function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w, types, i, head, name, at) {
+function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w, types, i, head, name, at, indirect) {
   p = index(line, " call ")
   if (p == 0) return line
   head = substr(line, 1, p + 5)
   rest = substr(line, p + 6)
   at = index(rest, " @")
+  indirect = 0
+  if (match(rest, / %([a-zA-Z0-9$._-]+|"[^"]+")\(/) && (at == 0 || RSTART < at)) {
+    at = RSTART
+    indirect = 1
+  }
   if (at == 0) return line
   ret = substr(rest, 1, at - 1)
   after = substr(rest, at + 1)
-  if (substr(after, 1, 1) != "@") return line
+  if (substr(after, 1, 1) != "@" && substr(after, 1, 1) != "%") return line
   op = name_end(after) + 1
   if (op == 1 || substr(after, op, 1) != "(") return line
   cl = close_paren(after, op)
@@ -31,9 +34,10 @@ function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w
   types = ""
   for (i = 1; i <= n; i++) {
     split(parts[i], w, " ")
+    if (indirect && ((w[1] != "" && index("[<{", substr(w[1], 1, 1)) > 0) || w[2] ~ /^addrspace\(/ || (w[1] ~ /^%"/ && w[1] !~ /"$/))) return line
     types = types (i > 1 ? ", " : "") w[1]
   }
-  if (name ~ /^@"[*~]/) ret = "iyicc " ret
+  if (indirect || name ~ /^@"[*~]/) ret = "iyicc " ret
   return head ret " (" types ") " name "(" args ")" tail
 }
 # The last character of the callee name that starts `s` (`@name` or `@"quoted name"`), or 0. A quoted
