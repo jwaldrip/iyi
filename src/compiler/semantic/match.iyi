@@ -121,9 +121,6 @@ pub class CallMatch
       return MatchAttempt.failed("parameters after a splat are not ported") if count > k + 1
     end
     splat_restriction = CallMatch.splat_restriction_of(definition, splat)
-    if splat_restriction && !splat_restriction.is_a?(Splat)
-      return MatchAttempt.failed("a restricted splat parameter is not ported")
-    end
     dsplat = definition.double_splat
     if dsplat
       return MatchAttempt.failed("a restricted double splat parameter is not ported") if dsplat.restriction
@@ -208,7 +205,7 @@ pub class CallMatch
       i += 1
     end
 
-    if splat && splat_restriction
+    if splat && splat_restriction && splat_restriction.is_a?(Splat)
       splat_tuple = ts.tuple_of(splat_types)
       found = ArgRestriction.lookup_free(ts, defining, splat_restriction.as(Splat).exp, owner, bound)
       if found.is_a?(LookupError)
@@ -220,8 +217,22 @@ pub class CallMatch
       exact = false if restricted.as(Type) != splat_tuple
     end
     if splat
+      element_restriction = splat_restriction && !splat_restriction.is_a?(Splat)
       while i < given
-        matched << signature.arg_types[i]
+        element = signature.arg_types[i]
+        if element_restriction
+          allowed_found = ArgRestriction.of_bound(ts, defining, definition.args[splat.as(Int32)], owner, bound)
+          if allowed_found.error
+            return MatchAttempt.failed(allowed_found.error.to_s)
+          end
+          allowed = allowed_found.type
+          if allowed
+            restricted = ts.restrict(element, allowed.as(Type))
+            return MatchAttempt.none if restricted.nil?
+            element = restricted.as(Type)
+          end
+        end
+        matched << element
         i += 1
       end
     end
@@ -313,11 +324,10 @@ pub class NumericAutocast
     false
   end
 
-  # A number literal always may. A typed integer may when its kind is at most
-  # 64 bits. A typed Float32 may. The harness writes a typed value as instance(T).
+  # A number literal always may. Other typed numeric expressions may when their
+  # integer range is supported, or when their type is Float32.
   def self.supports?(node : ASTNode, type : Type) : Bool
     return true if node.is_a?(NumberLiteral)
-    return false unless NumericAutocast.instance_call?(node)
     bits = NumericAutocast.integer_bits(type)
     return bits > 0 && bits <= 64 if bits > 0
     type.full_name == "Float32"
@@ -330,16 +340,10 @@ pub class NumericAutocast
     if node.is_a?(NumberLiteral)
       return NumericAutocast.value_fits?(node.as(NumberLiteral), target)
     end
-    if NumericAutocast.instance_call?(node)
+    if NumericAutocast.supports?(node, type)
       return NumericAutocast.range_subset?(type, target)
     end
     false
-  end
-
-  def self.instance_call?(node : ASTNode) : Bool
-    return false unless node.is_a?(Call)
-    call = node.as(Call)
-    call.obj.nil? && call.name == "instance"
   end
 
   def self.integer_bits(type : Type) : Int32

@@ -13,3 +13,13 @@ end
 # error String.interpolation("a", 1)
 # error String.interpolation("a", 1, "b", true, 2)
 # call ProbeErr.pick("a")
+
+def boom(x : Int32, *ys, z : Int32) : Int32
+  x
+end
+
+def boom(x : Int32) : Int32
+  x
+end
+
+# call boom(1)
