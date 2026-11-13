@@ -108,6 +108,11 @@ prove_mutation "explicit initialize is left public" "$NEW_FILE" \
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a generic receiver does not bind its type parameters in a restriction" "$MAIN_VISITOR_FILE" \
+  "    if owner.is_a?(GenericInstanceType) && restriction.is_a?(Path)" \
+  "    if false" \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic class inherits its default new instead of owning one" "$NEW_FILE" \
   '      define_default_generic_new(program, sub.as(GenericClassType))' \
   '      nil' \

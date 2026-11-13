@@ -36,7 +36,7 @@ module compiler/lower/primitives
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, Generic, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallAux, CallConv, Ordering}
 import compiler/lower/cast::{type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
@@ -242,6 +242,16 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
   receiver = obj.as(ASTNode)
   typ = receiver_type(low, receiver)
   if typ.is_a?(MetaclassType)
+    # Hosted prepare_call_args evaluates the metaclass receiver even though the
+    # tuple indexer uses only its static type.
+    if receiver.is_a?(Generic)
+      type_id_value(low, typ)
+    else
+      wants = low.needs_value
+      low.needs_value = true
+      visit_node(low, receiver)
+      low.needs_value = wants
+    end
     result = low.analysed.type_of?(node)
     raise "BUG: tuple metaclass index has no result type" if result.nil?
     low.last = type_id_value(low, result.as(Type))
@@ -454,6 +464,13 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   values = [] of Value
   pt : Type? = nil
   if name == "pointer_new" || name == "pointer_malloc"
+    if receiver = node.obj
+      if receiver.is_a?(Generic)
+        # Hosted prepare_call_args evaluates a generic metaclass receiver even
+        # when the pointer primitive uses only its statically known type.
+        type_id_value(low, receiver_type(low, receiver))
+      end
+    end
     pt = low.analysed.type_of?(node)
   else
     obj = node.obj
@@ -488,7 +505,7 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   end
   elem_kind = primitive_kind(elem)
   if name == "pointer_add"
-    low.last = low.builder.gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)
+    low.last = low.builder.inbounds_gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)
     return
   end
   if name == "pointer_get"
@@ -599,6 +616,11 @@ end
 pub def codegen_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 : Value, p2 : Value) : Value
   kind = primitive_kind(t1)
   if kind == "int" && primitive_kind(t2) == "int"
+    # Flow typing can describe an integer while the emitted local still carries a
+    # union. Refuse before emitting an instruction with incompatible operands.
+    if p1.type.key != low.typer.llvm_type(t1).key || p2.type.key != low.typer.llvm_type(t2).key
+      pending_visit_node("binary #{op} with operand IR types #{p1.type} and #{p2.type} inconsistent with #{t1.full_name} and #{t2.full_name} (hosted codegen_binary_op)")
+    end
     return codegen_int_binary_op(low, op, t1, t2, p1, p2)
   end
   if t1.full_name != t2.full_name

@@ -215,6 +215,16 @@ end
 # function already in the module when there is one, otherwise a new one, emitted now. A method's
 # self is the first parameter, of the owner's type (hosted `codegen_fun_signature_non_external`).
 pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : Function
+  # Hosted fun.cr:635-681 passes these values through memory. Refuse rather
+  # than emit a direct signature until that ABI is lowered here.
+  if low.typer.passed_indirectly?(ret)
+    raise "lower: indirect result above 128 bytes is not ported (hosted fun.cr:679)"
+  end
+  arg_types.each do |arg_type|
+    if low.typer.passed_indirectly?(arg_type)
+      raise "lower: indirect argument above 128 bytes is not ported (hosted fun.cr:644)"
+    end
+  end
   block_type : Type? = nil
   if target.uses_block_arg?
     block_arg = target.block_arg
@@ -308,6 +318,9 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
     low.current_context.vars["self"] = LowerVar.new(self_param, st, !self_by_pointer?(st))
     first = 1
   end
+  # Hosted alloca_non_closured_vars allocates the def's locals before copying
+  # arguments or emitting expressions, including temporary aggregate spills.
+  allocate_fun_locals(low, target)
   assigned = collect_assigned_vars(target.body)
   i = 0
   while i < target.args.size
@@ -445,6 +458,54 @@ private def collect_assigned_vars(body : ASTNode) : Set(String)
   collector = AssignedVarCollector.new
   body.accept(collector)
   collector.names
+end
+
+# Def locals are registered by semantic analysis after their assignment value
+# is visited. Preserve that order independently of the order IR is emitted.
+private class FunLocalCollector < Visitor
+  getter targets : Array(Var)
+
+  def initialize
+    @targets = [] of Var
+    @names = Set(String).new
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    !(node.is_a?(Def) || node.is_a?(ClassDef) || node.is_a?(ModuleDef) || node.is_a?(ProcLiteral) || node.is_a?(Compiler::Syntax::Ast::Block))
+  end
+
+  def end_visit(node : Assign) : Nil
+    target = node.target
+    if target.is_a?(Var)
+      var = target.as(Var)
+      unless @names.includes?(var.name)
+        @names.add(var.name)
+        @targets << var
+      end
+    end
+  end
+end
+
+private def allocate_fun_locals(low : Lowerer, target : Def) : Nil
+  collector = FunLocalCollector.new
+  target.body.accept(collector)
+  collector.targets.each do |var|
+    name = var.name
+    is_arg = false
+    target.args.each { |arg| is_arg = true if arg.name == name }
+    if block_arg = target.block_arg
+      is_arg = true if block_arg.name == name
+    end
+    next if is_arg || low.current_context.vars[name]?
+    t = low.analysed.type_of?(var)
+    if unions = low.current_context.var_unions
+      t = unions[name]? || t
+    end
+    next if t.nil? || t.is_a?(VoidType) || t.is_a?(NoReturnType)
+    type = t.as(Type)
+    pointer = low.alloca(low.typer.llvm_type(type), name)
+    low.current_context.vars[name] = LowerVar.new(pointer, type, false)
+  end
 end
 
 # The hosted `create_local_copy_of_arg` (fun.cr:945-1043) for a def parameter: allocates a local

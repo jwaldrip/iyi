@@ -29,6 +29,7 @@ import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symb
 import compiler/lower/type_id::{LowerTypeIds}
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Function, Linkage}
+import compiler/ir/function::{Global, TlsModel}
 import compiler/ir/inst::{Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -44,11 +45,13 @@ import compiler/lower/block::{branch_to_phi, lower_yield}
 import compiler/lower/ensure::{lower_exception_handler, execute_ensures_until, set_ensure_exception_handler}
 import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun, clear_fun_emission_done}
 import compiler/ir/verifier::{verify_function}
-import compiler/lower/primitives::{define_headed_bytes}
+import compiler/lower/primitives::{iyi_gc_arena?}
+import compiler/lower/gc_table::{define_gc_layouts}
 import compiler/lower/proc::{lower_proc_literal}
-import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, union_temp, upcast}
+import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, type_id_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
+import compiler/semantic/top_level::{LibType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants, path_const}
 import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_pointerof_class_var, codegen_type_declaration_class_var, in_class_body?, store_class_var}
 import compiler/lower/instance_var::{codegen_instance_var_read, codegen_pointerof_instance_var, store_instance_var}
@@ -68,8 +71,8 @@ import compiler/types/intersect::{TypeIntersect}
 # that reaches it does (fun.iyi target_def_fun), for the self type and argument types the caller gives. A refusal
 # raises (iyi has no rescue); the caller runs each probe in its own task and reads the message. The
 # instantiated def's type is its result, which can differ from the body's type.
-pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type), analysed : MainVisitor, typer : LowerTyper, m : Module) : String?
-  low = Lowerer.new(m, typer, analysed)
+pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type), analysed : MainVisitor, typer : LowerTyper, m : Module, probe_lowerer : Lowerer? = nil) : String?
+  low = probe_lowerer || Lowerer.new(m, typer, analysed)
   low.body_visitor = CoreBody.new
   program = analysed.program
   ids = LowerTypeIds.new
@@ -170,9 +173,8 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
     low.builder.call(entry_type, fn, [main_fn.param(0), main_fn.param(1)] of Value, "")
     low.builder.ret(low.builder.const_int(i32, 0))
   end
-  # The hosted `iyi_define_headed_bytes` (gc_layouts.cr 187), after every def: the census reads
-  # virtual types codegen made late, and every allocation loaded the global this fills.
-  define_headed_bytes(low)
+  # The arena's table and headed bytes are emitted together after all defs.
+  define_gc_layouts(low) if iyi_gc_arena?(low)
   function_attributes(m)
 end
 
@@ -651,6 +653,27 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
       codegen_pointerof_class_var(low, exp.as(ClassVar))
       return
     end
+    if exp.is_a?(Call)
+      call = exp.as(Call)
+      obj = call.obj
+      if obj && call.args.empty? && call.named_args.nil? && call.block.nil? && call.block_arg.nil?
+        owner = low.analysed.type_of?(obj.as(ASTNode))
+        if owner.is_a?(LibType)
+          external = owner.as(LibType).lookup_fun(call.name)
+          if external && external.external_var && external.primitive == "external_var_get"
+            var_type = external.resolved_return
+            raise "BUG: external variable #{external.real_name} has no resolved type" if var_type.nil?
+            global = low.module.get_global?(external.real_name)
+            if global.nil?
+              global = low.module.add_global(external.real_name, low.typer.llvm_return_type(var_type.as(Type)))
+              global.as(Global).tls = TlsModel::GeneralDynamic if external.thread_local
+            end
+            low.last = global.as(Value)
+            return
+          end
+        end
+      end
+    end
     pending_visit_node("pointerof of a #{node_class_name(exp)} (hosted codegen.cr: visit(PointerOf), only a local variable is ported)")
   end
   if node.is_a?(Primitive)
@@ -798,11 +821,40 @@ pub def codegen_char(low : Lowerer, node : CharLiteral) : Nil
   low.last = low.builder.const_int(low.typer.llvm_type(t.as(Type)), node.value.ord.to_i64)
 end
 
-# The hosted `visit(Var)`: a load of the variable, read at the type it was declared with.
+# The hosted visit(Var) treats an untyped read and a NoReturn slot as unreachable.
 pub def codegen_var(low : Lowerer, node : Var) : Nil
+  read_type = low.analysed.type_of?(node)
+  if read_type.nil?
+    low.builder.unreachable
+    low.last = nil
+    return
+  end
   var = low.current_context.vars[node.name]?
-  raise "BUG: variable #{node.name} is read before it is assigned (hosted codegen.cr: visit(Var))" if var.nil?
+  if var.nil?
+    if node.name == "self"
+      rt = read_type.as(Type)
+      if TypeQueries.metaclass?(rt)
+        low.last = type_id_value(low, rt)
+      else
+        owner = low.current_context.type
+        raise "BUG: self has no enclosing type (hosted llvm_self_ptr)" if owner.nil?
+        self_ptr = type_id_value(low, owner.as(Type))
+        low.last = downcast(low, self_ptr, rt, owner.as(Type), true)
+      end
+      return
+    end
+    raise "BUG: variable #{node.name} is read before it is assigned (hosted codegen.cr: visit(Var))"
+  end
   v = var.as(LowerVar)
+  if v.type.is_a?(NoReturnType)
+    low.builder.unreachable
+    low.last = nil
+    return
+  end
+  if read_type && v.type.is_a?(MixedUnionType) && read_type.as(Type).full_name != v.type.full_name
+    low.last = downcast(low, v.pointer, read_type.as(Type), v.type, v.already_loaded)
+    return
+  end
   if v.already_loaded
     # A parameter is read where it arrives: its value is the parameter itself (hosted visit(Var)).
     low.last = v.pointer
@@ -872,7 +924,14 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
     # A value of another type than the variable goes through the casts slice (the hosted upcast into a union).
     assign(low, v_var.pointer, v_var.type, vt, v)
   elsif !vt.is_a?(NilType)
-    store_aligned(low, v, v_var.pointer)
+    # Passed-by-value aggregates can be represented by their address while
+    # visiting expressions (for example Pointer(T)#value on a mixed union).
+    # An SSA aggregate is already an RHS and must not be loaded again.
+    stored = v
+    if passed_by_value?(vt) && v.type.pointer?
+      stored = load_aligned(low, low.typer.llvm_type(vt), v)
+    end
+    store_aligned(low, stored, v_var.pointer)
   end
   low.last = v
 end

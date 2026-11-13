@@ -47,7 +47,7 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/block::{LocalCollector, NoReturnPhi, alloca_local, copy_vars}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
-import compiler/lower/cast::{type_id_value}
+import compiler/lower/cast::{type_id_value, upcast}
 import compiler/lower/ensure::{set_ensure_exception_handler}
 import compiler/lower/fun::{block_ended?, target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
@@ -104,6 +104,9 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
         pending_visit_node("allocate outside a class method (hosted codegen_primitive_allocate, the instance type)")
       end
       inst = owner.as(Type)
+      # Hosted prepare_call_args reads the generic metaclass self before dispatching
+      # the allocate primitive, even though allocation itself does not use it.
+      type_id_value(low, inst) if inst.is_a?(GenericClassInstanceMetaclassType)
       ptr = primitive_allocate(low, inst)
       # A class's `_` holds the pointer itself (hosted allocate of a reference type); a struct's holds the value
       # loaded from the zeroed instance.
@@ -769,11 +772,8 @@ pub def lib_number_value(low : Lowerer, node : NumberLiteral, t : Type) : Value
   low.builder.const_int(ir, node.value.to_i64).as(Value)
 end
 
-# The argument types and values of a call, in order (hosted `prepare_call_args_non_external`
-# for scalars). Each argument's value is requested, so a value-less argument is a bug.
-# A restriction that converts an argument is refused, NoReturn included: the analysis types a
-# block call that breaks with a value as NoReturn (the hosted call is Int32), so a NoReturn
-# argument cannot be told from a converted one yet (NEEDS.md, lowering calls row 44).
+# The instantiated def's parameter types, not its written restrictions, are the
+# types the hosted prepare_call_args converts to and uses in the callee name.
 pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node : Def) : {Array(Type), Array(Value)}
   arg_types = [] of Type
   values = [] of Value
@@ -784,23 +784,20 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
     at_type = low.analysed.type_of?(arg_node)
     raise "BUG: the analysed program has no type for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)" if at_type.nil?
     at = at_type.as(Type)
-    if restriction = def_node.args[i].restriction
-      # Hosted restrict: a restriction the argument implements leaves the argument's own type as the parameter's
-      # (a Nil argument into `Fiber | Nil` is a Nil parameter, and the callee is named by it). Only an argument
-      # that does not implement the restriction would convert, and that is refused by name.
-      restricted = low.analysed.program.lookup_type_node(restriction.as(ASTNode), low.analysed.program)
-      unless at.implements?(restricted.as(Type))
-        pending_visit_node("a restriction that does not hold for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)")
-      end
+    param_type = low.analysed.type_of?(def_node.args[i])
+    if param_type.nil?
+      pending_visit_node("an untyped instantiated parameter #{i} of #{node.name} (hosted call.cr: prepare_call_args)")
     end
+    target_type = param_type.as(Type)
     low.needs_value = true
     visit_node(low, arg_node)
     value = low.last
     raise "BUG: argument #{i} of #{node.name} left no value (hosted call.cr: prepare_call_args)" if value.nil?
     # Hosted prepare_call_args_non_external: a nil argument is the nil value, the zero constant of the nil type
     # (zeroinitializer); the helper `llvm_nil` is an undef constant in this port, so it is not used here.
-    values << (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))
-    arg_types << at
+    passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)
+    values << upcast(low, passed, at, target_type)
+    arg_types << target_type
     i += 1
   end
   low.needs_value = wants

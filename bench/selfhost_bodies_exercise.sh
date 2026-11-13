@@ -15,7 +15,15 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
-IYI="$REPO/bin/iyi"
+probe="$(mktemp)"
+printf 'import compiler/syntax/ast::{ASTNode}\n' > "$probe.iyi"
+if [ -x "$REPO/.build/iyi" ] && "$REPO/.build/iyi" build -o "$probe" "$probe.iyi" >/dev/null 2>&1; then
+  IYI="$REPO/.build/iyi"
+else
+  IYI="${IYI_COMPILER:-/Users/jwaldrip/.local/state/ovnfs/uppers/s2a25-closure-int/.build/iyi}"
+fi
+rm -f "$probe" "$probe.iyi"
+export IYI_PATH="$REPO/src"
 CRYSTAL="${CRYSTAL:-crystal}"
 FLOOR_FILE="$REPO/bench/selfhost_bodies.floor"
 RAISE="${BODIES_RAISE:-0}"
@@ -58,7 +66,11 @@ for fixture in "$REPO"/bench/fixtures/sem_bodies_*.iyi; do
   fi
   sort "$WORK/o.txt" > "$WORK/o.sorted"
   nodes=$(wc -l < "$WORK/o.sorted" | tr -d ' ')
-  if "$TYPED" "$fixture" "$REPO/src" > "$WORK/p.txt" 2> "$WORK/p.err"; then
+  port_args=()
+  if [ "$(basename "$fixture")" = "sem_bodies_defer.iyi" ]; then
+    port_args=(--iyi-defer)
+  fi
+  if "$TYPED" "${port_args[@]}" "$fixture" "$REPO/src" > "$WORK/p.txt" 2> "$WORK/p.err"; then
     sort "$WORK/p.txt" > "$WORK/p.sorted"
     matched=$(comm -12 "$WORK/o.sorted" "$WORK/p.sorted" | wc -l | tr -d ' ')
   else
@@ -123,6 +135,38 @@ if [ "${refused_cache_count:-}" != 1 ]; then
 fi
 
 echo
+echo "== 2d. Program defs share instances across callers without shadowing methods"
+owner_fixture="$REPO/bench/fixtures/bodies_program_owner.iyi"
+owner_probe="$WORK/program_owner_probe"
+owner_expected="$WORK/program_owner.expected"
+printf '%s\n' '*owner_probe<Int32>:Int32' '*owner_probe<String>:String' '*OwnerShadow#owner_probe<Int32>:Bool' | sort > "$owner_expected"
+"$IYI" build -o "$owner_probe" "$REPO/bench/selfhost_program_owner_probe.iyi" > "$WORK/owner_build.log" 2>&1 || {
+  cat "$WORK/owner_build.log"
+  echo "  OWNER: failed to build probe"
+  exit 1
+}
+if ! "$owner_probe" "$owner_fixture" "$REPO/src" > "$WORK/owner.unsorted" ||
+   ! sort "$WORK/owner.unsorted" > "$WORK/owner.actual" ||
+   ! diff -u "$owner_expected" "$WORK/owner.actual"; then
+  echo "  OWNER: incorrect instance names or cache sharing"
+  status=1
+fi
+if ! "$ORACLE" "$owner_fixture" > "$WORK/owner.oracle" 2> "$WORK/owner.oracle.err" ||
+   ! "$TYPED" "$owner_fixture" "$REPO/src" > "$WORK/owner.typed" 2> "$WORK/owner.typed.err"; then
+  echo "  OWNER: typing comparison could not run"
+  status=1
+else
+  for line in 28 29 30; do
+    grep "^${line}:.* Call " "$WORK/owner.oracle" | sort > "$WORK/owner.oracle.calls"
+    grep "^${line}:.* Call " "$WORK/owner.typed" | sort > "$WORK/owner.typed.calls"
+    if [ ! -s "$WORK/owner.oracle.calls" ] || ! diff -u "$WORK/owner.oracle.calls" "$WORK/owner.typed.calls"; then
+      echo "  OWNER: call typing differs at line $line"
+      status=1
+    fi
+  done
+fi
+
+echo
 echo "== 2c. A call in a fun body's macro branch is typed after expansion"
 splice_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
 echo "  sem_bodies_fun_splice.iyi typed instances: ${splice_count:-none} (expected 1)"
@@ -184,6 +228,25 @@ bodies_at_floor() {
   return 0
 }
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
+owner_mutant_at_expected() {
+  if ! "$IYI" build -o "$WORK/owner_mutant" "$REPO/bench/selfhost_program_owner_probe.iyi" > "$WORK/owner_mutant_build.log" 2>&1; then
+    echo "INVALID MUTANT: owner probe failed to build" >&2
+    cat "$WORK/owner_mutant_build.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  if ! "$WORK/owner_mutant" "$owner_fixture" "$REPO/src" > "$WORK/owner_mutant.unsorted" 2> "$WORK/owner_mutant_run.log"; then
+    echo "INVALID MUTANT: owner probe failed to run" >&2
+    cat "$WORK/owner_mutant_run.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  sort "$WORK/owner_mutant.unsorted" > "$WORK/owner_mutant.actual" || return 0
+  diff -u "$owner_expected" "$WORK/owner_mutant.actual"
+}
+prove_mutation_all "program defs use their declared owner" "$MAIN_VISITOR" \
+  "instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)" \
+  "instance_owner = rec_type if declared_owner.is_a?(SemanticProgram)" -- owner_mutant_at_expected || status=1
 prove_mutation "lib call result type" "$MAIN_VISITOR" \
   "set_type(node, target.result_type.as(Type))" \
   "set_type(node, @program.nil_type)" -- bodies_at_floor || status=1
@@ -375,6 +438,53 @@ ensure_at_floor() {
 prove_mutation "ensure assignments reach following code" "$MAIN_VISITOR" \
   "          @vars[name] = type" \
   "          nil" -- ensure_at_floor || status=1
+
+# The oracle and port both normalize this fixture with the iyi prelude mode.
+defer_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
+  local fixture="$REPO/bench/fixtures/sem_bodies_defer.iyi"
+  "$ORACLE" "$fixture" > "$WORK/defer_o.txt" 2>/dev/null || return 1
+  "$MUT_TD" --iyi-defer "$fixture" "$REPO/src" > "$WORK/defer_p.txt" 2>/dev/null || return 1
+  sort "$WORK/defer_o.txt" > "$WORK/defer_o.sorted"
+  sort "$WORK/defer_p.txt" > "$WORK/defer_p.sorted"
+  local matched floor
+  matched=$(comm -12 "$WORK/defer_o.sorted" "$WORK/defer_p.sorted" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_defer.iyi" { print $2 }' "$FLOOR_FILE")
+  [ "$matched" -ge "${floor:-0}" ]
+}
+prove_mutation "defer cleanup is typed" "$MAIN_VISITOR" \
+  "      cleanup.accept(self)" \
+  "      nil" -- defer_at_floor || status=1
+
+ensure_refusal_check() {
+  "$IYI" build -o "$WORK/ensure_refusal" "$REPO/bench/selfhost_ensure_refusal.iyi" > "$WORK/ensure_refusal_build.log" 2>&1 || { body_build_failed "$WORK/ensure_refusal_build.log"; return $?; }
+  "$WORK/ensure_refusal"
+}
+echo "== 4c. Written ensure refusal and nested-loop exits"
+ensure_refusal_check || status=1
+prove_mutation "written ensure is refused under the prelude" "$MAIN_VISITOR" \
+  "if @program.iyi_prelude? && !node.iyi_defer?" \
+  "if false" -- ensure_refusal_check || status=1
+
+# The return targets its instantiated def (hosted main_visitor.cr 2096).
+ensure_targets_check() {
+  "$IYI" build -o "$WORK/ensure_targets" "$REPO/bench/selfhost_ensure_targets.iyi" > "$WORK/ensure_targets_build.log" 2>&1 || { body_build_failed "$WORK/ensure_targets_build.log"; return $?; }
+  "$WORK/ensure_targets"
+}
+echo "== 4d. Return target identity"
+ensure_targets_check || status=1
+prove_mutation "return identifies its typed def" "$MAIN_VISITOR" \
+  "    node.target = @current_def" \
+  "    node.target = nil" -- ensure_targets_check || status=1
+prove_mutation "break identifies its block call" "$MAIN_VISITOR" \
+  "      node.target = @jump_block_calls[block]?" \
+  "      node.target = nil" -- ensure_targets_check || status=1
+prove_mutation "next identifies its block" "$MAIN_VISITOR" \
+  "      node.target = block" \
+  "      node.target = nil" -- ensure_targets_check || status=1
+prove_mutation "captured next identifies its proc def" "$MAIN_VISITOR" \
+  "    inner.current_def = def_node if def_node.captured_block?" \
+  "    nil" -- ensure_targets_check || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"
