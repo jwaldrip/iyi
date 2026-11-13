@@ -65,7 +65,7 @@ src/compiler/llvm/module.iyi 0
 src/compiler/llvm/pass_manager.iyi 0
 src/compiler/llvm/target.iyi 0
 src/compiler/llvm/values.iyi 0
-src/compiler/loader.iyi 36
+src/compiler/loader.iyi 38
 src/compiler/lower/abi/aarch64.iyi 0
 src/compiler/lower/block.iyi 0
 src/compiler/lower/call.iyi 0
@@ -165,7 +165,7 @@ src/compiler/syntax/parser.iyi 0
 src/compiler/syntax/token.iyi 231
 src/compiler/syntax/transformer.iyi 111
 src/compiler/syntax/visitor.iyi 334
-src/compiler/tools/bind.iyi 95
+src/compiler/tools/bind.iyi 97
 src/compiler/tools/compile.iyi 0
 src/compiler/tools/compile_native.iyi 0
 src/compiler/tools/format.iyi 0

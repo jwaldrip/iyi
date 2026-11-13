@@ -653,7 +653,7 @@ prove_mutation "an explicit instance variable is not recorded for re-resolution"
   -- check_reresolve_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUT_TS="$REPO/src/compiler/types/type_system.iyi"
-prove_mutation "a generic type node resolves to its base once the type system is installed" "$MUT_SEM" \
+prove_mutation_all "a generic type node resolves to its base once the type system is installed" "$MUT_SEM" \
   "          return hook.instantiate_type(base_type, type_args)" \
   "          return base_type" \
   -- check_lib_types_diverge || status=1
@@ -664,8 +664,8 @@ prove_mutation "installing the type system leaves the lib fun records unresolved
   -- check_lib_types_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a lib fun's return type is dropped once the type system is installed" "$MUT_SEM" \
-  "              f.resolved_return = lookup_type_node(rt, owner)" \
-  "              f.resolved_return = nil" \
+  "                  f.resolved_return = found" \
+  "                  f.resolved_return = nil" \
   -- check_lib_types_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a constant is never added to the program's constant list" "$MUT_SEM" \
