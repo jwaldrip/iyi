@@ -174,7 +174,12 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)
         if ct.as(ModuleType).metaclass.defs[node.name]?
           class_owner = ct
-        elsif !low.analysed.program.defs[node.name]?
+        elsif target = low.analysed.target_def?(node)
+          if class_defining = low.analysed.program.def_owner(target)
+            class_owner = ct if class_defining
+          end
+        end
+        if class_owner.nil? && !low.analysed.program.defs[node.name]?
           pending_visit_node("a class method #{node.name} inherited from a superclass of #{ct.full_name} (hosted call.cr: target_def.owner is the defining type)")
         end
       else
@@ -381,6 +386,11 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
       pending_visit_node("a class method call on #{owner.full_name} (hosted call.cr: prepare_call_args, a generic or builtin metaclass)")
     end
     if owner.as(MetaclassType).defs[node.name]?.nil?
+      if target = low.analysed.target_def?(node)
+        if class_defining = low.analysed.program.def_owner(target)
+          return owner if class_defining
+        end
+      end
       pending_visit_node("a class method #{node.name} inherited from a superclass of #{owner.full_name} (hosted call.cr: target_def.owner is the defining type)")
     end
     return owner

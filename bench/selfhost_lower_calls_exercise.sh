@@ -178,7 +178,8 @@ lower_calls_check() {
       awk -v expected="$expected" 'index($0, expected) { found = 1 } END { exit !found }' "$WORK/mut.err" || return 1
       continue
     fi
-  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
+    "$WORK/mut" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/mut.out" 2>/dev/null || return 1
+    awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
   done
   return 0
 }
@@ -304,6 +305,8 @@ prove_mutation "a computed metaclass receiver is not evaluated" "$REPO/src/compi
   '      unless node.obj.as(ASTNode).is_a?(Path)' '      if false' -- lower_calls_check || status=1
 prove_mutation "an inherited call loses its defining owner" "$REPO/src/compiler/lower/call.iyi" \
   '    if defining = low.analysed.program.def_owner(target)' '    if defining = nil' -- lower_calls_check || status=1
+prove_mutation "an inherited class method loses its defining owner" "$REPO/src/compiler/lower/call.iyi" \
+  '        if class_defining = low.analysed.program.def_owner(target)' '        if class_defining = nil' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
