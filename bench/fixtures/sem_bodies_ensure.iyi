@@ -20,3 +20,15 @@ introduced
 cleanup
 nested_cleanup
 result
+
+def ensure_scope_probe
+  isolated = "callee"
+  isolated
+end
+
+isolated = 7
+begin
+  ensure_scope_probe
+ensure
+  isolated
+end
