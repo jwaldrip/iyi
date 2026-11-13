@@ -130,6 +130,12 @@ prove_mutation "a generic receiver does not bind its type parameters in a restri
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a generic child copies initializers beyond the first ancestor" "$NEW_FILE" \
+  '  inits = first_initializer_defs(type)' \
+  '  inits = MethodLookup.all_defs(type, "initialize", [] of Def)' \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

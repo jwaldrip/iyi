@@ -149,7 +149,7 @@ src/compiler/semantic/literal_expander.iyi 69
 src/compiler/semantic/main_visitor.iyi 237
 src/compiler/semantic/math_interpreter.iyi 52
 src/compiler/semantic/method_lookup.iyi 35
-src/compiler/semantic/new.iyi 19
+src/compiler/semantic/new.iyi 20
 src/compiler/semantic/normalizer.iyi 62
 src/compiler/semantic/recursive_struct_checker.iyi 11
 src/compiler/semantic/restrictions.iyi 24
