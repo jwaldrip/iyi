@@ -487,10 +487,6 @@ prove_mutation "a single macro node body loses its expansion: the wrapper is emp
   "Expressions.new([] of ASTNode)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a class, module or lib body that is one macro node is not passed to the splice" "$MUT_TOP" \
-  "splice_body_node(body, @current_type.full_name, @file || \"\", @current_type.is_a?(LibType))" \
-  "body" -- check_body_fixture || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # A constant whose value is one macro node is expanded where the typer reads it (main_visitor.iyi splice_const_value).
 prove_mutation "a constant whose value is one macro node is typed unexpanded, so the typer refuses its macro node" "$MUT_MAIN" \

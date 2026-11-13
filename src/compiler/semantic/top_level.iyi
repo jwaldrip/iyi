@@ -2160,11 +2160,9 @@ pub class TopLevelVisitor < Visitor
     nil
   end
 
-  # A class, module or lib body that is one inline macro node is spliced in the body's
-  # own scope, as a body of several nodes is (see splice_body_node). The typer then
-  # reads the expansion, not the macro node.
+  # Single sites are visited by the inline macro visitor in their enclosing scope.
   def splice_body(body : ASTNode) : ASTNode
-    splice_body_node(body, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+    body
   end
 
   def visit(node : Expressions) : Bool
