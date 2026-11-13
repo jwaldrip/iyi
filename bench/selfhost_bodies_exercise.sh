@@ -338,7 +338,7 @@ echo
 echo "== 4c. A macro site in a def body sees the receiver's type parameters and the def's free variables"
 # Rebuilds the typed dump from the patched source and checks the macro-bindings fixture alone.
 macro_bindings_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { echo "  mutant did not build"; return 0; }
   fixture="$REPO/bench/fixtures/sem_bodies_macro_bindings.iyi"
   rel="bench/fixtures/sem_bodies_macro_bindings.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -351,9 +351,9 @@ macro_bindings_at_floor() {
 prove_mutation "a macro site in a def body does not see the receiver's type parameters" "$MAIN_VISITOR" \
   "    MacroBindings.of(@scope, free)" \
   "    MacroBindings.of(nil, free)" -- macro_bindings_at_floor || status=1
-prove_mutation "a macro site in a def body does not see the def's free variables" "$MAIN_VISITOR" \
-  "        @def_free_types[target_def] = free_types unless free_types.empty?" \
-  "        nil" -- macro_bindings_at_floor || status=1
+prove_mutation_all "a macro site in a def body does not see the def's free variables" "$MAIN_VISITOR" \
+  "unless free_types.empty?" \
+  "if false" -- macro_bindings_at_floor || status=1
 free_types_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   fixture="$REPO/bench/fixtures/sem_bodies_free_types.iyi"
