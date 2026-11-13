@@ -350,6 +350,13 @@ prove_mutation "an inherited method's target forgets the type it was found on" "
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# matching lane (match.iyi, restrictions.iyi)
+prove_mutation "a generic restriction does not bind free vars from the instance type arguments" "$RESTRICT_FILE" \
+  '    return RestrictResult.no_match if base_type.full_name != inst.generic_type.full_name' \
+  '    return RestrictResult.no_match if true' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

@@ -66,7 +66,7 @@ module BenchSelfhostSemanticCallsExercise
     end
     arg_types = [] of Type
     call.args.each do |arg|
-      typed = CallReceiver.argument_type(prog, arg)
+      typed = typed_argument(prog, ts, arg)
       if typed.nil?
         return "argument is not a literal"
       end
@@ -78,6 +78,39 @@ module BenchSelfhostSemanticCallsExercise
     end
     signature = CallSignature.new(call.name, arg_types, named_types, call.block != nil)
     MethodLookup.lookup_with_autocast(scope.as(Type), ts, signature, call.args)
+  end
+
+  # A literal, or `instance(T)` where T is any written type (a path or a generic).
+  # CallReceiver types only a path. A generic instance is resolved here so a
+  # restriction written with free variables can be given Range(Int32, Nil).
+  def self.typed_argument(prog : SemanticProgram, ts : TypeSystem, node : ASTNode) : Type?
+    typed = CallReceiver.argument_type(prog, node)
+    return typed if typed
+    return nil unless node.is_a?(Call)
+    call = node.as(Call)
+    return nil unless call.obj.nil? && call.name == "instance" && call.args.size == 1
+    found = TypeLookup.new(ts.instances).lookup(prog, call.args[0])
+    return nil if found.is_a?(LookupError)
+    found.as(Type)
+  end
+
+  # `# bound` line: the free variables the one match bound, or `matched` / `none`.
+  def self.evaluate_bound(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
+    node = Parser.new(expr, "call").parse
+    return "error: not a call" unless node.is_a?(Call)
+    found = lookup(prog, ts, node.as(Call))
+    return "error: #{found.as(String)}" if found.is_a?(String)
+    matches = found.as(Matches)
+    return "error: #{matches.error.to_s}" if matches.error
+    return "none" if matches.empty?
+    bound = matches.matches[0].bound
+    return "matched" if bound.size == 0
+    names = bound.keys.sorted
+    parts = [] of String
+    names.each do |name|
+      parts << "#{name}=#{bound[name].to_s}"
+    end
+    parts.join(",")
   end
 
   # `# expand` line: the argument list of the one def the call matches, with its
@@ -312,6 +345,9 @@ module BenchSelfhostSemanticCallsExercise
       if line.starts_with?("# call ")
         expr = line[7, line.bytesize - 7].strip
         out << "#{expr} => #{evaluate(prog, ts, expr)}"
+      elsif line.starts_with?("# bound ")
+        expr = line[8, line.bytesize - 8].strip
+        out << "#{expr} => #{evaluate_bound(prog, ts, expr)}"
       elsif line.starts_with?("# error ")
         expr = line[8, line.bytesize - 8].strip
         out << "#{expr} => #{evaluate_error(prog, ts, expr)}"

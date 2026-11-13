@@ -82,11 +82,10 @@ def literal_type(program : Iyi::Program, node : Iyi::ASTNode) : Iyi::Type
   if node.is_a?(Iyi::NilLiteral)
     return program.types["Nil"].as(Iyi::Type)
   end
-  if node.is_a?(Iyi::Call) && node.as(Iyi::Call).name == "instance"
+  if node.is_a?(Iyi::Call) && node.as(Iyi::Call).name == "instance" && node.as(Iyi::Call).obj.nil?
     call = node.as(Iyi::Call)
-    if call.args.size == 1 && call.args[0].is_a?(Iyi::Path)
-      found = program.lookup_path(call.args[0].as(Iyi::Path))
-      return found.as(Iyi::Type) if found.is_a?(Iyi::Type)
+    if call.args.size == 1
+      return program.lookup_type(call.args[0])
     end
   end
   raise "argument is not a literal"
@@ -360,6 +359,25 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
+# The free variables the one match bound, `B=Int32,E=Nil`, or `matched` when the
+# call matches and binds none, or `none`. A `# bound` line is how a generic
+# restriction with free variables is compared: the match text cannot print a
+# restriction until those names are bound.
+def bound_text(program : Iyi::Program, expr : String) : String
+  node = Iyi::Parser.new(expr).parse
+  raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
+  call = node.as(Iyi::Call)
+  receiver = call_scope(program, expr)
+  found, _ = dispatch_matches(receiver, signature_of(program, call))
+  return "none" if found.empty?
+  vars = found[0].context.bound_free_vars
+  return "matched" if vars.nil? || vars.empty?
+  parts = vars.keys.sort.map { |name| "#{name}=#{vars[name]}" }
+  parts.join(",")
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 begin
   path = ARGV[0]? || abort("usage: selfhost_semantic_calls_oracle <fixture.iyi>")
   source = File.read(path)
@@ -368,6 +386,9 @@ begin
     if line.starts_with?("# call ")
       expr = line[7..].strip
       puts "#{expr} => #{evaluate(program, expr)}"
+    elsif line.starts_with?("# bound ")
+      expr = line[8..].strip
+      puts "#{expr} => #{bound_text(program, expr)}"
     elsif line.starts_with?("# error ")
       expr = line[8..].strip
       puts "#{expr} => #{error_text(path, source, expr)}"
