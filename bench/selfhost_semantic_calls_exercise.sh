@@ -196,7 +196,7 @@ prove_mutation "a virtual receiver answers covered when it has matches" "$METHOD
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a splat parameter takes none of the arguments past its prefix" "$MATCH_FILE" \
-  "        matched << signature.arg_types[i]" \
+  "        matched << element" \
   "        i = i" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
