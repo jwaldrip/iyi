@@ -490,7 +490,7 @@ visibility_check() {
 if visibility_check; then
   prove_mutation "visibility wrappers do not visit their expression" "$REPO/src/compiler/lower/lower.iyi" \
     '    codegen_node(low, node.as(VisibilityModifier).exp)' \
-    '    low.last = llvm_nil(low)' -- visibility_check || status=1
+    '    pending_visit_node("visibility wrapper")' -- visibility_check || status=1
 else
   echo "FAIL: visibility wrapper fixture does not match the hosted module"
   awk 'NR<=8' "$WORK/vis.err" "$WORK/vis.out" "$WORK/vis.build.log"
