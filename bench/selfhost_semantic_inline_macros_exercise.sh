@@ -417,8 +417,8 @@ fi
 
 if [ "$COMPARE_REACH" -eq 1 ]; then
 prove_mutation "a required file finishes its pending ivars at once, before a later file declares them" "$MUT_PROG" \
-  "inner.finish" \
-  "inner.finish; declare_guessed_instance_vars(prog)" \
+  "prog.loaded_files.add(key)" \
+  "declare_guessed_instance_vars(prog); prog.loaded_files.add(key)" \
   -- check_reach_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
