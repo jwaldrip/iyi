@@ -156,6 +156,22 @@ if ! "$ORACLE" --enum-primitives "$REPO/bench/fixtures/semdecl_enum_primitives.i
    ! cmp -s "$WORK/enum_primitive_oracle" "$WORK/enum_primitive_port"; then
   echo "  enum primitives DIFFER"; diff "$WORK/enum_primitive_oracle" "$WORK/enum_primitive_port"; status=1
 fi
+echo "== Nested pointer lib signatures"
+if ! "$ORACLE" --lib-starstar "$REPO/bench/fixtures/semdecl_lib_starstar.iyi" > "$WORK/lib_starstar_oracle" 2>&1 ||
+   ! "$PORT" --lib-types "$REPO/bench/fixtures/semdecl_lib_starstar.iyi" > "$WORK/lib_starstar_all" 2>&1; then
+  echo "  nested pointer signatures could not be read"; status=1
+else
+  awk '/^lib LibBytes\./' "$WORK/lib_starstar_all" > "$WORK/lib_starstar_port"
+  if ! cmp -s "$WORK/lib_starstar_oracle" "$WORK/lib_starstar_port"; then
+    echo "  nested pointer signatures DIFFER"; diff "$WORK/lib_starstar_oracle" "$WORK/lib_starstar_port"; status=1
+  fi
+fi
+echo "== Enum annotations"
+if ! "$ORACLE" --enum-annotations "$REPO/bench/fixtures/semdecl_enum_annotations.iyi" > "$WORK/enum_annotations_oracle" 2>&1 ||
+   ! "$PORT" --enum-annotations "$REPO/bench/fixtures/semdecl_enum_annotations.iyi" > "$WORK/enum_annotations_port" 2>&1 ||
+   ! cmp -s "$WORK/enum_annotations_oracle" "$WORK/enum_annotations_port"; then
+  echo "  enum annotations DIFFER"; diff "$WORK/enum_annotations_oracle" "$WORK/enum_annotations_port"; status=1
+fi
 echo "== Class variable generic types after type system installation"
 if ! "$PORT" --classvar-generic "$REPO/bench/fixtures/semdecl_classvar_generic.iyi" > "$WORK/classvar_result" 2>&1; then
   cat "$WORK/classvar_result"; status=1
@@ -504,6 +520,19 @@ check_enum_primitives_diverge() {
   "$probe" --enum-primitives "$REPO/bench/fixtures/semdecl_enum_primitives.iyi" > "$WORK/mut_enum_primitives" 2>/dev/null || return 1
   cmp -s "$WORK/mut_enum_primitives" "$WORK/enum_primitive_oracle"
 }
+check_enum_annotations_diverge() {
+  local probe="$WORK/mut_enum_annotations_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --enum-annotations "$REPO/bench/fixtures/semdecl_enum_annotations.iyi" > "$WORK/mut_enum_annotations" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_enum_annotations" "$WORK/enum_annotations_oracle"
+}
+check_lib_starstar_diverge() {
+  local probe="$WORK/mut_lib_starstar_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --lib-types "$REPO/bench/fixtures/semdecl_lib_starstar.iyi" > "$WORK/mut_lib_starstar_all" 2>/dev/null || return 1
+  awk '/^lib LibBytes\./' "$WORK/mut_lib_starstar_all" > "$WORK/mut_lib_starstar"
+  cmp -s "$WORK/mut_lib_starstar" "$WORK/lib_starstar_oracle"
+}
 check_classvar_generic_diverge() {
   local probe="$WORK/mut_classvar_port"
   "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
@@ -636,6 +665,17 @@ prove_mutation "lib fun drops its varargs flag" "$MUT_SEM" \
   "record = LibFun.new(node.name, real, arg_names, false, node.return_type)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "guessed instance variables lose their defining file's imports" "$MUT_IVARS" \
+  '    program.current_imports = body.imports' \
+  '    program.current_imports = saved_imports' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "two argument pointer malloc does not infer its element type" "$MUT_IVARS" \
+  '    if obj.is_a?(Path) && obj.as(Path).names == ["Pointer"] && node.name == "malloc" && node.args.size == 2' \
+  '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "lib struct takes Reference as its superclass" "$MUT_SEM" \
   "NonGenericClassType.new(@program, @current_type, node.name, @program.struct_type)" \
@@ -675,9 +715,20 @@ prove_mutation "a file's own directory is never searched for an import" "$MUT_SE
   "      roots << \"/nonexistent-root\"" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "explicit instance variables are recorded in reverse declaration order" "$MUT_SEM" \
-  "@pending_ivars.each do |pi|" \
-  "@pending_ivars.reversed.each do |pi|" \
+prove_mutation "explicit instance variables are recorded in reverse declaration order" "$MUT_IVARS" \
+  "        program.pending_ivars.each do |pi|" \
+  "        program.pending_ivars.reversed.each do |pi|" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "guessed variables are recorded before explicit variables" "$MUT_IVARS" \
+  '      [true, false].each do |explicit_pass|' \
+  '      declare_guessed(program, owners, og)
+      [true, false].each do |explicit_pass|' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "subclass declarations are processed before superclass guesses" "$MUT_IVARS" \
+  '      next unless class_depth(og.owner) == depth' \
+  '      next unless class_depth(og.owner) == max_depth - depth' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an initialize argument instance variable is recorded ahead of the class body's" "$MUT_SEM" \
@@ -689,12 +740,12 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # record (finish) and the guessed-ivar fallback (instance_vars.iyi, skipped when the ivar already exists)
 # each declare that ivar, and the pending one wins. Dropping either alone is not observable (probes: same
 # output), so the drop is not expressible on one file. This mutation is the pending path's type claim.
-prove_mutation "a typed argument's instance variable takes its restriction type" "$MUT_SEM" \
+prove_mutation "a typed argument's instance variable takes its restriction type" "$MUT_IVARS" \
   "mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)" \
-  "mv = MetaTypeVar.new(pi.name, @program.nil_type, pi.initializer)" \
+  "mv = MetaTypeVar.new(pi.name, program.nil_type, pi.initializer)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
+prove_mutation_all "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
   "return hook.virtual_of(resolved)" \
   "return resolved" \
   -- check_decl_fixtures_diverge || status=1
@@ -709,9 +760,19 @@ prove_mutation "pointer malloc and null calls do not infer instance variable typ
   '    if false' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "constructor guesses omit classes with subclasses" "$MUT_IVARS" \
+  '      if found && found.is_a?(NonGenericClassType)' \
+  '      if found && found.is_a?(NonGenericClassType) && found.as(NonGenericClassType).subclasses.empty?' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "typed array literals do not infer instance variable types" "$MUT_IVARS" \
   '    if node.is_a?(ArrayLiteral)' \
   '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "array literal elements do not infer instance variable types" "$MUT_IVARS" \
+  '      if literal.name.nil? && literal.of.nil?' \
+  '      if false' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "generic new calls do not infer instance variable types" "$MUT_IVARS" \
@@ -744,8 +805,8 @@ prove_mutation "a declared instance variable is not re-resolved once the type sy
   "nil" \
   -- check_reresolve_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "an explicit instance variable is not recorded for re-resolution" "$MUT_SEM" \
-  "@program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)" \
+prove_mutation "an explicit instance variable is not recorded for re-resolution" "$MUT_IVARS" \
+  "program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, program.current_imports)" \
   "nil" \
   -- check_reresolve_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -847,9 +908,9 @@ prove_mutation "a generic instance copies no instance variable the first time" "
   -- check_decl_fixtures_diverge || status=1
 
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "a declared instance variable keeps its alias: the hook path takes the alias itself" "$MUT_SEM" \
-  "      resolved = remove_alias(lookup_type_node(restriction, owner))" \
-  "      resolved = lookup_type_node(restriction, owner)" \
+prove_mutation "a declared instance variable keeps its alias: the optional path takes the alias itself" "$MUT_SEM" \
+  "    resolved = remove_alias(found)" \
+  "    resolved = found" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic instance's declared variable keeps its parameter type" "$MUT_TYPES" \
@@ -905,6 +966,31 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a redeclared external loses its previous link" "$MUT_SEM" \
   '            record.previous = old' \
   '            record.previous = nil' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+if cmp -s "$WORK/enum_annotations_oracle" "$WORK/enum_annotations_port"; then
+  prove_mutation "an enum loses its annotation" "$MUT_SEM" \
+    '      enum_type.add_annotation(annotation_type.as(AnnotationType), ann)' \
+    '      nil' \
+    -- check_enum_annotations_diverge || status=1
+  MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+else
+  echo "  NOT RUN: enum annotation baseline differs"
+  status=1
+fi
+if [ -s "$WORK/lib_starstar_oracle" ] && cmp -s "$WORK/lib_starstar_oracle" "$WORK/lib_starstar_port"; then
+  prove_mutation "a nested pointer lib argument loses its resolved type" "$MUT_SEM" \
+    '                  resolved_args << found' \
+    '                  resolved_args << @program.int32_type' \
+    -- check_lib_starstar_diverge || status=1
+  MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+else
+  echo "  NOT RUN: nested pointer lib signature baseline differs"
+  status=1
+fi
+prove_mutation "a generic alias loses its instantiated arguments" "$MUT_SEM" \
+  '      if @value.is_a?(Generic) && @program.merge_hook.nil?' \
+  '      if @value.is_a?(Generic)' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"

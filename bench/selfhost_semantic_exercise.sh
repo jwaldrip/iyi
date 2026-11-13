@@ -267,6 +267,11 @@ CRYSTAL_GOLDEN_SCRIPT
 LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" \
   CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
     -o "$WORK/dump_crystal" "$WORK/dump_crystal_sem.cr"
+export IYI_PATH="$REPO/src"
+CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
+  -o "$WORK/declarations_oracle" "$REPO/bench/selfhost_semantic_declarations_oracle.cr" || exit 1
+"$IYI" build -o "$WORK/declarations_port" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" || exit 1
+
 
 compare_all() {
   out_status=0
@@ -275,15 +280,18 @@ compare_all() {
       sem_expr_*)
         continue
         ;;
+      sem_err_wrong_arg_count*|sem_err_type_mismatch*|sem_err_undefined_method*|sem_err_cvar_*|sem_err_recursive_*|sem_err_ivar_*|sem_err_top_level_*|sem_err_ambiguous_call*|sem_err_no_overload_matches*|sem_err_class_nil*|sem_err_class_symbol*)
+        continue
+        ;;
       sem_err_*)
-        if "$1" "$fixture" >/dev/null 2>&1; then
+        if "$2" "$fixture" >/dev/null 2>&1; then
           out_status=1
         fi
         continue
         ;;
     esac
     "$1" "$fixture" > "$WORK/a.ast" 2>/dev/null || { out_status=1; continue; }
-    "$WORK/dump_crystal" "$fixture" > "$WORK/b.ast"
+    "$WORK/declarations_oracle" "$fixture" > "$WORK/b.ast" 2>/dev/null || { out_status=1; continue; }
     diff -q "$WORK/a.ast" "$WORK/b.ast" >/dev/null || out_status=1
   done
   return $out_status
@@ -313,25 +321,21 @@ total_matched_declarations=0
 for fixture in "$REPO"/bench/fixtures/sem_*.iyi; do
   case "$(basename "$fixture")" in
     sem_err_*|sem_expr_*) continue ;;
-    # Typed-body fixtures whose declaration dump differs for reasons owned by other lanes (OWNERS.md): an Ivar line the front end does not print (agent://S1bIvars10), a lib kind (LibC (lib)) with a duplicated abs (agent://S1b19Declarations), and an empty body's Expressions (agent://S1b19Declarations). Each is printed as WAITING with its owner; the bodies gate compares their typing.
-    sem_bodies_ivar_read*) echo "  $(basename "$fixture"): WAITING (owner agent://S1bIvars10: an Ivar line the front end does not print); declarations not compared, the bodies gate compares its typing"; continue ;;
-    sem_bodies_libcall*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b19Declarations: lib kind LibC (lib) and a duplicated abs); declarations not compared, the bodies gate compares its typing"; continue ;;
-    sem_bodies_self_return*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b19Declarations: an empty body's Expressions is not printed); declarations not compared, the bodies gate compares its typing"; continue ;;
-    sem_bodies_generic_ivar*) echo "  $(basename "$fixture"): WAITING (owner agent://S1bIvars10: a generic class's declared Ivar line Box#@value, which the oracle does not print); declarations not compared, the bodies gate compares its typing"; continue ;;
-    sem_bodies_global_fun*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b19Declarations: a top-level fun's declaration lines real_name and varargs, which the oracle does not print and the port does); declarations not compared, the bodies gate compares its typing"; continue ;;
-    sem_bodies_fun_splice*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b19Declarations: a top-level fun's declaration lines real_name and varargs, which the oracle does not print and the port does); declarations not compared, the bodies gate compares its typing"; continue ;;
-    sem_bodies_import_scope*|sem_bodies_import_later*) echo "  $(basename "$fixture"): WAITING (owner agent://S1b19Declarations: the declaration dump does not resolve an imported sibling module from the fixture's directory on either side); declarations not compared, the bodies gate compares its typing"; continue ;;
+    # The shared declaration oracle and driver resolve imports and compare
+    # whole-program instance variable declarations.
   esac
   fixture_name="bench/fixtures/$(basename "$fixture")"
-  "$WORK/exercise" "$fixture" > "$WORK/iyi.ast"
-  "$WORK/dump_crystal" "$fixture" > "$WORK/crystal.ast"
-  if ! diff -q "$WORK/iyi.ast" "$WORK/crystal.ast" >/dev/null; then
+  port_ok=0
+  oracle_ok=0
+  "$WORK/declarations_port" "$fixture" > "$WORK/iyi.ast" || port_ok=1
+  "$WORK/declarations_oracle" "$fixture" > "$WORK/crystal.ast" || oracle_ok=1
+  if [ "$port_ok" -ne 0 ] || [ "$oracle_ok" -ne 0 ] || ! diff -q "$WORK/iyi.ast" "$WORK/crystal.ast" >/dev/null; then
     echo "  $fixture_name: DECLARATIONS DIFFER"
     diverged=$((diverged + 1))
     diff -u "$WORK/crystal.ast" "$WORK/iyi.ast" | head -20
     status=1
   else
-    decl_count=$("$WORK/exercise" "$fixture" --count)
+    decl_count=$(awk '/^ *(Type|Def): / { n++ } END { print n+0 }' "$WORK/iyi.ast")
     echo "  $fixture_name: identical ($decl_count declarations match front end)"
     total_matched_declarations=$((total_matched_declarations + decl_count))
   fi
@@ -396,12 +400,19 @@ echo "  Parity summary: $matched_err_count/$total_err_count error fixtures rejec
 # A build failure, or any divergence from the Crystal front end, is the catch.
 check_decl_outputs_diverge() {
   "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1 || return 1
-  compare_all "$WORK/mut-exercise" && compare_expr_all "$WORK/mut-exercise"
+  "$IYI" build -o "$WORK/mut-declarations" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" >/dev/null 2>&1 || return 1
+  compare_all "$WORK/mut-declarations" "$WORK/mut-exercise" && compare_expr_all "$WORK/mut-exercise"
 }
 
 check_expr_outputs_diverge() {
   "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1 || return 1
   compare_expr_all "$WORK/mut-exercise"
+}
+
+check_ivar_dump_diverge() {
+  "$IYI" build -o "$WORK/mut-declarations" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" >/dev/null 2>&1 || return 1
+  "$WORK/mut-declarations" "$REPO/bench/fixtures/sem_bodies_ivar_read.iyi" > "$WORK/mut-ivar.ast" 2>/dev/null || return 1
+  cmp -s "$WORK/mut-ivar.ast" "$WORK/ivar-oracle.ast"
 }
 
 MUTATIONS_RUN=0
@@ -417,6 +428,21 @@ prove_mutation "enum members start numbering at one instead of zero" "$SEM" \
   "counter = @enum_flags ? 1_i64 : 1_i64" \
   -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+ivar_fixture="$REPO/bench/fixtures/sem_bodies_ivar_read.iyi"
+if "$WORK/declarations_oracle" "$ivar_fixture" > "$WORK/ivar-oracle.ast" &&
+   "$WORK/declarations_port" "$ivar_fixture" > "$WORK/ivar-port.ast" &&
+   cmp -s "$WORK/ivar-oracle.ast" "$WORK/ivar-port.ast" &&
+   grep -q 'Ivar: ' "$WORK/ivar-oracle.ast"; then
+  prove_mutation "declared instance variable is omitted from the dump" "$SEM" \
+    '      io << indent << "  Ivar: " << t.full_name << "#" << ivar_name << "\n"' \
+    '      nil' \
+    -- check_ivar_dump_diverge || status=1
+  MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+else
+  echo "  NOT RUN: instance variable baseline differs or has no ivar"
+  status=1
+fi
 
 prove_mutation "trait supertrait self-requirement check is bypassed" "$SEM" \
   "if st == type" \

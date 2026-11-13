@@ -29,6 +29,32 @@ pub abstract class Type
   property abstract : Bool
   property struct : Bool
   property locations : Array(Location)? = nil
+  # Hosted Type includes Annotatable (types.cr:5-6, annotatable.cr:3-25).
+  property annotations : Hash(AnnotationType, Array(Annotation))? = nil
+
+  def add_annotation(annotation_type : AnnotationType, value : Annotation) : Nil
+    annotations = @annotations
+    if annotations.nil?
+      annotations = Hash(AnnotationType, Array(Annotation)).new
+      @annotations = annotations
+    end
+    values = annotations[annotation_type]?
+    if values.nil?
+      values = [] of Annotation
+      annotations[annotation_type] = values
+    end
+    values << value
+    nil
+  end
+
+  def annotation(annotation_type : AnnotationType) : Annotation?
+    if annotations = @annotations
+      if values = annotations[annotation_type]?
+        return values.last?
+      end
+    end
+    nil
+  end
 
   def initialize(@program : SemanticProgram, @namespace : ModuleType?, @name : String)
     @visibility = Visibility::Public
@@ -1022,12 +1048,13 @@ pub class AliasType < NamedType
       at
     else
       scope = @namespace || @program
-      if @value.is_a?(Generic)
+      if @value.is_a?(Generic) && @program.merge_hook.nil?
+        # Before the type system is installed this is only a display name, not
+        # a resolved alias: caching the generic base loses its arguments.
         g = @value.as(Generic)
         base = @program.lookup_type_node(g.name, scope)
         args_strs = g.type_vars.map { |tv| @program.lookup_type_node(tv, scope).full_name }
         @aliased_type_display = "#{base.full_name}(#{args_strs.join(", ")})"
-        @aliased_type = base
         base
       else
         t = @program.lookup_type_node(@value, scope)
@@ -1151,6 +1178,7 @@ pub class SemanticProgram < NonGenericModuleType
   property merge_hook : TypeHook?
   # The explicit instance variables the top-level passes declared, for `resolve_declared_types`.
   getter declared_ivars : Array(DeclaredIvar)
+  getter pending_ivars : Array(PendingIvar) = [] of PendingIvar
   getter declared_cvars : Array(DeclaredIvar)
   # iyi: the typed dump's mode. Strict (the default) refuses a name the program
   # cannot resolve, as it always has; total mode records it and goes on.
@@ -1999,8 +2027,9 @@ end
 pub class TypeBody
   getter type : ModuleType
   getter body : ASTNode
+  getter imports : Hash(String, Type)
 
-  def initialize(@type : ModuleType, @body : ASTNode)
+  def initialize(@type : ModuleType, @body : ASTNode, @imports : Hash(String, Type))
   end
 end
 
@@ -2067,6 +2096,10 @@ pub class TopLevelVisitor < Visitor
   # keeps declaration order: TypeDeclarationVisitor).
   def finish : Nil
     saved = @program.current_imports
+    @pending_ivars.each do |pi|
+      pi.imports = saved if pi.imports.nil?
+      @program.pending_ivars << pi
+    end
     # An explicit `@x : T` decides the type of `@x`. An inferred record for the same name (an
     # initialize argument's restriction) does not replace it, as the hosted pass skips a guess for a
     # variable that exists.
@@ -2074,18 +2107,22 @@ pub class TopLevelVisitor < Visitor
     @pending_ivars.each do |found|
       explicit << "#{found.owner.full_name} #{found.name}" if found.explicit
     end
-    @pending_ivars.each do |pi|
-      next if !pi.explicit && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
-      if imports = pi.imports
-        @program.current_imports = imports
-      else
-        @program.current_imports = saved
+    # The hosted processor declares explicit variables before guessed ones for each owner.
+    [true, false].each do |explicit_pass|
+      @pending_ivars.each do |pi|
+        next if pi.explicit != explicit_pass
+        next if !pi.explicit && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
+        if imports = pi.imports
+          @program.current_imports = imports
+        else
+          @program.current_imports = saved
+        end
+        arg_type = @program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
+        mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
+        mv.owner = pi.owner
+        pi.owner.instance_vars[pi.name] = mv
+        @program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)
       end
-      arg_type = @program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
-      mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
-      mv.owner = pi.owner
-      pi.owner.instance_vars[pi.name] = mv
-      @program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)
     end
     @program.current_imports = saved
     @pending_ivars.clear
@@ -2349,7 +2386,7 @@ pub class TopLevelVisitor < Visitor
           meta.add_location(loc)
         end
         old_meta_scope = @current_type
-        @program.type_bodies << TypeBody.new(meta, node.body)
+        @program.type_bodies << TypeBody.new(meta, node.body, @program.current_imports)
         @current_type = meta
         node.body.accept(self)
         @current_type = old_meta_scope
@@ -2459,7 +2496,7 @@ pub class TopLevelVisitor < Visitor
     old_type = @current_type
     @current_type = type
     node.body = splice_body(node.body)
-    @program.type_bodies << TypeBody.new(type, node.body)
+    @program.type_bodies << TypeBody.new(type, node.body, @program.current_imports)
     node.body.accept(self)
     @current_type = old_type
     false
@@ -2646,6 +2683,8 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : EnumDef) : Bool
+    annotations = @pending_annotations
+    @pending_annotations = [] of Annotation
     scope, name, existing = lookup_type_def(node, node.name)
 
     enum_type : EnumType
@@ -2675,6 +2714,13 @@ pub class TopLevelVisitor < Visitor
     end
     if iyi_unexported?(scope, node.visibility)
       enum_type.visibility = Visibility::Private
+    end
+    annotations.each do |ann|
+      annotation_type = @program.lookup_type_path(ann.path, @current_type)
+      unless annotation_type.is_a?(AnnotationType)
+        raise("#{ann.path} is not an annotation")
+      end
+      enum_type.add_annotation(annotation_type.as(AnnotationType), ann)
     end
 
     @enum_flags = @pending_flags
