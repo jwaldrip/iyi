@@ -83,9 +83,11 @@ prove_mutation 'typed declarations do not introduce bindings' "$REPO/src/compile
   'elsif type = @visitor.type_of?(variable)
         nil' -- mutation_check || status=1
 prove_mutation 'uninitialized declarations do not introduce bindings' "$REPO/src/compiler/semantic/closures.iyi" \
-  'if type = @visitor.type_of?(variable)
+  'variable = node.var.as(Var)
+      if type = @visitor.type_of?(variable)
         @frame.bindings << ClosureBinding.new(ClosureVar.new(variable.name, type))' \
-  'if type = @visitor.type_of?(variable)
+  'variable = node.var.as(Var)
+      if type = @visitor.type_of?(variable)
         nil' -- mutation_check || status=1
 prove_mutation 'out arguments do not introduce bindings' "$REPO/src/compiler/semantic/closures.iyi" \
   'if type = @visitor.type_of?(variable)
