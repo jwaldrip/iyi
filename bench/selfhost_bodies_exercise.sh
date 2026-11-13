@@ -299,6 +299,18 @@ block_free_output_at_floor() {
 prove_mutation "block output binds its callee's free variable" "$MAIN_VISITOR" \
   "                        @def_free_types[cd] = bound" \
   "                        nil" -- block_free_output_at_floor || status=1
+captured_free_output_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  fixture="$REPO/bench/fixtures/sem_bodies_capture_free_output.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+  matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_capture_free_output.iyi" { print $2 }' "$FLOOR_FILE")
+  [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
+}
+prove_mutation "captured block output binds its callee's free variable" "$MAIN_VISITOR" \
+  "                      @def_free_types[target_def] = bound unless bound.empty?" \
+  "                      nil" -- captured_free_output_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"
