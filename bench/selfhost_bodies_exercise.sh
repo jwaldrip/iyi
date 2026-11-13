@@ -58,7 +58,11 @@ for fixture in "$REPO"/bench/fixtures/sem_bodies_*.iyi; do
   fi
   sort "$WORK/o.txt" > "$WORK/o.sorted"
   nodes=$(wc -l < "$WORK/o.sorted" | tr -d ' ')
-  if "$TYPED" "$fixture" "$REPO/src" > "$WORK/p.txt" 2> "$WORK/p.err"; then
+  port_args=()
+  if [ "$(basename "$fixture")" = "sem_bodies_defer.iyi" ]; then
+    port_args=(--iyi-defer)
+  fi
+  if "$TYPED" "${port_args[@]}" "$fixture" "$REPO/src" > "$WORK/p.txt" 2> "$WORK/p.err"; then
     sort "$WORK/p.txt" > "$WORK/p.sorted"
     matched=$(comm -12 "$WORK/o.sorted" "$WORK/p.sorted" | wc -l | tr -d ' ')
   else
@@ -275,14 +279,12 @@ prove_mutation "ensure assignments reach following code" "$MAIN_VISITOR" \
   "          @vars[name] = type" \
   "          nil" -- ensure_at_floor || status=1
 
-# This partial floor compares different normalization modes: the port's typed
-# dump is bare, while the oracle uses the prelude. The pipeline is the proof
-# for the prelude-normalized defer path.
+# The oracle and port both normalize this fixture with the iyi prelude mode.
 defer_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   local fixture="$REPO/bench/fixtures/sem_bodies_defer.iyi"
   "$ORACLE" "$fixture" > "$WORK/defer_o.txt" 2>/dev/null || return 1
-  "$MUT_TD" "$fixture" "$REPO/src" > "$WORK/defer_p.txt" 2>/dev/null || return 1
+  "$MUT_TD" --iyi-defer "$fixture" "$REPO/src" > "$WORK/defer_p.txt" 2>/dev/null || return 1
   sort "$WORK/defer_o.txt" > "$WORK/defer_o.sorted"
   sort "$WORK/defer_p.txt" > "$WORK/defer_p.sorted"
   local matched floor

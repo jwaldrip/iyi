@@ -14,6 +14,10 @@ class DeferGroup
   end
 end
 
+def run_once(&)
+  yield 1
+end
+
 io = DeferResource.new
 defer io.close
 io.write
@@ -23,7 +27,7 @@ early = true
 defer g.join(early)
 early = false
 
-[1].each do |item|
+run_once do |item|
   defer io.close
   item
 end
