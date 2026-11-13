@@ -105,13 +105,20 @@ function intrinsic_line(line,   p, lhs, rest, ret, after, op, k, cl, name, args,
 }
 # A def is `Iyi` (import.iyi convention_of: a name starting with `*` or `~`). The hosted text writes every
 # function `ccc`, so the defs of the oracle get the `iyicc` word of the port here, before the return type.
-function cc_define(line,   at, head, n, w, i, out) {
+function cc_define(line,   at, head, p, rest, sp, kw) {
   at = index(line, " @\"")
   head = substr(line, 1, at - 1)
-  n = split(head, w, " ")
-  out = ""
-  for (i = 1; i < n; i++) out = out w[i] " "
-  return out "iyicc " w[n] substr(line, at)
+  p = index(head, " ")
+  if (p == 0) return line
+  rest = substr(head, p + 1)
+  sp = index(rest, " ")
+  if (sp > 0) {
+    kw = substr(rest, 1, sp - 1)
+    if (kw ~ /^(internal|external|private|linkonce_odr|weak_odr|common|appending|available_externally|dso_local|unnamed_addr)$/) {
+      return substr(head, 1, p) kw " iyicc " substr(rest, sp + 1) substr(line, at)
+    }
+  }
+  return substr(head, 1, p) "iyicc " rest substr(line, at)
 }
 {
   if ($0 ~ /^define .* @"[*~]/) $0 = cc_define($0)
