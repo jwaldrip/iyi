@@ -1041,6 +1041,7 @@ pub class AliasType < NamedType
   property value : ASTNode
   property aliased_type : Type?
   property aliased_type_display : String?
+  property imports : Hash(String, Type)? = nil
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @value : ASTNode)
     super(program, namespace, name)
@@ -1064,8 +1065,12 @@ pub class AliasType < NamedType
     if at = @aliased_type
       at
     else
+      saved_imports = @program.current_imports
+      if imports = @imports
+        @program.current_imports = imports
+      end
       scope = @namespace || @program
-      if @value.is_a?(Generic) && @program.merge_hook.nil?
+      resolved = if @value.is_a?(Generic) && @program.merge_hook.nil?
         # Before the type system is installed this is only a display name, not
         # a resolved alias: caching the generic base loses its arguments.
         g = @value.as(Generic)
@@ -1079,6 +1084,8 @@ pub class AliasType < NamedType
         @aliased_type = t
         t
       end
+      @program.current_imports = saved_imports
+      resolved
     end
   end
 end
@@ -3076,6 +3083,7 @@ pub class TopLevelVisitor < Visitor
     end
 
     alias_type = AliasType.new(@program, scope, name, node.value)
+    alias_type.imports = @program.current_imports
     if loc = node.location
       alias_type.add_location(loc)
     end

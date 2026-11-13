@@ -1,0 +1,5 @@
+import aliases::{Imported}
+
+class AliasUser
+  @value : Imported
+end
