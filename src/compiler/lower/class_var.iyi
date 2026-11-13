@@ -38,7 +38,7 @@ import compiler/lower/context::{BodyVisit, Lowerer}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
 import compiler/lower/globals::{ClassVarState}
-import compiler/lower/const::{const_scope, literal_node_value}
+import compiler/lower/const::{const_scope, literal_node_value, literal_of_type}
 import compiler/lower/cast::{assign, nilable_reference_type?}
 import compiler/semantic/top_level::{ClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type}
 
@@ -201,6 +201,10 @@ pub def declare_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir
   if g = st.global
     return g.as(Global)
   end
+  if existing = low.module.get_global?(name)
+    st.global = existing
+    return existing.as(Global)
+  end
   g = low.module.add_global(name, ir)
   g.linkage = Linkage::Internal
   if cvar.thread_local
@@ -214,12 +218,17 @@ pub def declare_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir
 end
 
 # The global of a class variable with a literal initialiser: its value is the literal, stored at the declaration
-# (hosted `create_initialize_class_var_function` with `simple_initializer`, the `discard` branch).
+# (hosted `create_initialize_class_var_function` with `simple_initializer`, the `discard` branch). The constant is
+# built from the variable's declared type, not the initialiser node's analysed type: a required file is declaration-
+# visited only, so that node has no type (the census refusal on `@@cache : UInt64 = 0_u64`).
 pub def simple_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir : IrType, node : ASTNode, st : ClassVarState) : Global
   if g = st.global
     return g.as(Global)
   end
-  value = literal_node_value(low, node)
+  value = nil
+  if declared = cvar.type?
+    value = literal_of_type(low, node, declared)
+  end
   if value.nil?
     refuse_port("lower: class variable #{cvar.name} has a literal initialiser that is not an integer, Bool or Char (hosted class_var.cr: initialize_class_var)")
   end
@@ -232,6 +241,9 @@ end
 # evaluates the value and stores it in the global. A primitive constant result becomes the global's initializer,
 # and the function keeps nothing to do (as the hosted code does).
 pub def make_cvar_init_function(low : Lowerer, cvar : MetaTypeVar, init_name : String, global : Global, st : ClassVarState) : Function
+  if existing = low.module.get_function?(init_name)
+    return existing.as(Function)
+  end
   ir = cvar_ir_type(low, cvar)
   node = cvar.initializer.as(ASTNode)
   saved = low.enter_main
@@ -389,6 +401,16 @@ pub def codegen_class_var_read(low : Lowerer, node : Compiler::Syntax::Ast::Clas
   cvar = class_var_of(low, node)
   ir = cvar_ir_type(low, cvar)
   low.last = load_aligned(low, ir, class_var_pointer(low, cvar))
+end
+
+# The hosted `visit(PointerOf)` of a class variable (codegen.cr:1007-1021): initialise it if it has an
+# initialiser, then the address of its global (the thread-local accessor's address when it is thread-local).
+pub def codegen_pointerof_class_var(low : Lowerer, node : Compiler::Syntax::Ast::ClassVar) : Nil
+  cvar = class_var_of(low, node)
+  if cvar.initializer
+    initialize_class_var(low, cvar)
+  end
+  low.last = class_var_pointer(low, cvar)
 end
 
 # The hosted `codegen_assign` for a class variable target with a type (codegen.cr:1543-1556), once the value is evaluated:
