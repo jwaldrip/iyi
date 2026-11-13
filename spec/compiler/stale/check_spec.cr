@@ -565,7 +565,7 @@ describe "Iyi::Stale S3g: Check, MachineKey, KeyFile, Accept/Block" do
 
           with_data = Iyi::Stale::KeyFile.parse(File.read(with_path))
           without_data = Iyi::Stale::KeyFile.parse(File.read(without_path))
-          with_data.seconds.should be_close(with_result.seconds.not_nil!, 1e-6)
+          with_data.seconds.not_nil!.should be_close(with_result.seconds.not_nil!, 1e-6)
           without_data.seconds.should be_nil
           with_data.local.not_nil!.build.should eq(without_data.local.not_nil!.build)
           with_data.local.not_nil!.build.should eq(with_result.local_build_hex)
@@ -589,7 +589,7 @@ describe "Iyi::Stale S3g: Check, MachineKey, KeyFile, Accept/Block" do
           decision.should be > 0
           data = Iyi::Stale::KeyFile.parse(File.read(key_path))
           data.phase.should eq("linked")
-          data.seconds.should be_close(decision, 1e-6)
+          data.seconds.not_nil!.should be_close(decision, 1e-6)
           data.local.not_nil!.build.should eq(result.program.stale_check_result.not_nil!.local_build_hex)
         end
       end
