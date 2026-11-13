@@ -236,6 +236,7 @@ begin
   end
 
   program = Iyi::Program.new
+  program.filename = filename
   initial_types = program.types.keys.to_set
   visitor = Iyi::TopLevelVisitor.new(program)
   node.accept(visitor)
