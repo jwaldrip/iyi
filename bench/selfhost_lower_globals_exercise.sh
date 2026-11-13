@@ -37,10 +37,11 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_nilable_proc"
+WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_nilable_proc lowglob_cvar_pointer"
 # The body pass does not flag an untyped @[ThreadLocal] declaration.
 # The lazy fixture's indirect Proc call waits on zero-argument splat matching.
 # The nilable Proc fixture waits for declaration typing to instantiate Proc's arguments.
+# The pointer fixture waits for the same generic declaration resolution.
 #
 # The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
 
@@ -83,12 +84,13 @@ hosted_module() {
   fixture="$2"
   out="$3"
   log="$4"
-  if [ "$name" = "lowglob_cvar_lazy" ]; then
-    built_in=$("$IYI" env | awk -F= '/^IYI_PATH=/ { print substr($0, index($0, "=") + 1); exit }')
-    IYI_PATH="$REPO/bench/fixtures/lowglob_abi:${built_in}" "$IYI" build --prelude iyi/prelude --emit llvm-ir --no-debug -o "$out" "$fixture" > "$log" 2>&1
-  else
-    "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$out" "$fixture" > "$log" 2>&1
-  fi
+  case "$name" in
+    lowglob_cvar_lazy*)
+      built_in=$("$IYI" env | awk -F= '/^IYI_PATH=/ { print substr($0, index($0, "=") + 1); exit }')
+      IYI_PATH="$REPO/bench/fixtures/lowglob_abi:${built_in}" "$IYI" build --prelude iyi/prelude --emit llvm-ir --no-debug -o "$out" "$fixture" > "$log" 2>&1
+      ;;
+    *) "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$out" "$fixture" > "$log" 2>&1 ;;
+  esac
 }
 
 # Exit 1 means the initializer's side effect happened exactly once. A dropped flag
@@ -133,6 +135,12 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     if [ "$name" = lowglob_cvar_nilable_proc ]; then
       case "$reason" in
         *"class variable @@resolver is not an integer"*) ;;
+        *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
+      esac
+    fi
+    if [ "$name" = lowglob_cvar_pointer ]; then
+      case "$reason" in
+        *"uninstantiated generic type Pointer"*) ;;
         *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
       esac
     fi
@@ -244,6 +252,8 @@ prove_mutation "indirect calls are left without a function type" "$REPO/bench/li
   "  if (at == 0) return line" "  if (indirect || at == 0) return line" -- lowglob_check || status=1
 prove_mutation "lazy initializer ignores the once flag" "$REPO/bench/fixtures/lowglob_cvar_lazy.iyi" \
   "  if !flag.value" "  if true" -- hosted_once_check || status=1
+prove_mutation "an unresolved generic class variable is silently lowered" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  if cvar.type.is_a?(GenericClassType)" "  if false" -- lowglob_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1

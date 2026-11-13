@@ -42,7 +42,7 @@ import compiler/lower/globals::{ClassVarState}
 import compiler/lower/const::{const_scope, literal_node_value, literal_of_type, run_once}
 import compiler/lower/fun::{block_ended?}
 import compiler/lower/cast::{assign, nilable_reference_type?}
-import compiler/semantic/top_level::{ClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type}
+import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type}
 import compiler/types/types::{NilableProcType}
 
 # The scope a class variable name is looked up in: the type of the function being lowered, or else the class
@@ -172,6 +172,9 @@ end
 # The IR type of the variable (hosted `llvm_type(class_var.type)`). A nilable reference and a String are one
 # pointer; calling `llvm_type` on them would also declare the class struct, which the hosted global does not print.
 pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
+  if cvar.type.is_a?(GenericClassType)
+    refuse_port("lower: class variable #{cvar.name} has an uninstantiated generic type #{cvar.type.full_name}: its declaration must be resolved before lowering (hosted class_var.cr: declare_class_var)")
+  end
   if nilable_reference_type?(cvar.type)
     return low.module.types.ptr
   end
