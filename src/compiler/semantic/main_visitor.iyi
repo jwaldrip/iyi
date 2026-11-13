@@ -1827,6 +1827,7 @@ pub class MainVisitor < TypeNodeHost
         end
       end
     end
+    node.target = @current_def
     if rts = @return_types
       rts << value_t
     end

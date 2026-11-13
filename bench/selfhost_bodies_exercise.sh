@@ -365,6 +365,17 @@ prove_mutation "written ensure is refused under the prelude" "$MAIN_VISITOR" \
   "if @program.iyi_prelude? && !node.iyi_defer?" \
   "if false" -- ensure_refusal_check || status=1
 
+# The return targets its instantiated def (hosted main_visitor.cr 2096).
+ensure_targets_check() {
+  "$IYI" build -o "$WORK/ensure_targets" "$REPO/bench/selfhost_ensure_targets.iyi" > "$WORK/ensure_targets_build.log" 2>&1 || return 1
+  "$WORK/ensure_targets"
+}
+echo "== 4d. Return target identity"
+ensure_targets_check || status=1
+prove_mutation "return identifies its typed def" "$MAIN_VISITOR" \
+  "    node.target = @current_def" \
+  "    node.target = nil" -- ensure_targets_check || status=1
+
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"
 leak_typed=$("$TYPED" "$REPO/bench/fixtures/bodies_scope_leak_b.iyi" "$REPO/src" 2>/dev/null | awk '$1 ~ /^5:/' | wc -l | tr -d ' ')

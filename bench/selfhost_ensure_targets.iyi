@@ -1,0 +1,55 @@
+module bench/selfhost_ensure_targets
+
+import compiler/syntax/ast::{Def, Return}
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/visitor::{Visitor}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
+import compiler/semantic/main_visitor::{MainVisitor}
+
+class ReturnTargets < Visitor
+  getter lines : Array(String) = [] of String
+
+  def initialize(@expected : Def)
+  end
+
+  def visit(node : Return) : Bool
+    if target = node.target
+      raise "return targets a different def" unless target.node_id == @expected.node_id
+      node_line = if loc = node.location
+                    loc.line_number
+                  else
+                    0
+                  end
+      target_line = if loc = target.location
+                      loc.line_number
+                    else
+                      0
+                    end
+      @lines << "#{node_line} Return Def #{target_line}"
+    else
+      @lines << "Return missing target"
+    end
+    true
+  end
+end
+
+source = "def answer\n  return 42\nend\nanswer\n"
+node = Parser.new(source, "targets.iyi").parse
+program = SemanticProgram.new
+declarations = TopLevelVisitor.new(program, "targets.iyi")
+node.accept(declarations)
+declarations.finish
+visitor = MainVisitor.new(program)
+visitor.total = true
+node.accept(visitor)
+lines = [] of String
+visitor.typed_instances.each do |instance|
+  if instance.definition.name == "answer"
+    walk = ReturnTargets.new(instance.definition)
+    instance.definition.accept(walk)
+    lines.concat(walk.lines)
+  end
+end
+expected = ["2 Return Def 1"]
+raise "return targets: #{lines}" unless lines == expected
+puts lines.first
