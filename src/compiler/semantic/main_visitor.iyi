@@ -20,7 +20,7 @@ import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_n
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/lookup::{LookupError}
-import compiler/semantic/restrictions::{ArgRestriction}
+import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature}
 import compiler/semantic/call::{CallRecalculation}
 import compiler/semantic/new::{define_new_methods}
@@ -2041,18 +2041,31 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def def_more_specific?(d1 : Def, d2 : Def, args : Array(ASTNode), owner : Type) : Bool
+    # Hosted restrictions.cr:393-414 orders non-splat overloads ahead of splats.
+    return false if d1.splat_index && !d2.splat_index
+    return true if d2.splat_index && !d1.splat_index
+    if a = d1.splat_index
+      if b = d2.splat_index
+        return a.as(Int32) > b.as(Int32) if a != b
+      end
+    end
+    arg_types = [] of Type
+    args.each { |arg| arg_types << type_of(arg) }
+    bound1 = FreeBindings.of_def(d1, arg_types, type_node_system(@program))
+    bound2 = FreeBindings.of_def(d2, arg_types, type_node_system(@program))
     has_strict = false
     i = 0
-    while i < args.size
+    while i < args.size && i < d1.args.size && i < d2.args.size
+      break if d1.splat_index == i || d2.splat_index == i
       p1 = d1.args[i]
       p2 = d2.args[i]
       t1 = if r1 = p1.restriction
-             lookup_under(r1, owner)
+             comparison_restriction(r1, owner, bound1)
            else
              @program.object_type
            end
       t2 = if r2 = p2.restriction
-             lookup_under(r2, owner)
+             comparison_restriction(r2, owner, bound2)
            else
              @program.object_type
            end
@@ -2066,6 +2079,14 @@ pub class MainVisitor < TypeNodeHost
       i = i + 1
     end
     has_strict
+  end
+
+  def comparison_restriction(node : ASTNode, owner : Type, bound : Hash(String, Type)?) : Type
+    if bound
+      found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)
+      return found.as(Type) unless found.is_a?(LookupError)
+    end
+    @program.object_type
   end
 
   def filter_most_specific_overloads(candidates : Array(Def), args : Array(ASTNode), owner : Type) : Array(Def)
