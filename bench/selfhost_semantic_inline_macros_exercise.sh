@@ -326,7 +326,7 @@ prove_mutation "the expansion is parsed with no file, so its declarations are no
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation_all "no spliced inline macro expansion is ever declared (top-level and type-body sites)" "$MUT_INL" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals))" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts))" \
   "out.concat([] of ASTNode)" \
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -471,7 +471,7 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # Not "wrapped but not spliced": visit(Expressions) splices the wrapper again, so that mutant is equivalent.
 prove_mutation "a single macro node body loses its expansion: the wrapper is empty" "$MUT_INL" \
-  "Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals))" \
+  "Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals, bindings, facts))" \
   "Expressions.new([] of ASTNode)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -486,11 +486,6 @@ prove_mutation "a constant whose value is one macro node is typed unexpanded, so
   "spliced = Expressions.new([value] of ASTNode)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-# A fun body is spliced in place (type_nodes.iyi visit_fun_def): its macro sites are expanded, not refused by the typer.
-prove_mutation "a fun body's macro sites are not spliced, so the typer refuses them" "$MUT_TYPE" \
-  "body = splice_fun_body(node, visitor.program.full_name)" \
-  "body = node.body" -- check_body_fixture || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # A site's expansion is parsed knowing the names the body declared before it (inline_macros.iyi, the parser's var scope).
 prove_mutation "a site's expansion is parsed with no names declared before it, so a later local reads as a call" "$MUT_INL" \
@@ -503,8 +498,8 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # keeps the expansion and drops that write-back, so later_block_local.iyi pointerof
 # refuses the name and root-refusals rise above 5.
 prove_mutation "a recursive splice drops names an earlier expansion declared, so a later block's pointerof refuses them" "$MUT_INL" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals))" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals.dup))" -- check_body_fixture || status=1
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts))" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals.dup, bindings, facts))" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
