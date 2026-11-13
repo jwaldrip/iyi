@@ -34,7 +34,7 @@ import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper, passed_by_value?}
 import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, NilableReferenceUnionType, NilableProcType, PointerInstanceType, TypeQueries, VirtualType}
 import compiler/lower/context::{BodyVisit, BranchPhi, Lowerer, LowerVar}
-import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?, raise_overflow_name}
+import compiler/lower/helpers::{abi_name, int1, llvm_nil, load_aligned, store_aligned, at_terminator?, raise_overflow_name}
 import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
@@ -94,6 +94,16 @@ pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type)
     raise "error[#{err.kind}]: #{err.message}"
   end
   nil
+end
+
+# Give the per-def table the same runtime declarations as a whole-program
+# lowering before it probes any def.
+pub def prepare_well_known_funs(analysed : MainVisitor, typer : LowerTyper, m : Module) : Nil
+  low = Lowerer.new(m, typer, analysed)
+  low.body_visitor = CoreBody.new
+  low.type_ids.assign_all(analysed.program.object_type)
+  low.string_type_id = low.type_ids.type_id(analysed.program.string_type)
+  emit_well_known_funs(low)
 end
 
 # Whether the program's root defines a top-level `fun main`, the prelude's C entry. Its own `main` then
@@ -183,8 +193,8 @@ end
 # function (hosted External with no call_convention, call.cr:661), emitted with external linkage as a hosted External is;
 # a `__crystal_` or `__iyi_` name is internal instead, except the names asm refers to (hosted codegen_fun, fun.cr:763-781). A fun the program never calls is declared here,
 # as the hosted visit does (codegen.cr:864), and its body waits for emit_unused_fun_defs (the hosted @unused_fun_defs pass,
-# codegen.cr:747). A `well_known` fun is emitted on entry (see emit_well_known_funs).
-pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
+# codegen.cr:747). Well-known functions use this same visit.
+pub def codegen_fun_def(low : Lowerer, node : FunDef) : Nil
   rec_opt = low.analysed.program.lib_fun_of(node)
   if rec_opt.nil?
     pending_visit_node("visit(FunDef) #{node.name} with no record from the analysis (lib_fun_of)")
@@ -206,7 +216,7 @@ pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
   end
   low.fun_defs_done[name] = true
   ret = rt.as(Type)
-  if !well_known && !rec.used
+  if !rec.used
     # A fun is C (def_convention). The declaration is what a later generated call copies, and the
     # body pass has not run yet, so the convention has to be C here: `__iyi_new` is called from
     # `new` before `emit_unused_fun_defs` fills the body.
@@ -267,15 +277,22 @@ pub def emit_unused_fun_defs(low : Lowerer) : Nil
   end
 end
 
-# The hosted codegen emits the allocator, barrier and overflow functions before
-# lowering code that implicitly calls them.
+# Hosted codegen_well_known_functions visits these top-level definitions in
+# source order, applying the ordinary used/deferred rule to each.
 pub def emit_well_known_funs(low : Lowerer) : Nil
-  prefix = low.analysed.program.lookup_type("IyiRuntimeLock").nil? ? "__crystal_" : "__iyi_"
-  names = [raise_overflow_name(low), prefix + "malloc64", prefix + "malloc_atomic64", "__iyi_write_barrier_begin", "__iyi_write_barrier"]
+  names = [] of String
+  ["malloc64", "malloc_atomic64", "realloc64", "raise", "personality", "get_exception", "raise_overflow", "raise_cast_failed", "once_init", "once"].each do |suffix|
+    names << abi_name(low, suffix)
+  end
+  names << "__iyi_write_barrier_begin"
+  names << "__iyi_write_barrier"
   low.analysed.program.global_funs.each do |record|
+    if record.name == "__iyi_preempt"
+      refuse_port("__iyi_preempt requires the hosted iyi_preempt_on? predicate")
+    end
     if names.includes?(record.name)
       if node = record.node
-        codegen_fun_def(low, node, true)
+        codegen_fun_def(low, node)
       end
     end
   end
@@ -522,7 +539,7 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     return
   end
   if node.is_a?(FunDef)
-    codegen_fun_def(low, node.as(FunDef), false)
+    codegen_fun_def(low, node.as(FunDef))
     low.last = llvm_nil(low)
     return
   end

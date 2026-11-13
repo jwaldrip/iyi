@@ -16,12 +16,16 @@ import compiler/lower/pending::{refuse_port}
 import compiler/ir/types::{IrType}
 import compiler/lower/context::{Lowerer}
 
-# The hosted `Program#raise_overflow_name` uses the runtime ABI prefix.
-pub def raise_overflow_name(low : Lowerer) : String
+# The hosted Program#abi_name picks the runtime prefix from the prelude.
+pub def abi_name(low : Lowerer, suffix : String) : String
   if low.analysed.program.lookup_type("IyiRuntimeLock").nil?
-    return "__crystal_raise_overflow"
+    return "__crystal_" + suffix
   end
-  "__iyi_raise_overflow"
+  "__iyi_" + suffix
+end
+
+pub def raise_overflow_name(low : Lowerer) : String
+  abi_name(low, "raise_overflow")
 end
 
 # The hosted `int1(n)`: an i1 constant of `value` (0 or 1).

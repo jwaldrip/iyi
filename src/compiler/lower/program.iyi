@@ -36,7 +36,7 @@ import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/context::{Lowerer}
-import compiler/lower/lower::{codegen_program, lower_def_probe}
+import compiler/lower/lower::{codegen_program, lower_def_probe, prepare_well_known_funs}
 import compiler/lower/primitives::{primitive_name}
 import compiler/lower/fun::{mangled_name, discard_probe_functions}
 import compiler/native/driver::{compile_module}
@@ -382,6 +382,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   end
   m = made.as(Module)
   typer = LowerTyper.new(m.types, m.layout, true)
+  prepare_well_known_funs(typed.visitor, typer, m)
   bad = Hash(UInt64, Bool).new
   sites = Hash(String, Bool).new
   reasons = [] of String
