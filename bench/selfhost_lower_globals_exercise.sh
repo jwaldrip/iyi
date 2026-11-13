@@ -219,6 +219,10 @@ prove_mutation "a namespaced constant is named by its bare name, not its full na
 prove_mutation "a required file's class variable literal ignores its declared type" "$REPO/src/compiler/lower/class_var.iyi" \
   "    value = literal_of_type(low, node, declared)" \
   "    value = nil" -- lowglob_check || status=1
+prove_mutation "pointerof of a class variable is refused" "$REPO/src/compiler/lower/lower.iyi" \
+  "    if exp.is_a?(ClassVar)" \
+  "    if false" -- lowglob_check || status=1
+
 
 echo
 if [ "$status" -eq 0 ]; then

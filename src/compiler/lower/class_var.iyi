@@ -403,6 +403,16 @@ pub def codegen_class_var_read(low : Lowerer, node : Compiler::Syntax::Ast::Clas
   low.last = load_aligned(low, ir, class_var_pointer(low, cvar))
 end
 
+# The hosted `visit(PointerOf)` of a class variable (codegen.cr:1007-1021): initialise it if it has an
+# initialiser, then the address of its global (the thread-local accessor's address when it is thread-local).
+pub def codegen_pointerof_class_var(low : Lowerer, node : Compiler::Syntax::Ast::ClassVar) : Nil
+  cvar = class_var_of(low, node)
+  if cvar.initializer
+    initialize_class_var(low, cvar)
+  end
+  low.last = class_var_pointer(low, cvar)
+end
+
 # The hosted `codegen_assign` for a class variable target with a type (codegen.cr:1543-1556), once the value is evaluated:
 # the value is stored in the variable's global. A nilable reference variable takes a reference value as it is and nil
 # as the null pointer (cast.iyi `assign`). Any other value of another type is refused by name: the hosted assign into a
