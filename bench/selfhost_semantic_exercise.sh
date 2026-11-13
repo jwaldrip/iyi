@@ -229,6 +229,7 @@ begin
 
   if ARGV.size > 1 && ARGV[1] == "--expr"
     program = Iyi::Program.new
+    program.filename = filename
     node = program.normalize(node)
     node = program.semantic(node)
     dump_typed_node(node, STDOUT)
@@ -236,6 +237,7 @@ begin
   end
 
   program = Iyi::Program.new
+  program.filename = filename
   initial_types = program.types.keys.to_set
   visitor = Iyi::TopLevelVisitor.new(program)
   node.accept(visitor)
