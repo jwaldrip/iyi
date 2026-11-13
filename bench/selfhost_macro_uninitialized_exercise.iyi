@@ -18,7 +18,7 @@ source = if Program.args.empty?
            File.read(Program.args[0])
          end
 root = Parser.new(source).parse
-klass = root.is_a?(Expressions) ? root.as(Expressions).expressions.first.as(ClassDef) : root.as(ClassDef)
+klass = root.is_a?(Expressions) ? root.as(Expressions).expressions.find { |node| node.is_a?(ClassDef) }.as(ClassDef) : root.as(ClassDef)
 body = klass.body
 method = body.is_a?(Expressions) ? body.as(Expressions).expressions.first.as(Def) : body.as(Def)
 statements = method.body.as(Expressions).expressions
