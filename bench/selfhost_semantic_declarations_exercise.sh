@@ -710,8 +710,10 @@ prove_mutation "a file's own directory is never searched for an import" "$MUT_SE
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "explicit instance variables are recorded in reverse declaration order" "$MUT_SEM" \
-  "@pending_ivars.each do |pi|" \
-  "@pending_ivars.reversed.each do |pi|" \
+  '@pending_ivars.each do |pi|
+      next if !pi.explicit' \
+  '@pending_ivars.reversed.each do |pi|
+      next if !pi.explicit' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an initialize argument instance variable is recorded ahead of the class body's" "$MUT_SEM" \
