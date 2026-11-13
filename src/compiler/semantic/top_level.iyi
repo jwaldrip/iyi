@@ -47,6 +47,12 @@ pub abstract class Type
     full_name
   end
 
+  # The type with a virtual wrapper removed. The hosted printer calls this unless
+  # it is printing an IR name. A type that is not virtual is itself.
+  def devirtualize : Type
+    self
+  end
+
   # Records a place this type is declared, as the hosted pass does (`attach_doc`).
   def add_location(location : Location) : Nil
     if @locations.nil?
