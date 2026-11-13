@@ -326,6 +326,14 @@ class GuessVisitor < Visitor
         end
       end
     end
+    # Pointer.malloc(size, value) takes the inferred type of its second argument.
+    if obj.is_a?(Path) && obj.as(Path).names == ["Pointer"] && node.name == "malloc" && node.args.size == 2
+      if element_type = guess_type(node.args[1])
+        if hook = @program.merge_hook
+          return hook.instantiate_type(@program.types["Pointer"], [element_type] of Type)
+        end
+      end
+    end
     nil
   end
 
