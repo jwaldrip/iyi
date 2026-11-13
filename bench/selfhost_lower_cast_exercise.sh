@@ -171,6 +171,23 @@ if [ ! -f "$WORK/struct_mutant_built" ]; then
   echo "  NOT PROVEN: struct union mutant failed to build"
   status=1
 fi
+aggregate_behavior_check() {
+  "$IYI" build -o "$WORK/aggregate_mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/aggregate_mut.build.log" 2>&1 || return 1
+  "$WORK/aggregate_mut" emit "$REPO/bench/fixtures/lowcast_struct_union.iyi" "$WORK/lowcast_struct_union.oracle.ll" > "$WORK/aggregate_mut.ll" 2> "$WORK/aggregate_mut.emit.log" || return 1
+  "$WORK/compile_native" "$WORK/aggregate_mut.ll" -o "$WORK/aggregate_mut.native" > "$WORK/aggregate_mut.native.log" 2>&1 || return 1
+  "$WORK/aggregate_mut.native" > "$WORK/aggregate_mut.out" 2>&1
+  local result=$?
+  echo "$result" > "$WORK/aggregate_mut.exit"
+  [ "$result" -eq 7 ]
+}
+aggregate_behavior_check || { echo "  baseline: struct union native result differs"; status=1; }
+rm -f "$WORK/aggregate_mut.exit"
+prove_mutation "a union local receives a zero aggregate" "$REPO/src/compiler/lower/lower.iyi" \
+  '      stored = load_aligned(low, low.typer.llvm_type(vt), v)' '      stored = low.builder.const_zero(low.typer.llvm_type(vt))' -- aggregate_behavior_check || status=1
+if [ ! -f "$WORK/aggregate_mut.exit" ] || [ "$(cat "$WORK/aggregate_mut.exit")" != 200 ]; then
+  echo "  NOT PROVEN: aggregate mutant did not build, link and exit 200"
+  status=1
+fi
 no_return_check || { echo "  baseline: no-return union fixture differs"; status=1; }
 prove_mutation "a no-return union assignment stores a value" "$REPO/src/compiler/lower/cast.iyi" \
   '  return if at_terminator?(low) || TypeQueries.no_return?(value_type)' '  return if false' -- no_return_check || status=1
