@@ -2454,11 +2454,12 @@ pub class MainVisitor < TypeNodeHost
     old_import_defs = @program.current_import_defs
     enter_file_scope(target_def)
     old_current_type = @current_type
-    enter_owner_scope(rec_type)
+    body_receiver = rec_type
     if owner = @program.def_owners[target_def]?
-      @current_type = owner if owner.iyi_unit
+      body_receiver = owner if owner.iyi_unit
     end
-    result = type_method_body_in_file(target_def, rec_type, args, block, site, cache_key)
+    enter_owner_scope(body_receiver)
+    result = type_method_body_in_file(target_def, body_receiver, args, block, site, cache_key)
     @current_type = old_current_type
     @program.current_imports = old_imports
     @program.current_import_defs = old_import_defs
