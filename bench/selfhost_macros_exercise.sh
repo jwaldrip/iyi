@@ -55,6 +55,7 @@ for phrase in \
   "testing macro fresh variable generation... ok" \
   "testing macro code and definition generation... ok" \
   "testing @type as the enclosing class's TypeNode... ok" \
+  "testing that an expansion's nodes are in the calling file... ok" \
   "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"
@@ -744,6 +745,20 @@ prove_mutation "symbols print bare whatever their text" "$METHODS" \
   "plain = false" \
   "plain = plain" \
   -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# The plain exercise rebuilt on the patched engine: zero only when every unit check still passes.
+check_plain_exercise_passes() {
+  "$IYI" build -o "$WORK/mut-plain" "$REPO/bench/selfhost_macros_exercise.iyi" >/dev/null 2>&1 || return 1
+  "$WORK/mut-plain" > "$WORK/mut-plain.out" 2>&1 || return 1
+  grep -qF "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!" "$WORK/mut-plain.out"
+}
+
+prove_mutation "a macro call's expansion is parsed with no file name" "$ENGINE" \
+  "parser = Parser.new(expanded_source, file)" \
+  "parser = Parser.new(expanded_source)" \
+  -- check_plain_exercise_passes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 

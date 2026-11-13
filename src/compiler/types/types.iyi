@@ -522,7 +522,12 @@ pub class ProcInstanceType < GenericClassInstanceType
     all_args = [] of Type
     @arg_types.each { |a| all_args << a }
     all_args << @return_type
-    super(program, program.types["Proc"], Hash(String, Type).new, all_args, program.struct_type)
+    # Hosted ProcInstanceType#initialize (types.cr:2758-2765) binds the
+    # splatted arguments as T and the result as R.
+    vars = Hash(String, Type).new
+    vars["T"] = TupleInstanceType.new(program, @arg_types)
+    vars["R"] = @return_type
+    super(program, program.types["Proc"], vars, all_args, program.struct_type)
     @struct = true
   end
 

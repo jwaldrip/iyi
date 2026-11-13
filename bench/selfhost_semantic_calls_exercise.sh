@@ -363,6 +363,18 @@ prove_mutation "a generic owner's type parameter is not bound in a pointer restr
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a Proc does not bind its argument tuple as T" "$REPO/src/compiler/types/types.iyi" \
+  '    vars["T"] = TupleInstanceType.new(program, @arg_types)' \
+  '    vars["T"] = TupleInstanceType.new(program, [] of Type)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic owner's superclass restriction rejects subclasses" "$MATCH_FILE" \
+  '        restricted = ts.restrict(arg_type, allowed.as(Type))' \
+  '        restricted = arg_type == allowed.as(Type) ? arg_type : nil' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
