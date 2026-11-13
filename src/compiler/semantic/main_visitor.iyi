@@ -864,6 +864,10 @@ pub class MainVisitor < TypeNodeHost
   # recorded untyped with its name.
   def visit(node : Primitive) : Bool
     if cd = @current_def
+      if primitive_type = @program.primitive_return_type(cd)
+        set_type(node, primitive_type)
+        return false
+      end
       if rt = cd.return_type
         set_type(node, lookup_under(rt, @scope))
         return false
