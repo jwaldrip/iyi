@@ -1048,12 +1048,13 @@ pub class AliasType < NamedType
       at
     else
       scope = @namespace || @program
-      if @value.is_a?(Generic)
+      if @value.is_a?(Generic) && @program.merge_hook.nil?
+        # Before the type system is installed this is only a display name, not
+        # a resolved alias: caching the generic base loses its arguments.
         g = @value.as(Generic)
         base = @program.lookup_type_node(g.name, scope)
         args_strs = g.type_vars.map { |tv| @program.lookup_type_node(tv, scope).full_name }
         @aliased_type_display = "#{base.full_name}(#{args_strs.join(", ")})"
-        @aliased_type = base
         base
       else
         t = @program.lookup_type_node(@value, scope)
@@ -1177,6 +1178,7 @@ pub class SemanticProgram < NonGenericModuleType
   property merge_hook : TypeHook?
   # The explicit instance variables the top-level passes declared, for `resolve_declared_types`.
   getter declared_ivars : Array(DeclaredIvar)
+  getter pending_ivars : Array(PendingIvar) = [] of PendingIvar
   getter declared_cvars : Array(DeclaredIvar)
   # iyi: the typed dump's mode. Strict (the default) refuses a name the program
   # cannot resolve, as it always has; total mode records it and goes on.
@@ -2093,6 +2095,10 @@ pub class TopLevelVisitor < Visitor
   # keeps declaration order: TypeDeclarationVisitor).
   def finish : Nil
     saved = @program.current_imports
+    @pending_ivars.each do |pi|
+      pi.imports = saved if pi.imports.nil?
+      @program.pending_ivars << pi
+    end
     # An explicit `@x : T` decides the type of `@x`. An inferred record for the same name (an
     # initialize argument's restriction) does not replace it, as the hosted pass skips a guess for a
     # variable that exists.
