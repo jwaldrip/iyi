@@ -741,6 +741,25 @@ prove_mutation "a pointer union gains extra parentheses" "$REPO/src/compiler/low
   'skip_union_parens: true, codegen: true' \
   'skip_union_parens: false, codegen: true' -- name_pointer_check || status=1
 
+name_block_check() {
+  "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/name-block-oracle" "$REPO/bench/fixtures/nameblock_capture.iyi" > "$WORK/name-block.oracle.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/name-block-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-block.build.log" 2>&1 || return 1
+  "$WORK/name-block-port" "$REPO/bench/fixtures/nameblock_capture.iyi" "$WORK/name-block-oracle.ll" block > "$WORK/name-block.out" 2> "$WORK/name-block.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-block.out"
+}
+if name_block_check; then
+  echo "  nameblock_capture: captured block names match the hosted symbols"
+else
+  echo "  nameblock_capture: captured block names differ from the hosted symbols"
+  for log in "$WORK/name-block.err" "$WORK/name-block.out" "$WORK/name-block.build.log" "$WORK/name-block.oracle.log"; do
+    [ ! -f "$log" ] || awk 'NR<=8' "$log"
+  done
+  status=1
+fi
+prove_mutation "a captured block loses its ampersand" "$REPO/src/compiler/lower/fun.iyi" \
+  '      names << "&" + symbol_type(bt)' \
+  '      names << symbol_type(bt)' -- name_block_check || status=1
+
 echo
 echo
 if [ "$status" -eq 0 ]; then

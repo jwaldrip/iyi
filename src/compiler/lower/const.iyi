@@ -29,6 +29,8 @@ import compiler/lower/helpers::{build_string_constant, int1, llvm_nil, load_alig
 import compiler/lower/pending::{refuse_port}
 import compiler/lower/globals::{ConstState}
 import compiler/lower/symbols::{symbol_index}
+import compiler/lower/cast::{type_id_value}
+import compiler/types/types::{TupleInstanceType}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
 
 # The module a path is resolved in: the type of `self` in the function being lowered, or the program at
@@ -394,7 +396,15 @@ end
 pub def codegen_path(low : Lowerer, node : Path) : Nil
   const = path_const(low, node)
   if const.nil?
-    refuse_port("lower: a path that names a type or a module, read as a value (hosted codegen.cr: visit(Path)), is not ported yet")
+    typ = low.analysed.type_of?(node)
+    if typ.nil?
+      refuse_port("lower: a type path has no analysed type (hosted codegen.cr: visit(Path))")
+    end
+    if typ.is_a?(TupleInstanceType)
+      refuse_port("lower: a type tuple path requires allocating the tuple of type ids (hosted codegen.cr: visit(Path))")
+    end
+    low.last = type_id_value(low, typ.as(Type))
+    return
   end
   c = const.as(Compiler::Semantic::TopLevel::Const)
   v = literal_value(low, c)

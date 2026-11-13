@@ -21,7 +21,7 @@ module compiler/lower/fun
 # The body is lowered through the dispatch the lowering installed (`BodyVisit`,
 # context.iyi), because iyi refuses an import cycle and the dispatch imports this file.
 
-import compiler/syntax/ast::{ASTNode, Assign, ClassDef, Def, ModuleDef, ProcLiteral, Var}
+import compiler/syntax/ast::{ASTNode, Arg, Assign, ClassDef, Def, ModuleDef, ProcLiteral, Var}
 import compiler/syntax/visitor::{Visitor}
 import compiler/ir/function::{Function, Linkage}
 import compiler/ir/inst::{Attribute, Block, CallConv}
@@ -45,7 +45,7 @@ import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, Gen
 # not a plain identifier is not ported: the caller refuses such a name. `self_type` is nil for a
 # top-level def. A caller that still passes a metaclass as `self_type` and no `class_owner` is
 # the hosted metaclass owner: the instance type and `::`, not `Owner.class#`.
-pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : String
+pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil, block_type : Type? = nil) : String
   text = "*"
   named_self = self_type
   named_class = class_owner
@@ -64,10 +64,13 @@ pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), 
     text = text + owner_segment(st, name, false) + "#"
   end
   text = text + name
-  if arg_types.size > 0
+  if arg_types.size > 0 || block_type
     names = [] of String
     arg_types.each do |t|
       names << symbol_type(t)
+    end
+    if bt = block_type
+      names << "&" + symbol_type(bt)
     end
     text = text + "<" + names.join(", ") + ">"
   end
@@ -212,7 +215,14 @@ end
 # function already in the module when there is one, otherwise a new one, emitted now. A method's
 # self is the first parameter, of the owner's type (hosted `codegen_fun_signature_non_external`).
 pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : Function
-  name = mangled_name(target.name, self_type, arg_types, ret, class_owner)
+  block_type : Type? = nil
+  if target.uses_block_arg?
+    block_arg = target.block_arg
+    raise "BUG: captured block parameter is missing" if block_arg.nil?
+    block_type = low.analysed.type_of?(block_arg.as(ASTNode))
+    raise "BUG: captured block parameter has no type" if block_type.nil?
+  end
+  name = mangled_name(target.name, self_type, arg_types, ret, class_owner, block_type)
   if existing = low.module.get_function?(name)
     return existing.as(Function) if fun_emission_done?(low.module, name) || low.emitting[name]?
     low.module.remove_function(existing.as(Function))
@@ -228,6 +238,9 @@ pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types
   end
   arg_types.each do |t|
     params << low.typer.llvm_type(t)
+  end
+  if bt = block_type
+    params << low.typer.llvm_type(bt)
   end
   ret_ir = low.typer.llvm_return_type(ret)
   fn_type = low.module.types.func(params, ret_ir)
@@ -304,6 +317,16 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
     fn.name_param(param, arg.name)
     create_local_copy_of_arg(low, arg.name, arg_type, param, assigned.includes?(arg.name))
     i += 1
+  end
+  # A captured block is the last parameter (hosted fun.cr:626-629, 912-928).
+  if target.uses_block_arg?
+    block_arg = target.block_arg
+    raise "BUG: captured block parameter is missing" if block_arg.nil?
+    block_type = low.analysed.type_of?(block_arg.as(ASTNode))
+    raise "BUG: captured block parameter has no type" if block_type.nil?
+    param = fn.param(first + target.args.size)
+    fn.name_param(param, block_arg.as(Arg).name)
+    create_local_copy_of_arg(low, block_arg.as(Arg).name, block_type.as(Type), param, assigned.includes?(block_arg.as(Arg).name))
   end
 
   low.needs_value = true
