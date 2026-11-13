@@ -11,14 +11,15 @@ module compiler/lower/census
 # Any name that cannot be split, parsed, resolved, or matched to a target def is recorded as a `census` row in
 # `refused` (never mixed with the port's `body` or `lowering` refusals).
 
-import compiler/syntax/ast::{ASTNode, Call, Def, Var}
+import compiler/syntax/ast::{ASTNode, Call, Def, Generic, Metaclass, NumberLiteral, Path, ProcNotation, Self, Union, Var}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{TokenKind}
-import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, ModuleType, SemanticProgram, Type}
 import compiler/semantic/main_visitor::{MainVisitor, Refusal}
 import compiler/semantic/type_nodes::{type_node_metaclass, type_node_system}
-import compiler/types/types::{TypeQueries, VirtualType}
+import compiler/types/types::{NamedArgumentType, TypeQueries, VirtualType}
 import compiler/types/lookup::{LookupError, TypeLookup}
+import compiler/types/merge::{TypeMerge}
 import compiler/lower/program::{TypedProgram}
 import std/file
 
@@ -216,6 +217,100 @@ def strip_virtual_markers(text : String) : String
   end
 end
 
+# Resolves a type AST node including `private` nested constants (which the hosted IR emits by full path).
+def census_lookup_private(prog : SemanticProgram, lookup : TypeLookup, node : ASTNode) : Type | LookupError
+  res = lookup.lookup(prog, node)
+  unless res.is_a?(LookupError)
+    return res
+  end
+  unless res.as(LookupError).message.includes?("private constant")
+    return res
+  end
+
+  if node.is_a?(Path)
+    found = lookup.find_path(prog, node.as(Path), true)
+    return LookupError.new("undefined constant #{node.to_s}") if found.nil?
+    return lookup.expand(found.as(Type))
+  end
+  if node.is_a?(Union)
+    u = node.as(Union)
+    members = [] of Type
+    i = 0
+    while i < u.types.size
+      m = census_lookup_private(prog, lookup, u.types[i])
+      return m if m.is_a?(LookupError)
+      members << TypeQueries.virtual_type(m.as(Type))
+      i += 1
+    end
+    return TypeMerge.merge_all(prog, members)
+  end
+  if node.is_a?(Metaclass)
+    base = census_lookup_private(prog, lookup, node.as(Metaclass).name)
+    return base if base.is_a?(LookupError)
+    meta = type_node_metaclass(TypeQueries.virtual_type(base.as(Type)))
+    return LookupError.new("#{base.as(Type).full_name} doesn't have a metaclass") if meta.nil?
+    return TypeQueries.virtual_type(meta.as(Type))
+  end
+  if node.is_a?(ProcNotation)
+    pn = node.as(ProcNotation)
+    inputs = [] of Type
+    if ins = pn.inputs
+      i = 0
+      while i < ins.size
+        a = census_lookup_private(prog, lookup, ins[i])
+        return a if a.is_a?(LookupError)
+        inputs << TypeQueries.virtual_type(a.as(Type))
+        i += 1
+      end
+    end
+    ret : Type = prog.nil_type
+    if out_n = pn.output
+      r = census_lookup_private(prog, lookup, out_n)
+      return r if r.is_a?(LookupError)
+      ret = TypeQueries.virtual_type(r.as(Type))
+    end
+    return lookup.instances.proc_of(inputs, ret)
+  end
+  if node.is_a?(Generic)
+    g = node.as(Generic)
+    base = census_lookup_private(prog, lookup, g.name)
+    return base if base.is_a?(LookupError)
+    base_t = base.as(Type)
+    if base_t.is_a?(GenericClassType) && base_t.full_name == "NamedTuple"
+      entries = [] of NamedArgumentType
+      if named = g.named_args
+        i = 0
+        while i < named.size
+          na = named[i]
+          v = census_lookup_private(prog, lookup, na.value)
+          return v if v.is_a?(LookupError)
+          entries << NamedArgumentType.new(na.name, TypeQueries.virtual_type(v.as(Type)))
+          i += 1
+        end
+      end
+      return lookup.instances.named_tuple_of(entries)
+    end
+    if base_t.is_a?(GenericClassType) && base_t.full_name == "StaticArray" && g.type_vars.size == 2 && g.type_vars[1].is_a?(NumberLiteral)
+      elem = census_lookup_private(prog, lookup, g.type_vars[0])
+      return elem if elem.is_a?(LookupError)
+      sz = g.type_vars[1].as(NumberLiteral).value.to_i64
+      return lookup.instances.static_array_of(elem.as(Type), sz)
+    end
+    if base_t.is_a?(GenericClassType) || base_t.is_a?(GenericModuleType)
+      args = [] of Type
+      i = 0
+      while i < g.type_vars.size
+        tv = census_lookup_private(prog, lookup, g.type_vars[i])
+        return tv if tv.is_a?(LookupError)
+        args << TypeQueries.virtual_type(tv.as(Type))
+        i += 1
+      end
+      return lookup.instantiate(base_t, args)
+    end
+  end
+  res
+end
+
 # Parses and resolves a hosted type text from the root scope using the port's own parser and TypeLookup.
 def resolve_type_text(raw : String, prog : SemanticProgram, lookup : TypeLookup, cache : Hash(String, Type | String)) : Type | String
   if cached = cache[raw]?
@@ -250,7 +345,7 @@ def resolve_type_text(raw : String, prog : SemanticProgram, lookup : TypeLookup,
     return err
   end
 
-  resolved = lookup.lookup(prog, parsed.as(ASTNode))
+  resolved = census_lookup_private(prog, lookup, parsed.as(ASTNode))
   if resolved.is_a?(LookupError)
     err = resolved.as(LookupError).message
     cache[raw] = err
