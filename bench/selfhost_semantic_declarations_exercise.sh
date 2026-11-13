@@ -547,7 +547,7 @@ prove_mutation "a class reopened without a superclass takes the reference superc
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a metaclass takes Class as its parent even when its superclass has a metaclass" "$MUT_SEM" \
-  "        @parents << sc.as(ModuleType).metaclass" \
+  "        @parents << meta_sc" \
   "        @parents << program.types[\"Class\"]" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
