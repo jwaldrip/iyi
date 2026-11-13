@@ -236,7 +236,11 @@ pub def store_pointer_value(low : Lowerer, dest : Value, value : Value, type : T
   if low.typer.passed_indirectly?(type)
     copy_pointer_value(low, dest, value, ir, false)
   else
-    store_aligned(low, load_aligned(low, low.typer.llvm_embedded_type(type), value), dest)
+    stored = value
+    if value.type == low.module.types.ptr(0)
+      stored = load_aligned(low, low.typer.llvm_embedded_type(type), value)
+    end
+    store_aligned(low, stored, dest)
   end
 end
 

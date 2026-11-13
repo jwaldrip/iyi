@@ -17,9 +17,8 @@ def poke(p : Pointer(Pair), v : Pair) : Pair
 end
 
 def go : Int32
-  x = Pair.new(1)
-  y = Pair.new(7)
-  poke(pointerof(x), y)
+  x = Pair.new(7)
+  poke(pointerof(x), x)
   x.x
 end
 
