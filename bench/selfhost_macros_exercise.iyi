@@ -413,6 +413,38 @@ end
     puts "ok"
   end
 
+  # A macro call's expansion is in the file of the call: a def the macro writes is typed with the names
+  # that file imports. The fixture is the shape of `getter table : TypeTable`.
+  def self.test_expansion_file
+    print "testing that an expansion's nodes are in the calling file... "
+    src = %(
+macro reader(name)
+  def {{ name.var.id }} : {{ name.type }}
+    @{{ name.var.id }}
+  end
+end
+reader table : TypeTable
+)
+    parsed = Parser.new(src, "site.iyi").parse
+    a_macro : Macro? = nil
+    a_call : Call? = nil
+    if parsed.is_a?(Expressions)
+      parsed.as(Expressions).expressions.each do |e|
+        a_macro = e.as(Macro) if e.is_a?(Macro)
+        a_call = e.as(Call) if e.is_a?(Call)
+      end
+    end
+    assert(!a_macro.nil? && !a_call.nil?, "the fixture parses to a macro and a call of it")
+    expanded = MacroEngine.new.expand(a_macro.as(Macro), a_call.as(Call))
+    assert(expanded.is_a?(Def), "the expansion is a def")
+    file = ""
+    if loc = expanded.location
+      file = loc.filename
+    end
+    assert(file == "site.iyi", "the expanded def is in the calling file (it is in '#{file}')")
+    puts "ok"
+  end
+
   def self.run_all : Nil
     puts "Running Selfhost Macro Engine Verification Suite (pure iyi stage 0)"
     puts "============================================================="
@@ -425,6 +457,7 @@ end
     test_fresh_vars
     test_code_generation
     test_type_node
+    test_expansion_file
     puts "============================================================="
     puts "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!"
     puts "============================================================="

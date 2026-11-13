@@ -127,6 +127,10 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a bang on a group does not mark it propagated" "$NORM" '@propagating_group = true' '@propagating_group = false' -- check_transform_agrees || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "the propagated mark is never consumed" "$NORM" 'propagated = @propagating_group' 'propagated = false' -- check_transform_agrees || status=1
+# The normalizer drops an unrestricted block parameter the def never reads, and what "reads" means is
+# decided by the parser (semtx_block_arg_used.iyi: `keeps` reads it, `drops` only yields).
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a read of the block parameter does not mark the def as using it" "$REPO/src/compiler/syntax/parser.iyi" '@uses_block_arg = true if name == block_name' '@uses_block_arg = false if name == block_name' -- check_transform_agrees || status=1
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
