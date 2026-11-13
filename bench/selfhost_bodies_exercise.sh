@@ -58,7 +58,11 @@ for fixture in "$REPO"/bench/fixtures/sem_bodies_*.iyi; do
   fi
   sort "$WORK/o.txt" > "$WORK/o.sorted"
   nodes=$(wc -l < "$WORK/o.sorted" | tr -d ' ')
-  if "$TYPED" "$fixture" "$REPO/src" > "$WORK/p.txt" 2> "$WORK/p.err"; then
+  port_args=()
+  if [ "$(basename "$fixture")" = "sem_bodies_defer.iyi" ]; then
+    port_args=(--iyi-defer)
+  fi
+  if "$TYPED" "${port_args[@]}" "$fixture" "$REPO/src" > "$WORK/p.txt" 2> "$WORK/p.err"; then
     sort "$WORK/p.txt" > "$WORK/p.sorted"
     matched=$(comm -12 "$WORK/o.sorted" "$WORK/p.sorted" | wc -l | tr -d ' ')
   else
@@ -342,6 +346,53 @@ ensure_at_floor() {
 prove_mutation "ensure assignments reach following code" "$MAIN_VISITOR" \
   "          @vars[name] = type" \
   "          nil" -- ensure_at_floor || status=1
+
+# The oracle and port both normalize this fixture with the iyi prelude mode.
+defer_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  local fixture="$REPO/bench/fixtures/sem_bodies_defer.iyi"
+  "$ORACLE" "$fixture" > "$WORK/defer_o.txt" 2>/dev/null || return 1
+  "$MUT_TD" --iyi-defer "$fixture" "$REPO/src" > "$WORK/defer_p.txt" 2>/dev/null || return 1
+  sort "$WORK/defer_o.txt" > "$WORK/defer_o.sorted"
+  sort "$WORK/defer_p.txt" > "$WORK/defer_p.sorted"
+  local matched floor
+  matched=$(comm -12 "$WORK/defer_o.sorted" "$WORK/defer_p.sorted" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_defer.iyi" { print $2 }' "$FLOOR_FILE")
+  [ "$matched" -ge "${floor:-0}" ]
+}
+prove_mutation "defer cleanup is typed" "$MAIN_VISITOR" \
+  "      cleanup.accept(self)" \
+  "      nil" -- defer_at_floor || status=1
+
+ensure_refusal_check() {
+  "$IYI" build -o "$WORK/ensure_refusal" "$REPO/bench/selfhost_ensure_refusal.iyi" > "$WORK/ensure_refusal_build.log" 2>&1 || return 1
+  "$WORK/ensure_refusal"
+}
+echo "== 4c. Written ensure refusal and nested-loop exits"
+ensure_refusal_check || status=1
+prove_mutation "written ensure is refused under the prelude" "$MAIN_VISITOR" \
+  "if @program.iyi_prelude? && !node.iyi_defer?" \
+  "if false" -- ensure_refusal_check || status=1
+
+# The return targets its instantiated def (hosted main_visitor.cr 2096).
+ensure_targets_check() {
+  "$IYI" build -o "$WORK/ensure_targets" "$REPO/bench/selfhost_ensure_targets.iyi" > "$WORK/ensure_targets_build.log" 2>&1 || return 1
+  "$WORK/ensure_targets"
+}
+echo "== 4d. Return target identity"
+ensure_targets_check || status=1
+prove_mutation "return identifies its typed def" "$MAIN_VISITOR" \
+  "    node.target = @current_def" \
+  "    node.target = nil" -- ensure_targets_check || status=1
+prove_mutation "break identifies its block call" "$MAIN_VISITOR" \
+  "      node.target = @jump_block_calls[block]?" \
+  "      node.target = nil" -- ensure_targets_check || status=1
+prove_mutation "next identifies its block" "$MAIN_VISITOR" \
+  "      node.target = block" \
+  "      node.target = nil" -- ensure_targets_check || status=1
+prove_mutation "captured next identifies its proc def" "$MAIN_VISITOR" \
+  "    inner.current_def = def_node if def_node.captured_block?" \
+  "    nil" -- ensure_targets_check || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"

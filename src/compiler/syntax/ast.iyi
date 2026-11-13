@@ -3443,6 +3443,7 @@ pub class Def < ASTNode
     @calls_previous_def
   end
 
+
   def uses_block_arg? : Bool
     @uses_block_arg
   end
