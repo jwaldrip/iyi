@@ -23,6 +23,7 @@ import compiler/syntax/ast::{ImplDef, TraitDef}
 import compiler/types/types::{NamedTupleInstanceType}
 import compiler/syntax/ast::{TupleLiteral, Splat, Generic}
 import compiler/syntax/ast::{ExceptionHandler, Case}
+import compiler/syntax/ast::{MacroIf, MacroFor, MacroExpression, MacroVerbatim}
 import compiler/types/types::{TupleInstanceType}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
@@ -414,6 +415,15 @@ def codegen_tuple(low : Lowerer, node : TupleLiteral) : Nil
 end
 
 pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
+  # Hosted cleanup lowers the expansion already visited by body typing.
+  if node.is_a?(MacroIf) || node.is_a?(MacroFor) || node.is_a?(MacroExpression) || node.is_a?(MacroVerbatim)
+    if expanded = low.analysed.expansions[node]?
+      codegen_node(low, expanded)
+      return
+    end
+    pending_visit_node("an unexpanded #{node_class_name(node)} after body typing")
+    return
+  end
   if node.is_a?(TupleLiteral)
     codegen_tuple(low, node.as(TupleLiteral))
     return
