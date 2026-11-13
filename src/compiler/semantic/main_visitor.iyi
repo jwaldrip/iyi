@@ -2974,13 +2974,17 @@ pub class MainVisitor < TypeNodeHost
 
     saved_call_ntf = @needs_type_filters
     @needs_type_filters = 0
+    # PROBE (Main, not for merge): the receiver is visited before the arguments (hosted main_visitor.cr
+    # 1576-1592), so a local the receiver assigns is there for an argument to read.
+    if probe_recv = node.obj
+      probe_recv.accept(self)
+    end
     node.args.each do |arg|
       arg.accept(self)
     end
 
     rec_type : Type
     if obj = node.obj
-      obj.accept(self)
       if ot = child_type(obj)
         rec_type = ot
       else
