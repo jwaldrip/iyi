@@ -15,6 +15,7 @@ module compiler/compiler
 import compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
 import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dir_of}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/backend/backend::{Backend, BuildRequest}
 import compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, refuse_exception_handlers, register_primitive_operators}
@@ -24,7 +25,7 @@ import compiler/syntax/token::{NumberKind}
 import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/methods::{MacroMethods}
-import compiler/lower/program::{TypedProgram, declare_program, type_bodies, lower_program, native_objects, link_program, link_names, refusal_table, lowering_table}
+import compiler/lower/program::{TypedProgram, declare_program, assemble_root, type_bodies, lower_program, native_objects, link_program, link_names, refusal_table, lowering_table}
 
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
@@ -183,6 +184,7 @@ pub class Compiler
           cd.accept(tl)
         end
         tl.finish
+        declare_guessed_instance_vars(prog)
 
         mv = MainVisitor.new(prog)
         funs.each do |fd|
@@ -322,7 +324,7 @@ pub class Compiler
       refusal_table(typed, root_name, refused).each { |line| puts line }
       names = [] of String
       lowering_table(typed, triple, root_name, names, refused).each { |line| puts line }
-      File.write(@config.output_filename + ".names", names.join("\n") + "\n")
+      File.write(@config.output_filename + ".names", names.uniq.join("\n") + "\n")
       File.write(@config.output_filename + ".refusals", refused.join("\n") + "\n")
       STDOUT.flush
     end
@@ -421,13 +423,10 @@ pub class Compiler
     defs = Hash(String, Def).new
     libs = [] of LibDef
     flags = MacroTargetFlags.for_triple(triple, [] of String)
-    module_tops = {} of String => Array(ASTNode)
     resolved.each do |mod_info|
-      mod_top = [] of ASTNode
-      Compiler.extract_declarations(mod_info.ast, classes, funs, defs, libs, mod_top, flags)
-      Compiler.module_runtime_code(mod_info.ast, mod_top, flags)
-      module_tops[mod_info.filename] = mod_top
+      Compiler.extract_declarations(mod_info.ast, classes, funs, defs, libs, [] of ASTNode, flags)
     end
+    # Declarations splice inline macros into each unit, so runtime code must be collected after that pass.
     # extract_declarations keeps one def per name, so an overload would be lost: every top-level def of the units is
     # collected here, in order, and any def only the hash holds (one behind a macro condition) is added after them.
     all_defs = [] of Def
@@ -442,13 +441,11 @@ pub class Compiler
       all_defs << d unless all_defs.any? { |x| x.object_id == d.object_id }
     end
     top_level = [] of ASTNode
-    Loader.initialiser_order(resolved).each do |mod_info|
-      module_tops[mod_info.filename].each { |node| top_level << node }
-    end
     # The program is read the way the declarations gate reads one (bench/selfhost_semantic_declarations_exercise.iyi):
     # the loader's search path, and the entry's project root (its header root, else its directory).
     entry = resolved[resolved.size - 1]
     prog = SemanticProgram.new
+    prog.iyi_prelude = prelude
     prog.search_path = loader.iyi_path.entries
     prog.project_root = IyiPath.header_root_of(entry.filename, entry.source) || dir_of(entry.filename)
     # The prelude is declared before every other unit, as the declarations driver loads it first: the prelude's names are
@@ -460,7 +457,19 @@ pub class Compiler
     Loader.initialiser_order(resolved).each do |mod_info|
       units << mod_info unless mod_info.filename.ends_with?("/iyi/prelude.iyi")
     end
-    declare_program(classes, libs, all_defs, funs, top_level, links, !prelude, prog, units)
+    typed = declare_program(classes, libs, all_defs, funs, top_level, links, !prelude, prog, units)
+    Loader.initialiser_order(resolved).each do |mod_info|
+      runtime = [] of ASTNode
+      scratch_classes = [] of ClassDef
+      scratch_funs = [] of FunDef
+      scratch_defs = Hash(String, Def).new
+      scratch_libs = [] of LibDef
+      Compiler.extract_declarations(mod_info.ast, scratch_classes, scratch_funs, scratch_defs, scratch_libs, runtime, flags)
+      Compiler.module_runtime_code(mod_info.ast, runtime, flags)
+      runtime.each { |node| top_level << node }
+    end
+    root = assemble_root(classes, libs, all_defs, funs, top_level)
+    TypedProgram.new(root, typed.prog, typed.visitor, typed.links)
   end
 
   # The top-level defs among the given nodes, in order, unwrapping visibility modifiers and expression sequences.

@@ -19,6 +19,12 @@ import compiler/ir/parser::{parse, IrParseError}
 import compiler/ir/printer::{print}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program}
+import compiler/lower/primitives::{class_pointerful?, codegen_primitive_binary}
+import compiler/lower/context::{Lowerer}
+import compiler/ir/values::{Value}
+import compiler/ir/types::{IrType}
+import compiler/semantic/top_level::{GenericClassType, Type}
+import compiler/types/types::{GenericClassInstanceType}
 
 # The typer's layout is the analysed program's (hosted `Program#iyi_object_layout?`).
 def typer_for(m : Module, iyi : Bool) : LowerTyper
@@ -52,6 +58,46 @@ def emit_bare(fixture : String, oracle_path : String) : Nil
   puts print(m)
 end
 
+# A generic class instance is not a ClassType. class_pointerful? used to cast it and the
+# port tool raised (census root row 17). This check analyses a generic class whose instance
+# variable is a pointer, finds the instantiation, and requires the pointerful answer without
+# that cast. A mutation that drops the generic class's variables answers false.
+def check_generic_pointerful : Nil
+  source = "class Hold(T)\n  @buf : Pointer(Int32)\nend\n"
+  analysis = analyse(source, "generic_pointerful.iyi", false)
+  prog = analysis.visitor.program
+  found = prog.lookup_type("Hold")
+  raise "generic class Hold was not declared" if found.nil?
+  generic = found.as(GenericClassType)
+  int32 = prog.lookup_type("Int32")
+  raise "Int32 was not declared" if int32.nil?
+  tv = Hash(String, Type).new
+  tv["T"] = int32.as(Type)
+  args = [int32.as(Type)] of Type
+  inst = GenericClassInstanceType.new(prog, generic, tv, args, generic.superclass)
+  answer = class_pointerful?(inst)
+  unless answer
+    raise "Hold(Int32) is not pointerful"
+  end
+  puts "generic_pointerful=1"
+end
+
+# Reproduce the typed-flow mismatch at the primitive seam, before the verifier.
+# Both semantic operands are Int64, while one emitted value is the union local.
+def check_binary_union(fixture : String, side : String) : Nil
+  analysis = analyse(File.read(fixture), fixture, true)
+  m = ir_module("arm64-apple-macosx")
+  low = Lowerer.new(m, typer_for(m, analysis.iyi), analysis.visitor)
+  typ = analysis.visitor.program.lookup_type("Int64")
+  raise "Int64 was not declared" if typ.nil?
+  int = Value.new(m.types.int64)
+  union = Value.new(m.types.struct([m.types.int64, m.types.int64] of IrType))
+  left = side == "left" ? union : int
+  right = side == "right" ? union : int
+  codegen_primitive_binary(low, "<=", typ.as(Type), typ.as(Type), left, right)
+  raise "binary union operand was not refused"
+end
+
 def run : Nil
   args = Program.args
   if args.empty?
@@ -67,6 +113,10 @@ def run : Nil
     lower_bare(args[1], args[2])
   elsif mode == "emit"
     emit_bare(args[1], args[2])
+  elsif mode == "generic_pointerful"
+    check_generic_pointerful
+  elsif mode == "binary_union"
+    check_binary_union(args[1], args[2])
   else
     raise "unknown mode #{mode}"
   end

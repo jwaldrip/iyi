@@ -82,9 +82,17 @@ end
 # Where the hosted typer lays a type out as a struct: a class or struct with
 # instance variables, a tuple, a named tuple, a static array. Primitives, nil,
 # pointers, procs, enums, metaclasses and unions have no struct of their own.
+
+# A generic class instance laid out as a struct of its own fields. Pointer and proc instances are
+# not measured here (their layout is a pointer or a function, the typer's other branches).
+def plain_generic_instance?(type : Iyi::Type) : Bool
+  type.is_a?(Iyi::GenericClassInstanceType) && !type.is_a?(Iyi::PointerInstanceType) && !type.is_a?(Iyi::ProcInstanceType)
+end
+
 def struct_applies?(type : Iyi::Type) : Bool
   return true if type.is_a?(Iyi::TupleInstanceType) || type.is_a?(Iyi::NamedTupleInstanceType)
   return true if type.is_a?(Iyi::StaticArrayInstanceType)
+  return true if plain_generic_instance?(type)
   type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)
 end
 
@@ -96,13 +104,15 @@ end
 
 # The instance variables of a user class, in declaration order: `name:Type` (the name keeps its @), or `-`.
 def ivars_text(type : Iyi::Type) : String
-  return "-" unless type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)
-  parts = type.all_instance_vars.map { |name, ivar| "#{name}:#{ivar.type}" }
+  return "-" unless (type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)) || plain_generic_instance?(type)
+  ivars = type.is_a?(Iyi::GenericClassInstanceType) ? type.as(Iyi::GenericClassInstanceType).all_instance_vars : type.as(Iyi::NonGenericClassType).all_instance_vars
+  parts = ivars.map { |name, ivar| "#{name}:#{ivar.type}" }
   parts.empty? ? "-" : parts.join(" ")
 end
 
 # The `ids` mode's block: the type id and the id range the hosted LLVMId gives the type, or `-`.
 def ids_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
+  program.llvm_id.type_id(type)
   mm = program.llvm_id.min_max_type_id(type)
   String.build do |io|
     io << "== " << name << "\n"
@@ -115,6 +125,25 @@ def ids_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
       io << "type_id: -\n"
       io << "type_range: -\n"
       io << "metaclass_id: -\n"
+    end
+  end
+end
+
+# The `table` mode: every type the hosted LLVMId numbered, in id order, as `id name meta=<id|->`. The
+# metaclass id is the hosted `id_to_metaclass` entry of the type's id. Metaclasses are rows of their own,
+# so the whole numbering of two programs can be diffed row by row.
+def table_text(program : Iyi::Program) : String
+  llvm = program.llvm_id
+  rows = [] of {Int32, String}
+  llvm.each_type do |type|
+    mm = llvm.min_max_type_id(type)
+    rows << {mm[1], type.to_s} if mm
+  end
+  rows.sort_by! { |row| row[0] }
+  String.build do |io|
+    rows.each do |row|
+      meta = llvm.id_to_metaclass[row[0]]?
+      io << row[0] << " " << row[1] << " meta=" << (meta ? meta.to_s : "-") << "\n"
     end
   end
 end
@@ -355,6 +384,10 @@ begin
     next unless line.starts_with?("# type: ")
     expr = line[8..].strip
     pending << {expr, resolve(program, expr)}
+  end
+  if mode == "table"
+    print table_text(program)
+    exit 0
   end
   pending.each do |expr, type|
     if mode == "ids"

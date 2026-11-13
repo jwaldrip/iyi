@@ -22,12 +22,14 @@ module compiler/lower/instance_var
 # under Crystal's layout).
 
 import compiler/ir/values::{Value}
+import compiler/ir/function::{Global}
 import compiler/ir/types::{IrType}
 import compiler/semantic/top_level::{ClassType, NilType, Type, MetaTypeVar}
+import compiler/types/types::{GenericClassInstanceType}
 import compiler/syntax/ast::{ASTNode, Var}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
-import compiler/lower/cast::{assign, downcast}
+import compiler/lower/cast::{assign, downcast, to_rhs}
 import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node, refuse_port}
 
@@ -37,9 +39,28 @@ pub def self_by_pointer?(t : Type?) : Bool
   st = t
   return false if st.nil?
   s = st.as(Type)
-  return false unless s.is_a?(ClassType)
-  return false unless s.as(ClassType).struct?
+  return false unless s.is_a?(ClassType) || s.is_a?(GenericClassInstanceType)
+  return false unless owner_struct?(s)
   primitive_kind(s) == ""
+end
+
+# The instance variables of a class or a generic class instance (hosted all_instance_vars), or nil for any other owner.
+pub def owner_instance_vars(owner : Type) : Hash(String, MetaTypeVar)?
+  if owner.is_a?(ClassType)
+    return owner.as(ClassType).all_instance_vars
+  end
+  if owner.is_a?(GenericClassInstanceType)
+    return owner.as(GenericClassInstanceType).all_instance_vars
+  end
+  nil
+end
+
+# Whether the owner is a struct (hosted struct?). A generic class instance answers for itself.
+pub def owner_struct?(owner : Type) : Bool
+  if owner.is_a?(GenericClassInstanceType)
+    return owner.as(GenericClassInstanceType).struct?
+  end
+  owner.as(ClassType).struct?
 end
 
 # The value of self as an expression: a struct self is loaded from its pointer, anything else is
@@ -54,6 +75,9 @@ end
 # a primitive and an expression that is not a stored variable keep their value as the callee's self.
 pub def self_argument(low : Lowerer, obj : ASTNode, value : Value, st : Type) : Value
   return value unless self_by_pointer?(st)
+  # By-value aggregate expressions may already be represented by their address,
+  # as a class-variable read is after the hosted to_lhs conversion.
+  return value if value.type.pointer?
   if obj.is_a?(Var)
     var = low.current_context.vars[obj.as(Var).name]?
     if !var.nil?
@@ -70,10 +94,11 @@ end
 
 # The declared type of an instance variable of an owner (hosted `lookup_instance_var(name).type`).
 pub def instance_var_type(owner : Type, name : String) : Type
-  if !owner.is_a?(ClassType)
+  vars = owner_instance_vars(owner)
+  if vars.nil?
     refuse_port("lower: instance variable #{name} of #{owner.full_name}: not a class or struct (hosted instance_var_ptr, union or virtual owner) (slice S2a)")
   end
-  iv = owner.as(ClassType).all_instance_vars[name]?
+  iv = vars.as(Hash(String, MetaTypeVar))[name]?
   if iv.nil?
     raise "BUG: #{owner.full_name} has no instance variable #{name} (hosted lookup_instance_var)"
   end
@@ -86,7 +111,9 @@ end
 
 # The position of an instance variable among its owner's fields (`all_instance_vars` order).
 pub def instance_var_index(owner : Type, name : String) : Int32
-  names = owner.as(ClassType).all_instance_vars.keys
+  vars = owner_instance_vars(owner)
+  raise "BUG: #{owner.full_name} has no instance variables (hosted index_of_instance_var)" if vars.nil?
+  names = vars.as(Hash(String, MetaTypeVar)).keys
   i = 0
   while i < names.size
     return i if names[i] == name
@@ -101,8 +128,10 @@ pub def instance_var_pointer(low : Lowerer, owner : Type, name : String, pointer
   instance_var_type(owner, name)
   index = instance_var_index(owner, name)
   # Hosted `instance_var_ptr`: under Crystal's layout a class's type id is an i32 in front of its fields.
-  index += 1 if !owner.as(ClassType).struct? && !low.typer.iyi_layout
+  index += 1 if !owner_struct?(owner) && !low.typer.iyi_layout
   struct_t = low.typer.llvm_struct_type(owner)
+  # LLVM folds a constant GEP to a global's first field to the global address.
+  return pointer if index == 0 && pointer.is_a?(Global)
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   field = low.builder.const_int(low.module.types.int32, index.to_i64)
   low.builder.inbounds_gep(struct_t, pointer, [zero, field] of Value)
@@ -143,6 +172,21 @@ pub def codegen_instance_var_read(low : Lowerer, node : Compiler::Syntax::Ast::I
   low.last = read_instance_var(low, node_t.as(Type), owner.as(Type), node.name, self_var.as(LowerVar).pointer)
 end
 
+# The hosted `visit(PointerOf)` for an instance variable (codegen.cr:1005-1006): the field's
+# address, the same pointer a read would load from. A union or virtual owner is refused by
+# `instance_var_type` (hosted instance_var_ptr, that owner is a later increment).
+pub def codegen_pointerof_instance_var(low : Lowerer, node : Compiler::Syntax::Ast::InstanceVar) : Nil
+  owner = low.current_context.type
+  if owner.nil?
+    pending_visit_node("pointerof of an instance variable outside a class or struct (hosted visit(PointerOf), context.type)")
+  end
+  self_var = low.current_context.vars["self"]?
+  if self_var.nil?
+    raise "BUG: pointerof(#{node.name}) with no self (hosted llvm_self_ptr)"
+  end
+  low.last = instance_var_pointer(low, owner.as(Type), node.name, self_var.as(LowerVar).pointer)
+end
+
 # The store to an instance variable of the self being lowered (the hosted `codegen_assign` for an
 # `InstanceVar` target): a value of the variable's own type is stored as it is, a nil stores nothing,
 # and another type goes through `assign`. The value is already evaluated.
@@ -162,6 +206,7 @@ pub def store_instance_var(low : Lowerer, name : String, value : Value, value_ty
     return
   end
   if !value_type.is_a?(NilType)
-    store_aligned(low, value, ptr)
+    stored = value.type.pointer? ? to_rhs(low, value, value_type) : value
+    store_aligned(low, stored, ptr)
   end
 end

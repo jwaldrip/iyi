@@ -8,7 +8,16 @@ module bench/selfhost_lower_globals_exercise
 #   port lower <fixture.iyi> <oracle.ll>    lowers the fixture and compares it with the oracle
 #   port emit <fixture.iyi> <oracle.ll>     the port's module as text, for the native tool
 
-import bench/lib/lower_gate::{analyse, run_emit, run_lower, run_oracle}
+import bench/lib/lower_gate::{analyse, build_names, normalised_lines, run_emit, run_lower, run_oracle}
+
+# A program class variable containing a string must remain in the comparison even when
+# its initialiser uses the same getelementptr form as a hosted build constant.
+def check_normalizer : Nil
+  text = %(  store ptr getelementptr (i8, ptr @"'value'", i32 0), ptr @"K::v", align 8\n@"K::v" = internal global ptr null\n)
+  names = build_names(text, "::")
+  lines = normalised_lines(text, names)
+  raise "program global stripped from comparison" unless lines.includes?(%(@"K::v" = internal global ptr null))
+end
 
 def run : Nil
   args = Program.args
@@ -19,6 +28,10 @@ def run : Nil
     return
   end
   mode = args[0]
+  if mode == "normalizer-check"
+    check_normalizer
+    return
+  end
   if mode == "oracle"
     run_oracle(args[1], "::")
   elsif mode == "lower"

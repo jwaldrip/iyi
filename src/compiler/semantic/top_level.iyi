@@ -775,6 +775,7 @@ pub class LibFun
   # The primitive name is external_var_get or external_var_set. The dump does not
   # print these; body typing and primitives lowering read them.
   property external_var : Bool = false
+  property external_type_spec : ASTNode? = nil
   property thread_local : Bool = false
   property primitive : String? = nil
   property previous : LibFun? = nil
@@ -1183,6 +1184,12 @@ pub class SemanticProgram < NonGenericModuleType
   # iyi: the typed dump's mode. Strict (the default) refuses a name the program
   # cannot resolve, as it always has; total mode records it and goes on.
   property total_mode : Bool = false
+  property iyi_prelude : Bool = false
+
+  def iyi_prelude? : Bool
+    @iyi_prelude
+  end
+
   @value_type : ClassType?
   @reference_type : ClassType?
   @struct_type : ClassType?
@@ -1195,6 +1202,9 @@ pub class SemanticProgram < NonGenericModuleType
   @const_initializers : Array(Const)
   # The records of the funs the pass declared, by the node's id (`lib_fun_of`).
   @lib_funs_by_node : Hash(UInt64, LibFun)
+  # External variables have no FunDef node, but their written type also needs
+  # resolution after the type system is installed.
+  getter external_var_funs : Array(LibFun) = [] of LibFun
   # Defining scope, kept outside syntax nodes to avoid a semantic dependency in the AST.
   @def_owners : Hash(UInt64, ModuleType)
   @primitive_return_types : Hash(UInt64, Type)
@@ -1472,6 +1482,22 @@ pub class SemanticProgram < NonGenericModuleType
                 if found = lookup_type_node?(rt, owner)
                   f.resolved_return = found
                 end
+              end
+            end
+          end
+        end
+      end
+    end
+    @external_var_funs.each do |f|
+      if owner = f.owner
+        if imports = f.imports
+          @current_imports = imports
+          if spec = f.external_type_spec
+            if found = lookup_type_node?(spec, owner)
+              f.resolved_return = found
+              if f.primitive == "external_var_set"
+                f.arg_types.clear
+                f.arg_types << found
               end
             end
           end
@@ -2027,8 +2053,9 @@ end
 pub class TypeBody
   getter type : ModuleType
   getter body : ASTNode
+  getter imports : Hash(String, Type)
 
-  def initialize(@type : ModuleType, @body : ASTNode)
+  def initialize(@type : ModuleType, @body : ASTNode, @imports : Hash(String, Type))
   end
 end
 
@@ -2106,18 +2133,22 @@ pub class TopLevelVisitor < Visitor
     @pending_ivars.each do |found|
       explicit << "#{found.owner.full_name} #{found.name}" if found.explicit
     end
-    @pending_ivars.each do |pi|
-      next if !pi.explicit && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
-      if imports = pi.imports
-        @program.current_imports = imports
-      else
-        @program.current_imports = saved
+    # The hosted processor declares explicit variables before guessed ones for each owner.
+    [true, false].each do |explicit_pass|
+      @pending_ivars.each do |pi|
+        next if pi.explicit != explicit_pass
+        next if !pi.explicit && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
+        if imports = pi.imports
+          @program.current_imports = imports
+        else
+          @program.current_imports = saved
+        end
+        arg_type = @program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
+        mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
+        mv.owner = pi.owner
+        pi.owner.instance_vars[pi.name] = mv
+        @program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)
       end
-      arg_type = @program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
-      mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
-      mv.owner = pi.owner
-      pi.owner.instance_vars[pi.name] = mv
-      @program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)
     end
     @program.current_imports = saved
     @pending_ivars.clear
@@ -2374,7 +2405,7 @@ pub class TopLevelVisitor < Visitor
           meta.add_location(loc)
         end
         old_meta_scope = @current_type
-        @program.type_bodies << TypeBody.new(meta, node.body)
+        @program.type_bodies << TypeBody.new(meta, node.body, @program.current_imports)
         @current_type = meta
         node.body.accept(self)
         @current_type = old_meta_scope
@@ -2483,7 +2514,7 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = type
-    @program.type_bodies << TypeBody.new(type, node.body)
+    @program.type_bodies << TypeBody.new(type, node.body, @program.current_imports)
     node.body.accept(self)
     @current_type = old_type
     false
@@ -3061,6 +3092,7 @@ pub class TopLevelVisitor < Visitor
     getter_fun.owner = lib_type
     getter_fun.imports = @program.current_imports
     getter_fun.external_var = true
+    getter_fun.external_type_spec = node.type_spec
     getter_fun.thread_local = thread_local
     getter_fun.primitive = "external_var_get"
     getter_fun.resolved_return = var_type
@@ -3070,6 +3102,7 @@ pub class TopLevelVisitor < Visitor
     setter_fun.owner = lib_type
     setter_fun.imports = @program.current_imports
     setter_fun.external_var = true
+    setter_fun.external_type_spec = node.type_spec
     setter_fun.thread_local = thread_local
     setter_fun.primitive = "external_var_set"
     setter_fun.resolved_return = var_type
@@ -3077,6 +3110,8 @@ pub class TopLevelVisitor < Visitor
 
     lib_type.funs << getter_fun
     lib_type.funs << setter_fun
+    @program.external_var_funs << getter_fun
+    @program.external_var_funs << setter_fun
     false
   end
 

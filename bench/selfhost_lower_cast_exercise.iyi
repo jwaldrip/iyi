@@ -9,7 +9,26 @@ module bench/selfhost_lower_cast_exercise
 #   port lower <fixture.iyi> <oracle.ll>    lowers the fixture and compares it with the oracle
 #   port emit <fixture.iyi> <oracle.ll>     the port's module as text, for the native tool
 
-import bench/lib/lower_gate::{analyse, run_emit, run_lower, run_oracle}
+import bench/lib/lower_gate::{analyse, ir_module, run_emit, run_lower, run_oracle}
+import compiler/ir/values::{Value}
+import compiler/lower/cast::{assign_mixed_union}
+import compiler/lower/context::{Lowerer}
+import compiler/lower/typer::{LowerTyper}
+import compiler/semantic/top_level::{Type}
+import compiler/types/types::{MixedUnionType}
+
+def refuse_wrong_union_member : Nil
+  analysis = analyse("nil\n", "wrong_union_member.iyi", true)
+  prog = analysis.visitor.program
+  int_type = prog.lookup_type("Int32").as(Type)
+  bool_type = prog.lookup_type("Bool").as(Type)
+  char_type = prog.lookup_type("Char").as(Type)
+  target = MixedUnionType.new(prog, [int_type, bool_type] of Type)
+  m = ir_module("arm64-apple-macosx")
+  low = Lowerer.new(m, LowerTyper.new(m.types, m.layout, analysis.iyi), analysis.visitor)
+  assign_mixed_union(low, Value.new(m.types.ptr), target, char_type, Value.new(m.types.int32))
+  raise "non-member union store was accepted"
+end
 
 def run : Nil
   args = Program.args
@@ -26,6 +45,8 @@ def run : Nil
     run_lower(args[1], args[2], "::", true)
   elsif mode == "emit"
     run_emit(args[1], args[2], true)
+  elsif mode == "wrong_union_member"
+    refuse_wrong_union_member
   else
     raise "unknown mode #{mode}"
   end

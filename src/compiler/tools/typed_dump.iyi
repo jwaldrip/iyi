@@ -28,6 +28,7 @@ import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{NamedType, SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
@@ -92,16 +93,23 @@ module TypedDump
     dir
   end
 
-  def self.analyse(source : String, filename : String, roots : Array(String)) : TypedDumpResult
+  def self.analyse(source : String, filename : String, roots : Array(String), iyi_defer : Bool = false) : TypedDumpResult
     parser = Parser.new(source, filename)
-    node = Normalizer.new(NormalizerProgram.new(false)).normalize(parser.parse)
+    node = Normalizer.new(NormalizerProgram.new(iyi_defer)).normalize(parser.parse)
     prog = SemanticProgram.new
+    prog.iyi_prelude = iyi_defer
     prog.total_mode = true
     prog.search_path = roots
     prog.entry_dir = TypedDump.directory_of(filename)
     tl = TopLevelVisitor.new(prog, filename)
+    if iyi_defer
+      registry_source = "def __iyi_defer_push(cleanup : Proc(Nil)) : Nil\n  nil\nend\ndef __iyi_defer_pop_run : Nil\n  nil\nend\n"
+      registry = Parser.new(registry_source, "<iyi-defer-registry>").parse
+      registry.accept(tl)
+    end
     node.accept(tl)
     tl.finish
+    declare_guessed_instance_vars(prog)
     mv = MainVisitor.new(prog)
     mv.total = true
     node.accept(mv)
@@ -121,12 +129,17 @@ module TypedDumpTool
     args = Program.args
     first = 0
     instances = false
-    if !args.empty? && args[0] == "--instances"
-      instances = true
+    iyi_defer = false
+    if !args.empty? && args[0] == "--iyi-defer"
+      iyi_defer = true
       first = 1
     end
+    if args.size > first && args[first] == "--instances"
+      instances = true
+      first = first + 1
+    end
     if args.size <= first
-      raise "usage: typed_dump [--instances] <file.iyi> [root ...]"
+      raise "usage: typed_dump [--iyi-defer] [--instances] <file.iyi> [root ...]"
     end
     path = args[first]
     roots = [] of String
@@ -136,7 +149,7 @@ module TypedDumpTool
       i = i + 1
     end
     source = File.read(path)
-    result = TypedDump.analyse(source, path, roots)
+    result = TypedDump.analyse(source, path, roots, iyi_defer)
     result.lines.each { |line| puts line }
     if instances
       puts "typed instances: #{result.instances}"

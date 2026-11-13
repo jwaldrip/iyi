@@ -25,22 +25,26 @@ module compiler/lower/cast
 # a tuple or named tuple store, a virtual type, a proc, a pointer (their helpers are later
 # increments); downcast from any other union, and downcast of a nilable or virtual type.
 
-import compiler/ir/function::{Global, Linkage}
-import compiler/ir/inst::{Inst, Op}
+import compiler/ir/function::{Function, Global, Linkage}
+import compiler/ir/inst::{CallConv, Inst, IntPredicate, Op}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
-import compiler/lower/context::{Lowerer}
-import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
+import compiler/lower/context::{Lowerer, LowerVar}
+import compiler/lower/helpers::{at_terminator?, llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
+import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{primitive_kind, passed_by_value?}
 import compiler/lower/unions::{mixed_union_value_area}
-import compiler/semantic/top_level::{NilType, Type, UnionType, VoidType}
-import compiler/types/types::{MixedUnionType, NilableType, TypeQueries}
+import compiler/semantic/top_level::{MetaclassType, NilType, Type, UnionType, VoidType}
+import compiler/syntax/ast::{ASTNode, Var}
+import compiler/types/indirection::{TypeIndirection}
+import compiler/types/rendering::{TypeRenderer}
+import compiler/types/types::{MixedUnionType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, TypeQueries, VirtualMetaclassType, VirtualType}
 
-# The type id of a type as a loaded value: the hosted `type_id(type)` loads it from the
-# global `@"<full name>:type_id"`, an internal constant, created on first use.
+# Hosted type_id.cr 168-169 names the global using the codegen spelling of
+# the type, including virtual and generic arguments.
 pub def type_id_value(low : Lowerer, t : Type) : Value
-  name = "#{t.full_name}:type_id"
+  name = "#{TypeRenderer.render(t, codegen: true)}:type_id"
   global = low.module.get_global?(name)
   if global.nil?
     made = low.module.add_global(name, low.module.types.int32)
@@ -99,8 +103,13 @@ end
 # A nil value into a union only writes the type id and the zeroed area (the caller must not
 # store the nil itself).
 pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type, value : Value) : Nil
+  # Hosted cast.cr 73-85: an ended block or NoReturn value produces no store.
+  return if at_terminator?(low) || TypeQueries.no_return?(value_type)
+  target = TypeIndirection.remove_indirection(target)
+  value_type = TypeIndirection.remove_indirection(value_type)
   if target.full_name == value_type.full_name
-    store_aligned(low, value, pointer)
+    stored = value.type.pointer? ? to_rhs(low, value, target) : value
+    store_aligned(low, stored, pointer)
     return
   end
   if value_type.is_a?(VoidType)
@@ -134,6 +143,11 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
     assign_mixed_union(low, pointer, target, value_type, value)
     return
   end
+  # Hosted assign_distinct(ProcInstanceType, ProcInstanceType) (cast.cr:279-283): a non-void proc stored as a void proc.
+  if target.is_a?(ProcInstanceType) && value_type.is_a?(ProcInstanceType)
+    store_aligned(low, to_rhs(low, value, target), pointer)
+    return
+  end
   pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (hosted assign_distinct, not ported)")
 end
 
@@ -159,7 +173,11 @@ pub def assign_union_in_union(low : Lowerer, pointer : Value, target : MixedUnio
     pending_visit_node("assign #{value_type.full_name} to #{target.full_name}: different alignment (hosted store_union_in_union, memcpy)")
     return
   end
-  store_aligned(low, load_aligned(low, from_ir, value), pointer)
+  if value.type == low.module.types.ptr(0)
+    store_aligned(low, load_aligned(low, from_ir, value), pointer)
+  else
+    store_aligned(low, value, pointer)
+  end
 end
 
 # The hosted `assign_distinct(MixedUnionType, Type)` for a value that is one of the union's
@@ -213,6 +231,22 @@ pub def store_in_union(low : Lowerer, union_type : Type, union_pointer : Value, 
     store_aligned(low, value, field)
     return
   end
+  if value_type.is_a?(PointerInstanceType) || TypeQueries.reference_like?(value_type)
+    store_aligned(low, value, field)
+    return
+  end
+  if value_type.struct? && passed_by_value?(value_type)
+    if low.typer.passed_indirectly?(value_type)
+      pending_visit_node("store of indirectly passed #{value_type.full_name} in #{union_type.full_name} (hosted store_value, copy_value)")
+      return
+    end
+    stored = value
+    if value.type == low.module.types.ptr(0)
+      stored = load_aligned(low, low.typer.llvm_embedded_type(value_type), value)
+    end
+    store_aligned(low, stored, field)
+    return
+  end
   pending_visit_node("store of #{value_type.full_name} in #{union_type.full_name} (hosted store_value, not ported)")
 end
 
@@ -228,8 +262,29 @@ end
 # temporary. Structurally this is not the hosted `if` join (which keeps the temporary's
 # pointer); the core's join uses `union_temp` for identity with the hosted module.
 pub def upcast(low : Lowerer, value : Value, from : Type, to : Type) : Value
-  temp = union_temp(low, to, from, value)
-  load_aligned(low, low.typer.llvm_type(to), temp)
+  f = TypeIndirection.remove_indirection(from)
+  t = TypeIndirection.remove_indirection(to)
+  return value if f.full_name == t.full_name
+  if t.is_a?(MetaclassType) || t.is_a?(VirtualMetaclassType) || t.is_a?(VirtualType) || t.is_a?(ReferenceUnionType)
+    return value
+  end
+  if t.is_a?(NilableType)
+    return low.builder.const_null(low.typer.llvm_type(t)) if f.is_a?(NilType)
+    return value
+  end
+  if t.is_a?(NilableReferenceUnionType)
+    return low.builder.const_null(low.typer.llvm_type(t)) if f.is_a?(NilType)
+    return value
+  end
+  if t.is_a?(NilableProcType) && f.is_a?(ProcInstanceType)
+    return value
+  end
+  if t.is_a?(MixedUnionType)
+    temp = union_temp(low, t, f, value)
+    return load_aligned(low, low.typer.llvm_type(t), temp)
+  end
+  pending_visit_node("upcast #{f.full_name} to #{t.full_name} (hosted cast.cr: upcast_distinct)")
+  value
 end
 
 # The hosted `downcast` (cast.cr): a value of `from_type` read as `to_type`. A void source is
@@ -244,11 +299,16 @@ pub def downcast(low : Lowerer, value : Value, to_type : Type, from_type : Type,
   downcast_distinct(low, current, to_type, from_type)
 end
 
-# The hosted `downcast_distinct`, for the sources ported so far (a mixed union). A nil target
-# is nil; any other source is refused by name.
+# The hosted `downcast_distinct`, for mixed unions and reference/nilable pointers. A nil target
+# is nil; any other unsupported source is refused by name.
 pub def downcast_distinct(low : Lowerer, value : Value, to_type : Type, from_type : Type) : Value
   if to_type.is_a?(NilType)
     return llvm_nil(low)
+  end
+  if from_type.is_a?(NilableType) || from_type.is_a?(NilableReferenceUnionType) || from_type.is_a?(ReferenceUnionType) || from_type.is_a?(VirtualType)
+    if to_type.is_a?(VirtualType) || to_type.is_a?(ReferenceUnionType) || to_type.is_a?(NilableType) || TypeQueries.reference_like?(to_type)
+      return value
+    end
   end
   if from_type.is_a?(MixedUnionType)
     return downcast_from_mixed(low, value, to_type, from_type)
@@ -272,4 +332,121 @@ pub def downcast_from_mixed(low : Lowerer, value : Value, to_type : Type, from_t
     return low.builder.trunc(byte, low.module.types.int1)
   end
   to_lhs(low, value_ptr, to_type)
+end
+
+# The pointer to an expression's storage when a union is read by pointer: if the expression is a
+# stored variable, its alloca; if the value is already a pointer, itself; otherwise a fresh alloca.
+pub def pointer_of_value(low : Lowerer, node : ASTNode, value : Value, t : Type) : Value
+  if node.is_a?(Var)
+    if lv = low.current_context.vars[node.as(Var).name]?
+      unless lv.already_loaded
+        return lv.pointer
+      end
+    end
+  end
+  return value if value.type == low.module.types.ptr(0)
+  temp = low.alloca(low.typer.llvm_type(t), "")
+  store_aligned(low, value, temp)
+  temp
+end
+
+# The dynamic type id of a reference object (hosted `object_type_id`, type_id.cr:30-36).
+pub def object_type_id(low : Lowerer, value : Value) : Value
+  if low.typer.iyi_layout
+    neg4 = low.builder.const_int(low.module.types.int64, -4_i64)
+    slot = low.builder.gep(low.module.types.int8, value, [neg4] of Value, "type_id")
+    return load_aligned(low, low.module.types.int32, slot)
+  end
+  load_aligned(low, low.module.types.int32, value)
+end
+
+# The runtime type id of a value (hosted `type_id(value, type)`, type_id.cr:4-79 and unions.cr:182-185).
+pub def type_id_of_value(low : Lowerer, node : ASTNode, value : Value, t : Type) : Value
+  rt = TypeIndirection.remove_indirection(t)
+  if rt.is_a?(NilableType)
+    is_null = low.builder.icmp(IntPredicate::EQ, value, low.builder.const_null_pointer)
+    nil_id = type_id_value(low, low.analysed.program.nil_type)
+    other_id = type_id_value(low, rt.as(NilableType).not_nil_type)
+    return low.builder.select(is_null, nil_id, other_id)
+  end
+  if rt.is_a?(ReferenceUnionType) || rt.is_a?(VirtualType)
+    return object_type_id(low, value)
+  end
+  if rt.is_a?(NilableReferenceUnionType)
+    blocks = low.new_blocks(["nil", "not_nil"])
+    nil_block = blocks[0]
+    not_nil_block = blocks[1]
+    is_null = low.builder.icmp(IntPredicate::EQ, value, low.builder.const_null_pointer)
+    low.builder.cond_br(is_null, nil_block, not_nil_block)
+    phi = LowerPhi.new(true, low.module.types.int32)
+    low.builder.position_at_end(nil_block)
+    phi.add(low, type_id_value(low, low.analysed.program.nil_type), false)
+    low.builder.position_at_end(not_nil_block)
+    phi.add(low, object_type_id(low, value), true)
+    phi.close(low)
+    return low.last.as(Value)
+  end
+  if rt.is_a?(NilableProcType)
+    fun_ptr = low.builder.extract_value(value, 0)
+    is_null = low.builder.icmp(IntPredicate::EQ, fun_ptr, low.builder.const_null_pointer)
+    nil_id = type_id_value(low, low.analysed.program.nil_type)
+    proc_id = type_id_value(low, rt.as(NilableProcType).proc_type)
+    return low.builder.select(is_null, nil_id, proc_id)
+  end
+  if rt.is_a?(MixedUnionType)
+    uptr = pointer_of_value(low, node, value, rt)
+    return load_aligned(low, low.module.types.int32, union_type_id_ptr(low, low.typer.llvm_type(rt), uptr))
+  end
+  type_id_value(low, rt)
+end
+
+# The hosted `match_type_id` / `match_any_type_id` (match.cr:4-53) for a concrete or union restriction.
+pub def match_type_id(low : Lowerer, obj_type : Type, restriction : Type, tid : Value) : Value
+  r = TypeIndirection.remove_indirection(restriction)
+  if r.is_a?(UnionType) || r.is_a?(VirtualType) || r.is_a?(VirtualMetaclassType)
+    return match_any_type_id(low, r, tid)
+  end
+  low.builder.icmp(IntPredicate::EQ, type_id_value(low, r), tid)
+end
+
+pub def match_any_type_id(low : Lowerer, type : Type, tid : Value) : Value
+  r = TypeIndirection.remove_indirection(type)
+  if r.is_a?(UnionType) || r.is_a?(VirtualType) || r.is_a?(VirtualMetaclassType)
+    return match_any_type_id_with_function(low, r, tid)
+  end
+  low.builder.icmp(IntPredicate::EQ, type_id_value(low, r), tid)
+end
+
+private def match_any_type_id_with_function(low : Lowerer, type : Type, tid : Value) : Value
+  if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
+    pending_visit_node("match_type_id against #{type.full_name} (hosted match.cr: VirtualType range)")
+    return low.builder.const_int(low.module.types.int1, 0_i64)
+  end
+  name = "~match<#{type.full_name}>"
+  existing = low.module.get_function?(name)
+  fn : Function? = existing
+  if fn.nil?
+    fn_type = low.module.types.func([low.module.types.int32] of IrType, low.module.types.int1)
+    saved = low.enter_main
+    created = low.begin_main_function(name, fn_type, false)
+    created.call_convention = CallConv::Iyi
+    created.linkage = Linkage::Internal
+    param_tid = created.param(0)
+    acc : Value? = nil
+    type.as(UnionType).union_types.each do |sub_type|
+      cond = match_any_type_id(low, sub_type, param_tid)
+      if cur = acc
+        acc = low.builder.bitwise_or(cur, cond)
+      else
+        acc = cond
+      end
+    end
+    raise "BUG: empty union restriction in match_type_id" if acc.nil?
+    low.builder.ret(acc.as(Value))
+    low.finish_main_function
+    low.leave_main(saved)
+    fn = created
+  end
+  f = fn.as(Function)
+  low.builder.call(f.fn_type, f, [tid] of Value, "")
 end

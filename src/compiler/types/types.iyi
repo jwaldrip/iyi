@@ -4,7 +4,7 @@ import compiler/foundation/errors::{refuse_port}
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Def, Generic, Path, Visibility}
 import compiler/syntax/token::{NumberKind}
-import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaTypeVar, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeParameterType, UnionType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaclassType, MetaTypeVar, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeParameterType, UnionType, VoidType}
 
 pub class VirtualType < Type
   property base_type : Type
@@ -391,6 +391,7 @@ end
 
 pub class TupleInstanceType < GenericClassInstanceType
   getter tuple_types : Array(Type)
+  getter tuple_indexers : Hash(String, Def) = Hash(String, Def).new
 
   def initialize(program : SemanticProgram, @tuple_types : Array(Type))
     super(program, program.types["Tuple"], Hash(String, Type).new, @tuple_types, program.struct_type)
@@ -452,6 +453,7 @@ end
 
 pub class NamedTupleInstanceType < GenericClassInstanceType
   getter entries : Array(NamedArgumentType)
+  getter tuple_indexers : Hash(String, Def) = Hash(String, Def).new
 
   def initialize(program : SemanticProgram, @entries : Array(NamedArgumentType))
     args = @entries.map(&.type)

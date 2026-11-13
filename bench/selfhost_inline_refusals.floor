@@ -7,6 +7,6 @@ bench/fixtures/seminl_reach/body_nested_if.iyi 0
 bench/fixtures/seminl_reach/top_if_class.iyi 0
 bench/fixtures/seminl_reach/prelude_blocks.iyi 0
 bench/fixtures/seminl_reach/const_value_if.iyi 0
-bench/fixtures/seminl_reach/const_lower_if.iyi 0
 bench/fixtures/seminl_reach/fun_body_local_across.iyi 0
 bench/fixtures/seminl_reach/later_block_local.iyi 0
+bench/fixtures/seminl_reach/const_lower_if.iyi 0
