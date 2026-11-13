@@ -44,7 +44,10 @@ for fixture in "$REPO"/bench/fixtures/sem_bodies_*.iyi; do
   rel="bench/fixtures/$(basename "$fixture")"
   # pointer_set defines Pointer#value= in the file. The prelude already has that
   # method, so this fixture is analysed alone.
-  if [ "$(basename "$fixture")" = "sem_bodies_pointer_set.iyi" ]; then
+  if [ "$(basename "$fixture")" = "sem_bodies_ensure.iyi" ]; then
+    cp "$fixture" "$WORK/ensure.cr"
+    "$ORACLE" --bare "$WORK/ensure.cr" > "$WORK/o.txt" 2> "$WORK/o.err"
+  elif [ "$(basename "$fixture")" = "sem_bodies_pointer_set.iyi" ]; then
     "$ORACLE" --bare "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"
   else
     "$ORACLE" "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"
@@ -235,6 +238,42 @@ prove_mutation "pointer_set types the assigned value" "$MAIN_VISITOR" \
 prove_mutation "a Nil return annotation discards the body value" "$MAIN_VISITOR" \
   "unless declared_ret.nil_type? || bt.subtype_of?(declared_ret)" \
   "unless bt.subtype_of?(declared_ret)" -- bodies_at_floor || status=1
+
+# Assignment conditions carry the value's filters onto the assigned local.
+flow_assign_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  local fixture="$REPO/bench/fixtures/sem_bodies_flow_assign.iyi"
+  "$ORACLE" "$fixture" > "$WORK/flow_o.txt" 2>/dev/null || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" > "$WORK/flow_p.txt" 2>/dev/null || return 1
+  sort "$WORK/flow_o.txt" > "$WORK/flow_o.sorted"
+  sort "$WORK/flow_p.txt" > "$WORK/flow_p.sorted"
+  local matched floor
+  matched=$(comm -12 "$WORK/flow_o.sorted" "$WORK/flow_p.sorted" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_flow_assign.iyi" { print $2 }' "$FLOOR_FILE")
+  [ "$matched" -ge "${floor:-0}" ]
+}
+prove_mutation "assignment condition narrows its target" "$MAIN_VISITOR" \
+  "@type_filters = TypeFilters.assign_var(value_type_filters, v.name)" \
+  "@type_filters = value_type_filters" -- flow_assign_at_floor || status=1
+
+# A written ensure is refused with the iyi prelude; the handler mechanism is
+# compared against the hosted compiler without that prelude.
+ensure_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  local fixture="$REPO/bench/fixtures/sem_bodies_ensure.iyi"
+  cp "$fixture" "$WORK/ensure.cr"
+  "$ORACLE" --bare "$WORK/ensure.cr" > "$WORK/ensure_o.txt" 2>/dev/null || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" > "$WORK/ensure_p.txt" 2>/dev/null || return 1
+  sort "$WORK/ensure_o.txt" > "$WORK/ensure_o.sorted"
+  sort "$WORK/ensure_p.txt" > "$WORK/ensure_p.sorted"
+  local matched floor
+  matched=$(comm -12 "$WORK/ensure_o.sorted" "$WORK/ensure_p.sorted" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_ensure.iyi" { print $2 }' "$FLOOR_FILE")
+  [ "$matched" -ge "${floor:-0}" ]
+}
+prove_mutation "ensure assignments reach following code" "$MAIN_VISITOR" \
+  "          @vars[name] = type" \
+  "          nil" -- ensure_at_floor || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"

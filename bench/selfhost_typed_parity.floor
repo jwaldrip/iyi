@@ -113,7 +113,7 @@ src/compiler/platform/linker.iyi 16
 src/compiler/platform/target.iyi 41
 src/compiler/semantic/cleanup.iyi 10
 src/compiler/semantic/literal_expander.iyi 69
-src/compiler/semantic/main_visitor.iyi 201
+src/compiler/semantic/main_visitor.iyi 237
 src/compiler/semantic/math_interpreter.iyi 52
 src/compiler/semantic/normalizer.iyi 62
 src/compiler/semantic/recursive_struct_checker.iyi 11
