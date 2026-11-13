@@ -88,6 +88,11 @@ prove_mutation 'captured block argument is omitted from its def frame' "$REPO/sr
   'if block_arg = def_node.block_arg' 'if block_arg = (false ? def_node.block_arg : nil)' -- mutation_check || status=1
 prove_mutation 'block locals are owned by the enclosing frame' "$REPO/src/compiler/semantic/closures.iyi" \
   'node.body.accept(ClosureWalk.new(@facts, @visitor, frame, @inside_while))' 'node.body.accept(ClosureWalk.new(@facts, @visitor, @frame, @inside_while))' -- mutation_check || status=1
+prove_mutation 'a proc that captures a variable has no closure context' "$REPO/src/compiler/semantic/closures.iyi" \
+  'break if part.node.node_id == owner_context.node.node_id
+            part.closure = true if part.kind == FrameKind::Proc' \
+  'break if part.node.node_id == owner_context.node.node_id
+            part.closure = false if part.kind == FrameKind::Proc' -- mutation_check || status=1
 if [ "$status" -ne 0 ]; then
   printf '%s\n' '== SOME CLOSURE CHECKS FAILED'
   exit 1
