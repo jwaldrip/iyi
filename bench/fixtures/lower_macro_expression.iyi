@@ -1,0 +1,6 @@
+def macro_value : Int32
+  {{ 42 }}
+end
+
+macro_value
+nil

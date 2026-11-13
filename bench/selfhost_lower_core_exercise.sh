@@ -553,6 +553,20 @@ else
   awk 'NR<=8' "$WORK/interpolation.err" "$WORK/interpolation.out" "$WORK/interpolation.build.log"
   status=1
 fi
+macro_expansion_check() {
+  "$IYI" build -o "$WORK/port-macro-expansion" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/macro-expansion.build.log" 2>&1 || return 1
+  "$WORK/port-macro-expansion" lower "$REPO/bench/fixtures/lower_macro_expression.iyi" "$WORK/lower_macro_expression.oracle.ll" > "$WORK/macro-expansion.out" 2> "$WORK/macro-expansion.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/macro-expansion.out"
+}
+if macro_expansion_check; then
+  prove_mutation "a macro expression ignores its typed expansion" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if node.is_a?(MacroIf) || node.is_a?(MacroFor) || node.is_a?(MacroExpression)' \
+    '  if false' -- macro_expansion_check || status=1
+else
+  echo "FAIL: macro expression fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/macro-expansion.err" "$WORK/macro-expansion.out" "$WORK/macro-expansion.build.log"
+  status=1
+fi
 
 
 
