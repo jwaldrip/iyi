@@ -3114,6 +3114,23 @@ pub class MainVisitor < TypeNodeHost
       end
     end
 
+    # PROBE (Main, not for merge): a tuple indexed by a literal is its member (hosted call.cr check_tuple_indexer
+    # 881-985). Typing only, no target def: the real change is /tmp/iyi-selfhost-keep/briefs/contract-tuple-indexer.md.
+    if rec_type.is_a?(TupleInstanceType) && node.name == "[]" && node.args.size == 1
+      probe_ti_arg = node.args[0]
+      if probe_ti_arg.is_a?(NumberLiteral)
+        if probe_ti_val = probe_ti_arg.as(NumberLiteral).value.to_i?
+          probe_ti_types = rec_type.as(TupleInstanceType).tuple_types
+          probe_ti_index = probe_ti_val.as(Int32)
+          probe_ti_index = probe_ti_index + probe_ti_types.size if probe_ti_index < 0
+          if probe_ti_index >= 0 && probe_ti_index < probe_ti_types.size
+            set_type(node, probe_ti_types[probe_ti_index])
+            @type_filters = nil
+            return false
+          end
+        end
+      end
+    end
     target_def = lookup_method_matching(rec_type, node.name, node.args, node)
     return false if target_def.nil?
     # PROBE (Main, not for merge): hosted Call#lookup_matches: a call with no receiver that the scope does not
