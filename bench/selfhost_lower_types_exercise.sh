@@ -534,7 +534,7 @@ if ! check_own_diverges; then
 fi
 
 prove_mutation "a namespace module's branch bypassed (namespaces fall through to the raise)" "$TYPER_FILE" \
-  "    if type.is_a?(NonGenericModuleType) && !type.is_a?(LibType)" \
+  "    if (type.is_a?(NonGenericModuleType) || type.is_a?(TraitType)) && !type.is_a?(LibType)" \
   "    if false" \
   -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
