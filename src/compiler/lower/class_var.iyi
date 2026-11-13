@@ -3,7 +3,7 @@ module compiler/lower/class_var
 # The port of `src/compiler/iyi/codegen/class_var.cr` (the hosted `CodeGenVisitor`'s class variables), for the
 # part a program without the `once` runtime reaches: a class variable declared in a plain top-level class,
 # with an integer or float value. Ported:
-#   - a literal initialiser (Bool, Char or integer), which the hosted code stores in the global at its
+#   - a literal initialiser (Bool, Char, integer or float), which the hosted code stores in the global at its
 #     declaration with no function and no flag (`simple_initializer`): the global's initializer is the literal,
 #     and every read is a load of the global;
 #   - a non-literal initialiser that the class body declares before any read (`initialize_class_var` on the
@@ -17,7 +17,7 @@ module compiler/lower/class_var
 #     not define;
 #   - a class variable declared without an initialiser, unless it is a nilable reference (its global starts as null);
 #   - a class variable whose owner is in a namespace, is generic, or is not a class (its hosted `llvm_name`);
-#   - a string, symbol, nil or float initialiser, whose global is initialised by `initialize_simple_constants`;
+#   - a string, symbol or nil initialiser, whose global is initialised by an init function or by `initialize_simple_constants`;
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
 # Thread-local class variables: a `@[ThreadLocal]` variable's global is local-exec (hosted `declare_thread_local`,
 # class_var.cr:27-34), the model every non-Windows target uses, and `declare_cvar_global` sets it from the variable's
@@ -180,20 +180,18 @@ pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
 end
 
 # A literal initialiser the hosted code stores at the declaration with no function (`simple_literal?` with a
-# primitive value): a Bool, Char or integer literal.
+# primitive value): a Bool, Char, integer or float literal. A float is a number whose text has a point
+# (hosted `initialize_class_var`, the discard branch: the global's initializer is the constant, no function).
 pub def simple_literal?(node : ASTNode) : Bool
   if node.is_a?(BoolLiteral) || node.is_a?(CharLiteral)
     return true
   end
-  node.is_a?(NumberLiteral) && !node.as(NumberLiteral).value.includes?(".")
+  node.is_a?(NumberLiteral)
 end
 
-# Refuses an initialiser whose global the port does not initialise: a string, symbol, nil or float literal (their
-# globals come from `initialize_simple_constants`, which is not ported yet).
+# A non-literal initialiser is stored by its init function. A float literal is simple (above), so it does not
+# reach here. A string, symbol or nil is not stored at the declaration.
 pub def check_cvar_initializer(cvar : MetaTypeVar, node : ASTNode) : Nil
-  if node.is_a?(NumberLiteral) && node.as(NumberLiteral).value.includes?(".")
-    refuse_port("lower: class variable #{cvar.name} has a float literal: its global comes from initialize_simple_constants, not ported yet (hosted class_var.cr: initialize_class_var)")
-  end
 end
 
 # The global of a class variable, declared once (hosted `declare_class_var`, internal linkage).

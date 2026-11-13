@@ -101,7 +101,9 @@ pub def literal_of_type(low : Lowerer, value : ASTNode, typ : Type) : Value?
   if value.is_a?(NumberLiteral)
     text = value.as(NumberLiteral).value
     if text.includes?(".")
-      return nil
+      # Hosted `visit(NumberLiteral)` reads the text with `to_f64`. The point is the float; the lexer has
+      # already dropped a suffix, so `1.5` and `1.5_f32` both parse. The declared type picks double or float.
+      return low.builder.const_float(low.typer.llvm_type(typ), text.to_f)
     end
     if typ.full_name == "Int128" || typ.full_name == "UInt128"
       refuse_port("lower: a 128-bit integer literal is not ported yet: the literal path that emits int128 (hosted const.cr: read_const)")
