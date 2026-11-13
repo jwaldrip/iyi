@@ -42,8 +42,8 @@ import compiler/lower/const::{const_scope, literal_node_value, literal_of_type, 
 import compiler/lower/fun::{block_ended?}
 import compiler/lower/cast::{assign, nilable_reference_type?}
 import compiler/lower/symbols::{symbol_index}
-import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type}
-import compiler/types/types::{NilableProcType}
+import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type, UnionType}
+import compiler/types/types::{MixedUnionType, NilableProcType}
 
 # The scope a class variable name is looked up in: the type of the function being lowered, or else the class
 # whose body is being lowered (a declaration is visited in its class body, where the context is the program),
@@ -183,6 +183,9 @@ pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
   if cvar.type.is_a?(NilableProcType)
     return low.typer.llvm_type(cvar.type)
   end
+  if nilable_aggregate_initializer?(cvar)
+    return low.typer.llvm_type(cvar.type)
+  end
   ir = low.typer.llvm_type(cvar.type)
   if !(ir.int? || ir.float? || ir.pointer?)
     refuse_port("lower: class variable #{cvar.name} is not an integer, a float or a pointer: aggregate initialisers are not ported yet (hosted class_var.cr: initialize_class_var)")
@@ -204,6 +207,18 @@ end
 # zeroed proc pair is the hosted null value (class_var.cr:169-171).
 pub def nilable_proc_initializer?(cvar : MetaTypeVar, node : ASTNode) : Bool
   node.is_a?(NilLiteral) && cvar.type.is_a?(NilableProcType)
+end
+
+# A mixed union initialized to nil is its zero aggregate, discarded by the
+# hosted initializer in the same branch as a nilable Proc (class_var.cr:169-171).
+pub def nilable_aggregate_initializer?(cvar : MetaTypeVar) : Bool
+  if !cvar.initializer.is_a?(NilLiteral) || !cvar.type.is_a?(MixedUnionType)
+    return false
+  end
+  cvar.type.as(UnionType).union_types.each do |member|
+    return true if member.nil_type?
+  end
+  false
 end
 
 # A nil reference initializer is likewise the type's null value; the hosted
@@ -367,7 +382,7 @@ pub def initialize_class_var(low : Lowerer, cvar : MetaTypeVar) : Nil
   name = cvar_global_name(owner, cvar.name)
   st = low.globals.class_var_state(cvar_key(owner, cvar.name))
   ir = cvar_ir_type(low, cvar)
-  if nilable_proc_initializer?(cvar, node)
+  if nilable_proc_initializer?(cvar, node) || nilable_aggregate_initializer?(cvar)
     nilable_proc_global(low, cvar, name, ir, st)
     return
   end
@@ -435,7 +450,7 @@ pub def class_var_global(low : Lowerer, cvar : MetaTypeVar) : Global
   end
   ir = cvar_ir_type(low, cvar)
   node_init = init.as(ASTNode)
-  if nilable_proc_initializer?(cvar, node_init)
+  if nilable_proc_initializer?(cvar, node_init) || nilable_aggregate_initializer?(cvar)
     return nilable_proc_global(low, cvar, name, ir, st)
   end
   if nilable_reference_initializer?(cvar, node_init)
@@ -459,7 +474,7 @@ pub def class_var_pointer(low : Lowerer, cvar : MetaTypeVar) : Value
   name = cvar_global_name(owner, cvar.name)
   st = low.globals.class_var_state(cvar_key(owner, cvar.name))
   init = cvar.initializer
-  if !init.nil? && !simple_literal?(init.as(ASTNode)) && !nilable_proc_initializer?(cvar, init.as(ASTNode)) && !nilable_reference_initializer?(cvar, init.as(ASTNode)) && !st.no_init_flag
+  if !init.nil? && !simple_literal?(init.as(ASTNode)) && !nilable_proc_initializer?(cvar, init.as(ASTNode)) && !nilable_aggregate_initializer?(cvar) && !nilable_reference_initializer?(cvar, init.as(ASTNode)) && !st.no_init_flag
     st.read = true
     fn = create_cvar_read_function(low, cvar, name, st)
     ptr = low.module.types.ptr(0)
