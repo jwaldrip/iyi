@@ -10,7 +10,32 @@
 class IyiRuntimeLock
 end
 
+struct Pointer(T)
+  @[Primitive(:pointer_get)]
+  def value : T
+  end
+
+  @[Primitive(:pointer_set)]
+  def value=(value : T)
+  end
+
+  @[Primitive(:pointer_address)]
+  def address : UInt64
+  end
+end
+
+struct Proc
+  @[Primitive(:proc_call)]
+  def call(*args : *T) : R
+  end
+end
+
 fun __iyi_once(flag : Bool*, initializer : Void*) : Nil
+  if !flag.value
+    cell = {initializer.address, 0_u64}
+    pointerof(cell).as(Pointer(Proc(Nil))).value.call
+    flag.value = true
+  end
 end
 
 lib LibIyiMain
@@ -23,12 +48,25 @@ fun main(argc : Int32, argv : UInt8**) : Int32
 end
 
 class K
+  @@count : Int32 = 0
+  @@ran : Bool = false
+
   def self.mk : Int32
-    9
+    if @@ran
+      @@count = 2
+    else
+      @@ran = true
+      @@count = 1
+    end
+    @@count
   end
 
   def self.v : Int32
     @@n
+  end
+
+  def self.count : Int32
+    @@count
   end
 end
 
@@ -50,4 +88,5 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-LibC.exit(f)
+use(f)
+LibC.exit(K.count)

@@ -37,9 +37,11 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_cvar_tls"
-# lowglob_cvar_tls: an untyped `@[ThreadLocal] @@v = value` is refused by name (lower.iyi, visit(Annotation)): the body
-# pass does not flag it. While it waits, the mutation check requires the port to REFUSE it, so a lifted refusal is caught.
+WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy"
+# The body pass does not flag an untyped @[ThreadLocal] declaration.
+# The lazy fixture's indirect Proc call waits on zero-argument splat matching.
+#
+# The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
 
 echo "== 1. Building the port driver"
 if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
@@ -88,6 +90,14 @@ hosted_module() {
   fi
 }
 
+# Exit 1 means the initializer's side effect happened exactly once. A dropped flag
+# check makes the counter 2, even if the value global itself happens to look right.
+hosted_once_check() {
+  hosted_module lowglob_cvar_lazy "$REPO/bench/fixtures/lowglob_cvar_lazy.iyi" "$WORK/once_check" "$WORK/once_check.log" || return 1
+  timeout 30 "$WORK/once_check" > "$WORK/once_check.out" 2>&1
+  [ "$?" -eq 1 ]
+}
+
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
 passed=0
@@ -113,6 +123,12 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
   esac
   if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
     reason="$(awk 'NR==1' "$WORK/$name.port.err")"
+    if [ "$name" = lowglob_cvar_lazy ]; then
+      case "$reason" in
+        *"wrong number of arguments for 'Proc(Nil)#call'"*) ;;
+        *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
+      esac
+    fi
     if [ "$named" = 1 ]; then
       echo "  $name: WAITING, named: $reason"
       waiting=$((waiting + 1))
@@ -140,6 +156,14 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     diverged=$((diverged + 1))
   fi
 done
+timeout 30 "$WORK/lowglob_cvar_lazy" > "$WORK/lazy-hosted.out" 2>&1
+lazy_status=$?
+if [ "$lazy_status" -eq 1 ]; then
+  echo "  hosted lazy initialization: side effect occurred exactly once (status 1)"
+else
+  echo "  hosted lazy initialization: expected status 1, got $lazy_status"
+  diverged=$((diverged + 1))
+fi
 echo "  fixtures: $passed passed, $waiting waiting (named), $diverged failed"
 if [ "$diverged" -gt 0 ] || [ "$passed" -eq 0 ]; then
   status=1
@@ -211,6 +235,8 @@ prove_mutation "a program global is incorrectly stripped as a build constant" "$
   "        if destination.starts_with?(prefix) && identity_names.includes?(destination[prefix.size..-1])" "        if destination.includes?(marker)" -- lowglob_check || status=1
 prove_mutation "indirect calls are left without a function type" "$REPO/bench/lib/lower_oracle.sh" \
   "  if (at == 0) return line" "  if (indirect || at == 0) return line" -- lowglob_check || status=1
+prove_mutation "lazy initializer ignores the once flag" "$REPO/bench/fixtures/lowglob_cvar_lazy.iyi" \
+  "  if !flag.value" "  if true" -- hosted_once_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1
