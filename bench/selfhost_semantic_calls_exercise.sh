@@ -345,13 +345,18 @@ prove_mutation "a number literal is not matched when its value fits" "$MATCH_FIL
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an inherited method's target forgets the type it was found on" "$CALL_FILE" \
-  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, instantiated)' \
-  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, nil, single.arg_types, instantiated)' \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, nil)' \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, nil, single.arg_types, nil)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "instantiated argument types are the written restrictions" "$CALL_FILE" \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, nil)' \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.declared, nil)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "declared return is mistaken for the inferred body return" "$CALL_FILE" \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, nil)' \
   'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, instantiated)' \
-  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.declared, instantiated)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

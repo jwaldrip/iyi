@@ -261,8 +261,8 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
-# The instantiated argument types and return of the one target, as the hosted
-# call pass writes them on the target def (args[i].type and the def's type).
+# The instantiated argument types of the target after the hosted call pass.
+# Its inferred return type belongs to the body typing gate.
 def instance_text(path : String, fixture : String, expr : String) : String
   node = new_compiler.typed_node(Iyi::Compiler::Source.new(path, fixture + "\n" + expr + "\n"))
   current = node
@@ -274,8 +274,7 @@ def instance_text(path : String, fixture : String, expr : String) : String
   raise "not a call: #{expr}" unless current.is_a?(Iyi::Call)
   td = current.as(Iyi::Call).target_def
   parts = td.args.map { |arg| arg.type.to_s }
-  ret = td.type? ? td.type.to_s : "needs body typing"
-  "args=#{parts.join(",")} ret=#{ret}"
+  "args=#{parts.join(",")} body=pending"
 rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end

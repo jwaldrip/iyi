@@ -131,16 +131,16 @@ end
 # the type the def was found on, which is not the receiver when the method is
 # inherited. *arg_types* are the instantiated argument types (the type each
 # argument was matched as, after a free variable is bound and a number is cast),
-# not the written restriction. *return_type* is that same match's instantiated
-# return, or nil when the def declares none. *error* is the first line of the
-# message the hosted call pass raises, or a marked refusal for a shape this port
-# does not answer.
+# not the written restriction. *return_type* is the body-inferred type of the
+# instantiated def, populated by body typing; *declared_return* is the annotation.
+# *error* is the first line of the message the hosted call pass raises, or a
+# marked refusal for a shape this port does not answer.
 pub class CallTarget
   getter definition : Def?
   getter owner : Type?
   getter defining : ModuleType?
   getter arg_types : Array(Type)
-  getter return_type : Type?
+  property return_type : Type?
   getter declared_return : Type?
   getter untyped : Bool
   getter error : String?
@@ -203,7 +203,7 @@ pub class CallRecalculation
       found = ArgRestriction.lookup_free(ts, single.defining, ret.as(ASTNode), rec_type, single.bound)
       return CallTarget.failed(found.as(LookupError).message) if found.is_a?(LookupError)
       instantiated = found.as(Type)
-      return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, instantiated)
+      return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, nil)
     end
     named = signature.named_args
     if named

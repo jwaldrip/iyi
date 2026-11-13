@@ -295,9 +295,8 @@ module BenchSelfhostSemanticCallsExercise
     owner.as(Type).to_s
   end
 
-  # args=<instantiated> ret=<instantiated> for the one target, or the error line.
-  # The argument types are CallTarget.arg_types, after a free variable is bound
-  # and a number is cast, not the written restriction.
+  # The instantiated argument types, after free-variable binding and autocast.
+  # Return inference is exercised by the body typing gate, not lookup alone.
   def self.evaluate_instance(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
     node = Parser.new(expr, "call").parse
     if !node.is_a?(Call)
@@ -312,7 +311,8 @@ module BenchSelfhostSemanticCallsExercise
     if target.error
       return "error: #{target.error.to_s}"
     end
-    "args=#{args_text(target)} ret=#{return_text(target)}"
+    state = target.return_type.nil? ? "pending" : "premature"
+    "args=#{args_text(target)} body=#{state}"
   end
 
   def self.args_text(target : CallTarget) : String
@@ -321,12 +321,6 @@ module BenchSelfhostSemanticCallsExercise
       parts << t.to_s
     end
     parts.join(",")
-  end
-
-  def self.return_text(target : CallTarget) : String
-    ret = target.return_type
-    return "needs body typing" if ret.nil?
-    ret.as(Type).to_s
   end
 
   def self.run(src : String, filename : String) : String

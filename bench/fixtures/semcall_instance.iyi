@@ -15,7 +15,7 @@ def pick(x : T) : T forall T
   x
 end
 
-def member(x : Int32 | String) : Int32
+def member(x : Int32 | String) : Int32 | String
   1
 end
 
