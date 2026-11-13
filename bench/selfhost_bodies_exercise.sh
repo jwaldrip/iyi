@@ -390,18 +390,28 @@ captured_free_output_at_floor() {
 prove_mutation "captured block output binds its callee's free variable" "$MAIN_VISITOR" \
   "                        @def_free_types[target_def] = bound unless bound.empty?" \
   "                        nil" -- captured_free_output_at_floor || status=1
-imported_generic_at_floor() {
+generic_rebuild_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  fixture="$REPO/bench/fixtures/sem_bodies_imported_generic.iyi"
+  touch "$WORK/imported_generic_mutant_built"
+  fixture="$REPO/bench/fixtures/sem_bodies_owner_typeof.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
   matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
-  floor=$(awk '$1 == "bench/fixtures/sem_bodies_imported_generic.iyi" { print $2 }' "$FLOOR_FILE")
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_owner_typeof.iyi" { print $2 }' "$FLOOR_FILE")
+  printf '%s of floor %s\n' "$matched" "$floor" > "$WORK/imported_generic_mutant_count"
   [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
 }
-prove_mutation "imported generic uses its typed lexical base" "$REPO/src/compiler/semantic/type_nodes.iyi" \
-  "  if typed_base = visitor.child_type(node.name)" \
-  "  if typed_base = visitor.child_type(node)" -- imported_generic_at_floor || status=1
+rm -f "$WORK/imported_generic_mutant_built"
+prove_mutation "a generic with typed arguments is rebuilt" "$REPO/src/compiler/semantic/type_nodes.iyi" \
+  "    rebuilt = generic_of_typed_args(visitor, node)" \
+  "    rebuilt = nil" -- generic_rebuild_at_floor || status=1
+if [ "${MUTATION_SKIP:-0}" != 1 ] && [ ! -f "$WORK/imported_generic_mutant_built" ]; then
+  echo "  FAIL: generic rebuild mutation did not build"
+  status=1
+fi
+if [ -f "$WORK/imported_generic_mutant_count" ]; then
+  echo "  generic rebuild mutant matched $(<"$WORK/imported_generic_mutant_count")"
+fi
 writer_type_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   fixture="$REPO/bench/fixtures/sem_bodies_block_writer_type.iyi"
@@ -426,6 +436,25 @@ captured_input_at_floor() {
 prove_mutation "captured block parameters use restriction inputs" "$MAIN_VISITOR" \
   "                    @vars[arg.name] = input_types[index]" \
   "                    @vars[arg.name] = @program.nil_type" -- captured_input_at_floor || status=1
+atomic_free_at_floor() {
+  "$IYI" build -o "$WORK/atomic_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  rm -f "$WORK/atomic.refusals"
+  "$WORK/atomic_tool" "$REPO/bench/fixtures/sem_bodies_match_atomics.iyi" \
+    -o "$WORK/atomic" --pipeline typed --probe-phase --keep-going > "$WORK/atomic.log" 2>&1 || true
+  [ -f "$WORK/atomic.refusals" ] || return 1
+  awk -F '\t' '
+    $1 == "body" && $2 ~ /^MatchAtomic\((UInt64|Int64)\)#(get|set|add|compare_and_set)$/ { bad = 1 }
+    $1 == "reached" && $2 ~ /^MatchAtomic\((UInt64|Int64)\)#(get|set|add|compare_and_set)$/ { seen[$2] = 1 }
+    END { for (name in seen) count++; exit bad || count != 8 }
+  ' "$WORK/atomic.refusals"
+}
+if ! atomic_free_at_floor; then
+  echo "  ATOMIC: one of the instantiated atomic bodies was refused or not reached"
+  status=1
+fi
+prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
+  "    if count_matches.any? { |d| !d.free_vars.nil? }" \
+  "    if false" -- atomic_free_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"
