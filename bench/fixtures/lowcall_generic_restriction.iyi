@@ -3,7 +3,7 @@ lib LibC
 end
 
 class Box(T)
-  def self.take(value : T) : T
+  def self.take(value : T)
     value
   end
 end
