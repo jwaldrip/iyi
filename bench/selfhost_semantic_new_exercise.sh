@@ -85,7 +85,7 @@ echo "== 3. Guarded mutation proofs (patch, rebuild, the gate must fail)"
 MUTATIONS_RUN=0
 
 prove_mutation "allocate's type not given the instance type" "$MAIN_VISITOR_FILE" \
-  "          set_type(node, sc.as(MetaclassType).instance_type)" \
+  "          set_type(node, instance)" \
   "          set_type(node, sc)" \
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
