@@ -45,7 +45,7 @@ src/compiler/foundation/location.iyi 18
 src/compiler/foundation/string_pool.iyi 7
 src/compiler/ir/builder.iyi 118
 src/compiler/ir/function.iyi 97
-src/compiler/ir/inst.iyi 212
+src/compiler/ir/inst.iyi 213
 src/compiler/ir/intrinsics.iyi 72
 src/compiler/ir/layout.iyi 22
 src/compiler/ir/module.iyi 27
@@ -159,7 +159,7 @@ src/compiler/semantic/type_node_host.iyi 13
 src/compiler/semantic/type_nodes.iyi 26
 src/compiler/semantic/typed.iyi 197
 src/compiler/stage1.iyi 4
-src/compiler/syntax/ast.iyi 1449
+src/compiler/syntax/ast.iyi 1451
 src/compiler/syntax/lexer.iyi 131
 src/compiler/syntax/parser.iyi 342
 src/compiler/syntax/token.iyi 280
