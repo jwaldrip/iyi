@@ -1,6 +1,7 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader, Path}
 import compiler/semantic/top_level::{GenericClassType, ModuleType, SemanticProgram, TopLevelVisitor, Type, UnionType, dir_of}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/types/types::{GenericInstanceType, NamedArgumentType, VirtualType}
@@ -65,6 +66,7 @@ module BenchSelfhostSemanticCallsCensusExercise
     visitor = TopLevelVisitor.new(prog, path)
     Expressions.new(nodes).accept(visitor)
     visitor.finish
+    declare_guessed_instance_vars(prog)
     {prog, TypeSystem.new(prog)}
   end
 

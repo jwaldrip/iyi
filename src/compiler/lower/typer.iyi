@@ -17,7 +17,7 @@ module compiler/lower/typer
 
 import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/layout::{DataLayout}
-import compiler/semantic/top_level::{Type, ClassType, EnumType, LibType, MetaclassType, NilType, NonGenericClassType, NonGenericModuleType, GenericClassType, NoReturnType, VoidType, AliasType, TypeDefType, ModuleType, UnionType}
+import compiler/semantic/top_level::{Type, ClassType, EnumType, LibType, MetaclassType, NilType, NonGenericClassType, NonGenericModuleType, GenericClassType, NoReturnType, VoidType, AliasType, TypeDefType, ModuleType, TraitType, UnionType}
 import compiler/types/types::{PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, NamedTupleInstanceType, GenericClassInstanceType, GenericModuleInstanceType, MixedUnionType, VirtualType, VirtualMetaclassType, NilableType, ReferenceUnionType, NilableReferenceUnionType, NilableProcType, TypeQueries}
 import compiler/types/merge::{TypeMerge}
 import compiler/lower/unions::{mixed_union_body, mixed_union_value_area}
@@ -78,16 +78,20 @@ pub def passed_by_value?(type : Type) : Bool
   if type.is_a?(TupleInstanceType) || type.is_a?(NamedTupleInstanceType)
     return true
   end
-  if type.is_a?(MixedUnionType)
+  if type.is_a?(NilableType) || type.is_a?(ReferenceUnionType) || type.is_a?(NilableReferenceUnionType) || type.is_a?(NilableProcType)
+    return false
+  end
+  if type.is_a?(UnionType)
     return !reference_union?(type.as(UnionType))
   end
   if type.is_a?(VirtualType)
     return type.struct?
   end
-  if type.is_a?(NonGenericModuleType)
-    # The hosted rule (codegen/types.cr): the union of the implementors is passed by value when it is a
-    # mixed union, and one implementor answers for itself (NEEDS.md row 5).
-    implementors = module_implementors(type)
+  if type.is_a?(NonGenericModuleType) || type.is_a?(TraitType)
+    # The hosted rule (codegen/types.cr; TraitType < NonGenericModuleType there): the union of the
+    # implementors is passed by value when it is a mixed union, and one implementor answers for
+    # itself (NEEDS.md row 5).
+    implementors = module_implementors(type.as(ModuleType))
     return false if implementors.size == 0
     return passed_by_value?(implementors[0]) if implementors.size == 1
     implementors.each do |member|
@@ -105,9 +109,7 @@ pub def passed_by_value?(type : Type) : Bool
     return passed_by_value?(type.as(TypeDefType).typedef)
   end
   if type.is_a?(AliasType)
-    aliased = type.as(AliasType).aliased_type
-    raise "BUG: passed_by_value? of an unresolved alias #{type.full_name}" if aliased.nil?
-    return passed_by_value?(aliased.as(Type))
+    return passed_by_value?(TypeMerge.remove_alias(type))
   end
   if type.is_a?(ClassType)
     return type.struct?
@@ -117,7 +119,7 @@ end
 
 # The types that include a module, as the hosted `including_types` gives them. A module's own metaclass
 # includes the module (for `extend`), and that is not an implementor.
-pub def module_implementors(type : NonGenericModuleType) : Array(Type)
+pub def module_implementors(type : ModuleType) : Array(Type)
   found = [] of Type
   type.including_types.each do |t|
     found << t unless t.is_a?(MetaclassType) || t.is_a?(VirtualMetaclassType)
@@ -316,11 +318,11 @@ pub class LowerTyper
       # This can only be reached if the generic class has no implementors.
       return @table.int1
     end
-    if type.is_a?(NonGenericModuleType) && !type.is_a?(LibType)
-      # A namespace has no implementors and answers `i1`: the hosted typer's answer for a
-      # NonGenericModuleType (codegen/llvm_typer.cr, `create_llvm_type(NonGenericModuleType | GenericClassType)`).
+    if (type.is_a?(NonGenericModuleType) || type.is_a?(TraitType)) && !type.is_a?(LibType)
+      # A namespace or trait has no implementors and answers `i1`: the hosted typer's answer for a
+      # NonGenericModuleType / TraitType (codegen/llvm_typer.cr, `create_llvm_type(NonGenericModuleType | GenericClassType)`).
       # A module with implementors is the hosted union of them (NEEDS.md row 5).
-      implementors = module_implementors(type)
+      implementors = module_implementors(type.as(ModuleType))
       if implementors.size == 0
         # The file's own module (its `module a/b/c` header, an iyi unit) answers `i32`, the hosted answer
         # measured on `Compiler::Backend::Backend` and every header module of src/compiler.
@@ -418,8 +420,10 @@ pub class LowerTyper
     if id_in_front
       fields << @table.int32
     end
-    raise "BUG: llvm_struct_type of generic instance #{type.full_name} is not ported: the port model has no all_instance_vars for it (see NEEDS.md)" if type.is_a?(GenericClassInstanceType)
-    type.as(ModuleType).all_instance_vars.each do |ivar_name, ivar|
+    # A generic instance's fields are its generic's, with the type parameters replaced by its arguments
+    # (`GenericClassInstanceType#all_instance_vars`, types.iyi), as the hosted instance's ivars are.
+    ivars = type.is_a?(GenericClassInstanceType) ? type.as(GenericClassInstanceType).all_instance_vars : type.as(ModuleType).all_instance_vars
+    ivars.each do |ivar_name, ivar|
       var_type = ivar.var_type
       raise "BUG: instance variable #{ivar_name} of #{type.full_name} has no type yet (declarations slice)" if var_type.nil?
       fields << llvm_embedded_type(var_type.as(Type), wants_size)
@@ -448,7 +452,8 @@ pub class LowerTyper
     max_alignment = pointer_size.to_i32
     type.as(UnionType).union_types.each do |member|
       next if member.is_a?(VoidType) || member.is_a?(NoReturnType)
-      raise "BUG: a module member of a union is not ported (hosted types.cr expand_union_types, NEEDS.md row 7)" if member.is_a?(NonGenericModuleType)
+      # Hosted codegen/types.cr:141-179 keeps a module with no includers as itself.
+      raise "BUG: a module member of a union is not ported (hosted types.cr expand_union_types, NEEDS.md row 7)" if member.is_a?(NonGenericModuleType) && !member.as(ModuleType).including_types.empty?
       member_type = llvm_type(member, true)
       size = size_of(member_type)
       align = align_of(member_type)

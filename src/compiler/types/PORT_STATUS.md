@@ -199,7 +199,7 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 1441 | def | NonGenericModuleType | `module?` | other owner GenericModuleInstanceType (src/compiler/types/types.iyi:212) |  | other-owner |
 | 1445 | def | NonGenericModuleType | `add_instance_var_initializer` | missing |  | missing |
 | 1466 | class | TraitSupertraits | `TraitSupertraits` | missing class |  | missing |
-| 1467 | attr | TraitSupertraits | `supertraits` | other owner TraitType (src/compiler/semantic/top_level.iyi:494) |  | other-owner |
+| 1467 | attr | TraitSupertraits | `supertraits` | other owner TraitType and GenericTraitType (src/compiler/semantic/top_level.iyi) |  | other-owner |
 | 1470 | class | TraitType | `TraitType` | ported class (src/compiler/semantic/top_level.iyi:493) |  | ported |
 | 1473 | def | TraitType | `trait?` | ported (src/compiler/semantic/top_level.iyi:503) |  | ported |
 | 1477 | def | TraitType | `type_desc` | ported (src/compiler/semantic/top_level.iyi:507) |  | ported |
@@ -311,10 +311,10 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 2200 | def | GenericModuleType | `add_instance_var_initializer` | missing |  | missing |
 | 2204 | def | GenericModuleType | `to_s_with_options` | out of scope: Crystal-only inspection/printing |  | out-of-scope |
 | 2228 | class | GenericTraitType | `GenericTraitType` | ported class (src/compiler/semantic/top_level.iyi:512) |  | ported |
-| 2232 | attr | GenericTraitType | `assoc_types` | other owner TraitType (src/compiler/semantic/top_level.iyi:495) |  | other-owner |
+| 2232 | attr | GenericTraitType | `assoc_types` | ported (src/compiler/semantic/top_level.iyi) |  | ported |
 | 2235 | def | GenericTraitType | `trait_params` | missing |  | missing |
 | 2242 | def | GenericTraitType | `to_s_with_options` | out of scope: Crystal-only inspection/printing |  | out-of-scope |
-| 2258 | def | GenericTraitType | `trait?` | other owner GenericTraitInstanceType (src/compiler/types/types.iyi:236) |  | other-owner |
+| 2258 | def | GenericTraitType | `trait?` | ported (src/compiler/semantic/top_level.iyi) |  | ported |
 | 2262 | def | GenericTraitType | `type_desc` | other owner VirtualType (src/compiler/types/types.iyi:29) |  | other-owner |
 | 2268 | class | GenericClassType | `GenericClassType` | ported class (src/compiler/semantic/top_level.iyi:458) |  | ported |
 | 2272 | def | GenericClassType | `initialize` | ported (src/compiler/semantic/top_level.iyi:462) |  | ported |

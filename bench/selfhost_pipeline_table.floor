@@ -1,4 +1,5 @@
 # selfhost pipeline table floor: <root> <defs reached by the body typer> <defs typed with no refusal> <defs lowered with no refusal>. A count may only rise. Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh.
-hello 601 375 194
-parse 913 505 272
-compile_native 2905 1839 1492
+# Distinct instantiations. One granted drop, loader fix 2d2a9d847 only: the chaos files are no longer loaded. hello 829 753 320 to 810 737 309, parse 2104 1740 551 to 2085 1724 540, compile_native 1078 951 371 to 1059 935 360. Pipeline gate exit 0, ALL CHECKS PASSED, including the first-branch mutation.
+hello 810 737 309
+parse 2085 1724 540
+compile_native 1059 935 360

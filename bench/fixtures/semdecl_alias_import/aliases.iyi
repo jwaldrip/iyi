@@ -1,0 +1,5 @@
+module aliases
+
+import definitions::{Payload}
+
+pub alias Imported = Payload

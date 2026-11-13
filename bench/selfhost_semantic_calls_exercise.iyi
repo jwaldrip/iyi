@@ -1,6 +1,7 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Call, Def, Expressions, NamedArgument, NamedTupleLiteral, NilLiteral, Out, Path, Primitive, TupleLiteral, Underscore, Var}
 import compiler/semantic/top_level::{LibType, ModuleType, SemanticProgram, TopLevelVisitor, Type, dir_of}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/semantic/method_lookup::{MethodLookup, Matches}
@@ -398,6 +399,7 @@ module BenchSelfhostSemanticCallsExercise
     node.accept(visitor)
     visitor.finish
     define_new_methods(prog)
+    declare_guessed_instance_vars(prog)
     # The type system is installed after the declarations, as the declarations gate does.
     ts = TypeSystem.new(prog)
     out = [] of String

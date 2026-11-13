@@ -4,7 +4,7 @@ import compiler/foundation/errors::{refuse_port}
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Def, Generic, Path, Visibility}
 import compiler/syntax/token::{NumberKind}
-import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaTypeVar, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeParameterType, UnionType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaclassType, MetaTypeVar, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeParameterType, UnionType, VoidType}
 
 pub class VirtualType < Type
   property base_type : Type
@@ -304,6 +304,10 @@ pub class GenericModuleInstanceType < GenericInstanceType
     true
   end
 
+  def trait? : Bool
+    @generic_type.trait?
+  end
+
   def type_desc : String
     "module"
   end
@@ -316,20 +320,6 @@ pub class GenericModuleInstanceType < GenericInstanceType
       @metaclass = m
       m
     end
-  end
-end
-
-pub class GenericTraitInstanceType < GenericInstanceType
-  def initialize(program : SemanticProgram, generic_type : Type, type_vars : Hash(String, Type), type_args : Array(Type))
-    super(program, generic_type, type_vars, type_args)
-  end
-
-  def trait? : Bool
-    true
-  end
-
-  def type_desc : String
-    "trait"
   end
 end
 
@@ -583,7 +573,7 @@ pub class PointerInstanceType < GenericClassInstanceType
   end
 
   def full_name : String
-    "Pointer(#{@element_type.full_name})"
+    "Pointer(#{@element_type.devirtualize.arg_full_name})"
   end
 
   def to_s : String
@@ -609,7 +599,7 @@ pub class StaticArrayInstanceType < GenericClassInstanceType
   end
 
   def full_name : String
-    "StaticArray(#{@element_type.full_name}, #{@size_int})"
+    "StaticArray(#{@element_type.devirtualize.arg_full_name}, #{@size_int})"
   end
 
   def to_s : String

@@ -101,13 +101,12 @@ module BenchSelfhostSemanticDeclarationsExercise
     visitor = TopLevelVisitor.new(prog, entry)
     node.accept(visitor)
     visitor.finish
+    declare_guessed_instance_vars(prog)
     {prog, entry}
   end
 
   def self.dump_file_typed(path : String) : String
     prog, entry = load_typed_program(path)
-    type_node_system(prog)
-    declare_guessed_instance_vars(prog)
     dump_program_declarations(prog, entry) + dump_instances(prog, entry)
   end
 
@@ -178,6 +177,7 @@ module BenchSelfhostSemanticDeclarationsExercise
     prelude_file = prelude.import_file("iyi/prelude")
     if prelude_file
       prelude.load_file(prelude_file.as(String))
+      prelude.finish
     end
     prog.entry_dir = dir_of(entry)
     visitor = TopLevelVisitor.new(prog, entry)

@@ -36,7 +36,7 @@ import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program, lower_def_probe}
 import compiler/lower/primitives::{primitive_name}
-import compiler/lower/fun::{mangled_name}
+import compiler/lower/fun::{mangled_name, discard_probe_functions}
 import compiler/native/driver::{compile_module}
 import compiler/native/obj/object::{ObjectFile}
 import compiler/native/link/link::{link, LinkOptions, LinkedImage, LinkError}
@@ -309,15 +309,9 @@ end
 pub def refusal_table(typed : TypedProgram, root : String, refused : Array(String)) : Array(String)
   lines = [] of String
   visitor = typed.visitor
-  seen = Hash(UInt64, Bool).new
-  defs = [] of Def
-  visitor.typed_instances.each do |inst|
-    d = inst.definition
-    unless seen.has_key?(d.node_id)
-      seen[d.node_id] = true
-      defs << d
-    end
-  end
+  # A call clones the def it types. The clone's node id is new every time, so counting
+  # those ids counted the same instantiation once per call site. The label is the
+  # receiver, the name and the argument types: one instantiation, however many clones.
   refusals = visitor.refusals
   sites = Hash(String, Bool).new
   reasons = [] of String
@@ -341,17 +335,28 @@ pub def refusal_table(typed : TypedProgram, root : String, refused : Array(Strin
       end
     end
   end
-  clean = 0
-  defs.each do |d|
+  seen = Hash(String, Bool).new
+  dirty = Hash(String, Bool).new
+  labels = [] of String
+  visitor.typed_instances.each do |inst|
+    label = instance_label(inst.definition, inst.self_type, inst.arg_types)
+    unless seen.has_key?(label)
+      seen[label] = true
+      labels << label
+    end
     ids = NodeIds.new
-    d.accept(ids)
+    inst.definition.accept(ids)
     hit = false
     refusals.each do |r|
       hit = true if ids.ids.has_key?(r.node.node_id)
     end
-    clean += 1 unless hit
+    dirty[label] = true if hit
   end
-  lines << "table: #{root} defs-reached=#{defs.size} defs-typed-clean=#{clean} root-refusals=#{root_refusals} refusal-sites=#{sites.size}"
+  clean = 0
+  labels.each do |label|
+    clean += 1 unless dirty.has_key?(label)
+  end
+  lines << "table: #{root} defs-reached=#{labels.size} defs-typed-clean=#{clean} root-refusals=#{root_refusals} refusal-sites=#{sites.size}"
   ranked_rows(root, "refusal", reasons, counts, examples).each { |line| lines << line }
   lines
 end
@@ -377,6 +382,8 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     # neither probes it nor counts it, so it is no refusal row and no clean def.
     next unless primitive_name(d.body).nil?
     refused << "reached\t#{lowering_example(d, inst.self_type)}\t-\t-"
+    before = [] of String
+    m.functions.each { |fn| before << fn.name }
     outcome = group do |g|
       task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m) }
       task.value
@@ -391,9 +398,9 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
       message = outcome.as(String)
     end
     unless failed
-      # The function a clean instance defines, by the name lower_def_probe gives it (target_def_fun: the body's type is
-      # the return type). A name a failed probe created first is still found here, once a clean probe completes it.
+      # Find the same instantiated return type the probe passes to target_def_fun.
       if body_t = typed.visitor.type_of?(d.body)
+        result_t = typed.visitor.type_of?(d) || body_t
         # The call lowering names a metaclass receiver's method by its class (call.iyi class_owner, no self): `*Point::new`.
         self_for = inst.self_type
         class_owner : Type? = nil
@@ -403,7 +410,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
             self_for = nil
           end
         end
-        name = mangled_name(d.name, self_for, inst.arg_types, body_t.as(Type), class_owner)
+        name = mangled_name(d.name, self_for, inst.arg_types, result_t.as(Type), class_owner)
         # A body that is one instance variable is read where the call stands (hosted try_inline_call, call.cr 614; the
         # port's call.iyi 207): the lowering defines its function here only to lower it alone, and no call emits it.
         # Counted as lowered clean above, but not as a function the program defines.
@@ -413,6 +420,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
       end
     end
     if failed
+      discard_probe_functions(m, before)
       bad[d.node_id] = true
       reason = first_line(message)
       key = "#{d.node_id}|#{reason}"
@@ -430,17 +438,23 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
       end
     end
   end
-  checked = Hash(UInt64, Bool).new
-  clean = 0
+  seen_label = Hash(String, Bool).new
+  failed_label = Hash(String, Bool).new
+  labels = [] of String
   typed.visitor.typed_instances.each do |inst|
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
     # neither probes it nor counts it, so it is no refusal row and no clean def.
     next unless primitive_name(inst.definition.body).nil?
-    id = inst.definition.node_id
-    unless checked.has_key?(id)
-      checked[id] = true
-      clean += 1 unless bad.has_key?(id)
+    label = instance_label(inst.definition, inst.self_type, inst.arg_types)
+    unless seen_label.has_key?(label)
+      seen_label[label] = true
+      labels << label
     end
+    failed_label[label] = true if bad.has_key?(inst.definition.node_id)
+  end
+  clean = 0
+  labels.each do |label|
+    clean += 1 unless failed_label.has_key?(label)
   end
   lines = [] of String
   lines << "table: #{root} defs-lowered-clean=#{clean} lowering-refusal-sites=#{sites.size}"
@@ -454,4 +468,17 @@ def lowering_example(d : Def, t : Type?) : String
     return "#{st.full_name}##{d.name}"
   end
   d.name
+end
+
+# One instantiation: receiver, name, argument types. Two clones of the same call types are one label.
+def instance_label(d : Def, self_type : Type?, arg_types : Array(Type)) : String
+  owner = ""
+  if st = self_type
+    owner = st.full_name
+  end
+  args = [] of String
+  arg_types.each do |t|
+    args << t.full_name
+  end
+  "#{owner}##{d.name}(#{args.join(",")})"
 end

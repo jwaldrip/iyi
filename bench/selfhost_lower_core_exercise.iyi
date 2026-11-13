@@ -16,10 +16,11 @@ module bench/selfhost_lower_core_exercise
 # holding their text, and the stores into them), the `declare` of printf that the hosted
 # constant printing emits, the attribute groups, comments and the source header.
 
-import compiler/syntax/ast::{ASTNode}
+import compiler/syntax/ast::{ASTNode, Break, Def, Next, Nop, Return}
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
-import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
+import compiler/semantic/main_visitor::{MainVisitor, TypedInstance}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/ir/module::{Module}
@@ -29,9 +30,12 @@ import compiler/ir/printer::{print}
 import compiler/ir/types::{IrType}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
-import compiler/lower/lower::{codegen_program}
+import compiler/lower/lower::{codegen_program, jump_target, lower_def_probe}
+import compiler/ir/function::{Function}
 import compiler/lower/context::{Lowerer}
 import bench/lib/lower_gate::{attach_attrs, oracle_attr_map, printed_attr_map}
+import bench/lib/primitive_stand_in::{stand_in_primitive_types}
+import compiler/types/type_system::{TypeSystem}
 
 # The parsed and analysed fixture: the tree, the semantic pass that typed it, and the object
 # layout the program itself chooses (hosted `Program#iyi_object_layout?`: the prelude's IyiRuntimeLock).
@@ -53,10 +57,13 @@ def analyse(source : String, filename : String) : Analysis
   normalizer.iyi_prelude = false
   root = normalizer.normalize(root)
   prog = SemanticProgram.new
+  ts = TypeSystem.new(prog)
   tl = TopLevelVisitor.new(prog)
   root.accept(tl)
   tl.finish
+  declare_guessed_instance_vars(prog)
   mv = MainVisitor.new(prog)
+  stand_in_primitive_types(root, prog, mv)
   root.accept(mv)
   RecursiveStructChecker.new(prog).run
   Analysis.new(root, mv, !prog.types["IyiRuntimeLock"]?.nil?)
@@ -223,6 +230,18 @@ end
 # The state and the alloca rule of lower/context.iyi: a function with an alloca that
 # is kept, one with no alloca whose alloca block is removed, and the block order.
 def check_context : Nil
+  lexical = Nop.new
+  break_node = Break.new
+  next_node = Next.new
+  return_node = Return.new
+  definition = Def.new("f")
+  raise "CONTEXT FAILED: lexical jump target" unless jump_target(break_node, lexical).as(ASTNode).object_id == lexical.object_id
+  break_node.target = lexical
+  next_node.target = lexical
+  return_node.target = definition
+  raise "CONTEXT FAILED: typed break target" unless jump_target(break_node, nil).as(ASTNode).object_id == lexical.object_id
+  raise "CONTEXT FAILED: typed next target" unless jump_target(next_node, nil).as(ASTNode).object_id == lexical.object_id
+  raise "CONTEXT FAILED: typed return target" unless jump_target(return_node, nil).as(ASTNode).object_id == definition.object_id
   analysis = analyse("nil\n", "context_check.iyi")
   m = ir_module("aarch64-apple-darwin27.0.0")
   typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
@@ -283,6 +302,83 @@ def build_constant?(stripped : String, builds : Array(String)) : Bool
   false
 end
 
+# Two defs share one module. The first fails after declaring a callee. The leftover is the
+# form a verifier accepts (a declaration). The second calls that callee. The callee is clean
+# only when a later probe reuses the unfinished function.
+def probe_message(analysis : Analysis, typer : LowerTyper, m : Module, name : String) : String?
+  found : TypedInstance? = nil
+  analysis.visitor.typed_instances.each do |row|
+    found = row if row.definition.name == name
+  end
+  raise "no typed instance of #{name}" if found.nil?
+  row = found.as(TypedInstance)
+  outcome = group do |g|
+    task = g.spawn do
+      lower_def_probe(row.definition, row.self_type, row.arg_types, analysis.visitor, typer, m)
+    end
+    task.value
+  end
+  return outcome.as(Panicked).message if outcome.is_a?(Panicked)
+  return outcome.as(String) if outcome.is_a?(String)
+  nil
+end
+
+def leave_declaration(m : Module, fragment : String) : Nil
+  found : Function? = nil
+  m.functions.each do |fn|
+    found = fn if fn.name.includes?(fragment)
+  end
+  raise "the first probe left no function named #{fragment}" if found.nil?
+  fn = found.as(Function)
+  fn_type = fn.fn_type
+  kept = fn.name
+  m.remove_function(fn)
+  m.define_function(kept, fn_type)
+end
+
+def run_probe_reuse(fixture : String) : Nil
+  analysis = analyse(File.read(fixture), fixture)
+  m = ir_module("aarch64-apple-darwin27.0.0")
+  typer = LowerTyper.new(m.types, m.layout, false)
+  first = probe_message(analysis, typer, m, "first")
+  raise "first did not fail after declaring the callee" if first.nil?
+  leave_declaration(m, "callee")
+  probe_message(analysis, typer, m, "second")
+  callee = probe_message(analysis, typer, m, "callee")
+  if callee.nil?
+    puts "callee-clean=1"
+    raise "the callee was recorded clean"
+  end
+  puts "callee-clean=0"
+end
+
+# Analyse the required unit separately from the entry, then lower the checked def
+# alone into a fresh module, as the per-function census does.
+def run_probe_required(runtime : String, entry : String, oracle : String) : Nil
+  normalizer = NormalizerProgram.new
+  normalizer.iyi_prelude = false
+  required_root = normalizer.normalize(Parser.new(File.read(runtime), runtime).parse)
+  entry_root = normalizer.normalize(Parser.new(File.read(entry), entry).parse)
+  prog = SemanticProgram.new
+  ts = TypeSystem.new(prog)
+  tl = TopLevelVisitor.new(prog)
+  required_root.accept(tl)
+  entry_root.accept(tl)
+  tl.finish
+  declare_guessed_instance_vars(prog)
+  mv = MainVisitor.new(prog)
+  stand_in_primitive_types(entry_root, prog, mv)
+  required_root.accept(mv)
+  entry_root.accept(mv)
+  RecursiveStructChecker.new(prog).run
+  analysis = Analysis.new(entry_root, mv, true)
+  m = ir_module(triple_of(File.read(oracle)))
+  typer = LowerTyper.new(m.types, m.layout, true)
+  error = probe_message(analysis, typer, m, "checked_sum")
+  raise error.as(String) unless error.nil?
+  puts print(m)
+end
+
 def run : Nil
   args = Program.args
   if args.empty?
@@ -298,6 +394,14 @@ def run : Nil
     run_emit(args[1], args[2])
   elsif mode == "context"
     check_context
+  elsif mode == "jump-mismatch"
+    node = Break.new
+    node.target = Nop.new
+    jump_target(node, Nop.new)
+  elsif mode == "probe-reuse"
+    run_probe_reuse(args[1])
+  elsif mode == "probe-required"
+    run_probe_required(args[1], args[2], args[3])
   else
     raise "unknown mode #{mode}"
   end

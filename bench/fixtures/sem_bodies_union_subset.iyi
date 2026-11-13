@@ -1,0 +1,7 @@
+def union_subset(flag : Bool)
+  value = flag ? 1 : "one"
+  result : Int32 | String | Nil = value
+  result
+end
+
+union_subset(true)

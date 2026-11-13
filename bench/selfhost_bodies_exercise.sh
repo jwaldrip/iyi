@@ -44,7 +44,10 @@ for fixture in "$REPO"/bench/fixtures/sem_bodies_*.iyi; do
   rel="bench/fixtures/$(basename "$fixture")"
   # pointer_set defines Pointer#value= in the file. The prelude already has that
   # method, so this fixture is analysed alone.
-  if [ "$(basename "$fixture")" = "sem_bodies_pointer_set.iyi" ]; then
+  if [ "$(basename "$fixture")" = "sem_bodies_ensure.iyi" ]; then
+    cp "$fixture" "$WORK/ensure.cr"
+    "$ORACLE" --bare "$WORK/ensure.cr" > "$WORK/o.txt" 2> "$WORK/o.err"
+  elif [ "$(basename "$fixture")" = "sem_bodies_pointer_set.iyi" ]; then
     "$ORACLE" --bare "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"
   else
     "$ORACLE" "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"
@@ -294,6 +297,7 @@ prove_mutation "a proc literal inherits its enclosing scope" "$MAIN_VISITOR" \
 prove_mutation "unit definitions resolve in their lexical scope" "$MAIN_VISITOR" \
   "      if mod.iyi_unit" \
   "      if false" -- bodies_at_floor || status=1
+
 prove_mutation "imported restrictions use the defining unit" "$MAIN_VISITOR" \
   "        @current_type = owner if owner.iyi_unit" \
   "        nil" -- bodies_at_floor || status=1
@@ -323,6 +327,41 @@ prove_mutation "default is cloned into the caller's arguments" "$MAIN_VISITOR" \
 prove_mutation "magic line defaults use Int32" "$MAIN_VISITOR" \
   "        literal = NumberLiteral.new(line.to_s, NumberKind::I32)" \
   "        literal = NumberLiteral.new(line.to_s, NumberKind::I64)" -- defaults_at_floor sem_bodies_default_magic || status=1
+# Assignment conditions carry the value's filters onto the assigned local.
+flow_assign_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  local fixture="$REPO/bench/fixtures/sem_bodies_flow_assign.iyi"
+  "$ORACLE" "$fixture" > "$WORK/flow_o.txt" 2>/dev/null || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" > "$WORK/flow_p.txt" 2>/dev/null || return 1
+  sort "$WORK/flow_o.txt" > "$WORK/flow_o.sorted"
+  sort "$WORK/flow_p.txt" > "$WORK/flow_p.sorted"
+  local matched floor
+  matched=$(comm -12 "$WORK/flow_o.sorted" "$WORK/flow_p.sorted" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_flow_assign.iyi" { print $2 }' "$FLOOR_FILE")
+  [ "$matched" -ge "${floor:-0}" ]
+}
+prove_mutation "assignment condition narrows its target" "$MAIN_VISITOR" \
+  "@type_filters = TypeFilters.assign_var(value_type_filters, v.name)" \
+  "@type_filters = value_type_filters" -- flow_assign_at_floor || status=1
+
+# A written ensure is refused with the iyi prelude; the handler mechanism is
+# compared against the hosted compiler without that prelude.
+ensure_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  local fixture="$REPO/bench/fixtures/sem_bodies_ensure.iyi"
+  cp "$fixture" "$WORK/ensure.cr"
+  "$ORACLE" --bare "$WORK/ensure.cr" > "$WORK/ensure_o.txt" 2>/dev/null || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" > "$WORK/ensure_p.txt" 2>/dev/null || return 1
+  sort "$WORK/ensure_o.txt" > "$WORK/ensure_o.sorted"
+  sort "$WORK/ensure_p.txt" > "$WORK/ensure_p.sorted"
+  local matched floor
+  matched=$(comm -12 "$WORK/ensure_o.sorted" "$WORK/ensure_p.sorted" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_ensure.iyi" { print $2 }' "$FLOOR_FILE")
+  [ "$matched" -ge "${floor:-0}" ]
+}
+prove_mutation "ensure assignments reach following code" "$MAIN_VISITOR" \
+  "          @vars[name] = type" \
+  "          nil" -- ensure_at_floor || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"

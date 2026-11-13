@@ -324,7 +324,7 @@ pub class Compiler
       refusal_table(typed, root_name, refused).each { |line| puts line }
       names = [] of String
       lowering_table(typed, triple, root_name, names, refused).each { |line| puts line }
-      File.write(@config.output_filename + ".names", names.join("\n") + "\n")
+      File.write(@config.output_filename + ".names", names.uniq.join("\n") + "\n")
       File.write(@config.output_filename + ".refusals", refused.join("\n") + "\n")
       STDOUT.flush
     end
@@ -451,6 +451,7 @@ pub class Compiler
     # the loader's search path, and the entry's project root (its header root, else its directory).
     entry = resolved[resolved.size - 1]
     prog = SemanticProgram.new
+    prog.iyi_prelude = prelude
     prog.search_path = loader.iyi_path.entries
     prog.project_root = IyiPath.header_root_of(entry.filename, entry.source) || dir_of(entry.filename)
     # The prelude is declared before every other unit, as the declarations driver loads it first: the prelude's names are

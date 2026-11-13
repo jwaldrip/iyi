@@ -1,0 +1,30 @@
+# Explicitly cast an implementer to the trait implemented by both classes.
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+trait Coded
+end
+
+class Alpha
+  def initialize
+  end
+end
+
+class Beta
+  def initialize
+  end
+end
+
+impl Coded for Alpha
+end
+
+impl Coded for Beta
+end
+
+def keep : Int32
+  x = Alpha.new.as(Coded)
+  7
+end
+
+LibC.exit(keep)

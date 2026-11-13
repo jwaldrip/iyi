@@ -30,6 +30,7 @@ import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/token::{NumberKind}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ClassType, NonGenericClassType}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/methods::{MacroMethods}
@@ -4730,9 +4731,10 @@ pub def compile_source_to_module(src : String, filename : String, mod : Module) 
     next if (tvars = cd.type_vars) && !tvars.empty?
     plain_classes << cd
   end
-  # One pass over the classes: the top level resolves each field's type when the
-  # pass finishes, so every class must be registered before that point.
+  # Register every class before installing the ordered instance variables.
   Expressions.new(plain_classes).accept(tl)
+  tl.finish
+  declare_guessed_instance_vars(prog)
 
   mv = MainVisitor.new(prog)
   funs.each do |fd|

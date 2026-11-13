@@ -10,7 +10,8 @@
 module compiler/loader
 
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Expressions, ImportDecl, Require, Call, StringLiteral, MacroIf, MacroLiteral}
+import compiler/syntax/ast::{ASTNode, Expressions, ImportDecl, Require, Call, StringLiteral, MacroIf, MacroFor, MacroLiteral}
+import compiler/macros/engine::{MacroEngine}
 
 lib LibC
   fun exit(status : Int32) : NoReturn
@@ -127,6 +128,9 @@ pub class Loader
   property header_root : String?
   property project_root : String?
   property load_prelude : Bool
+  # Expands a file's top-level `{% if %}` and `{% for %}` sites, so that a `require` is loaded only from the
+  # branch the target's flags pick. One engine for the whole resolution: each site still gets a fresh interpreter.
+  property macro_engine : MacroEngine
 
   def initialize(@iyi_path : IyiPath = IyiPath.new)
     @modules = Hash(String, ModuleInfo).new
@@ -135,6 +139,7 @@ pub class Loader
     @header_root = nil
     @project_root = nil
     @load_prelude = false
+    @macro_engine = MacroEngine.new
   end
 
   # Resolves all dependencies starting from root_file.
@@ -189,7 +194,14 @@ pub class Loader
   end
 
   # Collects all import and require dependency paths from an AST.
-  def self.collect_import_paths(node : ASTNode, into : Array(String)) : Nil
+  #
+  # A top-level `{% if %}` or `{% for %}` is expanded first, as the hosted compiler expands it before it reads
+  # what is inside (top_level_visitor.cr visit(MacroIf) and visit(MacroFor), through expand_inline_macro): a
+  # `require` in a branch the target's flags do not pick is never loaded, and one in an `{% else %}` is. Taking
+  # every `{% if %}`'s first branch instead loaded `iyi/chaos` and `iyi/chaos_points` into every program
+  # (src/iyi/prelude.iyi, under `flag?(:iyi_chaos)`), and with them a second `Atomic#get` that no build without
+  # `-Diyi_chaos` has.
+  def self.collect_import_paths(node : ASTNode, into : Array(String), engine : MacroEngine, filename : String) : Nil
     if node.is_a?(ImportDecl)
       into << node.as(ImportDecl).path.join("/")
     elsif node.is_a?(Require)
@@ -201,9 +213,18 @@ pub class Loader
           into << call_node.args[0].as(StringLiteral).value
         end
       end
-    elsif node.is_a?(MacroIf)
-      mif = node.as(MacroIf)
-      collect_import_paths(mif.then, into)
+    elsif node.is_a?(MacroIf) || node.is_a?(MacroFor)
+      report = engine.site_report(node)
+      if report.failure.nil? && !report.skipped
+        text = report.output
+        if text.bytesize > 0
+          collect_import_paths(Parser.new(text, filename).parse, into, engine, filename)
+        end
+      elsif node.is_a?(MacroIf)
+        # The engine refused the site (a macro method it has not ported): what the loader did before, the
+        # first branch's text, so a file loaded until now is not dropped.
+        collect_import_paths(node.as(MacroIf).then, into, engine, filename)
+      end
     elsif node.is_a?(MacroLiteral)
       ml = node.as(MacroLiteral)
       lines = ml.value.split('\n')
@@ -216,7 +237,7 @@ pub class Loader
       end
     elsif node.is_a?(Expressions)
       node.as(Expressions).expressions.each do |e|
-        collect_import_paths(e, into)
+        collect_import_paths(e, into, engine, filename)
       end
     end
   end
@@ -269,7 +290,7 @@ pub class Loader
     ast = parser.parse
 
     import_paths = [] of String
-    Loader.collect_import_paths(ast, import_paths)
+    Loader.collect_import_paths(ast, import_paths, @macro_engine, clean_fn)
 
     imported_filenames = [] of String
     relative_dir = Loader.dirname(clean_fn)

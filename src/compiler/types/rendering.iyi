@@ -3,8 +3,8 @@ module compiler/types/rendering
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/token
-import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, UnionType, VoidType}
-import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, UnionType, VoidType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType}
 
 pub class TypeRenderer
   def self.render(type : Type, skip_union_parens : Bool = false, generic_args : Bool = true, codegen : Bool = false) : String
@@ -60,12 +60,12 @@ pub class TypeRenderer
 
     if type.is_a?(PointerInstanceType)
       ptr = type.as(PointerInstanceType)
-      return "Pointer(#{render(ptr.element_type, skip_union_parens: false, generic_args: generic_args, codegen: codegen)})"
+      return "Pointer(#{render(shown(ptr.element_type, codegen), skip_union_parens: true, generic_args: generic_args, codegen: codegen)})"
     end
 
     if type.is_a?(StaticArrayInstanceType)
       sary = type.as(StaticArrayInstanceType)
-      return "StaticArray(#{render(sary.element_type, skip_union_parens: false, generic_args: generic_args, codegen: codegen)}, #{sary.size_int})"
+      return "StaticArray(#{render(shown(sary.element_type, codegen), skip_union_parens: true, generic_args: generic_args, codegen: codegen)}, #{sary.size_int})"
     end
 
     if type.is_a?(GenericInstanceType)
@@ -112,15 +112,6 @@ pub class TypeRenderer
         return "#{gm.full_name}(#{gm.type_vars.join(", ")})"
       else
         return gm.full_name
-      end
-    end
-
-    if type.is_a?(GenericTraitType)
-      gt = type.as(GenericTraitType)
-      if generic_args && !gt.type_vars.empty?
-        return "#{gt.full_name}(#{gt.type_vars.join(", ")})"
-      else
-        return gt.full_name
       end
     end
 

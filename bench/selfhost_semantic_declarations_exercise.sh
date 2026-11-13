@@ -918,9 +918,9 @@ prove_mutation "a generic instance's declared variable keeps its parameter type"
   "            mv = MetaTypeVar.new(name, source_type)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "a nilable pointer prints without its element type" "$MUT_TYPES" \
-  'Pointer(#{@element_type.full_name})' \
-  'Pointer' \
+prove_mutation "a nilable pointer prints without its element type" "$REPO/src/compiler/types/rendering.iyi" \
+  '      return "Pointer(#{render(shown(ptr.element_type, codegen), skip_union_parens: true, generic_args: generic_args, codegen: codegen)})"' \
+  '      return "Pointer"' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a replaced def is not reachable from the def that replaced it" "$MUT_SEM" \
@@ -937,6 +937,11 @@ prove_mutation "an external variable's setter is not added" "$MUT_SEM" \
   "    lib_type.funs << setter_fun" \
   "    setter_fun.external_var = false" \
   -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an external variable keeps its uninstantiated type" "$MUT_SEM" \
+  '    @external_var_funs.each do |f|' \
+  '    ([] of LibFun).each do |f|' \
+  -- check_lib_types_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an enum member loses its enum type" "$MUT_SEM" \
   "    c.enum_value_type = self" \
@@ -989,8 +994,13 @@ else
   status=1
 fi
 prove_mutation "a generic alias loses its instantiated arguments" "$MUT_SEM" \
-  '      if @value.is_a?(Generic) && @program.merge_hook.nil?' \
-  '      if @value.is_a?(Generic)' \
+  '      resolved = if @value.is_a?(Generic) && @program.merge_hook.nil?' \
+  '      resolved = if @value.is_a?(Generic)' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an alias loses its declaring file imports" "$MUT_SEM" \
+  '    alias_type.imports = @program.current_imports' \
+  '    alias_type.imports = nil' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"

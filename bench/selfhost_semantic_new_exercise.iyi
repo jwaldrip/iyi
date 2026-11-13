@@ -2,6 +2,7 @@ import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Assign, Call, Def, DoubleSplat, Expressions, Generic, If, InstanceVar, Nop, Path, Primitive, RespondsTo, Splat, Var, Visibility}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/types/types::{GenericClassInstanceType}
 
@@ -107,6 +108,7 @@ module BenchSelfhostSemanticNewExercise
     tl = TopLevelVisitor.new(prog)
     node.accept(tl)
     tl.finish
+    declare_guessed_instance_vars(prog)
     mv = MainVisitor.new(prog)
     node.accept(mv)
 

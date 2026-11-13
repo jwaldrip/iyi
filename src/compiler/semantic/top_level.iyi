@@ -200,15 +200,6 @@ pub abstract class Type
     # Hosted types.cr:421-433 unwraps virtual restriction types before checking parents.
     target = other.devirtualize
     return subtype_of?(target) unless target == other
-    if other.is_a?(UnionType)
-      ut = other.as(UnionType)
-      i = 0
-      while i < ut.union_types.size
-        return true if self.subtype_of?(ut.union_types[i])
-        i = i + 1
-      end
-      return false
-    end
     if self.is_a?(UnionType)
       sut = self.as(UnionType)
       i = 0
@@ -217,6 +208,15 @@ pub abstract class Type
         i = i + 1
       end
       return true
+    end
+    if other.is_a?(UnionType)
+      ut = other.as(UnionType)
+      i = 0
+      while i < ut.union_types.size
+        return true if self.subtype_of?(ut.union_types[i])
+        i = i + 1
+      end
+      return false
     end
     if self.is_a?(ModuleType)
       mod = self.as(ModuleType)
@@ -775,6 +775,7 @@ pub class LibFun
   # The primitive name is external_var_get or external_var_set. The dump does not
   # print these; body typing and primitives lowering read them.
   property external_var : Bool = false
+  property external_type_spec : ASTNode? = nil
   property thread_local : Bool = false
   property primitive : String? = nil
   property previous : LibFun? = nil
@@ -923,14 +924,12 @@ pub class GenericModuleType < ModuleType
   end
 end
 
-pub class TraitType < ModuleType
+pub class TraitType < NonGenericModuleType
   getter supertraits : Array(Type)
-  getter assoc_types : Array(String)
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
     super(program, namespace, name)
     @supertraits = [] of Type
-    @assoc_types = [] of String
   end
 
   def trait? : Bool
@@ -942,16 +941,34 @@ pub class TraitType < ModuleType
   end
 end
 
-pub class GenericTraitType < TraitType
-  getter type_vars : Array(String)
+pub class GenericTraitType < GenericModuleType
+  getter supertraits : Array(Type)
+  getter assoc_types : Array(String)
 
-  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @type_vars : Array(String))
-    super(program, namespace, name)
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, type_vars : Array(String))
+    super(program, namespace, name, type_vars)
+    @supertraits = [] of Type
+    @assoc_types = [] of String
   end
 
-  def generic_type_vars : Array(String)?
-    @type_vars
+  def trait? : Bool
+    true
   end
+
+  def type_desc : String
+    "trait"
+  end
+
+  def to_s : String
+    return base_full_name if @type_vars.empty?
+    "#{base_full_name}(#{@type_vars.join(", ")})"
+  end
+end
+
+pub def trait_supertraits(type : Type) : Array(Type)?
+  return type.as(TraitType).supertraits if type.is_a?(TraitType)
+  return type.as(GenericTraitType).supertraits if type.is_a?(GenericTraitType)
+  nil
 end
 
 pub class Const < NamedType
@@ -1024,6 +1041,7 @@ pub class AliasType < NamedType
   property value : ASTNode
   property aliased_type : Type?
   property aliased_type_display : String?
+  property imports : Hash(String, Type)? = nil
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @value : ASTNode)
     super(program, namespace, name)
@@ -1047,8 +1065,12 @@ pub class AliasType < NamedType
     if at = @aliased_type
       at
     else
+      saved_imports = @program.current_imports
+      if imports = @imports
+        @program.current_imports = imports
+      end
       scope = @namespace || @program
-      if @value.is_a?(Generic) && @program.merge_hook.nil?
+      resolved = if @value.is_a?(Generic) && @program.merge_hook.nil?
         # Before the type system is installed this is only a display name, not
         # a resolved alias: caching the generic base loses its arguments.
         g = @value.as(Generic)
@@ -1062,6 +1084,8 @@ pub class AliasType < NamedType
         @aliased_type = t
         t
       end
+      @program.current_imports = saved_imports
+      resolved
     end
   end
 end
@@ -1183,6 +1207,12 @@ pub class SemanticProgram < NonGenericModuleType
   # iyi: the typed dump's mode. Strict (the default) refuses a name the program
   # cannot resolve, as it always has; total mode records it and goes on.
   property total_mode : Bool = false
+  property iyi_prelude : Bool = false
+
+  def iyi_prelude? : Bool
+    @iyi_prelude
+  end
+
   @value_type : ClassType?
   @reference_type : ClassType?
   @struct_type : ClassType?
@@ -1195,6 +1225,9 @@ pub class SemanticProgram < NonGenericModuleType
   @const_initializers : Array(Const)
   # The records of the funs the pass declared, by the node's id (`lib_fun_of`).
   @lib_funs_by_node : Hash(UInt64, LibFun)
+  # External variables have no FunDef node, but their written type also needs
+  # resolution after the type system is installed.
+  getter external_var_funs : Array(LibFun) = [] of LibFun
   # Defining scope, kept outside syntax nodes to avoid a semantic dependency in the AST.
   @def_owners : Hash(UInt64, ModuleType)
   @primitive_return_types : Hash(UInt64, Type)
@@ -1472,6 +1505,22 @@ pub class SemanticProgram < NonGenericModuleType
                 if found = lookup_type_node?(rt, owner)
                   f.resolved_return = found
                 end
+              end
+            end
+          end
+        end
+      end
+    end
+    @external_var_funs.each do |f|
+      if owner = f.owner
+        if imports = f.imports
+          @current_imports = imports
+          if spec = f.external_type_spec
+            if found = lookup_type_node?(spec, owner)
+              f.resolved_return = found
+              if f.primitive == "external_var_set"
+                f.arg_types.clear
+                f.arg_types << found
               end
             end
           end
@@ -2100,31 +2149,6 @@ pub class TopLevelVisitor < Visitor
       pi.imports = saved if pi.imports.nil?
       @program.pending_ivars << pi
     end
-    # An explicit `@x : T` decides the type of `@x`. An inferred record for the same name (an
-    # initialize argument's restriction) does not replace it, as the hosted pass skips a guess for a
-    # variable that exists.
-    explicit = [] of String
-    @pending_ivars.each do |found|
-      explicit << "#{found.owner.full_name} #{found.name}" if found.explicit
-    end
-    # The hosted processor declares explicit variables before guessed ones for each owner.
-    [true, false].each do |explicit_pass|
-      @pending_ivars.each do |pi|
-        next if pi.explicit != explicit_pass
-        next if !pi.explicit && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
-        if imports = pi.imports
-          @program.current_imports = imports
-        else
-          @program.current_imports = saved
-        end
-        arg_type = @program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
-        mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
-        mv.owner = pi.owner
-        pi.owner.instance_vars[pi.name] = mv
-        @program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)
-      end
-    end
-    @program.current_imports = saved
     @pending_ivars.clear
   end
 
@@ -2564,13 +2588,13 @@ pub class TopLevelVisitor < Visitor
   def visit(node : TraitDef) : Bool
     scope, name, existing = lookup_type_def(node, node.name)
 
-    type : TraitType
+    type : ModuleType
 
     if ex = existing
       unless ex.trait?
         raise("#{name} is not a trait, it's a #{ex.type_desc}")
       end
-      type = ex.as(TraitType)
+      type = ex.as(ModuleType)
     else
       tv = node.type_vars
       at = node.assoc_types
@@ -2620,10 +2644,11 @@ pub class TopLevelVisitor < Visitor
         if st == type
           raise("#{type.full_name} can't require itself")
         end
-        if type.supertraits.includes?(st)
+        supertraits = trait_supertraits(type) || raise("BUG: trait has no supertraits")
+        if supertraits.includes?(st)
           raise("#{type.full_name} already requires #{st.full_name}")
         end
-        type.supertraits << st
+        supertraits << st
       end
     end
 
@@ -3038,6 +3063,7 @@ pub class TopLevelVisitor < Visitor
     end
 
     alias_type = AliasType.new(@program, scope, name, node.value)
+    alias_type.imports = @program.current_imports
     if loc = node.location
       alias_type.add_location(loc)
     end
@@ -3076,6 +3102,7 @@ pub class TopLevelVisitor < Visitor
     getter_fun.owner = lib_type
     getter_fun.imports = @program.current_imports
     getter_fun.external_var = true
+    getter_fun.external_type_spec = node.type_spec
     getter_fun.thread_local = thread_local
     getter_fun.primitive = "external_var_get"
     getter_fun.resolved_return = var_type
@@ -3085,6 +3112,7 @@ pub class TopLevelVisitor < Visitor
     setter_fun.owner = lib_type
     setter_fun.imports = @program.current_imports
     setter_fun.external_var = true
+    setter_fun.external_type_spec = node.type_spec
     setter_fun.thread_local = thread_local
     setter_fun.primitive = "external_var_set"
     setter_fun.resolved_return = var_type
@@ -3092,6 +3120,8 @@ pub class TopLevelVisitor < Visitor
 
     lib_type.funs << getter_fun
     lib_type.funs << setter_fun
+    @program.external_var_funs << getter_fun
+    @program.external_var_funs << setter_fun
     false
   end
 
@@ -3510,8 +3540,6 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
     io << indent << "  type_vars: [" << t.as(GenericClassType).type_vars.join(", ") << "]\n"
   elsif t.is_a?(GenericModuleType)
     io << indent << "  type_vars: [" << t.as(GenericModuleType).type_vars.join(", ") << "]\n"
-  elsif t.is_a?(GenericTraitType)
-    io << indent << "  type_vars: [" << t.as(GenericTraitType).type_vars.join(", ") << "]\n"
   end
 
   if t.is_a?(ClassType)
@@ -3549,14 +3577,16 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
     end
   end
 
-  if t.is_a?(TraitType)
-    tr = t.as(TraitType)
-    unless tr.supertraits.empty?
-      st_strs = tr.supertraits.map(&.full_name).sorted
+  if supertraits = trait_supertraits(t)
+    unless supertraits.empty?
+      st_strs = supertraits.map(&.full_name).sorted
       io << indent << "  supertraits: [" << st_strs.join(", ") << "]\n"
     end
-    unless tr.assoc_types.empty?
-      at_strs = tr.assoc_types.dup.sorted
+  end
+  if t.is_a?(GenericTraitType)
+    assoc_types = t.as(GenericTraitType).assoc_types
+    unless assoc_types.empty?
+      at_strs = assoc_types.dup.sorted
       io << indent << "  assoc_types: [" << at_strs.join(", ") << "]\n"
     end
   end
