@@ -1,2 +1,5 @@
-# The prelude's CHANNEL_WAIT: a top-level flag? if, expanded by the macro engine.
-CHANNEL_WAIT = {% if flag?(:x86_64) %}512{% else %}2048{% end %}
+macro channel_wait
+  CHANNEL_WAIT = {% if flag?(:x86_64) %}512{% else %}2048{% end %}
+end
+
+channel_wait

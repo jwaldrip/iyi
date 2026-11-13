@@ -361,7 +361,7 @@ pub class MacroMethods
       # answers a generic type from its name (MacroSiteRef.generic), so the name
       # is the same with or without the argument.
       if method == "name"
-        return MacroId.new(tn.name)
+        return MacroId.new(rec.as(TypeNode).name)
       end
       # Hosted `TypeNode#size`: the type argument count of a tuple or named
       # tuple instance. Any other type, a union included, is refused.
