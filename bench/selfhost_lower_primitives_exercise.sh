@@ -164,6 +164,21 @@ if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
 fi
 
 echo
+binary_union_check() {
+  for side in left right; do
+    if "$1" binary_union "$REPO/bench/fixtures/prim_refuse_union.iyi" "$side" > "$WORK/union.out" 2> "$WORK/union.err"; then
+      return 1
+    fi
+    awk '/lower: visit\(binary <= with operand IR types .* inconsistent with Int64 and Int64 \(hosted codegen_binary_op\)\)/ { found = 1 } END { exit !found }' "$WORK/union.err" || return 1
+  done
+}
+if binary_union_check "$WORK/port"; then
+  echo "  union comparison: both operand positions refused by name"
+else
+  echo "  union comparison: missing named refusal"
+  status=1
+fi
+
 echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires every primitive fixture
 # to match the hosted module exactly. It returns 0 only on the unmutated behaviour.
@@ -179,10 +194,13 @@ lower_primitives_check() {
   done
   "$WORK/mut" generic_pointerful > "$WORK/mut.pointerful" 2>"$WORK/mut.pointerful.err" || return 1
   awk '/^generic_pointerful=1$/ { found = 1 } END { exit !found }' "$WORK/mut.pointerful" || return 1
+  binary_union_check "$WORK/mut" || return 1
   return 0
 }
 # The baseline: the unmutated port must pass the check, or every mutation below is caught for the wrong reason.
 lower_primitives_check || { echo "  baseline: the unmutated primitives do not pass the check"; status=1; }
+prove_mutation "binary union operand is not refused" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    if p1.type.key != low.typer.llvm_type(t1).key || p2.type.key != low.typer.llvm_type(t2).key' '    if false' -- lower_primitives_check || status=1
 prove_mutation "the wrapping add is a subtraction" "$REPO/src/compiler/lower/primitives.iyi" \
   "    return low.builder.add(p1, p2)" "    return low.builder.sub(p1, p2)" -- lower_primitives_check || status=1
 prove_mutation "the signed less-than is unsigned" "$REPO/src/compiler/lower/primitives.iyi" \
@@ -237,6 +255,8 @@ prove_mutation "runtime type id returns Nil's id" "$REPO/src/compiler/lower/prim
   '      low.last = type_id_of_value(low, obj || node, values[0], t1)' '      low.last = type_id_value(low, low.analysed.program.nil_type)' -- lower_primitives_check || status=1
 prove_mutation "proc call omits the closure context" "$REPO/src/compiler/lower/primitives.iyi" \
   '  closure_args = [ctx.as(Value)] of Value' '  closure_args = [] of Value' -- lower_primitives_check || status=1
+prove_mutation "tuple metaclass indexing returns Nil's type id" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    low.last = type_id_value(low, result.as(Type))' '    low.last = type_id_value(low, low.analysed.program.nil_type)' -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
