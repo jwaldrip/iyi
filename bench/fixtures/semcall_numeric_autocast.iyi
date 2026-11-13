@@ -1,0 +1,9 @@
+def wide_a(x : Int64) : Int64
+  x
+end
+
+def wide_b(x : UInt64) : UInt64
+  x
+end
+
+# error wide_a(1)
