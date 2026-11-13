@@ -3,6 +3,7 @@
 #   ir_core print FILE       parse FILE and print it again
 #   ir_core roundtrip FILE   parse FILE and check that printing it gives back the same bytes
 #   ir_core verify FILE      parse FILE and report every rule it breaks
+#   ir_core drop-unwind FILE parse FILE, drop every unwind edge (Module#drop_unwind_edges), verify and print it
 #   ir_core layout TRIPLE    print the target's DataLayout string
 #   ir_core structs FILE     parse FILE and print each named struct's size, alignment and field offsets
 #   ir_core emit NAME        build the NAME fixture module with the Builder and print it
@@ -31,7 +32,7 @@ module IrCore
   def self.run : Nil
     args = Program.args
     if args.empty?
-      STDERR.puts "usage: ir_core print|roundtrip|verify|layout|structs FILE | emit NAME | intrinsics"
+      STDERR.puts "usage: ir_core print|roundtrip|verify|drop-unwind|layout|structs FILE | emit NAME | intrinsics"
       LibC.exit(2)
     end
     command = args[0]
@@ -40,7 +41,7 @@ module IrCore
       return
     end
     if args.size < 2
-      STDERR.puts "usage: ir_core print|roundtrip|verify|layout|structs FILE | emit NAME | intrinsics"
+      STDERR.puts "usage: ir_core print|roundtrip|verify|drop-unwind|layout|structs FILE | emit NAME | intrinsics"
       LibC.exit(2)
     end
     argument = args[1]
@@ -48,7 +49,7 @@ module IrCore
       emit(argument)
     elsif command == "layout"
       layout(argument)
-    elsif command == "print" || command == "roundtrip" || command == "verify" || command == "structs"
+    elsif command == "print" || command == "roundtrip" || command == "verify" || command == "drop-unwind" || command == "structs"
       unless File.exists?(argument)
         STDERR.puts "ir_core: no such file: #{argument}"
         LibC.exit(2)
@@ -75,6 +76,15 @@ module IrCore
         errors.each { |e| STDOUT.puts e.to_s }
         LibC.exit(1) unless errors.empty?
         STDOUT.puts "verified"
+      elsif command == "drop-unwind"
+        if reason = mod.drop_unwind_edges
+          STDOUT.puts "refused: #{reason}"
+          LibC.exit(1)
+        end
+        errors = verify(mod)
+        errors.each { |e| STDOUT.puts e.to_s }
+        LibC.exit(1) unless errors.empty?
+        STDOUT.print(print(mod))
       else
         structs(mod)
       end
@@ -273,6 +283,9 @@ module IrCore
     old = b.atomicrmw("add", counter, b.const_int(i64, 1_i64), Ordering::SeqCst, false, "old")
     pair = b.cmpxchg(counter, old, bumped, Ordering::AcqRel, Ordering::Acquire, "pair")
     won = b.extract_value(pair, 1, "won")
+    seen = b.atomic_load(i64, counter, Ordering::Acquire, false, "seen")
+    seen.alignment = 8
+    b.atomic_store(seen, counter, Ordering::Release, true).alignment = 8
     b.fence(Ordering::SeqCst, false)
     b.fence(Ordering::Acquire, true)
     b.ret(b.add(bumped, b.const_int(i64, 0_i64), "result"))

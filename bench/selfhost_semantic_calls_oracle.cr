@@ -56,6 +56,14 @@ class Iyi::Compiler
     program.semantic_after_top_level(node, processor, cleanup: false)
     program
   end
+
+  def typed_node(source : Iyi::Compiler::Source) : Iyi::ASTNode
+    program = new_program([source])
+    node = parse(program, [source])
+    node, processor = program.top_level_semantic(node)
+    program.semantic_after_top_level(node, processor, cleanup: false)
+    node
+  end
 end
 
 # A compiler configured the way the typed oracle configures it, with the prelude.
@@ -252,6 +260,24 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
+# The instantiated argument types of the target after the hosted call pass.
+# Its inferred return type belongs to the body typing gate.
+def instance_text(path : String, fixture : String, expr : String) : String
+  node = new_compiler.typed_node(Iyi::Compiler::Source.new(path, fixture + "\n" + expr + "\n"))
+  current = node
+  while current.is_a?(Iyi::Expressions)
+    exps = current.as(Iyi::Expressions).expressions
+    raise "empty file" if exps.empty?
+    current = exps.last
+  end
+  raise "not a call: #{expr}" unless current.is_a?(Iyi::Call)
+  td = current.as(Iyi::Call).target_def
+  parts = td.args.map { |arg| arg.type.to_s }
+  "args=#{parts.join(",")} body=pending"
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 def evaluate(program : Iyi::Program, expr : String) : String
   node = Iyi::Parser.new(expr).parse
   raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
@@ -395,6 +421,9 @@ begin
     elsif line.starts_with?("# defining ")
       expr = line[11..].strip
       puts "#{expr} => #{defining_text(program, expr)}"
+    elsif line.starts_with?("# instance ")
+      expr = line[11..].strip
+      puts "#{expr} => #{instance_text(path, source, expr)}"
     elsif line.starts_with?("# expand ")
       expr = line[9..].strip
       puts "#{expr} => #{expand_text(program, expr)}"

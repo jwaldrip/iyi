@@ -8,8 +8,9 @@ import compiler/ir/module::{Module}
 import compiler/ir/intrinsics::{intrinsic_name}
 
 # The text form of a module. It is deterministic: globals and functions are written in emission order,
-# named types in creation order, flags sorted by name, and unnamed values numbered in definition order.
-# The parser reads exactly this form, so print(parse(text)) == text for every text the printer wrote.
+# the named types the module mentions in creation order, flags sorted by name, and unnamed values numbered
+# in definition order. The parser reads exactly this form, so print(parse(text)) == text for every text the
+# printer wrote.
 pub def print(m : Module) : String
   IrPrinter.new(m).module_text
 end
@@ -26,13 +27,110 @@ class IrPrinter
       io << "target datalayout = " << ir_quote(@module.layout.llvm_string) << "\n"
       @module.files.each { |f| io << "file " << ir_quote(f) << "\n" }
       @module.flags.keys.sorted.each { |k| io << "flag " << ir_quote(k) << " = " << @module.flags[k].to_s << "\n" }
+      used = used_named_types
       @module.types.named.each do |t|
+        next unless used.includes?(t.name || "")
         body = t.opaque? ? "opaque" : t.struct_body_text
         io << "%" << ir_name_text(t.name || "") << " = type " << body << "\n"
       end
       @module.globals.each { |g| io << global_text(g) << "\n" }
       @module.functions.each { |f| io << function_text(f) << "\n" }
     end
+  end
+
+  # ---- which named types the text defines ------------------------------------------------
+  #
+  # A named struct is written only when the module mentions it: in a global's type or initializer, in a
+  # function's signature or attributes, or in an instruction's type, operands, source type or attributes,
+  # directly or inside another type. LLVM writes a module that way (its type finder walks exactly those),
+  # the hosted compiler's text is LLVM's, and the lowering is compared with it: a type the lowering created
+  # and nothing mentions (`%String` in a program that never holds one) is in the table and not in the text.
+  def used_named_types : Set(String)
+    used = Set(String).new
+    seen = Hash(Value, Bool).new
+    @module.globals.each do |g|
+      note_type(g.value_type, used)
+      if init = g.initializer
+        note_operand(init, used, seen)
+      end
+    end
+    @module.functions.each do |f|
+      note_type(f.fn_type, used)
+      note_attrs(f.attrs, used)
+      note_attrs(f.ret_attrs, used)
+      f.param_attrs.each { |list| note_attrs(list, used) }
+      if p = f.personality
+        note_operand(p, used, seen)
+      end
+      f.blocks.each do |b|
+        b.insts.each { |i| note_inst(i, used, seen) }
+      end
+    end
+    used
+  end
+
+  # An instruction of a block, or a constant: its own type, what its aux carries, and its operands. An
+  # operand that is another block's instruction is noted when that block is walked, so only constants are
+  # followed (they sit in no block), each once.
+  def note_inst(i : Inst, used : Set(String), seen : Hash(Value, Bool)) : Nil
+    note_type(i.type, used)
+    aux = i.aux
+    if aux.is_a?(GepAux)
+      note_type(aux.as(GepAux).source_type, used)
+    elsif aux.is_a?(CallAux)
+      call = aux.as(CallAux)
+      note_type(call.fn_type, used)
+      note_attrs(call.fn_attrs, used)
+      note_attrs(call.ret_attrs, used)
+      call.param_attrs.each { |list| note_attrs(list, used) }
+    elsif aux.is_a?(IntrinsicAux)
+      intrinsic = aux.as(IntrinsicAux)
+      intrinsic.overload.each { |t| note_type(t, used) }
+      intrinsic.param_attrs.each { |list| note_attrs(list, used) }
+    end
+    i.args.each { |a| note_operand(a, used, seen) }
+    nil
+  end
+
+  def note_operand(v : Value, used : Set(String), seen : Hash(Value, Bool)) : Nil
+    note_type(v.type, used)
+    return nil unless v.is_a?(Inst)
+    constant = v.as(Inst)
+    return nil unless constant_op?(constant.op)
+    return nil if seen.has_key?(v)
+    seen[v] = true
+    note_inst(constant, used, seen)
+  end
+
+  def constant_op?(op : Op) : Bool
+    op == Op::ConstInt || op == Op::ConstFloat || op == Op::ConstNull || op == Op::ConstUndef || op == Op::ConstPoison || op == Op::ConstZero || op == Op::ConstAggregate || op == Op::ConstBytes || op == Op::ConstExpr
+  end
+
+  def note_attrs(attrs : Array(Attribute), used : Set(String)) : Nil
+    attrs.each do |a|
+      if t = a.type_value
+        note_type(t, used)
+      end
+    end
+    nil
+  end
+
+  # A named struct is noted once and its fields followed once, so a struct that holds a pointer to itself
+  # ends; an unnamed type cannot hold itself.
+  def note_type(t : IrType, used : Set(String)) : Nil
+    if t.struct?
+      if name = t.name
+        return nil if used.includes?(name)
+        used.add(name)
+      end
+      t.fields.each { |field| note_type(field, used) }
+    elsif t.array? || t.vector?
+      note_type(t.element_type, used)
+    elsif t.function?
+      note_type(t.return_type, used)
+      t.param_types.each { |param| note_type(param, used) }
+    end
+    nil
   end
 
   # ---- module-level items -------------------------------------------------------------

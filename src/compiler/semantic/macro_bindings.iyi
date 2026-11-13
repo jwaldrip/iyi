@@ -1,0 +1,86 @@
+module compiler/semantic/macro_bindings
+
+import compiler/macros/interpreter::{MacroFreeBinding}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, MetaclassType, Type, UnionType}
+import compiler/types/types::{GenericInstanceType, NamedTupleInstanceType, TupleInstanceType, TypeQueries}
+
+# The type parameters an inline macro site sees in the def being typed, as the
+# macro engine names them (interpreter.iyi MacroFreeBinding). Hosted
+# interpreter.cr resolve?(Path) 555-610: a single name is the def's free variable
+# first (`@free_vars`), then the instantiated owner's type parameter (the path
+# lookup). The owner's splat parameter (`T` of `Tuple(*T)`, `T` of a named tuple,
+# `T` of a union) is a literal of type nodes when it is bound to a tuple, a named
+# tuple or a union (hosted produce_tuple, 571-601); every other binding is the
+# type's node.
+pub class MacroBindings
+  # `scope` is the receiver of the def being typed (nil at the top level) and
+  # `free` the def's free variables as the call's arguments bound them. A free
+  # variable hides an owner's parameter of the same name, as hosted looks the
+  # free variables up first.
+  def self.of(scope : Type?, free : Hash(String, Type)) : Array(MacroFreeBinding)
+    out = [] of MacroFreeBinding
+    splat_name : String? = nil
+    if receiver = scope
+      owner : Type = receiver
+      if owner.is_a?(MetaclassType)
+        owner = owner.as(MetaclassType).instance_type
+      end
+      if owner.is_a?(UnionType)
+        splat_name = "T"
+        out << binding("T", owner, true) unless free.has_key?("T")
+      elsif owner.is_a?(GenericInstanceType)
+        inst = owner.as(GenericInstanceType)
+        names = type_var_names(inst.generic_type)
+        if index = TypeQueries.splat_index(inst.generic_type)
+          splat_name = names[index] if index < names.size
+        end
+        if owner.is_a?(TupleInstanceType) || owner.is_a?(NamedTupleInstanceType)
+          # The port keeps a tuple's members on the instance, not under its type
+          # parameter, so the parameter is bound to the instance here.
+          own = splat_name || "T"
+          splat_name = own
+          out << binding(own, owner, true) unless free.has_key?(own)
+        else
+          inst.type_vars.each do |name, type|
+            out << binding(name, type, name == splat_name) unless free.has_key?(name)
+          end
+        end
+      end
+    end
+    free.each do |name, type|
+      out << binding(name, type, name == splat_name)
+    end
+    out
+  end
+
+  # One type parameter: a tuple, named tuple or union keeps its members, anything
+  # else is its printed name.
+  def self.binding(name : String, type : Type, splat : Bool) : MacroFreeBinding
+    if type.is_a?(NamedTupleInstanceType)
+      entries = [] of String
+      type.as(NamedTupleInstanceType).entries.each { |entry| entries << "#{entry.name}:#{entry.type.to_s}" }
+      return MacroFreeBinding.new(name, type.to_s, "named_tuple", entries, splat)
+    end
+    if type.is_a?(TupleInstanceType)
+      members = [] of String
+      type.as(TupleInstanceType).tuple_types.each { |member| members << member.to_s }
+      return MacroFreeBinding.new(name, type.to_s, "tuple", members, splat)
+    end
+    if type.is_a?(UnionType)
+      members = [] of String
+      type.as(UnionType).union_types.each { |member| members << member.to_s }
+      return MacroFreeBinding.new(name, type.to_s, "union", members, splat)
+    end
+    MacroFreeBinding.new(name, type.to_s, "type", [] of String, splat)
+  end
+
+  def self.type_var_names(generic : Type) : Array(String)
+    if generic.is_a?(GenericClassType)
+      return generic.as(GenericClassType).type_vars
+    end
+    if generic.is_a?(GenericModuleType)
+      return generic.as(GenericModuleType).type_vars
+    end
+    [] of String
+  end
+end

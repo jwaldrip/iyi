@@ -1200,6 +1200,12 @@ pub class SemanticProgram < NonGenericModuleType
   # iyi: the typed dump's mode. Strict (the default) refuses a name the program
   # cannot resolve, as it always has; total mode records it and goes on.
   property total_mode : Bool = false
+  property iyi_prelude : Bool = false
+
+  def iyi_prelude? : Bool
+    @iyi_prelude
+  end
+
   @value_type : ClassType?
   @reference_type : ClassType?
   @struct_type : ClassType?

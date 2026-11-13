@@ -4,7 +4,7 @@ import compiler/foundation/errors::{refuse_port}
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Def, Generic, Path, Visibility}
 import compiler/syntax/token::{NumberKind}
-import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaTypeVar, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeParameterType, UnionType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaclassType, MetaTypeVar, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeParameterType, UnionType, VoidType}
 
 pub class VirtualType < Type
   property base_type : Type
@@ -512,7 +512,12 @@ pub class ProcInstanceType < GenericClassInstanceType
     all_args = [] of Type
     @arg_types.each { |a| all_args << a }
     all_args << @return_type
-    super(program, program.types["Proc"], Hash(String, Type).new, all_args, program.struct_type)
+    # Hosted ProcInstanceType#initialize (types.cr:2758-2765) binds the
+    # splatted arguments as T and the result as R.
+    vars = Hash(String, Type).new
+    vars["T"] = TupleInstanceType.new(program, @arg_types)
+    vars["R"] = @return_type
+    super(program, program.types["Proc"], vars, all_args, program.struct_type)
     @struct = true
   end
 

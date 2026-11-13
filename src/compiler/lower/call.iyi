@@ -40,24 +40,26 @@ module compiler/lower/call
 # The AST node is named `Compiler::Syntax::Ast::Call` because this module is itself
 # `compiler/lower/call`, and inside it the name `Call` means this module.
 
-import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, InstanceVar, Nop, NilLiteral, NumberLiteral, Out, Path, RespondsTo, Var}
+import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, Generic, InstanceVar, Nop, NilLiteral, NumberLiteral, Out, Path, RespondsTo, Var}
 import compiler/ir/function::{Function}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/block::{LocalCollector, NoReturnPhi, alloca_local, copy_vars}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
+import compiler/lower/cast::{type_id_value}
+import compiler/lower/ensure::{set_ensure_exception_handler}
 import compiler/lower/fun::{block_ended?, target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/helpers::{int1}
-import compiler/semantic/top_level::{ClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, Type, UnionType, VoidType}
+import compiler/semantic/top_level::{ClassType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, Type, UnionType, VoidType}
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
-import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType}
+import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType, GenericClassInstanceMetaclassType}
 import compiler/semantic/lib_call::{LibCallTarget}
 
 # A body that is a literal or nothing (`Nop`, an empty def), which the hosted call inlines (`try_inline_call`:
@@ -128,8 +130,17 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   class_owner : Type? = nil
   unless node.obj.nil?
     recv_type = receiver_owner(low, node)
-    if recv_type.is_a?(MetaclassType)
+    if recv_type.is_a?(GenericClassInstanceMetaclassType)
+      self_type = recv_type
+      self_value = type_id_value(low, recv_type)
+    elsif recv_type.is_a?(MetaclassType)
       class_owner = recv_type.as(MetaclassType).instance_type
+      # A computed metaclass receiver is evaluated even when its value is not
+      # passed as self (hosted prepare_call_args, call.cr:69-82).
+      unless node.obj.as(ASTNode).is_a?(Path)
+        lower_receiver(low, node)
+        return if block_ended?(low)
+      end
     else
       self_type = recv_type
       # Hosted prepare_call_args visits the receiver before try_inline_call: an inlined literal body reads the receiver
@@ -142,16 +153,29 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
           self_value = storage.as(Value)
         else
           recv = lower_receiver(low, node)
-          self_value = receiver_self(low, node, recv, self_type.as(Type))
+          self_value = self_argument(low, node.obj.as(ASTNode), recv, self_type.as(Type))
         end
       end
     end
   end
   if node.obj.nil? && !low.current_context.type.nil?
-    owner = implicit_owner(low, node)
-    self_type = owner
-    unless owner.nil?
-      self_value = implicit_self_value(low)
+    ct = low.current_context.type.as(Type)
+    if low.current_context.vars["self"]?.nil?
+      # A non-generic class method has no self argument. An unqualified call to
+      # another method on its own metaclass uses the same class owner.
+      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)
+        if ct.as(ModuleType).metaclass.defs[node.name]?
+          class_owner = ct
+        elsif !low.analysed.program.defs[node.name]?
+          pending_visit_node("a class method #{node.name} inherited from a superclass of #{ct.full_name} (hosted call.cr: target_def.owner is the defining type)")
+        end
+      else
+        pending_visit_node("a call to #{node.name} with no receiver inside a generic or builtin class method (hosted call.cr: prepare_call_args, the metaclass owner)")
+      end
+    else
+      owner = implicit_owner(low, node)
+      self_type = owner
+      self_value = implicit_self_value(low) unless owner.nil?
     end
   end
 
@@ -162,7 +186,23 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       low.last = llvm_nil(low)
       return
     end
-    codegen_call_with_block(low, node, block.as(Block), def_node, ret, self_type, self_value, arg_types, values)
+    if (literal = block.fun_literal) && def_node.uses_block_arg?
+      wants = low.needs_value
+      low.needs_value = true
+      visit_node(low, literal)
+      low.needs_value = wants
+      if block_ended?(low)
+        low.last = llvm_nil(low)
+        return
+      end
+      value = low.last
+      raise "BUG: captured block literal produced no value" if value.nil?
+      values << value.as(Value)
+      func = target_def_fun(low, def_node, self_type, arg_types, ret, class_owner)
+      emit_def_call(low, node, func, self_value, values, ret)
+    else
+      codegen_call_with_block(low, node, block.as(Block), def_node, ret, self_type, self_value, arg_types, values)
+    end
     return
   end
 
@@ -234,6 +274,11 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     return
   end
   func = target_def_fun(low, def_node, self_type, arg_types, ret, class_owner)
+  emit_def_call(low, node, func, self_value, values, ret)
+end
+
+# Emit the call after its receiver, arguments and optional captured block are evaluated.
+pub def emit_def_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, func : Function, self_value : Value?, values : Array(Value), ret : Type) : Nil
   inst = low.builder.call(func.fn_type, func, call_arguments(self_value, values), "")
   # Hosted codegen_call_or_invoke: a NoReturn call ends its block with `unreachable`, and its value is nil.
   if ret.is_a?(NoReturnType)
@@ -269,9 +314,8 @@ end
 
 # The owner of an implicit-self call: a call with no receiver inside an instance method (hosted call.cr:
 # prepare_call_args, `owner` is the target def's owner). The current type when it defines the method, whose self
-# the call passes; nil for a top-level def, which takes no self; a refusal otherwise. A class method's implicit
-# call is refused (its self is the class, a metaclass owner), and so is an inherited method (the hosted owner is
-# the superclass, which the port does not record).
+# the call passes; nil for a top-level def, which takes no self. An inherited method is refused
+# because the hosted owner is the superclass, which the port does not record.
 pub def implicit_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type?
   ct = low.current_context.type.as(Type)
   if low.current_context.vars["self"]?.nil?
@@ -315,15 +359,18 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
   raise "BUG: the analysed program has no type for the receiver of #{node.name} (hosted call.cr: prepare_call_args)" if t.nil?
   owner = t.as(Type)
   if owner.is_a?(MetaclassType)
+    if owner.is_a?(GenericClassInstanceMetaclassType) && obj.as(ASTNode).is_a?(Generic)
+      return owner
+    end
     # A class method of a non-generic class or module, called on the constant path that names it (`Sched.go`).
     # The hosted code does not evaluate the path, and the method is the metaclass's own def (an inherited one is
     # refused: the hosted target owner is the superclass).
     inst = owner.as(MetaclassType).instance_type
-    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""
-      pending_visit_node("a class method call on #{owner.full_name} (hosted call.cr: prepare_call_args, a generic or builtin metaclass)")
+    if inst.is_a?(GenericClassType)
+      pending_visit_node("the receiver of #{node.name} is the uninstantiated generic #{owner.full_name}: typing has not instantiated the owner")
     end
-    unless obj.as(ASTNode).is_a?(Path)
-      pending_visit_node("a class method call on a receiver that is not a constant path (hosted call.cr: prepare_call_args, Path)")
+    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)
+      pending_visit_node("a class method call on #{owner.full_name} (hosted call.cr: prepare_call_args, a generic or builtin metaclass)")
     end
     if owner.as(MetaclassType).defs[node.name]?.nil?
       pending_visit_node("a class method #{node.name} inherited from a superclass of #{owner.full_name} (hosted call.cr: target_def.owner is the defining type)")
@@ -339,20 +386,6 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
     end
   end
   owner
-end
-
-# The self of a call on a struct receiver. A receiver that is itself a call with a struct result (`Point.new(1, 2).sum`)
-# was just spilled to an alloca by that call (codegen_call_node, hosted call.cr:707-713), and the hosted self is that
-# spill pointer: the port passes the spill slot as self and makes no second alloca. Any other receiver goes through
-# `self_argument`. `lower_receiver` cleared `spill_node` before it visited the receiver, so a match is this receiver's own spill.
-pub def receiver_self(low : Lowerer, node : Compiler::Syntax::Ast::Call, recv : Value, st : Type) : Value
-  obj = node.obj.as(ASTNode)
-  if self_by_pointer?(st) && low.spill_node != 0_u64 && low.spill_node == obj.object_id
-    if slot = low.spill_slot
-      return slot.as(Value)
-    end
-  end
-  self_argument(low, obj, recv, st)
 end
 
 # The receiver's value, evaluated as the hosted `request_value(obj)` does: the value the receiver
@@ -418,6 +451,7 @@ end
 # body is the call's value, merged by a phi (hosted `Phi.open(self, node)`, which always wants a value).
 # A call whose type is NoReturn merges nothing: its body ends in `unreachable` (`NoReturnPhi`).
 pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Call, block : Block, def_node : Def, ret : Type, self_type : Type?, self_value : Value?, arg_types : Array(Type), values : Array(Value)) : Nil
+  set_ensure_exception_handler(low, node)
   unless def_node.block_arg.nil?
     pending_visit_node("a call to a def with a &block parameter (hosted call.cr: codegen_call_with_block_as_fun_literal, closures)")
   end
@@ -442,6 +476,7 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   block_ctx.top_level = caller.top_level
   block_ctx.return_type = caller.return_type
   block_ctx.return_phi = caller.return_phi
+  block_ctx.return_target = caller.return_target
   block_ctx.block_node = caller.block_node
   block_ctx.block_context = caller.block_context
   allocate_block_vars(low, block, block_ctx.vars)
@@ -456,6 +491,7 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   frame = LowerContext.new(caller.fun, caller.fun_type, self_type, Hash(String, LowerVar).new)
   frame.block_node = block
   frame.block_context = block_ctx
+  frame.return_target = node
   if noreturn
     frame.return_phi = NoReturnPhi.new
   else

@@ -143,6 +143,14 @@ cast_check() {
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out" && return 0
   return 1
 }
+no_return_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_noreturn_union.iyi" "$WORK/lowcast_noreturn_union.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
+}
+no_return_check || { echo "  baseline: no-return union fixture differs"; status=1; }
+prove_mutation "a no-return union assignment stores a value" "$REPO/src/compiler/lower/cast.iyi" \
+  '  return if at_terminator?(low) || TypeQueries.no_return?(value_type)' '  return if false' -- no_return_check || status=1
 if [ "$passed" -eq 0 ]; then
   echo "  NOT PROVEN: no cast fixture is identical to the hosted module yet, so no mutation can be"
   echo "  shown to change the result. The three patches are listed in the gate's source; they run"
