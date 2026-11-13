@@ -121,7 +121,7 @@ table: hello refusal 6 owner=bodies reason=undefined local variable or method 'b
 table: hello refusal 6 owner=declarations reason=undefined constant HEADER_SIZE example=src/iyi/./string.iyi:36 in String.class#new
 table: hello refusal 5 owner=calls reason=undefined method 'object_id' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3990 in IyiScheduler.class#deadlock_found
 table: hello refusal 5 owner=calls reason=undefined method 'state' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3997 in IyiScheduler.class#deadlock_found
-table: hello refusal 5 owner=unassigned reason=wrong number of arguments for 'String.interpolation' (given 5, expected 1) example=no location in Array(IyiFiber | Nil)#[]
+table: hello refusal 5 owner=calls reason=wrong number of arguments for 'String.interpolation' (given 5, expected 1) example=no location in Array(IyiFiber | Nil)#[]
 table: hello refusal 5 owner=bodies reason=the value of 'victim' cannot be typed example=src/iyi/./concurrency.iyi:5534 in IyiWorkers.class#steal_unstarted
 table: hello refusal 5 owner=declarations reason=undefined constant HELD example=src/iyi/./concurrency.iyi:1561 in IyiChanLock.class#acquire
 table: hello refusal 4 owner=macros reason=macro control expansion (macros engine) example=src/iyi/./concurrency.iyi:1557 in top level
@@ -153,7 +153,7 @@ table: hello refusal 2 owner=declarations reason=undefined constant CACHE_REQUES
 table: hello refusal 2 owner=unassigned reason=unsupported node: AsmOperand example=no location in IyiThread.class#stop_here
 table: hello refusal 2 owner=unassigned reason=wrong number of arguments for 'Proc(Nil)#call' (given 0, expected 1) example=src/iyi/./concurrency.iyi:2874 in IyiScheduler.class#run_spawned_fiber
 table: hello refusal 2 owner=calls reason=expected argument #1 to 'IyiAtomic.load' to be Pointer(<unresolved T>), not Pointer(UInt8) example=src/iyi/prelude.iyi:10779 in top level
-table: hello refusal 2 owner=unassigned reason=wrong number of arguments for 'String.interpolation' (given 3, expected 1) example=no location in Samples::Hello::User#greet
+table: hello refusal 2 owner=calls reason=wrong number of arguments for 'String.interpolation' (given 3, expected 1) example=no location in Samples::Hello::User#greet
 table: hello refusal 2 owner=bodies reason=the value of '__temp_3' cannot be typed example=no location in top level
 table: hello refusal 2 owner=bodies reason=the value of '__temp_4' cannot be typed example=no location in top level
 table: hello refusal 1 owner=unassigned reason=type mismatch for return type: expected IyiSchedulerState, got (IyiSchedulerState | Nil) example=src/iyi/./concurrency.iyi:1793 in IyiScheduler.class#state
@@ -231,7 +231,7 @@ table: hello refusal 1 owner=calls reason=expected argument #1 to 'Pointer#copy_
 table: hello refusal 1 owner=calls reason=expected argument #1 to 'IyiAtomic.load' to be Pointer(<unresolved T>), not Pointer(UInt64) example=src/iyi/prelude.iyi:3 in IyiOnce.class#run
 table: hello refusal 1 owner=calls reason=expected argument #1 to 'IyiAtomic.cmpxchg' to be Pointer(<unresolved T>), not Pointer(UInt64) example=src/iyi/prelude.iyi:4 in IyiOnce.class#run
 table: hello refusal 1 owner=calls reason=expected argument #1 to 'IyiAtomic.store' to be Pointer(<unresolved T>), not Pointer(UInt64) example=src/iyi/prelude.iyi:3 in IyiOnce.class#run
-table: hello refusal 1 owner=unassigned reason=wrong number of arguments for 'String.interpolation' (given 2, expected 1) example=no location in Samples::Hello::Robot#greet
+table: hello refusal 1 owner=calls reason=wrong number of arguments for 'String.interpolation' (given 2, expected 1) example=no location in Samples::Hello::Robot#greet
 table: hello refusal 1 owner=bodies reason=the value of 'crowd' cannot be typed example=samples/iyi/hello.iyi:117 in top level
 table: hello refusal 1 owner=calls reason=expected argument #1 to 'Samples::Hello#announce' to be <unresolved T>, not Samples::Hello::Robot example=samples/iyi/hello.iyi:119 in top level
 table: hello defs-lowered-clean=194 lowering-refusal-sites=323
@@ -355,7 +355,7 @@ table: parse refusal 19 owner=bodies reason=the value of '__temp_1' cannot be ty
 table: parse refusal 18 owner=bodies reason=undefined local variable or method 'block' for IyiThread.class example=src/iyi/thread.iyi:317 in IyiThread.class#start
 table: parse refusal 17 owner=calls reason=undefined method 'next_run=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2310 in IyiScheduler.class#take_mail
 table: parse refusal 16 owner=bodies reason=the value of 'buffer' cannot be typed example=src/iyi/./string.iyi:38 in String.class#new
-table: parse refusal 15 owner=unassigned reason=wrong number of arguments for 'String.interpolation' (given 5, expected 1) example=no location in Array(IyiFiber | Nil)#[]
+table: parse refusal 15 owner=calls reason=wrong number of arguments for 'String.interpolation' (given 5, expected 1) example=no location in Array(IyiFiber | Nil)#[]
 table: parse refusal 15 owner=bodies reason=the value of 'memory' cannot be typed example=src/iyi/./string.iyi:37 in String.class#new
 table: parse refusal 12 owner=calls reason=expected argument #1 to 'IyiFiber#state=' to be IyiFiberState, not Int32 example=src/iyi/./concurrency.iyi:5047 in IyiScheduler.class#panic_current
 table: parse refusal 12 owner=bodies reason=the value of 'chunk' cannot be typed example=src/iyi/./concurrency.iyi:18 in IyiScheduler.class#io_chunk
@@ -422,13 +422,13 @@ table: parse refusal 2 owner=unassigned reason=wrong number of arguments for 'Pr
 table: parse refusal 2 owner=calls reason=expected argument #1 to 'Pointer#+' to be Int64, not Int32 example=src/iyi/./io.iyi:300 in IyiIO#write
 table: parse refusal 2 owner=calls reason=expected argument #1 to 'IyiAtomic.load' to be Pointer(<unresolved T>), not Pointer(UInt8) example=src/iyi/prelude.iyi:10779 in top level
 table: parse refusal 2 owner=bodies reason=the value of 'grown' cannot be typed example=src/iyi/./concurrency.iyi:3460 in IyiScheduler.class#io_room
-table: parse refusal 2 owner=unassigned reason=wrong number of arguments for 'String.interpolation' (given 3, expected 1) example=no location in IyiScheduler.class#wait_posix
+table: parse refusal 2 owner=calls reason=wrong number of arguments for 'String.interpolation' (given 3, expected 1) example=no location in IyiScheduler.class#wait_posix
 table: parse refusal 2 owner=calls reason=undefined method 'prev_io=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3436 in IyiScheduler.class#io_link
 table: parse refusal 2 owner=calls reason=undefined method '[]=' for Nil (compile-time type is (Array(IyiFiber | Nil) | Nil)) example=src/iyi/./concurrency.iyi:3440 in IyiScheduler.class#io_link
 table: parse refusal 2 owner=bodies reason=the value of 'pair' cannot be typed example=src/iyi/./concurrency.iyi:4826 in IyiScheduler.class#sleep_pairs
 table: parse refusal 2 owner=calls reason=undefined method 'sleep_child' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4768 in IyiScheduler.class#heap_remove
 table: parse refusal 2 owner=calls reason=undefined method 'sleep_child=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4770 in IyiScheduler.class#heap_remove
-table: parse refusal 2 owner=unassigned reason=wrong number of arguments for 'String.interpolation' (given 2, expected 1) example=no location in String#[]
+table: parse refusal 2 owner=calls reason=wrong number of arguments for 'String.interpolation' (given 2, expected 1) example=no location in String#[]
 table: parse refusal 2 owner=bodies reason=the value of '__temp_3' cannot be typed example=no location in Compiler::Tools::Parse::ParseTool.class#parse_source
 table: parse refusal 2 owner=bodies reason=undefined local variable or method 'var_scopes' for Compiler::Syntax::Parser::Parser.class example=no location in Compiler::Syntax::Parser::Parser.class#new
 table: parse refusal 2 owner=bodies reason=the value of 'parser' cannot be typed example=src/compiler/tools/parse.iyi:37 in Compiler::Tools::Parse::ParseTool.class#parse_source
@@ -660,18 +660,18 @@ table: compile_native refusal 24 owner=bodies reason=the value of 'size' cannot 
 table: compile_native refusal 24 owner=bodies reason=the value of 'memory' cannot be typed example=src/iyi/./string.iyi:37 in String.class#new
 table: compile_native refusal 24 owner=bodies reason=the value of 'buffer' cannot be typed example=src/iyi/./string.iyi:38 in String.class#new
 table: compile_native refusal 20 owner=calls reason=expected argument #1 to 'Pointer(UInt8)#copy_from' to be Pointer(<unresolved T>), not Pointer(UInt8) example=src/iyi/./file.iyi:141 in File.class#c_path
-table: compile_native refusal 18 owner=unassigned reason=wrong number of arguments for 'String.interpolation' (given 5, expected 1) example=no location in Array(IyiFiber | Nil)#[]
+table: compile_native refusal 18 owner=calls reason=wrong number of arguments for 'String.interpolation' (given 5, expected 1) example=no location in Array(IyiFiber | Nil)#[]
 table: compile_native refusal 18 owner=bodies reason=undefined local variable or method 'block' for IyiThread.class example=src/iyi/thread.iyi:317 in IyiThread.class#start
 table: compile_native refusal 17 owner=calls reason=undefined method 'next_run=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2310 in IyiScheduler.class#take_mail
 table: compile_native refusal 16 owner=declarations reason=undefined constant HEADER_SIZE example=src/iyi/./string.iyi:36 in String.class#new
 table: compile_native refusal 13 owner=bodies reason=the value of 'entry' cannot be typed example=src/iyi/./concurrency.iyi:17 in IyiScheduler.class#io_chunk
 table: compile_native refusal 12 owner=calls reason=expected argument #1 to 'IyiFiber#state=' to be IyiFiberState, not Int32 example=src/iyi/./concurrency.iyi:5047 in IyiScheduler.class#panic_current
 table: compile_native refusal 12 owner=declarations reason=undefined constant T example=src/iyi/./array.iyi:28 in Array#initialize
-table: compile_native refusal 12 owner=unassigned reason=wrong number of arguments for 'String.interpolation' (given 3, expected 1) example=no location in Compiler::Tools::CompileNative::CompileNative.class#run
+table: compile_native refusal 12 owner=calls reason=wrong number of arguments for 'String.interpolation' (given 3, expected 1) example=no location in Compiler::Tools::CompileNative::CompileNative.class#run
 table: compile_native refusal 12 owner=bodies reason=the value of 'chunk' cannot be typed example=src/iyi/./concurrency.iyi:18 in IyiScheduler.class#io_chunk
 table: compile_native refusal 11 owner=unassigned reason=unsupported node: Asm example=src/iyi/./concurrency.iyi:2 in top level
 table: compile_native refusal 11 owner=unassigned reason=wrong number of arguments for 'Proc#call' (given 2, expected 1) example=src/iyi/prelude.iyi:3 in Int64#raise
-table: compile_native refusal 11 owner=unassigned reason=wrong number of arguments for 'String.interpolation' (given 2, expected 1) example=no location in Compiler::Tools::CompileNative::CompileNative.class#run
+table: compile_native refusal 11 owner=calls reason=wrong number of arguments for 'String.interpolation' (given 2, expected 1) example=no location in Compiler::Tools::CompileNative::CompileNative.class#run
 table: compile_native refusal 11 owner=bodies reason=undefined local variable or method 'uleb' for Compiler::Native::Wasm::Module::WasmModule example=src/compiler/native/wasm/leb.iyi:50 in Compiler::Native::Wasm::Module::WasmModule#uleb_i
 table: compile_native refusal 10 owner=calls reason=undefined method 'size' for Nil (compile-time type is (Array | Nil)) example=src/iyi/./concurrency.iyi:5529 in IyiWorkers.class#steal_unstarted
 table: compile_native refusal 10 owner=unassigned reason=type mismatch for return type: expected <unresolved T>, got T example=src/iyi/./concurrency.iyi:5533 in IyiWorkers.class#steal_unstarted
