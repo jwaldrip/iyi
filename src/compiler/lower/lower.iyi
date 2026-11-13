@@ -867,7 +867,14 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
     # A value of another type than the variable goes through the casts slice (the hosted upcast into a union).
     assign(low, v_var.pointer, v_var.type, vt, v)
   elsif !vt.is_a?(NilType)
-    store_aligned(low, v, v_var.pointer)
+    # Passed-by-value aggregates can be represented by their address while
+    # visiting expressions (for example Pointer(T)#value on a mixed union).
+    # An SSA aggregate is already an RHS and must not be loaded again.
+    stored = v
+    if passed_by_value?(vt) && v.type.pointer?
+      stored = load_aligned(low, low.typer.llvm_type(vt), v)
+    end
+    store_aligned(low, stored, v_var.pointer)
   end
   low.last = v
 end
