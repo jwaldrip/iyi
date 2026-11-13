@@ -5,7 +5,6 @@ target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:
 file "everything.iyi"
 flag "branch-target-enforcement" = 1
 %Pair = type { i8, i64 }
-%Opaque = type opaque
 %Packed = type <{ i8, i32 }>
 %Node = type { ptr, i64 }
 @ext = external global i64, align 8
@@ -25,6 +24,8 @@ flag "branch-target-enforcement" = 1
 @scaled = internal global i64 mul (i64 6, i64 7)
 @cs = internal global <{ i8, i32 }> <{ i8 3, i32 4 }>
 @zero = internal global [2 x i32] zeroinitializer
+@packed = internal global %Packed zeroinitializer
+@node = internal global %Node zeroinitializer
 @undef = internal global i32 undef
 @poison = internal global ptr poison
 @nul = internal global ptr null
