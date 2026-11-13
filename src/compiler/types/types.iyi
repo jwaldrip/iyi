@@ -571,7 +571,7 @@ pub class PointerInstanceType < GenericClassInstanceType
   end
 
   def full_name : String
-    "Pointer(#{@element_type.full_name})"
+    "Pointer(#{@element_type.devirtualize.arg_full_name})"
   end
 
   def to_s : String
@@ -597,7 +597,7 @@ pub class StaticArrayInstanceType < GenericClassInstanceType
   end
 
   def full_name : String
-    "StaticArray(#{@element_type.full_name}, #{@size_int})"
+    "StaticArray(#{@element_type.devirtualize.arg_full_name}, #{@size_int})"
   end
 
   def to_s : String
