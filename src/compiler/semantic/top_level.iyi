@@ -2160,11 +2160,6 @@ pub class TopLevelVisitor < Visitor
     nil
   end
 
-  # Single sites are visited by the inline macro visitor in their enclosing scope.
-  def splice_body(body : ASTNode) : ASTNode
-    body
-  end
-
   def visit(node : Expressions) : Bool
     @exp_nest = @exp_nest + 1
     node.expressions = splice_inline_sites(node.expressions, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
@@ -2488,7 +2483,6 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = type
-    node.body = splice_body(node.body)
     @program.type_bodies << TypeBody.new(type, node.body)
     node.body.accept(self)
     @current_type = old_type
@@ -2547,7 +2541,6 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = type
-    node.body = splice_body(node.body)
     node.body.accept(self)
     @current_type = old_type
 
@@ -2911,7 +2904,6 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = lib_type
-    node.body = splice_body(node.body)
     node.body.accept(self)
     @current_type = old_type
 
