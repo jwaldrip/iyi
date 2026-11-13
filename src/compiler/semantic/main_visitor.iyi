@@ -3475,6 +3475,27 @@ pub class MainVisitor < TypeNodeHost
     if exp.is_a?(ClassVar) || exp.is_a?(InstanceVar)
       return pointerof_variable(node, exp)
     end
+    if exp.is_a?(Call)
+      call = exp.as(Call)
+      if call.args.empty? && call.named_args.nil? && call.block.nil? && call.block_arg.nil?
+        if obj = call.obj
+          obj.accept(self)
+          if owner = child_type(obj)
+            if owner.is_a?(LibType)
+              if external = owner.as(LibType).lookup_fun(call.name)
+                if external.external_var && external.primitive == "external_var_get"
+                  if var_type = external.resolved_return
+                    set_type(call, var_type)
+                    set_type(node, type_node_system(@program).pointer_of(var_type))
+                    return false
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
     if exp.is_a?(Path)
       exp.accept(self)
       ct = @program.lookup_type_path?(exp.as(Path), @current_type)
