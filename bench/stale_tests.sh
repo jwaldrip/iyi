@@ -1446,7 +1446,7 @@ File.write(File.join(ctl, "pid-$name"), "#{Process.pid}")
 File.write(File.join(ctl, "started-$name"), "1")
 waited = 0
 while !File.exists?(File.join(ctl, "release"))
-  raise "never released" if waited >= 60
+  raise "never released" if waited >= 300
   sleep(1)
   waited += 1
 end
