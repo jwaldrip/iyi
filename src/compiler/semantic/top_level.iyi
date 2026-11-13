@@ -1667,7 +1667,7 @@ pub class SemanticProgram < NonGenericModuleType
       # lookup_type_node, which sees this file's imports; the hook's own lookup does not, so a
       # Tuple(String, IrType, Bool) named in an imported file stays unresolved there (codegen.iyi 651).
       if !gc.splat_index.nil?
-        return gc.full_name == "Tuple" && g.type_vars.all? { |t| type_node?(t) }
+        return (gc.full_name == "Tuple" || (gc.full_name == "Proc" && !g.type_vars.empty?)) && g.type_vars.all? { |t| type_node?(t) }
       end
       return gc.type_vars.size == g.type_vars.size && g.type_vars.all? { |t| type_node?(t) }
     end
@@ -1728,6 +1728,25 @@ pub class SemanticProgram < NonGenericModuleType
     elsif node.is_a?(Self)
       current_type
     elsif node.is_a?(ProcNotation)
+      if hook = @merge_hook
+        notation = node.as(ProcNotation)
+        args = [] of Type
+        if inputs = notation.inputs
+          inputs.each do |input|
+            found = lookup_type_node?(input, current_type)
+            return nil unless found
+            args << found
+          end
+        end
+        result : Type = nil_type
+        if output = notation.output
+          found = lookup_type_node?(output, current_type)
+          return nil unless found
+          result = found
+        end
+        args << result
+        return hook.instantiate_type(proc_type, args)
+      end
       proc_type
     else
       nil

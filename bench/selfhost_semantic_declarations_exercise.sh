@@ -647,6 +647,11 @@ prove_mutation "optional type lookup skips enclosing namespaces" "$MUT_SEM" \
   "        match = nil" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "optional proc notation lookup loses its arguments" "$MUT_SEM" \
+  "        return hook.instantiate_type(proc_type, args)" \
+  "        return proc_type" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
   "di.owner.instance_vars[di.name] = mv" \
   "nil" \
