@@ -885,6 +885,19 @@ else
   awk 'NR<=8' "$WORK/tuple.err" "$WORK/tuple.out" "$WORK/tuple.build.log"
   status=1
 fi
+tuple_local_check() {
+  "$IYI" build -o "$WORK/port-tuple-local" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple-local.build.log" 2>&1 || return 1
+  "$WORK/port-tuple-local" lower "$REPO/bench/fixtures/lower_tuple_local.iyi" "$WORK/lower_tuple_local.oracle.ll" > "$WORK/tuple-local.out" 2> "$WORK/tuple-local.err" || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/tuple-local.out"
+}
+if tuple_local_check; then
+  prove_mutation "a typed local tuple receiver loses its address" "$REPO/src/compiler/lower/primitives.iyi" \
+    '    address_receiver = expanded if expanded.is_a?(Var)' \
+    '    address_receiver = receiver' -- tuple_local_check || status=1
+else
+  echo "FAIL: local tuple receiver differs from hosted"
+  status=1
+fi
 tuple_entry_check() {
   "$IYI" build -o "$WORK/port-tuple-entry" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple-entry.build.log" 2>&1 || return 1
   "$WORK/port-tuple-entry" emit "$REPO/bench/fixtures/lower_tuple.iyi" "$WORK/lower_tuple.oracle.ll" > "$WORK/tuple-entry.ir" 2> "$WORK/tuple-entry.err" || return 1

@@ -266,8 +266,12 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
     raise "BUG: unsupported tuple indexer on #{typ.full_name}"
   end
   value = nil.as(Value?)
-  if receiver.is_a?(Var)
-    variable = low.current_context.vars[receiver.as(Var).name]?
+  address_receiver = receiver
+  if expanded = low.analysed.expansions[receiver]?
+    address_receiver = expanded if expanded.is_a?(Var)
+  end
+  if address_receiver.is_a?(Var)
+    variable = low.current_context.vars[address_receiver.as(Var).name]?
     if variable && !variable.already_loaded
       value = variable.pointer
     end
