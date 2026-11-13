@@ -214,6 +214,14 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   first = primitive.tuple_index
   if node.args.size == 1 && node.args[0].is_a?(RangeLiteral)
+    # Hosted prepare_call_args evaluates the range before the primitive builds its tuple.
+    arg = node.args[0]
+    expansion = low.analysed.expansions[arg]?
+    raise "BUG: tuple range argument has no analysed expansion" if expansion.nil?
+    wants = low.needs_value
+    low.needs_value = true
+    visit_node(low, expansion.as(ASTNode))
+    low.needs_value = wants
     result_type = low.analysed.type_of?(node)
     raise "BUG: tuple range has no result type" if result_type.nil?
     result_ir = low.typer.llvm_type(result_type.as(Type))
