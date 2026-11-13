@@ -1,6 +1,6 @@
 module compiler/semantic/closures
 
-import compiler/syntax/ast::{ASTNode, Assign, Block, Break, Def, InstanceVar, Next, NodeMap, ProcLiteral, Return, Self, Var, While, Yield}
+import compiler/syntax/ast::{ASTNode, Assign, Block, Break, Call, Def, InstanceVar, Next, NodeMap, ProcLiteral, Return, Self, Var, While, Yield}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{MetaclassType, SemanticProgram, Type}
 import compiler/semantic/main_visitor::{MainVisitor}
@@ -197,6 +197,26 @@ pub class ClosureWalk < Visitor
   def visit(node : InstanceVar) : Bool
     capture_self
     false
+  end
+
+  def visit(node : Call) : Bool
+    if node.obj.nil?
+      if target = @visitor.target_def?(node)
+        if owner = @visitor.program.def_owner(target)
+          current : ClosureFrame? = @frame
+          while frame = current
+            if frame.kind == FrameKind::Def
+              if self_type = frame.self_type
+                capture_self if self_type.subtype_of?(owner)
+              end
+              break
+            end
+            current = frame.parent
+          end
+        end
+      end
+    end
+    true
   end
 
   def capture_self : Nil

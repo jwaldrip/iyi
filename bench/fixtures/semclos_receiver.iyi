@@ -1,0 +1,17 @@
+def use_proc(p : Proc(Int32)) : Int32
+  p.call
+end
+
+class Parent
+  def value : Int32
+    7
+  end
+end
+
+class Child < Parent
+  def capture : Int32
+    use_proc(-> { value })
+  end
+end
+
+Child.new.capture

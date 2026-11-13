@@ -76,6 +76,8 @@ prove_mutation 'instance variable does not capture self' "$REPO/src/compiler/sem
   'def visit(node : InstanceVar) : Bool
     capture_self' 'def visit(node : InstanceVar) : Bool
     nil' -- mutation_check || status=1
+prove_mutation 'receiverless inherited call does not capture self' "$REPO/src/compiler/semantic/closures.iyi" \
+  'capture_self if self_type.subtype_of?(owner)' 'capture_self if false && self_type.subtype_of?(owner)' -- mutation_check || status=1
 prove_mutation 'reassignment after capture is not mutable' "$REPO/src/compiler/semantic/closures.iyi" \
   'elsif assignment && binding.captured' 'elsif false && assignment && binding.captured' -- mutation_check || status=1
 prove_mutation 'changing captured variable is not refused' "$REPO/src/compiler/semantic/closures.iyi" \
