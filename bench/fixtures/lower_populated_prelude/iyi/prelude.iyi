@@ -1,0 +1,72 @@
+@[Unsafe("minimal allocation for the array fixture")]
+class IyiHeap
+end
+
+class IyiRuntimeLock
+end
+
+lib LibC
+  fun malloc(size : UInt64) : Void*
+  fun exit(status : Int32) : NoReturn
+end
+
+lib LibIyiMain
+  fun __iyi_main(argc : Int32, argv : UInt8**) : Void*
+end
+
+fun __iyi_new(size : UInt64, type_id : UInt64, flags : UInt64) : Void*
+  LibC.malloc(size)
+end
+
+fun __iyi_raise_overflow : NoReturn
+  LibC.exit(1)
+end
+
+fun main(argc : Int32, argv : UInt8**) : Int32
+  LibIyiMain.__iyi_main(argc, argv)
+  0
+end
+
+struct Int32
+  @[Primitive(:convert)]
+  def to_i64 : Int64
+  end
+
+  @[Primitive(:convert)]
+  def to_u64 : UInt64
+  end
+end
+
+struct Pointer(T)
+  @[Primitive(:pointer_malloc)]
+  def self.malloc(size : UInt64)
+  end
+
+  @[Primitive(:pointer_set)]
+  def value=(value : T)
+  end
+
+  @[Primitive(:pointer_add)]
+  def +(offset : Int64) : self
+  end
+
+  def []=(offset : Int32, value : T) : T
+    (self + offset.to_i64).value = value
+  end
+end
+
+class Array(T)
+  @buffer : Pointer(T)
+
+  def initialize(capacity : Int32)
+    @buffer = Pointer(T).malloc(capacity.to_u64)
+  end
+
+  def self.unsafe_build(capacity : Int32) : Array(T)
+    new(capacity)
+  end
+
+  def to_unsafe : Pointer(T)
+    @buffer
+  end
+end
