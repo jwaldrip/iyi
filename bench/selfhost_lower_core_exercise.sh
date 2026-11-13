@@ -453,6 +453,9 @@ fi
 prove_mutation "the completed-emission check dropped" "$REPO/src/compiler/lower/fun.iyi" \
   'return existing.as(Function) if fun_emission_done?(low.module, name) || low.emitting[name]?' \
   'return existing.as(Function)' -- probe_reuse_check || status=1
+prove_mutation "a generic class instance has no instance variables" "$REPO/src/compiler/lower/instance_var.iyi" \
+  "  if owner.is_a?(GenericClassInstanceType)" \
+  "  if false" -- lower_core_check || status=1
 
 echo
 echo
