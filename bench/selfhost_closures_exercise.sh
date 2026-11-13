@@ -84,6 +84,8 @@ prove_mutation 'shadowed parameters lose outer insertion order' "$REPO/src/compi
   'parent.visible_names' '[] of String' -- mutation_check || status=1
 prove_mutation 'loop assignment is not mutable' "$REPO/src/compiler/semantic/closures.iyi" \
   'binding.variable.mutably = true if @inside_while' 'binding.variable.mutably = false if @inside_while' -- mutation_check || status=1
+prove_mutation 'captured block argument is omitted from its def frame' "$REPO/src/compiler/semantic/closures.iyi" \
+  'if block_arg = def_node.block_arg' 'if block_arg = (false ? def_node.block_arg : nil)' -- mutation_check || status=1
 if [ "$status" -ne 0 ]; then
   printf '%s\n' '== SOME CLOSURE CHECKS FAILED'
   exit 1
