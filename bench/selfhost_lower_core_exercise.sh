@@ -660,6 +660,23 @@ else
   awk 'NR<=8' "$WORK/union-read.err" "$WORK/union-read.out" "$WORK/union-read.build.log"
   status=1
 fi
+class_self_check() {
+  "$IYI" build -o "$WORK/port-class-self" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/class-self.build.log" 2>&1 || { touch "$WORK/class-self.invalid"; return 1; }
+  "$WORK/port-class-self" lower "$REPO/bench/fixtures/lower_class_self.iyi" "$WORK/lower_class_self.oracle.ll" > "$WORK/class-self.out" 2> "$WORK/class-self.err" || { touch "$WORK/class-self.invalid"; return 1; }
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/class-self.out"
+}
+if class_self_check; then
+  prove_mutation "class self uses its metaclass id" "$REPO/src/compiler/lower/lower.iyi" \
+    '        low.last = type_id_value(low, rt)' \
+    '        low.last = low.builder.const_int(low.module.types.int32, 0_i64)' -- class_self_check || status=1
+  if [ -e "$WORK/class-self.invalid" ]; then
+    echo "FAIL: class self mutant could not build or lower"
+    status=1
+  fi
+else
+  echo "FAIL: class self fixture differs from hosted"
+  status=1
+fi
 tuple_literal_check() {
   "$IYI" build -o "$WORK/port-tuple" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple.build.log" 2>&1 || return 1
   "$WORK/port-tuple" lower "$REPO/bench/fixtures/lower_tuple_literal.iyi" "$WORK/lower_tuple_literal.oracle.ll" > "$WORK/tuple.out" 2> "$WORK/tuple.err" || return 1
