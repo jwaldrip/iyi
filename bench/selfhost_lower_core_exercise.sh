@@ -234,6 +234,40 @@ else
   status=1
 fi
 
+class_self_check() {
+  "$IYI" build -o "$WORK/port-class-self" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/class-self.build.log" 2>&1 || return 1
+  "$WORK/port-class-self" lower "$REPO/bench/fixtures/lower_class_self.iyi" "$WORK/lower_class_self.oracle.ll" > "$WORK/class-self.out" 2> "$WORK/class-self.err" || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/class-self.out"
+}
+echo "== 2c. Class self is the metaclass type id, identical to hosted"
+if class_self_check; then
+  echo "  lower_class_self: IR identical to hosted"
+  prove_mutation "class self uses its metaclass id" "$REPO/src/compiler/lower/call.iyi" \
+    '        low.last = type_id_value(low, meta)' \
+    '        low.last = low.builder.const_int(low.module.types.int32, 0_i64)' -- class_self_check || status=1
+else
+  echo "FAIL: class self fixture differs from hosted"
+  awk 'NR<=12' "$WORK/class-self.err" "$WORK/class-self.out" "$WORK/class-self.build.log"
+  status=1
+fi
+
+and_effect_check() {
+  "$IYI" build -o "$WORK/port-and-effect" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/and-effect.build.log" 2>&1 || return 1
+  "$WORK/port-and-effect" lower "$REPO/bench/fixtures/lower_and_effect.iyi" "$WORK/lower_and_effect.oracle.ll" > "$WORK/and-effect.out" 2> "$WORK/and-effect.err" || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/and-effect.out"
+}
+echo "== 2c2. Nested && and || lower the typed expansion"
+if and_effect_check; then
+  echo "  lower_and_effect: IR identical to hosted"
+  prove_mutation "an and ignores its typed expansion" "$REPO/src/compiler/lower/lower.iyi" \
+    '  recorded = low.analysed.expansions[node]?' \
+    '  recorded = nil' -- and_effect_check || status=1
+else
+  echo "FAIL: and effect fixture differs from hosted"
+  awk 'NR<=12' "$WORK/and-effect.err" "$WORK/and-effect.out" "$WORK/and-effect.build.log"
+  status=1
+fi
+
 module_floor_file="$REPO/bench/selfhost_lower_core_module.floor"
 module_floor="$(awk 'NR==1 { print $1 }' "$module_floor_file" 2>/dev/null)"
 module_floor="${module_floor:-0}"
@@ -740,7 +774,7 @@ aggregate_store_check() {
   [ "$ns" = "$hs" ] && cmp -s "$WORK/aggregate-store.native.out" "$WORK/aggregate-store.hosted.out"
 }
 if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/aggregate-store.hosted" "$REPO/bench/fixtures/lowcast_struct_union.iyi" > "$WORK/aggregate-store.hosted.log" 2>&1 &&
-   cp "$WORK/aggregate-store.hosted.ll" "$WORK/aggregate-store.ll" && aggregate_store_check; then
+   [ -s "$WORK/aggregate-store.ll" ] && aggregate_store_check; then
   prove_mutation "aggregate store preserves the loaded value" "$REPO/src/compiler/lower/lower.iyi" \
     '      stored = load_aligned(low, low.typer.llvm_type(vt), v)' \
     '      stored = low.builder.const_zero(low.typer.llvm_type(vt))' -- aggregate_store_check || status=1
@@ -750,6 +784,7 @@ if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/aggregate-st
   fi
 else
   echo "FAIL: aggregate store baseline differs from hosted"
+  awk 'NR<=12' "$WORK/aggregate-store.hosted.log" "$WORK/aggregate-store.err"
   status=1
 fi
 tuple_literal_check() {

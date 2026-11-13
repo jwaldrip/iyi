@@ -49,6 +49,7 @@ import compiler/lower/helpers::{int1, llvm_nil, raise_overflow_name}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
+import compiler/types/indirection::{TypeIndirection}
 import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, TupleInstanceType, TypeQueries, VirtualType}
 import compiler/lower/helpers::{store_aligned, load_aligned}
 import compiler/lower/typer::{passed_by_value?}
@@ -274,8 +275,22 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
   if value.nil?
     wants = low.needs_value
     low.needs_value = true
+    # Hosted codegen_call leaves a passed-by-value result as its spill pointer
+    # (call.cr:707-711). Asking the call not to reload that struct keeps the gep base a pointer.
+    prev_unused = low.receiver_unused
+    if receiver.is_a?(Call)
+      low.receiver_unused = receiver.as(Call).object_id
+    end
     visit_node(low, receiver)
-    value = low.last
+    low.receiver_unused = prev_unused
+    if receiver.is_a?(Call) && low.spill_node == receiver.as(Call).object_id
+      if slot = low.spill_slot
+        value = slot
+      end
+    end
+    if value.nil?
+      value = low.last
+    end
     low.needs_value = wants
   end
   raise "BUG: tuple indexer receiver left no value" if value.nil?

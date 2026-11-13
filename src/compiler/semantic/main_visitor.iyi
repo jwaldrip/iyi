@@ -18,8 +18,8 @@ import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
-import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system}
-import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
+import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system, type_node_metaclass}
+import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries, NamedTupleInstanceType, TupleInstanceType}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/intersect::{TypeIntersect}
 import compiler/types/restrictions::{TypeRestrictions}
@@ -298,6 +298,7 @@ pub class MainVisitor < TypeNodeHost
   # The analysed signature of each fun, keyed by its FunDef node: argument types
   # in declared order and the declared return type. The lowering reads them.
   property fun_arg_types_by_node : NodeMap(Array(Type)) = NodeMap(Array(Type)).new
+  property matched_call_args : NodeMap(Array(Type)) = NodeMap(Array(Type)).new
   property fun_return_types_by_node : NodeMap(Type) = NodeMap(Type).new
 
   def record_fun_signature(node : FunDef, arg_types : Array(Type), return_type : Type?) : Nil
@@ -864,6 +865,32 @@ pub class MainVisitor < TypeNodeHost
   # by-name cases are not ported here; a primitive with no return type is
   # recorded untyped with its name.
   def visit(node : Primitive) : Bool
+    if node.name == "tuple_indexer_known_index" && !node.tuple_range
+      if sc = @scope
+        instance : Type = sc
+        meta = false
+        if sc.is_a?(MetaclassType)
+          instance = sc.as(MetaclassType).instance_type
+          meta = true
+        end
+        if instance.is_a?(TupleInstanceType)
+          members = instance.as(TupleInstanceType).tuple_types
+          if node.tuple_index >= 0 && node.tuple_index < members.size
+            result = members[node.tuple_index]
+            set_type(node, meta ? type_node_metaclass(result).as(Type) : result)
+            return false
+          end
+        elsif instance.is_a?(NamedTupleInstanceType)
+          entries = instance.as(NamedTupleInstanceType).entries
+          if node.tuple_index >= 0 && node.tuple_index < entries.size
+            result = entries[node.tuple_index].type
+            set_type(node, meta ? type_node_metaclass(result).as(Type) : result)
+            return false
+          end
+        end
+      end
+      return refuse(node, "unsupported TupleIndexer scope")
+    end
     if cd = @current_def
       if primitive_type = @program.primitive_return_type(cd)
         set_type(node, primitive_type)
@@ -1476,14 +1503,14 @@ pub class MainVisitor < TypeNodeHost
   def splice_def_inline_sites(node : Expressions) : Nil
     return nil if @current_def.nil?
     return nil unless node.expressions.any? { |exp| inline_site?(exp) }
-    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope))
+    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true)
     nil
   end
 
   def splice_def_body(node : ASTNode) : ASTNode
     return node if @current_def.nil?
     return node unless inline_site?(node)
-    splice_body_node(node, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope))
+    splice_body_node(node, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true)
   end
 
   # An inline macro site that is the whole value of a constant (`CHANNEL_WAIT = {% if ... %}512{% else %}2048{% end %}`)
@@ -2467,6 +2494,9 @@ pub class MainVisitor < TypeNodeHost
       i = i + 1
     end
 
+    indexer = CallRecalculation.check_tuple_indexer(rec_type, name, args, type_node_system(@program), @current_type)
+    return indexer.as(Def) if indexer.is_a?(Def)
+    return refuse_call(call_node, indexer) if indexer.is_a?(String)
     candidates = [] of Def
     visited = Set(String).new
     collect_candidate_defs(rec_type, name, candidates, visited)
@@ -2573,71 +2603,23 @@ pub class MainVisitor < TypeNodeHost
       return most_specific.first
     end
 
-    # A resolved restriction can still contain a free variable, as in
-    # Pointer(T). Let the calls matcher bind it before reporting a mismatch.
-    if count_matches.any? { |d| !d.free_vars.nil? }
-      if matched = match_splat_with_calls(rec_type, name, args, call_node)
-        return matched
+    # The shared matcher handles splats, free variables and numeric widening
+    # for both number literals and typed integers.
+    arg_types = [] of Type
+    args.each { |arg| arg_types << type_of(arg) }
+    signature = CallSignature.new(name, arg_types, nil, call_node.block != nil)
+    widened = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args)
+    if widened.error.nil? && widened.definition
+      @matched_call_args[call_node] = widened.arg_types
+      return widened.definition
+    end
+    if message = widened.error
+      if message.starts_with?("ambiguous call")
+        return refuse_call(call_node, message)
       end
     end
-
     if ur = unresolved_restriction
-      if rescued = match_splat_with_calls(rec_type, name, args, call_node)
-        return rescued
-      end
       return refuse_call(call_node, ur)
-    end
-
-    # 3. Check autocast matches for literals
-    has_literal_arg = args.any? { |a| a.is_a?(NumberLiteral) }
-    if has_literal_arg
-      autocast_matches = [] of Def
-      autocast_types = [] of String
-      count_matches.each do |d|
-        all_match = true
-        matched_t_name = ""
-        i = 0
-        while i < args.size
-          arg = args[i]
-          arg_t = type_of(arg)
-          param = d.args[i]
-          if r = param.restriction
-            expected_t = lookup_under(r, rec_type)
-            if arg_t.subtype_of?(expected_t)
-              # exact subtype match
-            elsif arg.is_a?(NumberLiteral) && number_literal_matches_type?(arg.as(NumberLiteral), expected_t)
-              matched_t_name = expected_t.full_name
-            else
-              all_match = false
-              break
-            end
-          end
-          i = i + 1
-        end
-        if all_match
-          autocast_matches << d
-          autocast_types << matched_t_name
-        end
-      end
-
-      if autocast_matches.size > 1
-        lit_val = ""
-        args.each do |a|
-          if a.is_a?(NumberLiteral)
-            lit_val = a.as(NumberLiteral).value
-            break
-          end
-        end
-        uniq_types = [] of String
-        autocast_types.each do |tn|
-          unless tn.empty? || uniq_types.includes?(tn)
-            uniq_types << tn
-          end
-        end
-        return refuse_call(call_node, "ambiguous call, implicit cast of #{lit_val} matches all of #{uniq_types.join(", ")}")
-      elsif autocast_matches.size == 1
-        return autocast_matches.first
-      end
     end
 
     # 4. Error reporting for no matching overload
@@ -3040,6 +3022,11 @@ pub class MainVisitor < TypeNodeHost
         param_type = child_type(args[arg_index]) if arg_index >= 0 && arg_index < args.size
       elsif i < args.size
         param_type = child_type(args[i])
+        if call_node
+          if matched = @matched_call_args[call_node]?
+            param_type = matched[i] if i < matched.size
+          end
+        end
       elsif dv = param.default_value
         dv.accept(self)
         param_type = child_type(dv)
@@ -3082,6 +3069,15 @@ pub class MainVisitor < TypeNodeHost
         self_t = rec_type
       end
       @typed_instances << TypedInstance.new(target_def, self_t, inst_args)
+      # Hosted Call#instantiate registers the typed def before visiting its body
+      # (semantic/call.cr 628-630, body at 714). A recursive call must target this
+      # object, whose parameters already carry their instantiated types, not a fresh clone.
+      provisional : Type = @program.no_return_type
+      if declared = target_def.return_type
+        provisional = lookup_def_return(declared, rec_type, target_def)
+      end
+      set_type(target_def, provisional)
+      remember_def_instance(cache_key, target_def, provisional)
     end
     body = splice_def_body(body.as(ASTNode))
     target_def.body = body.as(ASTNode)

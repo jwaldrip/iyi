@@ -331,7 +331,7 @@ prove_mutation "the expansion is parsed with no file, so its declarations are no
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation_all "no spliced inline macro expansion is ever declared (top-level and type-body sites)" "$MUT_INL" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts))" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts, keep_empty))" \
   "out.concat([] of ASTNode)" \
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -512,15 +512,15 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # Not "wrapped but not spliced": visit(Expressions) splices the wrapper again, so that mutant is equivalent.
 prove_mutation "a single macro node body loses its expansion: the wrapper is empty" "$MUT_INL" \
-  "Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals, bindings, facts))" \
+  "Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals, bindings, facts, keep_empty))" \
   "Expressions.new([] of ASTNode)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 
-# The constant's macro is evaluated in its declaration namespace, not the reader's scope.
+# Wrapping the site in Expressions is equivalent: the def that reads the constant splices it again in the same namespace. Pass an empty scope so @type is not the declaring type.
 prove_mutation "a constant macro expands in the reader's scope instead of its declaration namespace" "$MUT_MAIN" \
   "spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType))" \
-  "spliced = Expressions.new([value] of ASTNode)" -- check_body_fixture || status=1
+  "spliced = splice_body_node(value, \"\", file, c.namespace.is_a?(LibType))" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 
@@ -535,8 +535,8 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # keeps the expansion and drops that write-back, so later_block_local.iyi pointerof
 # refuses the name and root-refusals rise above 5.
 prove_mutation "a recursive splice drops names an earlier expansion declared, so a later block's pointerof refuses them" "$MUT_INL" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts))" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals.dup, bindings, facts))" -- check_body_fixture || status=1
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts, keep_empty))" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals.dup, bindings, facts, keep_empty))" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 fi
 
