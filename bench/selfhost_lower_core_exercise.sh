@@ -104,7 +104,9 @@ for fixture in "$REPO"/bench/fixtures/lower_*.iyi; do
   name="$(basename "$fixture" .iyi)"
   # lower_headed_late is proved in section 2c against the arena prelude. The empty-prelude
   # loop names its proc Proc(Base, Base); the port, having made the virtual type, names Base+.
-  if [ "$name" = "lower_headed_late" ] || [ "$name" = "lower_probe_reuse" ]; then
+  # lower_string_fields reads @bytesize. That load is the instance-var fold, proved in 2c4
+  # against the arena prelude, not in this empty-prelude identity loop.
+  if [ "$name" = "lower_headed_late" ] || [ "$name" = "lower_probe_reuse" ] || [ "$name" = "lower_string_fields" ]; then
     continue
   fi
   if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
@@ -584,14 +586,27 @@ string_fields_ir() {
   python3 - "$WORK/sfields.ll" "$WORK/sfields.port.ll" << 'PY' || return 1
 import sys
 def lines(text):
-    out = []
+    globals = []
+    pointers = []
     for line in text.splitlines():
-        if "@\"'hi'\"" in line or "getelementptr inbounds" in line and "'hi'" in line:
-            out.append(line.strip())
-    return out
-host = lines(open(sys.argv[1]).read())
-port = lines(open(sys.argv[2]).read())
-if host != port or not host:
+        stripped = line.strip()
+        if stripped.startswith("@\"'hi'\" ="):
+            globals.append(stripped.split("=", 1)[1].strip())
+        start = 0
+        needle = "getelementptr inbounds ({ i64,"
+        while True:
+            at = stripped.find(needle, start)
+            if at < 0:
+                break
+            end = stripped.find(")", at)
+            piece = stripped[at:end + 1] if end >= 0 else stripped[at:]
+            if "\"'hi'\"" in piece and "i32 0, i32 1" in piece:
+                pointers.append(piece)
+            start = at + len(needle)
+    return globals, pointers
+host_g, host_p = lines(open(sys.argv[1]).read())
+port_g, port_p = lines(open(sys.argv[2]).read())
+if host_g != port_g or host_p != port_p or not host_g or not host_p:
     sys.stderr.write("string literal lines differ\n")
     sys.exit(1)
 PY

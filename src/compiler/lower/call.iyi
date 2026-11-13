@@ -87,29 +87,21 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   raise "BUG: the call to #{node.name} has no target def (hosted call.cr: visit(Call))" if target.nil?
   def_node = target.as(Def)
 
-  if node.args.size != def_node.args.size || def_node.splat_index != nil
-    pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
-  end
-
+  # A primitive is lowered at the call site (hosted codegen_call). Proc#call is a
+  # primitive whose def is a splat; that splat is the primitive's form, not an
+  # unexpanded user call. A non-primitive splat or default still refuses by name.
   unless primitive_name_of(def_node).nil?
     unless node.block.nil?
       pending_visit_node("a block passed to a primitive (hosted call.cr: codegen_call, Primitive body)")
     end
     if node.obj.nil? && primitive_name_of(def_node) == "allocate"
-      # `_ = allocate` in a class method (the generated `new`): the instance type is the class method's context
-      # type (fun.iyi class_owner). The pointer to the zeroed instance is loaded as the struct value, which is
-      # what `_` holds (hosted allocate returns the value; primitive_allocate returns the pointer).
       owner = low.current_context.type
       if owner.nil?
         pending_visit_node("allocate outside a class method (hosted codegen_primitive_allocate, the instance type)")
       end
       inst = owner.as(Type)
-      # Hosted prepare_call_args reads the generic metaclass self before dispatching
-      # the allocate primitive, even though allocation itself does not use it.
       type_id_value(low, inst) if inst.is_a?(GenericClassInstanceMetaclassType)
       ptr = primitive_allocate(low, inst)
-      # A class's `_` holds the pointer itself (hosted allocate of a reference type); a struct's holds the value
-      # loaded from the zeroed instance.
       if passed_by_value?(inst)
         low.last = load_aligned(low, low.typer.llvm_type(inst), ptr, "")
       else
@@ -119,6 +111,10 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     end
     lower_primitive_call(low, node, def_node)
     return
+  end
+
+  if node.args.size != def_node.args.size || def_node.splat_index != nil
+    pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
   end
 
   if node.super? || node.previous_def?
