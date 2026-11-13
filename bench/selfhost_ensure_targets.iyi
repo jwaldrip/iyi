@@ -1,6 +1,6 @@
 module bench/selfhost_ensure_targets
 
-import compiler/syntax/ast::{Def, Return}
+import compiler/syntax/ast::{ASTNode, Block, Break, Call, Def, Next, Return, While}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
@@ -33,6 +33,47 @@ class ReturnTargets < Visitor
   end
 end
 
+class LoopTargets < Visitor
+  getter lines : Array(String) = [] of String
+
+  def describe(node : ASTNode, target : ASTNode?) : String
+    line = if loc = node.location
+             loc.line_number
+           else
+             0
+           end
+    if target
+      kind = if target.is_a?(While)
+               "While"
+             elsif target.is_a?(Block)
+               "Block"
+             elsif target.is_a?(Call)
+               "Call"
+             else
+               "other"
+             end
+      target_line = if loc = target.location
+                      loc.line_number
+                    else
+                      0
+                    end
+      "#{line} #{kind} #{target_line}"
+    else
+      "#{line} missing"
+    end
+  end
+
+  def visit(node : Break) : Bool
+    @lines << "Break #{describe(node, node.target)}"
+    true
+  end
+
+  def visit(node : Next) : Bool
+    @lines << "Next #{describe(node, node.target)}"
+    true
+  end
+end
+
 source = "def answer\n  return 42\nend\nanswer\n"
 node = Parser.new(source, "targets.iyi").parse
 program = SemanticProgram.new
@@ -53,3 +94,18 @@ end
 expected = ["2 Return Def 1"]
 raise "return targets: #{lines}" unless lines == expected
 puts lines.first
+
+source = "def once\n  yield\nend\nwhile false\n  next\nend\nwhile false\n  break\nend\nonce do\n  next\nend\nonce do\n  break\nend\n"
+node = Parser.new(source, "jumps.iyi").parse
+program = SemanticProgram.new
+declarations = TopLevelVisitor.new(program, "jumps.iyi")
+node.accept(declarations)
+declarations.finish
+visitor = MainVisitor.new(program)
+visitor.total = true
+node.accept(visitor)
+walk = LoopTargets.new
+node.accept(walk)
+expected = ["Next 5 While 4", "Break 8 While 7", "Next 11 Block 10", "Break 14 Call 13"]
+raise "jump targets: #{walk.lines}" unless walk.lines == expected
+walk.lines.each { |line| puts line }

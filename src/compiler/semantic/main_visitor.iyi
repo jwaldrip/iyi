@@ -238,6 +238,10 @@ pub class MainVisitor < TypeNodeHost
   # The break values of each block's call, and the def and return list each block is written in.
   property block_breaks : NodeMap(Array(Type?)) = NodeMap(Array(Type?)).new
   property block_owners : NodeMap(BlockOwner) = NodeMap(BlockOwner).new
+  # Jump boundaries are AST identities, not the value-collection stacks.
+  property jump_block_calls : NodeMap(Call) = NodeMap(Call).new
+  property jump_block : Block? = nil
+  property jump_whiles : Array(While) = [] of While
   # The record of each call on a lib (see visit_lib_call): the fun, the result type and the
   # arguments the lowering passes.
   property lib_call_targets : NodeMap(LibCallTarget) = NodeMap(LibCallTarget).new
@@ -754,6 +758,11 @@ pub class MainVisitor < TypeNodeHost
       e.accept(self)
       value_t = child_type(e)
     end
+    if target = @jump_whiles.last?
+      node.target = target
+    elsif block = @jump_block
+      node.target = @jump_block_calls[block]?
+    end
     if bts = @break_types
       bts << value_t
     elsif !@while_break_vars.empty?
@@ -773,6 +782,13 @@ pub class MainVisitor < TypeNodeHost
     if e = node.exp
       e.accept(self)
       value_t = child_type(e)
+    end
+    if target = @jump_whiles.last?
+      node.target = target
+    elsif block = @jump_block
+      node.target = block
+    elsif current = @current_def
+      node.target = current if current.captured_block?
     end
     if nts = @next_types
       nts << value_t
@@ -1737,9 +1753,11 @@ pub class MainVisitor < TypeNodeHost
       @type_filters = nil
       @unreachable = false
       @while_break_vars.push([] of Hash(String, Type))
+      @jump_whiles << node
       old_handler_direct_exit = @handler_direct_exit
       @handler_direct_exit = false
       node.body.accept(self)
+      @jump_whiles.pop
       @handler_direct_exit = old_handler_direct_exit
       body_vars = @vars
       break_vars_list = @while_break_vars.pop
@@ -1964,9 +1982,15 @@ pub class MainVisitor < TypeNodeHost
       @needs_type_filters = 0
       @unreachable = false
       enter_file_scope(blk)
+      saved_jump_block = @jump_block
+      saved_jump_whiles = @jump_whiles
+      @jump_block = blk
+      @jump_whiles = [] of While
       old_handler_direct_exit = @handler_direct_exit
       @handler_direct_exit = false
       blk.body.accept(self)
+      @jump_block = saved_jump_block
+      @jump_whiles = saved_jump_whiles
       @handler_direct_exit = old_handler_direct_exit
       @type_filters = old_yield_type_filters
       @needs_type_filters = old_yield_needs_filters
@@ -2620,6 +2644,10 @@ pub class MainVisitor < TypeNodeHost
       return refuse_recursion(site, target_def, "instantiation depth exceeded at '#{target_def.name}'")
     end
 
+    saved_jump_block = @jump_block
+    saved_jump_whiles = @jump_whiles
+    @jump_block = nil
+    @jump_whiles = [] of While
     old_vars = @vars
     old_handler_vars = @handler_vars
     old_handler_writes = @handler_writes
@@ -2763,6 +2791,8 @@ pub class MainVisitor < TypeNodeHost
     @needs_type_filters = old_needs_type_filters
     @unreachable = old_unreachable
     @while_break_vars = old_while_break_vars
+    @jump_block = saved_jump_block
+    @jump_whiles = saved_jump_whiles
     @typing_stack.pop
 
     return nil unless params_typed
@@ -2954,6 +2984,9 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Call) : Bool
+    if block = node.block
+      @jump_block_calls[block] = node
+    end
     if expand_macro(node)
       return false
     end

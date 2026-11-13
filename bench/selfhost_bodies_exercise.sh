@@ -375,6 +375,12 @@ ensure_targets_check || status=1
 prove_mutation "return identifies its typed def" "$MAIN_VISITOR" \
   "    node.target = @current_def" \
   "    node.target = nil" -- ensure_targets_check || status=1
+prove_mutation "break identifies its block call" "$MAIN_VISITOR" \
+  "      node.target = @jump_block_calls[block]?" \
+  "      node.target = nil" -- ensure_targets_check || status=1
+prove_mutation "next identifies its block" "$MAIN_VISITOR" \
+  "      node.target = block" \
+  "      node.target = nil" -- ensure_targets_check || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"
