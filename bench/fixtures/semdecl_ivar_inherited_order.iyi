@@ -7,3 +7,12 @@ end
 class IvarChild < IvarParent
   @value : Int32
 end
+
+class IvarReadDeclaration
+  @source : Int32
+
+  def initialize
+    @source = 1
+    @copy = @source
+  end
+end

@@ -271,8 +271,24 @@ class GuessVisitor < Visitor
       return nil
     end
     if node.is_a?(InstanceVar)
-      if declared = @og.owner.instance_vars[node.as(InstanceVar).name]?
+      name = node.as(InstanceVar).name
+      if declared = @og.owner.instance_vars[name]?
         return declared.var_type
+      end
+      [true, false].each do |declaration_pass|
+        @program.pending_ivars.each do |pi|
+          next unless pi.owner == @og.owner && pi.name == name && pi.explicit == declaration_pass
+          saved = @program.current_imports
+          if imports = pi.imports
+            @program.current_imports = imports
+          end
+          found = @program.declared_ivar_type?(pi.restriction, pi.owner, pi.virtual)
+          @program.current_imports = saved
+          return found if found
+        end
+      end
+      if guessed = @og.guesses[name]?
+        return guessed.type
       end
       return nil
     end
@@ -517,7 +533,11 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
   re_resolve_explicit_ivars(program)
   # During the transition finish may already have installed these records.
   # Remove only those records, then install them in hierarchy order below.
+  previous = {} of String => MetaTypeVar
   program.pending_ivars.each do |pi|
+    if existing = pi.owner.instance_vars[pi.name]?
+      previous["#{pi.owner.full_name} #{pi.name}"] = existing
+    end
     pi.owner.instance_vars.delete(pi.name)
   end
   retained = program.declared_ivars.reject do |di|
@@ -559,7 +579,14 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
           else
             program.current_imports = saved_imports
           end
-          arg_type = program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
+          arg_type = program.declared_ivar_type?(pi.restriction, pi.owner, pi.virtual)
+          unless arg_type
+            if old = previous["#{pi.owner.full_name} #{pi.name}"]?
+              arg_type = old.type
+            else
+              arg_type = program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
+            end
+          end
           mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
           mv.owner = pi.owner
           pi.owner.instance_vars[pi.name] = mv
