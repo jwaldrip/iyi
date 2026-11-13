@@ -192,19 +192,22 @@ def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entr
     dump_type(user_types[name], io, "", entry)
   end
   if typed
-    dump_instances(program, io, initial_types)
+    dump_instances(program, io, initial_types, entry)
   end
 end
 
 # The instances of the program's own generic classes, with their instance variables, in the
 # typed mode only: the hosted pass always makes them, the port's untyped pass does not, so the
 # gate asks for them with `--typed` on the typed fixtures alone. Each instance is a record of its
-# own, sorted by its name, as the port's driver prints them.
-def dump_instances(program : Iyi::Program, io : IO, initial_types : Set(String))
+# own, sorted by its name, as the port's driver prints them. A generic is the entry's only when
+# declared_in? says so, the same test dump_type uses, so a prelude or imported generic's
+# instances are not records of this file.
+def dump_instances(program : Iyi::Program, io : IO, initial_types : Set(String), entry : String?)
   program.types.keys.sort.each do |name|
     next if initial_types.includes?(name)
     generic = program.types[name]
     next unless generic.is_a?(Iyi::GenericClassType)
+    next unless declared_in?(generic.locations, entry)
     generic.instantiated_types.sort_by(&.to_s).each do |inst|
       next unless inst.is_a?(Iyi::GenericClassInstanceType)
       full = inst.to_s

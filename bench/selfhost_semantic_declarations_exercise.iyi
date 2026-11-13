@@ -1,6 +1,6 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader, Path}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, dump_program_declarations, dump_type, dir_of, normalize_path}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, dump_program_declarations, dump_type, dir_of, normalize_path, declared_in?}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/type_nodes::{type_node_system}
 import compiler/types/types::{GenericClassInstanceType}
@@ -91,6 +91,11 @@ module BenchSelfhostSemanticDeclarationsExercise
     prelude_file = prelude.import_file("iyi/prelude")
     if prelude_file
       prelude.load_file(prelude_file.as(String))
+      # The file that reads the prelude finishes its pending instance variables, as
+      # load_file hands them up and never resolves them itself. That instantiates the
+      # prelude generics (Channel(T), IyiSendNode(T)). dump_instances then keeps only
+      # a generic declared in the entry file.
+      prelude.finish
     end
     prog.entry_dir = dir_of(entry)
     visitor = TopLevelVisitor.new(prog, entry)
@@ -103,7 +108,7 @@ module BenchSelfhostSemanticDeclarationsExercise
     prog, entry = load_typed_program(path)
     type_node_system(prog)
     declare_guessed_instance_vars(prog)
-    dump_program_declarations(prog, entry) + dump_instances(prog)
+    dump_program_declarations(prog, entry) + dump_instances(prog, entry)
   end
 
   # The post-declaration re-resolution path: load bare without the type system, then install it
@@ -111,19 +116,23 @@ module BenchSelfhostSemanticDeclarationsExercise
   def self.dump_file_reresolved(path : String) : String
     prog, entry = load_program(path)
     type_node_system(prog)
-    dump_program_declarations(prog, entry) + dump_instances(prog)
+    dump_program_declarations(prog, entry) + dump_instances(prog, entry)
   end
 
   # The instances of the program's own generic classes with their instance variables, in the
   # typed mode only (the oracle prints the same with its --typed flag). Each instance is a record
   # of its own, sorted by name, as the oracle prints them; the built-in types are left out.
-  def self.dump_instances(prog : SemanticProgram) : String
+  # A generic the prelude or an import declared is not the entry's: the oracle's typed dump is
+  # bare, and it prints a type only when declared_in? says the entry owns it. The same test
+  # keeps Channel(T) and an imported generic's instances out of this dump.
+  def self.dump_instances(prog : SemanticProgram, entry : String) : String
     sb = String::Builder.new
     initial = SemanticProgram.new.types.keys.to_set
     prog.types.keys.sorted.each do |name|
       next if initial.includes?(name)
       generic = prog.types[name]
       next unless generic.is_a?(GenericClassType)
+      next unless declared_in?(generic.locations, entry)
       insts = generic.as(GenericClassType).instantiated_types.select { |i| i.is_a?(GenericClassInstanceType) }
       insts.sorted_by { |i| i.full_name }.each do |inst|
         full = inst.full_name
