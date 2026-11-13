@@ -24,7 +24,7 @@ CALL = re.compile(r'(?:call|invoke)\b[^@\n]*@("(?:[^"\\]|\\.)*"|[^\s(,]+)\(')
 
 # The slice word the tool writes (typed_owner in lower/program.iyi) -> the live agent that owns it (OWNERS.md).
 SLICE_OWNER = {
-    "bodies": "agent://S1d14Bodies",
+    "bodies": "agent://S1d15Bodies",
     "declarations": "agent://S1b19Declarations",
     "calls": "agent://S1c10Calls",
     "macros": "agent://S1bInlineMacros12",
