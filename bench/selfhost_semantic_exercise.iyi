@@ -1,6 +1,6 @@
 import compiler/syntax/ast::{ASTNode, Expressions}
 import compiler/syntax/parser::{Parser}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, TypeException, dump_program_declarations}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, TypeException, dump_program_declarations, dir_of}
 import compiler/semantic/main_visitor::{MainVisitor, dump_program_expressions}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 
@@ -9,7 +9,8 @@ module BenchSelfhostSemanticExercise
     parser = Parser.new(src, filename)
     node = parser.parse
     prog = SemanticProgram.new
-    visitor = TopLevelVisitor.new(prog)
+    prog.entry_dir = dir_of(filename)
+    visitor = TopLevelVisitor.new(prog, filename)
     node.accept(visitor)
     visitor.finish
     dump_program_declarations(prog)
