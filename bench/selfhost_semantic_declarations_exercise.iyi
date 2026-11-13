@@ -1,6 +1,6 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Def, Expressions, ModuleHeader, Path, Primitive}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, EnumType, dump_program_declarations, dump_type, dir_of, normalize_path, declared_in?}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, EnumType, AnnotationType, dump_program_declarations, dump_type, dir_of, normalize_path, declared_in?}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/type_nodes::{type_node_system}
 import compiler/types/types::{GenericClassInstanceType, VirtualType}
@@ -314,6 +314,17 @@ elsif Program.args[0] == "--lib-types"
       end
     end
   end
+elsif Program.args[0] == "--classvar-generic"
+  prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_program(Program.args[1])
+  type_node_system(prog)
+  holder = prog.types["ClassVarGeneric"].as(ModuleType)
+  resolver = holder.class_vars["@@resolver"].type.full_name
+  pointer = holder.class_vars["@@pointer"].type.full_name
+  maybe = holder.class_vars["@@maybe"].type.full_name
+  raise "resolver lost generic arguments: #{resolver}" unless resolver.includes?("Proc(") && resolver.includes?("Pointer(") && resolver.includes?("Int32")
+  raise "pointer lost its argument: #{pointer}" unless pointer == "Pointer(Int32)"
+  raise "nilable pointer lost its argument: #{maybe}" unless maybe.includes?("Pointer(Int32)") && maybe.includes?("Nil")
+  print "class variable generic arguments retained\n"
 elsif Program.args[0] == "--primitive-annotations"
   prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
   arithmetic = prog.types["Arithmetic"].as(ModuleType)
@@ -324,6 +335,13 @@ elsif Program.args[0] == "--primitive-annotations"
     else
       print "#{name} not-primitive\n"
     end
+  end
+elsif Program.args[0] == "--enum-annotations"
+  prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_program(Program.args[1])
+  flags = prog.types["Flags"].as(AnnotationType)
+  ["MarkedEnum", "PlainEnum"].each do |name|
+    enum_type = prog.types[name].as(EnumType)
+    print "#{name} Flags=#{!enum_type.annotation(flags).nil?}\n"
   end
 elsif Program.args[0] == "--enum-primitives"
   prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_program(Program.args[1])
