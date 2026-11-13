@@ -21,6 +21,7 @@ module compiler/semantic/type_nodes
 
 import compiler/syntax/ast::{ASTNode, AlignOf, Cast, EnumDef, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, PointerOf, ProcNotation, Self, SizeOf, TypeOf, Union, UninitializedVar, Var}
 import compiler/semantic/type_node_host::{TypeNodeHost}
+import compiler/semantic/inline_macros::{splice_fun_body}
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, LibFun, SemanticProgram, Type, TypeHook}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, NamedArgumentType, TypeQueries}
@@ -199,7 +200,9 @@ pub def visit_self(visitor : TypeNodeHost, node : Self) : Bool
 end
 
 # `x.as(T)`: the target's instance type. The object and the target are visited
-# first, as the hosted pass does; the target is a type argument.
+# first, as the hosted pass does; the target is a type argument. The node is typed
+# as the virtual type of the filtered type, and records whether it is an upcast
+# (hosted `Cast#update`, bindings.cr 478-531).
 pub def visit_cast(visitor : TypeNodeHost, node : Cast) : Bool
   node.obj.accept(visitor)
   visitor.bracket_type_args(1)
@@ -210,12 +213,24 @@ pub def visit_cast(visitor : TypeNodeHost, node : Cast) : Bool
   if target.nil?
     return false
   end
-  visitor.set_type(node, target.as(Type))
+  to_type = target.as(Type)
+  object_type = visitor.child_type(node.obj)
+  filtered = cast_filtered(visitor, object_type, to_type, true)
+  upcast = cast_is_upcast(visitor, object_type, filtered, to_type)
+  node.upcast = upcast
+  result = to_type
+  if !upcast
+    if f = filtered
+      result = f.as(Type)
+    end
+  end
+  visitor.set_type(node, TypeQueries.virtual_type(result))
   false
 end
 
 # `x.as?(T)`: the target's instance type with Nil, the union the hosted
-# `NilableCast#update` gives it.
+# `NilableCast#update` gives it (bindings.cr 534-597), with the same upcast flag.
+# A nilable cast does not leave pointers out of its filter.
 pub def visit_nilable_cast(visitor : TypeNodeHost, node : NilableCast) : Bool
   node.obj.accept(visitor)
   visitor.bracket_type_args(1)
@@ -226,8 +241,52 @@ pub def visit_nilable_cast(visitor : TypeNodeHost, node : NilableCast) : Bool
   if target.nil?
     return false
   end
-  visitor.set_type(node, visitor.program.type_merge(target.as(Type), visitor.program.nil_type))
+  to_type = target.as(Type)
+  object_type = visitor.child_type(node.obj)
+  filtered = cast_filtered(visitor, object_type, to_type, false)
+  upcast = cast_is_upcast(visitor, object_type, filtered, to_type)
+  node.upcast = upcast
+  result = to_type
+  if !upcast
+    if f = filtered
+      result = f.as(Type)
+    end
+  end
+  visitor.set_type(node, visitor.program.type_merge(TypeQueries.virtual_type(result), visitor.program.nil_type))
   false
+end
+
+# The object's type filtered by a cast's target (hosted `obj_type.filter_by(to_type)`),
+# or nil when the object has no type. A plain cast (`pointers_excluded`) does not filter
+# a pointer, as hosted `Cast#update` skips pointer objects and targets.
+def cast_filtered(visitor : TypeNodeHost, object_type : Type?, target : Type, pointers_excluded : Bool) : Type?
+  if object_type.nil?
+    return nil
+  end
+  object = object_type.as(Type)
+  if pointers_excluded && (TypeQueries.pointer?(object) || TypeQueries.pointer?(target))
+    return nil
+  end
+  type_node_system(visitor.program).filter_by(object, target)
+end
+
+# The upcast flag of a cast, as hosted `Cast#update` and `NilableCast#update` set it: the
+# object's type filtered by the target is still the object's type (an upcast, `1 as Int32 | Float64`,
+# `Bar.new as Foo`), and the target can be stored.
+def cast_is_upcast(visitor : TypeNodeHost, object_type : Type?, filtered : Type?, target : Type) : Bool
+  if object_type.nil?
+    return false
+  end
+  if filtered.nil?
+    return false
+  end
+  if filtered.as(Type) != object_type.as(Type)
+    return false
+  end
+  if target.is_a?(GenericClassType)
+    return false
+  end
+  TypeLookup.new(type_node_system(visitor.program).instances).can_be_stored?(target)
 end
 
 # `fun name(a : Int32) : Int32 ... end` with a body: the body is typed in its own
@@ -248,7 +307,7 @@ pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
   declared = record.resolved_return
   visitor.record_fun_signature(node, arg_types, declared)
 
-  body = node.body
+  body = splice_fun_body(node, visitor.program.full_name)
   if body.nil?
     return false
   end

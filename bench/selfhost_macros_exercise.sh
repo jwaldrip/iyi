@@ -598,6 +598,33 @@ prove_mutation "TypeNode#name appends a character" "$METHODS" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# TypeNode#size is the tuple or named tuple type argument count (methods.iyi).
+# A constant 0 makes macro_typenode_size.iyi expand the wrong branch.
+prove_mutation "TypeNode#size ignores the type arguments" "$METHODS" \
+  "return NumberLiteral.new(tn.type_args.size.to_s, NumberKind::I32)" \
+  "return NumberLiteral.new(\"0\", NumberKind::I32)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+
+# TypeNode == compares the resolved type (ast.iyi). Always-false makes
+# macro_typenode_eq.iyi expand the wrong branch.
+prove_mutation "TypeNode == ignores the resolved type" "$REPO/src/compiler/macros/ast.iyi" \
+  "return @name == tn.name && @sized == tn.sized && same_args?(tn.type_args)" \
+  "return false && @name == tn.name && @sized == tn.sized && same_args?(tn.type_args)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+
+# CHANNEL_WAIT is a top-level flag? if (macro_channel_wait.iyi). Inverting the
+# answer expands the other branch.
+prove_mutation "flag? answers the opposite of the target's set" "$REPO/src/compiler/macros/interpreter.iyi" \
+  "return BoolLiteral.new(MacroMethods.has_flag?(@flags, flag_name_of(node)))" \
+  "return BoolLiteral.new(!MacroMethods.has_flag?(@flags, flag_name_of(node)))" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+
 prove_mutation "sites expanded in the program scope, not their class" "$REPO/bench/selfhost_macros_exercise.iyi" \
   "scope = ref.type_name.empty? ? \"<Program>\" : ref.type_name" \
   "scope = \"<Program>\"" \
