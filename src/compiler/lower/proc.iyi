@@ -187,7 +187,7 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   end
   ret_ir = low.typer.llvm_return_type(proc.return_type)
   fn_type = low.module.types.func(params, ret_ir)
-  fn = codegen_fun(low, name, node.def, nil, proc.arg_types, fn_type, ret_ir)
+  fn = codegen_fun(low, name, node.def, nil, proc.arg_types, fn_type, ret_ir, proc.return_type)
   null_ctx = low.builder.const_null(low.module.types.ptr(0)).as(Value)
   low.last = make_fun(low, proc_type, fn.as(Value), null_ctx)
 end

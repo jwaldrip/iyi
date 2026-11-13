@@ -223,7 +223,7 @@ pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types
   end
   ret_ir = low.typer.llvm_return_type(ret)
   fn_type = low.module.types.func(params, ret_ir)
-  fn = codegen_fun(low, name, target, self_type, arg_types, fn_type, ret_ir, class_owner)
+  fn = codegen_fun(low, name, target, self_type, arg_types, fn_type, ret_ir, ret, class_owner)
   # Hosted codegen_fun: a def whose analysed return type is NoReturn carries `noreturn` (fun.cr).
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
@@ -259,7 +259,7 @@ end
 # `new_entry_block` makes them, `self` (when the owner is passed as self) and each parameter a value
 # read where it arrives (hosted `already_loaded`), the body, and the return. The caller's state is put
 # back afterwards (hosted `old_position`, `old_alloca_block`, `old_needs_value`).
-pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType, class_owner : Type? = nil) : Function
+pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType, ret : Type, class_owner : Type? = nil) : Function
   fn = declared_or_defined_fun(low, name, fn_type)
   low.emitting[name] = true
   fn.call_convention = def_convention(name)
@@ -274,6 +274,7 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
     ctx_type = class_owner
   end
   low.context = LowerContext.new(fn, fn_type, ctx_type, Hash(String, LowerVar).new)
+  low.current_context.return_type = ret
   low.current_context.var_unions = low.analysed.def_var_unions[target]?
   low.alloca_block = nil
   low.entry_block = nil
