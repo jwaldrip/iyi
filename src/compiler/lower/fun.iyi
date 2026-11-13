@@ -298,23 +298,7 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   add_body_attributes(fn, low.module.triple)
 
   saved = low.save_function_state
-  # Hosted fun.cr:289 sets context.type to the metaclass. A non-generic class
-  # method has no runtime self (types.cr passed_as_self?) and keeps the instance
-  # here, which allocate and the implicit-call path already read. A generic class
-  # method is passed as self; a caller that drops that parameter (lower.iyi
-  # lower_def_probe) still passes the instance as class_owner. Keep the metaclass
-  # so a receiverless new sees the owner llvm_self would synthesize
-  # (codegen.cr:2491-2496).
-  ctx_type = self_type
-  if ctx_type.nil?
-    if co = class_owner
-      if co.is_a?(GenericClassInstanceType)
-        ctx_type = co.as(GenericClassInstanceType).metaclass
-      else
-        ctx_type = co
-      end
-    end
-  end
+  ctx_type = def_context_type(self_type, class_owner)
   low.context = LowerContext.new(fn, fn_type, ctx_type, Hash(String, LowerVar).new)
   low.current_context.return_type = ret
   low.current_context.var_unions = low.analysed.def_var_unions[target]?
@@ -361,6 +345,19 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   low.emitting.delete(name)
   mark_fun_emission_done(low.module, name)
   fn
+end
+
+# Ordinary and inlined defs share the same owner context. A generic class
+# method uses its metaclass even when a probe omitted runtime self; other
+# class methods retain the instance owner used by allocation and lookup.
+pub def def_context_type(self_type : Type?, class_owner : Type?) : Type?
+  return self_type unless self_type.nil?
+  if owner = class_owner
+    if owner.is_a?(GenericClassInstanceType)
+      return owner.as(GenericClassInstanceType).metaclass
+    end
+  end
+  class_owner
 end
 
 # Whether the block the builder is in already ends (its last instruction is a terminator,
