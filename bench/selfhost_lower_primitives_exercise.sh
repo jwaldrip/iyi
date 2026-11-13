@@ -47,6 +47,7 @@ waiting=0
 # taken off this list, so a wait cannot outlive its cause unnoticed.
 waiting_on() {
   case "$1" in
+    lowprim_enum) echo "enum members type as Int32 until the bodies lane's enum Path fix lands" ;;
   esac
 }
 
@@ -218,6 +219,24 @@ prove_mutation "an atomic read-modify-write ignores its ordering" "$REPO/src/com
   '  ordering = atomic_ordering(node.args[3])' '  ordering = Ordering::Monotonic' -- lower_primitives_check || status=1
 prove_mutation "compare-exchange ignores its failure ordering" "$REPO/src/compiler/lower/primitives.iyi" \
   '  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, failure)' '  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, success)' -- lower_primitives_check || status=1
+if [ -n "$(waiting_on lowprim_enum)" ]; then
+  echo "  NOT RUN: enum mutation waits for enum member typing"
+else
+  prove_mutation "an enum value is not lowered" "$REPO/src/compiler/lower/primitives.iyi" \
+    '  if name == "enum_value"' '  if name == "wrong_enum_value"' -- lower_primitives_check || status=1
+fi
+prove_mutation "checked conversion omits its lower bound" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  low.builder.build_or(below, above)' '  above' -- lower_primitives_check || status=1
+prove_mutation "checked conversion omits its upper bound" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  low.builder.build_or(below, above)' '  below' -- lower_primitives_check || status=1
+prove_mutation "a tuple index selects the first member" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  first = primitive.tuple_index' '  first = 0' -- lower_primitives_check || status=1
+prove_mutation "object_id returns zero instead of the receiver address" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    low.last = low.builder.ptr_to_int(values[0], low.module.types.int64)' '    low.last = low.builder.const_int(low.module.types.int64, 0_i64)' -- lower_primitives_check || status=1
+prove_mutation "runtime type id returns Nil's id" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      low.last = type_id_of_value(low, obj || node, values[0], t1)' '      low.last = type_id_value(low, low.analysed.program.nil_type)' -- lower_primitives_check || status=1
+prove_mutation "proc call omits the closure context" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  closure_args = [ctx.as(Value)] of Value' '  closure_args = [] of Value' -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
