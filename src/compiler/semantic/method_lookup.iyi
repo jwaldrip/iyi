@@ -155,15 +155,20 @@ pub class MethodLookup
     return Matches.new(matches_array, false) if defs.nil?
 
     found = [] of Match
+    first_error : String? = nil
     defs.as(Array(Def)).each do |item|
       next if item.abstract
       attempt = CallMatch.attempt(ts, signature, item, owner, path_lookup)
-      if attempt.error
-        return Matches.new(matches_array, false, attempt.error)
+      if err = attempt.error
+        first_error = err if first_error.nil?
+        next
       end
       match = attempt.match
       next if match.nil?
       found << match.as(Match)
+    end
+    if found.empty? && first_error && matches_array.empty?
+      return Matches.new(matches_array, false, first_error)
     end
     best = MethodLookup.most_specific(found)
     if best
@@ -199,6 +204,8 @@ pub class MethodLookup
   # True when *a*'s declared restrictions are each a subtype of *b*'s, position by
   # position over the parameters they both have.
   def self.at_least_as_specific(a : Match, b : Match) : Bool
+    return false if a.definition.splat_index && !b.definition.splat_index
+    return true if !a.definition.splat_index && b.definition.splat_index
     k = 0
     while k < a.declared.size && k < b.declared.size
       return false if !a.declared[k].subtype_of?(b.declared[k])

@@ -438,25 +438,21 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # The type a type node names under `owner`. A generic instance binds its type
-  # parameter names to its type arguments (`T` is UInt64 in Pointer(UInt64)), as the
-  # hosted lookup does for an instantiated def; anything else is the lexical lookup
-  # from the current type.
+  # parameter names to its type arguments (`T` is UInt64 in Pointer(UInt64)), and a
+  # generic written with those names (`Pointer(T)`) is instantiated, as the hosted
+  # MatchContext does. Anything else is the lexical lookup from the current type.
   def lookup_under(node : ASTNode, owner : Type?) : Type
-    if inst = receiver_instance(owner)
-      if node.is_a?(Path)
-        path = node.as(Path)
-        if !path.global && path.names.size == 1
-          if bound = inst.type_vars[path.names.first]?
-            return bound
-          end
-        end
-      end
+    if receiver_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)
+      return found.as(Type) unless found.is_a?(LookupError)
     end
-    # `self` in a declared type is the receiver (hosted: the def's self type), not the lexical scope.
     if node.is_a?(Self)
       if o = owner
         return o.as(Type) unless o.is_a?(SemanticProgram)
       end
+    end
+    if quiet = @program.lookup_type_node?(node, @current_type)
+      return quiet
     end
     @program.lookup_type_node(node, @current_type)
   end
@@ -1836,22 +1832,22 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # The type a parameter's restriction names for a call on *rec_type*. A generic instance
-  # (or its metaclass) binds its type parameters, so `v : T` on Box(Int32) is Int32, as the
-  # hosted MatchContext binds them. Anything else is the scope's own lookup. Nil when the
-  # restriction is not a type node (a splat `*T`): lookup_type_node would raise
-  # "expected type, got *T", and total mode must record a refusal instead of aborting.
+  # (or its metaclass) binds its type parameters, so `v : T` on Box(Int32) is Int32 and
+  # `Pointer(T)` is that pointer, as the hosted MatchContext binds them.
+  # A splat restriction (`*T`) is not a type node: lookup_type_node would raise
+  # "expected type, got *T". Nil here, so total mode records a refusal instead of aborting.
   def restriction_type(restriction : ASTNode, rec_type : Type) : Type?
+    if restriction.is_a?(Splat)
+      return nil
+    end
     owner = rec_type
     if owner.is_a?(MetaclassType)
       owner = owner.as(MetaclassType).instance_type
     end
-    if owner.is_a?(GenericInstanceType) && restriction.is_a?(Path)
-      names = restriction.as(Path).names
-      if names.size == 1
-        if bound = owner.as(GenericInstanceType).type_vars[names[0]]?
-          return bound
-        end
-      end
+    if receiver_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)
+      return found.as(Type) unless found.is_a?(LookupError)
+      return nil
     end
     @program.lookup_type_node?(restriction, @current_type)
   end

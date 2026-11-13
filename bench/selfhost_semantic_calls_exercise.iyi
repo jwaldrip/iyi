@@ -34,6 +34,9 @@ module BenchSelfhostSemanticCallsExercise
     restrictions = [] of String
     m.definition.args.each do |arg|
       r = ArgRestriction.of(ts, defining, arg, m.owner)
+      if err = r.error
+        return "error: #{err}"
+      end
       if r.type.nil?
         restrictions << "_"
       else
@@ -169,7 +172,9 @@ module BenchSelfhostSemanticCallsExercise
     end
     parts = [] of String
     matches.matches.each do |m|
-      parts << match_text(ts, m)
+      mt = match_text(ts, m)
+      return mt if mt.starts_with?("error: ")
+      parts << mt
     end
     text = parts.join("; ")
     text = text + " [cover all]" if matches.cover_all?
