@@ -258,8 +258,8 @@ prove_mutation "runtime type id returns Nil's id" "$REPO/src/compiler/lower/prim
   '      low.last = type_id_of_value(low, obj || node, values[0], t1)' '      low.last = type_id_value(low, low.analysed.program.nil_type)' -- lower_primitives_check || status=1
 prove_mutation "proc call omits the closure context" "$REPO/src/compiler/lower/primitives.iyi" \
   '  closure_args = [ctx.as(Value)] of Value' '  closure_args = [] of Value' -- lower_primitives_check || status=1
-prove_mutation "a nil proc call merges void values" "$REPO/src/compiler/lower/primitives.iyi" \
-  '  phi = LowerPhi.new(wants && !ret_type.void?, ret_type)' '  phi = LowerPhi.new(wants, ret_type)' -- lower_primitives_check || status=1
+prove_mutation "a nil proc call merges Nil values" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  phi = LowerPhi.new(wants && !proc_type.return_type.nil_type? && !ret_type.void?, ret_type)' '  phi = LowerPhi.new(wants && !ret_type.void?, ret_type)' -- lower_primitives_check || status=1
 prove_mutation "tuple metaclass indexing returns Nil's type id" "$REPO/src/compiler/lower/primitives.iyi" \
   '    low.last = type_id_value(low, result.as(Type))' '    low.last = type_id_value(low, low.analysed.program.nil_type)' -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
