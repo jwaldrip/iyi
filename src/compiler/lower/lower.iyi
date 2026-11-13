@@ -300,14 +300,33 @@ end
 
 def pool_reached?(low : Lowerer) : Bool
   low.analysed.typed_instances.each do |inst|
-    next unless inst.definition.name == "start"
-    st = inst.self_type
-    next unless st
-    if st.is_a?(MetaclassType)
-      return true if st.as(MetaclassType).instance_type.to_s == "IyiWorkers"
+    return true if pool_start?(low, inst.definition, inst.self_type)
+  end
+  false
+end
+
+def pool_start?(low : Lowerer, definition : Def, self_type : Type?) : Bool
+  return false unless definition.name == "start"
+  if st = self_type
+    if st.is_a?(MetaclassType) && st.as(MetaclassType).instance_type.to_s == "IyiWorkers"
+      return true
+    end
+  end
+  if owner = low.analysed.program.def_owner(definition)
+    if owner.is_a?(MetaclassType) && owner.as(MetaclassType).instance_type.to_s == "IyiWorkers"
+      return true
     end
   end
   false
+end
+
+def pool_start_call?(low : Lowerer, call : Call) : Bool
+  return false unless call.name == "start"
+  obj = call.obj
+  return false unless obj
+  t = low.analysed.type_of?(obj.as(ASTNode))
+  return false unless t
+  t.is_a?(MetaclassType) && t.as(MetaclassType).instance_type.to_s == "IyiWorkers"
 end
 
 # The hosted cleanup follows expansions and constant values before folding an interpolation
@@ -581,10 +600,15 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   if node.is_a?(Call)
     # The hosted cleanup replaces expanded calls before codegen (call.cr:4-7).
     # Declaration macros remain on their Call nodes in the port.
-    if expanded = node.as(Call).expanded
+    call = node.as(Call)
+    if pool_start_call?(low, call)
+      pending_visit_node("loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)")
+      return
+    end
+    if expanded = call.expanded
       codegen_node(low, expanded)
     else
-      codegen_call_node(low, node.as(Call))
+      codegen_call_node(low, call)
     end
     return
   end
@@ -1173,6 +1197,14 @@ pub def jump_target(node : ASTNode, lexical : ASTNode?) : ASTNode?
   end
   if typed
     if lexical && typed.object_id != lexical.object_id
+      # An inlined yield frame sets its return target to the call (call.iyi). The
+      # typer still points the Return at the def. Those are the same jump: ensures
+      # were registered on the call, so the frame target is the one to stop at.
+      # A break whose typed and lexical targets are unrelated nodes still raises
+      # (the jump-mismatch control).
+      if node.is_a?(Return) && typed.is_a?(Def) && lexical.is_a?(Call)
+        return lexical
+      end
       raise "lower: typed jump target disagrees with lexical target (hosted execute_ensures_until)"
     end
     return typed
