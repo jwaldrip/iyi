@@ -137,6 +137,12 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       self_value = type_id_value(low, recv_type)
     elsif recv_type.is_a?(MetaclassType)
       class_owner = recv_type.as(MetaclassType).instance_type
+      # A computed metaclass receiver is evaluated even when its value is not
+      # passed as self (hosted prepare_call_args, call.cr:69-82).
+      unless node.obj.as(ASTNode).is_a?(Path)
+        lower_receiver(low, node)
+        return if block_ended?(low)
+      end
     else
       self_type = recv_type
       # Hosted prepare_call_args visits the receiver before try_inline_call: an inlined literal body reads the receiver
@@ -343,9 +349,6 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
     inst = owner.as(MetaclassType).instance_type
     unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)
       pending_visit_node("a class method call on #{owner.full_name} (hosted call.cr: prepare_call_args, a generic or builtin metaclass)")
-    end
-    unless obj.as(ASTNode).is_a?(Path)
-      pending_visit_node("a class method call on a receiver that is not a constant path (hosted call.cr: prepare_call_args, Path)")
     end
     if owner.as(MetaclassType).defs[node.name]?.nil?
       pending_visit_node("a class method #{node.name} inherited from a superclass of #{owner.full_name} (hosted call.cr: target_def.owner is the defining type)")
