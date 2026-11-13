@@ -223,7 +223,9 @@ describe Iyi::Stale::FastRecord do
     compiler_file = File.join(dir, "iyi")
     File.write(compiler_file, "v1")
     old_facts = fast_facts(dir, {"FAST_X" => "old"}, [Iyi::Stale::FastEntry.new(compiler_file, Iyi::Stale::FileStamp.of(compiler_file))])
-    record = fast_record(old_facts, "src/x.iyi", [file], {"FAST_X" => "old"} of String => String?, false, {listed => ["old.iyi"]})
+    listings = Hash(String, Array(String) | Nil).new
+    listings[listed] = ["old.iyi"]
+    record = fast_record(old_facts, "src/x.iyi", [file], {"FAST_X" => "old"} of String => String?, false, listings)
 
     File.write(file, "after")
     File.write(File.join(listed, "new.iyi"), "new")

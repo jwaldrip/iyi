@@ -141,7 +141,7 @@ module Iyi::Stale
       observed = {} of String => String?
       observed_env.each_key { |name| observed[name] = facts.env[name]? }
 
-      listings_now = {} of String => Array(String)?
+      listings_now = Hash(String, Array(String) | Nil).new
       listings.each_key { |dir| listings_now[dir] = BuildInputs.children(dir) }
 
       FastRecord.new(test, file, facts.cwd, local_build, portable_build,
