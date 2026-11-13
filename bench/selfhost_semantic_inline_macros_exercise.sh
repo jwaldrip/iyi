@@ -516,10 +516,10 @@ prove_mutation "a single macro node body loses its expansion: the wrapper is emp
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 
-# The constant's macro is evaluated in its declaration namespace, not the reader's scope.
+# Wrapping the site in Expressions is equivalent: the def that reads the constant splices it again in the same namespace. Pass an empty scope so @type is not the declaring type.
 prove_mutation "a constant macro expands in the reader's scope instead of its declaration namespace" "$MUT_MAIN" \
   "spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType))" \
-  "spliced = Expressions.new([value] of ASTNode)" -- check_body_fixture || status=1
+  "spliced = splice_body_node(value, \"\", file, c.namespace.is_a?(LibType))" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 
