@@ -2,7 +2,7 @@ enum MacroFactsColour
   Red
   Blue
 
-  def count_kind
+  def self.count_kind
     {% if @type.constants.size == 2 %}
       1
     {% else %}
@@ -11,4 +11,4 @@ enum MacroFactsColour
   end
 end
 
-value = MacroFactsColour::Red.count_kind
+value = MacroFactsColour.count_kind
