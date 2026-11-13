@@ -102,6 +102,16 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     lower_atomic_cmpxchg(low, node)
     return
   end
+  if name == "enum_new"
+    # Hosted primitives.cr 68-69 returns call_args[0]; the metaclass is not an operand.
+    raise "BUG: enum_new needs one argument" unless node.args.size == 1
+    wants = low.needs_value
+    low.needs_value = true
+    visit_node(low, node.args[0])
+    low.needs_value = wants
+    raise "BUG: enum_new argument left no value" if low.last.nil?
+    return
+  end
   if name == "pointer_malloc" || name == "pointer_new" || name == "pointer_realloc" || name == "pointer_diff" || name == "pointer_get" || name == "pointer_set" || name == "pointer_add" || name == "pointer_address"
     lower_pointer_primitive(low, node, name.as(String))
     return
@@ -136,6 +146,11 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     values << value.as(Value)
   end
   low.needs_value = wants
+  if name == "enum_value"
+    # Hosted primitives.cr 68-69 returns call_args[0], the enum's underlying value.
+    low.last = values[0]
+    return
+  end
   if name == "binary"
     if values.size != 2
       pending_visit_node("binary primitive with #{values.size - 1} arguments (hosted codegen_primitive_binary)")
