@@ -7,3 +7,6 @@
 {% end %}
 
 puts seminl_reach_value
+
+class SeminlLater
+end

@@ -2,3 +2,9 @@
 fun seminl_reach_value : Int32
   41 + 1
 end
+
+# @later names a class the root file declares. The ordered phase must run after
+# every unit, not before the root is accepted: resolving it here is the refusal.
+class SeminlBox
+  @later : SeminlLater
+end
