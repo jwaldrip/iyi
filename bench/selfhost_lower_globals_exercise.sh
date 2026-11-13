@@ -39,7 +39,7 @@ trap 'rm -rf "$WORK"' EXIT
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
 WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_nilable_proc lowglob_cvar_pointer"
 # The body pass does not flag an untyped @[ThreadLocal] declaration.
-# The lazy fixture's indirect Proc call waits on zero-argument splat matching.
+# The lazy fixture's indirect Proc call waits on body typing's splat binding.
 # The nilable Proc fixture waits for declaration typing to instantiate Proc's arguments.
 # The pointer fixture waits for the same generic declaration resolution.
 #
@@ -128,7 +128,7 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     reason="$(awk 'NR==1' "$WORK/$name.port.err")"
     if [ "$name" = lowglob_cvar_lazy ]; then
       case "$reason" in
-        *"wrong number of arguments for 'Proc(Nil)#call'"*) ;;
+        *"expected type, got *T"*) ;;
         *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
       esac
     fi
