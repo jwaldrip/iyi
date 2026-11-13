@@ -62,6 +62,10 @@ pub class LowerContext
   getter fun : Function
   getter fun_type : IrType
   getter type : Type?
+  # The scope class-variable names are looked up in. A class method's `type`
+  # is its instance type; this keeps the metaclass when the method is owned by
+  # a module, whose class variables live there.
+  property class_var_scope : Type?
   getter vars : Hash(String, LowerVar)
   property return_type : Type?
   # True for the unit that begin_main_function makes (`__crystal_main`): a return there has no def to leave.

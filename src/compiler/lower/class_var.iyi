@@ -50,11 +50,14 @@ import compiler/types/types::{MixedUnionType, NilableProcType}
 # whose body is being lowered (a declaration is visited in its class body, where the context is the program),
 # or else the program. The analysis looks the name up in the scope it typed it in (main_visitor.iyi `visit(ClassVar)`).
 pub def class_var_scope(low : Lowerer) : ModuleType
+  scope = low.current_context.class_var_scope
+  if scope.is_a?(ModuleType) && !scope.is_a?(SemanticProgram)
+    return scope.as(ModuleType)
+  end
   ct = low.current_context.type
   if ct.is_a?(ModuleType) && !ct.is_a?(SemanticProgram)
     return ct.as(ModuleType)
   end
-  scopes = low.globals.body_scopes
   if scopes.size > 0
     return scopes[scopes.size - 1]
   end
