@@ -12,7 +12,7 @@
 @[Unsafe("reads string bytes through to_unsafe in its substring search, which the compiler does not check")]
 module compiler/compiler
 
-import compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
+import compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, ModuleHeader, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
 import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dir_of}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
@@ -651,8 +651,8 @@ pub class Compiler
       extract_declarations(branch, classes, funs, defs, libs, top_level, flags)
     elsif node.is_a?(Alias) || node.is_a?(ImplDef) || node.is_a?(MacroFor) || node.is_a?(MacroExpression)
       # Declarations or compile-time constructs, not top-level runtime code
-    elsif node.is_a?(ImportDecl) || node.is_a?(Require)
-      # Module loader directives
+    elsif node.is_a?(ImportDecl) || node.is_a?(Require) || node.is_a?(ModuleHeader)
+      # Module loader directives and compilation-unit metadata
     elsif node.is_a?(Call) && node.as(Call).name == "require"
       # Module loader directives
     elsif !node.is_a?(Annotation) && !node.is_a?(Nop)

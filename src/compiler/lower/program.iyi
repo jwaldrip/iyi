@@ -119,11 +119,10 @@ pub def type_bodies(typed : TypedProgram) : Nil
   typed.root.accept(typed.visitor)
   RecursiveStructChecker.new(typed.prog).run
 end
-# The hosted `iyi_object_layout?` (gc_layouts.cr:40-44) is `iyi_prelude? && types["IyiRuntimeLock"]?`.
-# The port has no named-prelude flag, so a program that declares IyiRuntimeLock uses iyi's layout,
-# matching the lowering gates. A `--prelude empty` program does not, and is laid out as Crystal.
+
+# Match hosted gc_layouts.cr:40-44: the iyi prelude and its runtime lock select the layout.
 private def iyi_object_layout?(prog : SemanticProgram) : Bool
-  !prog.types["IyiRuntimeLock"]?.nil?
+  prog.iyi_prelude? && !prog.types["IyiRuntimeLock"]?.nil?
 end
 
 # The lowering phase: the program's IR module for the target, with its entry and the rest of the program.
