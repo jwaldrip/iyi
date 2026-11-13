@@ -1,5 +1,9 @@
+import definitions
 import aliases::{Imported}
 
 class AliasUser
   @value : Imported
+  def initialize
+    @value = Imported.new
+  end
 end
