@@ -20,11 +20,11 @@ src/compiler/ir/function.iyi 7
 src/compiler/ir/inst.iyi 18
 src/compiler/ir/intrinsics.iyi 3
 src/compiler/ir/layout.iyi 3
-src/compiler/ir/module.iyi 1
+src/compiler/ir/module.iyi 2
 src/compiler/ir/parser.iyi 7
 src/compiler/ir/printer.iyi 2
 src/compiler/ir/types.iyi 5
-src/compiler/ir/values.iyi 4
+src/compiler/ir/values.iyi 5
 src/compiler/ir/verifier.iyi 2
 src/compiler/llvm.iyi 1
 src/compiler/llvm/builder.iyi 0
@@ -141,7 +141,7 @@ src/compiler/tools/compile.iyi 4
 src/compiler/tools/compile_native.iyi 4
 src/compiler/tools/format.iyi 2
 src/compiler/tools/formatter.iyi 7
-src/compiler/tools/ir.iyi 4
+src/compiler/tools/ir.iyi 5
 src/compiler/tools/ir_core.iyi 4
 src/compiler/tools/link_elf.iyi 3
 src/compiler/tools/link_macho.iyi 3
@@ -165,5 +165,5 @@ src/compiler/types/rendering.iyi 2
 src/compiler/types/restrictions.iyi 2
 src/compiler/types/to_restriction.iyi 2
 src/compiler/types/type_system.iyi 2
-src/compiler/types/types.iyi 24
+src/compiler/types/types.iyi 30
 src/compiler/types/unification.iyi 2
