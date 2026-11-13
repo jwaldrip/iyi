@@ -1,7 +1,7 @@
 @[Unsafe("the fixture reads a string literal through the object fields")]
 class String
   def bytesize : Int32
-    @bytesize
+    @bytesize &+ 0
   end
 
   def to_unsafe : UInt8*
