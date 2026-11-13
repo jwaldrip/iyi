@@ -5,7 +5,7 @@ enum Color
 end
 
 enum Flag
-  On = 1
+  On  = 1
   Off = 2
 end
 
@@ -13,4 +13,4 @@ alias Count = Int32
 alias Names = Array(String)
 
 MAX_SIZE = 42
-LIMIT = 7
+LIMIT    =  7

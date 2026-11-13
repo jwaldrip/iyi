@@ -622,6 +622,16 @@ prove_mutation "an initialize argument instance variable keeps its bare type: th
   "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, false)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "pointer malloc and null calls do not infer instance variable types" "$MUT_IVARS" \
+  '    if obj.is_a?(Generic) && (node.name == "malloc" || node.name == "null")' \
+  '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "generic new calls do not infer instance variable types" "$MUT_IVARS" \
+  '    if node.name == "new" && obj.is_a?(Generic)' \
+  '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic class's guessed instance variables are not declared on the generic" "$MUT_IVARS" \
   "if owner.owner.is_a?(NonGenericClassType) || owner.owner.is_a?(GenericClassType)" \
   "if owner.owner.is_a?(NonGenericClassType)" \
@@ -728,6 +738,21 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic instance's declared variable keeps its parameter type" "$MUT_TYPES" \
   "            mv = MetaTypeVar.new(name, TypeQueries.replace_type_parameters(source_type, @type_vars))" \
   "            mv = MetaTypeVar.new(name, source_type)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a nilable pointer prints without its element type" "$MUT_TYPES" \
+  'Pointer(#{@element_type.full_name})' \
+  'Pointer' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a replaced def is not reachable from the def that replaced it" "$MUT_SEM" \
+  "          a_def.previous = old" \
+  "          a_def.previous = nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a type-variable restriction replaces a prelude def of the same text" "$MUT_SEM" \
+  "      return vars.includes?(path.names[0])" \
+  "      return false" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"

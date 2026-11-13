@@ -42,10 +42,12 @@ import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, 
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
-import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_type_declaration_class_var, in_class_body?, store_class_var}
-import compiler/lower/instance_var::{codegen_instance_var_read, store_instance_var}
+import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_pointerof_class_var, codegen_type_declaration_class_var, in_class_body?, store_class_var}
+import compiler/lower/instance_var::{codegen_instance_var_read, codegen_pointerof_instance_var, store_instance_var}
 import compiler/syntax/ast::{FunDef}
 import compiler/syntax/ast::{Annotation}
+import compiler/syntax/ast::{Asm}
+import compiler/lower/asm::{codegen_asm}
 import compiler/semantic/top_level::{LibFun}
 import compiler/ir/inst::{Attribute}
 import compiler/syntax/token::{NumberKind}
@@ -56,8 +58,8 @@ import compiler/types/intersect::{TypeIntersect}
 
 # The per-def probe the typed pipeline table reads (S3Pipeline): lowers one def's function into `m` the way a call
 # that reaches it does (fun.iyi target_def_fun), for the self type and argument types the caller gives. A refusal
-# raises (iyi has no rescue); the caller runs each probe in its own task and reads the message. The return type
-# is the analysed type of the def's body, the value the body leaves; a def whose body has no analysed type raises.
+# raises (iyi has no rescue); the caller runs each probe in its own task and reads the message. The
+# instantiated def's type is its result, which can differ from the body's type.
 pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type), analysed : MainVisitor, typer : LowerTyper, m : Module) : String?
   low = Lowerer.new(m, typer, analysed)
   low.body_visitor = CoreBody.new
@@ -68,11 +70,12 @@ pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type)
   low.string_type_id = ids.type_id(program.string_type)
   body_t = analysed.type_of?(target.body)
   raise "BUG: the analysed program has no type for the body of #{target.name} (hosted codegen_fun: return type)" if body_t.nil?
+  result_t = analysed.type_of?(target) || body_t
   built : Function? = nil
   if self_type.is_a?(MetaclassType)
-    built = target_def_fun(low, target, nil, arg_types, body_t.as(Type), self_type.as(MetaclassType).instance_type)
+    built = target_def_fun(low, target, nil, arg_types, result_t.as(Type), self_type.as(MetaclassType).instance_type)
   else
-    built = target_def_fun(low, target, self_type, arg_types, body_t.as(Type))
+    built = target_def_fun(low, target, self_type, arg_types, result_t.as(Type))
   end
   fn = built.as(Function)
   errs = verify_function(m, fn)
@@ -448,6 +451,14 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     low.last = llvm_nil(low)
     return
   end
+  if node.is_a?(Annotation) && node.as(Annotation).path.names.last == "ThreadLocal"
+    # A `@[ThreadLocal]` annotation is lowered just before the class variable it marks, which takes the mark
+    # (class_var.iyi take_thread_local_annotation). The local-exec global (hosted class_var.cr declare_thread_local)
+    # exists only when the analysis flagged that variable, so an untyped declaration is refused there, by name.
+    low.globals.thread_local_pending = true
+    low.last = llvm_nil(low)
+    return
+  end
   if node.is_a?(Alias) || node.is_a?(Macro) || node.is_a?(Annotation)
     # The hosted `visit(Alias)` and `visit(Macro)`: nothing is emitted and the value is nil. The hosted
     # `visit(Annotation)` (codegen.cr:838) emits nothing and returns without setting `@last`; the value is
@@ -470,13 +481,21 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     return
   end
   if node.is_a?(PointerOf)
-    # The hosted `visit(PointerOf)` for a local (codegen.cr:1003): the variable's own pointer, not a load. The other
-    # operands (instance, class and constant variables, a call's extern variable) are not ported and are refused by name.
+    # The hosted `visit(PointerOf)` (codegen.cr:1001-1038): a local's pointer, an instance
+    # field address, or an initialized class variable's global address.
     exp = node.as(PointerOf).exp
     if exp.is_a?(Var)
       var = low.current_context.vars[exp.as(Var).name]?
       raise "BUG: variable #{exp.as(Var).name} is read before it is assigned (hosted codegen.cr: visit(PointerOf))" if var.nil?
       low.last = var.as(LowerVar).pointer
+      return
+    end
+    if exp.is_a?(InstanceVar)
+      codegen_pointerof_instance_var(low, exp.as(InstanceVar))
+      return
+    end
+    if exp.is_a?(ClassVar)
+      codegen_pointerof_class_var(low, exp.as(ClassVar))
       return
     end
     pending_visit_node("pointerof of a #{node_class_name(exp)} (hosted codegen.cr: visit(PointerOf), only a local variable is ported)")
@@ -486,6 +505,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     # own site (primitives.iyi). A def with this body that the probe lowers alone is refused here by name, where
     # `node_class_name` has no name for the class and would answer the generic `ASTNode`.
     pending_visit_node("Primitive (a def body; hosted codegen_call lowers it at the call site)")
+  end
+  # --- asm ---
+  if node.is_a?(Asm)
+    codegen_asm(low, node.as(Asm)); return
   end
   pending_visit_node(node_class_name(node))
 end

@@ -34,31 +34,127 @@ import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/instance_var::{self_by_pointer?}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/types/merge::{TypeMerge}
-import compiler/semantic/top_level::{NilType, NoReturnType, Type, VoidType}
+import compiler/types/rendering::{TypeRenderer}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, MetaclassType, ModuleType, NilType, NoReturnType, Type, VoidType}
+import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceType, PointerInstanceType}
 
-# The hosted `Def#mangled_name` (codegen/ast.cr): `*`, then for a method the owner's name and `#`,
-# then the name, the argument types in `<>`, each by its full name, then `:` and the return type.
-# A def with no argument has no `<>`. The hosted escaping of a name that is not a plain identifier
-# is not ported: the caller refuses such a name. `self_type` is nil for a top-level def.
+# The hosted `Def#mangled_name` (codegen/ast.cr:13-31): `*`, then for a method the receiver's
+# name, `^` and the defining owner when that owner is not the receiver, then `#` (or `::` for a
+# metaclass owner). Then the name, the argument types in `<>`, each by its full name, then `:`
+# and the return type. A def with no argument has no `<>`. The hosted escaping of a name that is
+# not a plain identifier is not ported: the caller refuses such a name. `self_type` is nil for a
+# top-level def. A caller that still passes a metaclass as `self_type` and no `class_owner` is
+# the hosted metaclass owner: the instance type and `::`, not `Owner.class#`.
 pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : String
   text = "*"
-  # A method of a non-generic metaclass (`def self.go`) is named after its class and `::`, and passes no self
-  # (hosted Def#mangled_name, codegen/ast.cr: a metaclass owner writes `self_type.instance_type` then `::`).
-  if co = class_owner
-    text = text + co.full_name + "::"
+  named_self = self_type
+  named_class = class_owner
+  if named_class.nil?
+    if st = self_type
+      if st.is_a?(MetaclassType)
+        named_class = st.as(MetaclassType).instance_type
+        named_self = nil
+      end
+    end
   end
-  if st = self_type
-    text = text + st.full_name + "#"
+  if co = named_class
+    text = text + owner_segment(co, name, true) + "::"
+  end
+  if st = named_self
+    text = text + owner_segment(st, name, false) + "#"
   end
   text = text + name
   if arg_types.size > 0
     names = [] of String
     arg_types.each do |t|
-      names << t.full_name
+      names << symbol_type(t)
     end
     text = text + "<" + names.join(", ") + ">"
   end
-  text + ":" + ret.full_name
+  text + ":" + symbol_type(ret)
+end
+
+# The receiver's name in a symbol, then `^` and the defining owner when the hosted compiler writes
+# that segment (codegen/ast.cr: original_owner != self_type). A class method compares instance types.
+def owner_segment(receiver : Type, name : String, class_method : Bool) : String
+  shown = owner_spell(receiver)
+  start = defining_walk_start(receiver, class_method)
+  return shown if start.nil?
+  found = defining_type(start.as(Type), name, [] of UInt64)
+  return shown if found.nil?
+  defined = found.as(Type)
+  if class_method && defined.is_a?(MetaclassType)
+    defined = defined.as(MetaclassType).instance_type
+  end
+  defined_spell = owner_spell(defined)
+  return shown if defined_spell == shown
+  shown + "^" + defined_spell
+end
+
+# The name the hosted compiler writes for an owner (llvm_name). An unbound generic is `Box(T)`,
+# which is `to_s`; `full_name` drops the type variables.
+def owner_spell(t : Type) : String
+  symbol_type(t)
+end
+
+# Hosted llvm_name omits the union's own parentheses inside Pointer(...), but keeps
+# virtual types in generic arguments, unlike the user-facing full_name.
+def symbol_type(t : Type) : String
+  if t.is_a?(PointerInstanceType)
+    element = t.as(PointerInstanceType).element_type
+    return "Pointer(#{TypeRenderer.render(element, skip_union_parens: true, codegen: true)})"
+  end
+  TypeRenderer.render(t, codegen: true)
+end
+
+# Where the walk for the defining owner starts. A generic instance's methods live on the generic
+# type, not on the instance (method_lookup.iyi lookup_receiver). Starting on the instance would
+# see the delegated defs and omit `^`.
+def defining_walk_start(receiver : Type, class_method : Bool) : Type?
+  if class_method
+    if receiver.is_a?(GenericClassInstanceType)
+      generic = receiver.as(GenericClassInstanceType).generic_type
+      return nil unless generic.is_a?(ModuleType)
+      return generic.as(ModuleType).metaclass
+    end
+    if receiver.is_a?(GenericModuleInstanceType)
+      generic = receiver.as(GenericModuleInstanceType).generic_type
+      return nil unless generic.is_a?(ModuleType)
+      return generic.as(ModuleType).metaclass
+    end
+    return nil unless receiver.is_a?(ModuleType)
+    return receiver.as(ModuleType).metaclass
+  end
+  if receiver.is_a?(GenericInstanceType)
+    generic = receiver.as(GenericInstanceType).generic_type
+    return generic if generic.is_a?(ModuleType)
+    return nil
+  end
+  return receiver if receiver.is_a?(ModuleType)
+  nil
+end
+
+# The first type on the parent walk whose own defs declare *name* (hosted original_owner: the type
+# the untyped def was added to). Parents are the hosted lookup order.
+def defining_type(start : Type, name : String, seen : Array(UInt64)) : Type?
+  id = start.object_id
+  i = 0
+  while i < seen.size
+    return nil if seen[i] == id
+    i += 1
+  end
+  seen << id
+  return nil unless start.is_a?(ModuleType)
+  mod = start.as(ModuleType)
+  return mod if mod.defs[name]?
+  parents = mod.parents
+  pi = 0
+  while pi < parents.size
+    found = defining_type(parents[pi], name, seen)
+    return found if found
+    pi += 1
+  end
+  nil
 end
 
 # Lowers the body of a function through the installed dispatch (hosted `accept`).
