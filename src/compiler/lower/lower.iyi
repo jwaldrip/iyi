@@ -20,6 +20,8 @@ import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, Ca
 import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, StringInterpolation}
 import compiler/syntax/ast::{NamedTupleLiteral}
 import compiler/types/types::{NamedTupleInstanceType}
+import compiler/syntax/ast::{TupleLiteral, Splat}
+import compiler/types/types::{TupleInstanceType}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -139,7 +141,8 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
 
   fn = low.begin_main_function(main_function_name(analysed), entry_type, true)
   fn.linkage = Linkage::Internal
-  fn.call_convention = CallConv::C
+  # Both program entries use the internal convention, including aggregate results.
+  fn.call_convention = CallConv::Iyi
   fn.name_param(fn.param(0), "argc")
   fn.name_param(fn.param(1), "argv")
   store_aligned(low, fn.param(0), argc_global)
@@ -327,7 +330,36 @@ def codegen_named_tuple(low : Lowerer, node : NamedTupleLiteral) : Nil
   low.last = load_aligned(low, ir_type, tuple)
 end
 
+# The non-splat arm of visit(TupleLiteral) and allocate_tuple
+# (codegen.cr:974-979, 2812-2820). Splat typing is not yet available.
+def codegen_tuple(low : Lowerer, node : TupleLiteral) : Nil
+  type = low.analysed.type_of?(node)
+  raise "BUG: tuple literal has no type" unless type.is_a?(TupleInstanceType)
+  tuple_type = type.as(TupleInstanceType)
+  ir_type = low.typer.llvm_type(tuple_type)
+  tuple = low.alloca(ir_type)
+  zero = low.builder.const_int(low.module.types.int32, 0).as(Value)
+  wants = low.needs_value
+  low.needs_value = true
+  node.elements.each_with_index do |element, index|
+    if element.is_a?(Splat)
+      refuse_port("a splatted tuple literal (hosted visit(TupleLiteral), splat typing not ported)")
+    end
+    codegen_node(low, element)
+    ptr = low.builder.inbounds_gep(ir_type, tuple, [zero, low.builder.const_int(low.module.types.int32, index).as(Value)] of Value)
+    value_type = low.analysed.type_of?(element)
+    raise "BUG: tuple entry has no type" if value_type.nil?
+    assign(low, ptr, tuple_type.tuple_types[index], value_type.as(Type), low.last.as(Value))
+  end
+  low.needs_value = wants
+  low.last = load_aligned(low, ir_type, tuple)
+end
+
 pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
+  if node.is_a?(TupleLiteral)
+    codegen_tuple(low, node.as(TupleLiteral))
+    return
+  end
   if node.is_a?(NamedTupleLiteral)
     codegen_named_tuple(low, node.as(NamedTupleLiteral))
     return
