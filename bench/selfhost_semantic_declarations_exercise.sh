@@ -156,6 +156,12 @@ if ! "$ORACLE" --enum-primitives "$REPO/bench/fixtures/semdecl_enum_primitives.i
    ! cmp -s "$WORK/enum_primitive_oracle" "$WORK/enum_primitive_port"; then
   echo "  enum primitives DIFFER"; diff "$WORK/enum_primitive_oracle" "$WORK/enum_primitive_port"; status=1
 fi
+echo "== Enum annotations"
+if ! "$ORACLE" --enum-annotations "$REPO/bench/fixtures/semdecl_enum_annotations.iyi" > "$WORK/enum_annotations_oracle" 2>&1 ||
+   ! "$PORT" --enum-annotations "$REPO/bench/fixtures/semdecl_enum_annotations.iyi" > "$WORK/enum_annotations_port" 2>&1 ||
+   ! cmp -s "$WORK/enum_annotations_oracle" "$WORK/enum_annotations_port"; then
+  echo "  enum annotations DIFFER"; diff "$WORK/enum_annotations_oracle" "$WORK/enum_annotations_port"; status=1
+fi
 echo "== Class variable generic types after type system installation"
 if ! "$PORT" --classvar-generic "$REPO/bench/fixtures/semdecl_classvar_generic.iyi" > "$WORK/classvar_result" 2>&1; then
   cat "$WORK/classvar_result"; status=1
@@ -503,6 +509,12 @@ check_enum_primitives_diverge() {
   "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   "$probe" --enum-primitives "$REPO/bench/fixtures/semdecl_enum_primitives.iyi" > "$WORK/mut_enum_primitives" 2>/dev/null || return 1
   cmp -s "$WORK/mut_enum_primitives" "$WORK/enum_primitive_oracle"
+}
+check_enum_annotations_diverge() {
+  local probe="$WORK/mut_enum_annotations_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --enum-annotations "$REPO/bench/fixtures/semdecl_enum_annotations.iyi" > "$WORK/mut_enum_annotations" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_enum_annotations" "$WORK/enum_annotations_oracle"
 }
 check_classvar_generic_diverge() {
   local probe="$WORK/mut_classvar_port"
@@ -907,6 +919,16 @@ prove_mutation "a redeclared external loses its previous link" "$MUT_SEM" \
   '            record.previous = nil' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+if cmp -s "$WORK/enum_annotations_oracle" "$WORK/enum_annotations_port"; then
+  prove_mutation "an enum loses its annotation" "$MUT_SEM" \
+    '      enum_type.add_annotation(annotation_type.as(AnnotationType), ann)' \
+    '      nil' \
+    -- check_enum_annotations_diverge || status=1
+  MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+else
+  echo "  NOT RUN: enum annotation baseline differs"
+  status=1
+fi
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
 

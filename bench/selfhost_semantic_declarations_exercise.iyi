@@ -1,6 +1,6 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Def, Expressions, ModuleHeader, Path, Primitive}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, EnumType, dump_program_declarations, dump_type, dir_of, normalize_path, declared_in?}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, EnumType, AnnotationType, dump_program_declarations, dump_type, dir_of, normalize_path, declared_in?}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/type_nodes::{type_node_system}
 import compiler/types/types::{GenericClassInstanceType, VirtualType}
@@ -329,6 +329,13 @@ elsif Program.args[0] == "--primitive-annotations"
     else
       print "#{name} not-primitive\n"
     end
+  end
+elsif Program.args[0] == "--enum-annotations"
+  prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_program(Program.args[1])
+  flags = prog.types["Flags"].as(AnnotationType)
+  ["MarkedEnum", "PlainEnum"].each do |name|
+    enum_type = prog.types[name].as(EnumType)
+    print "#{name} Flags=#{!enum_type.annotation(flags).nil?}\n"
   end
 elsif Program.args[0] == "--enum-primitives"
   prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_program(Program.args[1])
