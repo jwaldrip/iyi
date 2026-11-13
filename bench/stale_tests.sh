@@ -1321,12 +1321,12 @@ cp -p "$r28_iyi" "$WORK/r54/iyi-copy"
 r54_copy() { (cd "$WORK/r54" && IYI_PATH="$REPO/src" "$WORK/r54/iyi-copy" test "$@"); }
 rm -rf "$CACHE/tests-v1"
 run_json "$WORK/r54" t_test.iyi >/dev/null
-row54_hit="$(run_json "$WORK/r54" t_test.iyi)"
+row54_hit="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r54" t_test.iyi) )"
 expect_eq "$(printf '%s' "$row54_hit" | json_test t_test.iyi check)" inputs "the original compiler's unchanged run is served"
 row54_copy="$(r54_copy --cached --json t_test.iyi)"
 expect_eq "$(printf '%s' "$row54_copy" | json_test t_test.iyi check)" compiler "the copy's first run is checked by the compiler"
 expect_contains "$(printf '%s' "$row54_copy" | json_test t_test.iyi check_reason)" "compiler" "the check names the compiler"
-row54_copy_again="$(r54_copy --cached --json t_test.iyi)"
+row54_copy_again="$( (unset IYI_STALE_FAST_AUDIT; r54_copy --cached --json t_test.iyi) )"
 expect_eq "$(printf '%s' "$row54_copy_again" | json_test t_test.iyi check)" inputs "the copy's second run is served"
 run_json "$WORK/r54" t_test.iyi >/dev/null
 set +e
