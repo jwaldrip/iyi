@@ -152,6 +152,19 @@ if ! lower_calls_check; then
   echo "  baseline: the unmutated port does not match the hosted module, so no mutation below is counted"
   exit 1
 fi
+generic_gap_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  if "$WORK/mut" lower "$generic_fixture" "$WORK/uninstantiated.oracle.ll" > "$WORK/generic.mut.out" 2> "$WORK/generic.mut.err"; then
+    return 1
+  fi
+  awk 'index($0, "the receiver of probe is the uninstantiated generic Range(B, E).class: typing has not instantiated the owner") { found = 1 } END { exit !found }' "$WORK/generic.mut.err"
+}
+if ! generic_gap_check; then
+  echo "  baseline: uninstantiated generic diagnostic did not match"
+  exit 1
+fi
+prove_mutation "an uninstantiated generic loses its typing-gap diagnostic" "$REPO/src/compiler/lower/call.iyi" \
+  '    if inst.is_a?(GenericClassType)' '    if false' -- generic_gap_check || status=1
 # The import of a lib fun (contract 6b): the port's own text declares SecRandomCopyBytes with its framework. The
 # comparison above drops the `import` text on both sides (lower_gate.iyi strip_import), so this check is the one
 # that proves it. It rebuilds the driver from the current source, so a mutation of the import is what it tests.
