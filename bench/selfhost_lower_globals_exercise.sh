@@ -37,11 +37,11 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_nilable_proc lowglob_cvar_pointer lowglob_cvar_struct"
+WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_nilable_proc lowglob_cvar_pointer lowglob_cvar_nilable_pointer lowglob_cvar_struct"
 # The body pass does not flag an untyped @[ThreadLocal] declaration.
 # The lazy fixture's indirect Proc call waits on body typing's splat binding.
 # The nilable Proc fixture waits for declaration typing to instantiate Proc's arguments.
-# The pointer fixture waits for the same generic declaration resolution.
+# The pointer fixtures wait for the same generic declaration resolution.
 # The nilable struct fixture waits for declaration type resolution and aggregate initialization.
 #
 # The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
@@ -142,6 +142,12 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     if [ "$name" = lowglob_cvar_pointer ]; then
       case "$reason" in
         *"uninstantiated generic type Pointer"*) ;;
+        *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
+      esac
+    fi
+    if [ "$name" = lowglob_cvar_struct ]; then
+      case "$reason" in
+        *"class variable @@value is not an integer"*) ;;
         *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
       esac
     fi
