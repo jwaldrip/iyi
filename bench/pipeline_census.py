@@ -202,13 +202,12 @@ def label_of(full: str) -> str:
         return f"{owner}.class#{meth}"
     return head
 
-
 def normalize_reason(reason: str) -> str:
     """Normalize a raw refusal reason into a shape by replacing quoted names, type names, and counts."""
     s = reason.strip()
 
-    # Replace single-quoted names (`'foo'`, `'String.interpolation'`, etc.).
-    s = re.sub(r"'[^']*'", "'<name>'", s)
+    # Replace single-quoted names (`'foo'`, `'String.interpolation'`), avoiding English possessives (`union's`).
+    s = re.sub(r"(?<![A-Za-z0-9_])'[^']*'", "'<name>'", s)
 
     # Specific recurring messages whose structure names a type or identifier without quotes:
     s = re.sub(r"\bundefined constant \S+", "undefined constant <Const>", s)
@@ -221,6 +220,16 @@ def normalize_reason(reason: str) -> str:
     s = re.sub(r"\(given \d+, expected [^)]+\)", "(given <n>, expected <n>)", s)
     s = re.sub(r"(the call to )\S+( has no )", r"\1<name>\2", s)
     s = re.sub(r"(lower: visit\(a restriction that converts argument )\d+ of \S+", r"\1<n> of <name>", s)
+    s = re.sub(r"(a function or global named )\S+( already exists)", r"\1<name>\2", s)
+    s = re.sub(r"(pointerof of )\S+( is not ported yet)", r"\1<name> is not ported yet", s)
+    s = re.sub(r"(lower: visit\(allocate of class )\S+(:)", r"\1<Type>\2", s)
+    s = re.sub(r"(lower: visit\(a call to )\S+( with no receiver)", r"\1<name>\2", s)
+    s = re.sub(r"(lower: visit\(a call to )\S+( inherited from a superclass of )\S+", r"\1<name>\2<Type>", s)
+    s = re.sub(r"(create_llvm_type for )\S+( is not ported)", r"\1<Type>\2", s)
+    s = re.sub(r"(llvm_struct_type of (?:generic instance )?)(.+?)( is not ported)", r"\1<Type>\3", s)
+    s = re.sub(r"^BUG: .+?( has no type id \(not reachable)", r"BUG: <Type>\1", s)
+    s = re.sub(r"^(lower: )\S+( is declared )(.+?)( and assigned )(.+?)(: the hosted upcast)", r"\1<name>\2<Type>\4<Type>\6", s)
+    s = re.sub(r"^(lower: visit\(assign )\S+( to )\S+( \(hosted assign_distinct)", r"\1<Type>\2<Type>\3", s)
     s = re.sub(
         r"(lower: visit\((?:pointer_get|pointer_set) of )([^()]+(?:\([^)]*\))?)( \(hosted)",
         r"\1<Type>\3",
@@ -231,14 +240,10 @@ def normalize_reason(reason: str) -> str:
         r"\1<Type> and <Type>\4",
         s,
     )
-    s = re.sub(
-        r"(llvm_struct_type of generic instance )(.+?)( is not ported)",
-        r"\1<Type>\3",
-        s,
-    )
     s = re.sub(r"(class var @@\S+ initializer of )(\S+)", r"\1<Type>", s)
     s = re.sub(r"(class variable @@\S+)", "class variable @@<name>", s)
-    s = re.sub(r"(at /[^\s:]+:\d+)", "at <file>:<line>", s)
+    s = re.sub(r"(at /[^\s:]+):\d+(?::\d+)*", r"\1:<line>", s)
+    s = re.sub(r"at /[^\s:]+:<line>", "at <file>:<line>", s)
 
     if s.startswith("unsupported node:"):
         return s
@@ -261,7 +266,7 @@ def normalize_reason(reason: str) -> str:
                 elif s[j] == "|" and depth == 1:
                     has_bar = True
                 j += 1
-            if has_bar and depth == 0 and (i == 0 or s[i - 1] in " ,"):
+            if has_bar and depth == 0 and (i == 0 or s[i - 1] in " ,("):
                 res.append("<Type>")
                 i = j + 1
                 continue
@@ -293,6 +298,8 @@ def normalize_reason(reason: str) -> str:
         r"( to be )",
         r"('<name>' for )",
         r"( of )",
+        r"(Cast from )",
+        r"( to )",
     ):
         s = re.sub(prep + r"([A-Z][A-Za-z0-9_]*\+?(?:\.class)?)", replace_cap_type, s)
 
