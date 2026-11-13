@@ -20,6 +20,11 @@ class TupleIndexProbe
   end
 end
 
+members = {1, "s"}
+single = members[0]
+singleton = members[0..0]
+empty = members[1...1]
+
 probe = TupleIndexProbe.new
 scalar = probe.scalar
 text_size = probe.text_size
