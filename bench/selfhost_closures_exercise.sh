@@ -6,7 +6,7 @@ cd "$REPO" || exit 1
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT INT TERM
 . "$REPO/bench/lib/mutation.sh"
-export IYI_PATH="$REPO/bench/fixtures/semclos_prelude:$REPO/src"
+PRELUDE_PATH="$REPO/bench/fixtures/semclos_prelude:$REPO/src"
 export CRYSTAL_PATH="$REPO/src" IYI_CONFIG_PATH="$REPO/src"
 ORACLE="$WORK/oracle"
 PORT="$WORK/port"
@@ -30,7 +30,7 @@ compare_fixtures() {
   local fixture rel expected count
   for fixture in bench/fixtures/semclos_*.iyi; do
     rel="$fixture"
-    "$ORACLE" "$fixture" > "$WORK/oracle.out" 2> "$WORK/oracle.err" || { awk 'NR<=10' "$WORK/oracle.err"; return 1; }
+    IYI_PATH="$PRELUDE_PATH" "$ORACLE" "$fixture" > "$WORK/oracle.out" 2> "$WORK/oracle.err" || { awk 'NR<=10' "$WORK/oracle.err"; return 1; }
     "$PORT" "$fixture" > "$WORK/port.out" 2> "$WORK/port.err" || { awk 'NR<=10' "$WORK/port.err"; return 1; }
     if ! diff -u "$WORK/oracle.out" "$WORK/port.out"; then
       printf 'DIFFERENT: %s\n' "$rel"
