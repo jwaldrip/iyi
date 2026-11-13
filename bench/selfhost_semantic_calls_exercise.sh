@@ -390,6 +390,12 @@ prove_mutation "a generic owner's superclass restriction rejects subclasses" "$M
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a typed integer expression is not eligible for autocast" "$MATCH_FILE" \
+  '    bits = NumericAutocast.integer_bits(type)' \
+  '    return false if node.is_a?(Call) && node.as(Call).obj'$'\n''    bits = NumericAutocast.integer_bits(type)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

@@ -88,6 +88,10 @@ module BenchSelfhostSemanticCallsExercise
     return typed if typed
     return nil unless node.is_a?(Call)
     call = node.as(Call)
+    # The integer abs expression preserves its receiver's type.
+    if call.name == "abs" && call.args.empty? && call.obj
+      return typed_argument(prog, ts, call.obj.as(ASTNode))
+    end
     return nil unless call.obj.nil? && call.name == "instance" && call.args.size == 1
     found = TypeLookup.new(ts.instances).lookup(prog, call.args[0])
     return nil if found.is_a?(LookupError)
