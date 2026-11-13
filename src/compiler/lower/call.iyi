@@ -509,9 +509,9 @@ pub def call_arguments(self_value : Value?, values : Array(Value)) : Array(Value
   out
 end
 
-# The hosted `codegen_call_with_block` (call.cr:356) for a def with no `&block` parameter, with or
-# without a receiver. The arguments are already evaluated, and so is the receiver (`self_value`, of
-# `self_type`). The block's own variables (its arguments and its locals) are made in a copy of the
+# The hosted `codegen_call_with_block` (call.cr:356) for a def that does not use its block argument.
+# It may still name or annotate that argument. The arguments and receiver are already evaluated.
+# The block's own variables (its arguments and its locals) are made in a copy of the
 # caller's variables, the way the hosted code makes them before it clones the context. The def's body
 # is then inlined in a frame of its own: `self` (when there is a receiver) and the def's arguments and
 # locals are bound there, and each `yield` in the body runs the block (block.iyi). The value of the
@@ -519,7 +519,7 @@ end
 # A call whose type is NoReturn merges nothing: its body ends in `unreachable` (`NoReturnPhi`).
 pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Call, block : Block, def_node : Def, ret : Type, self_type : Type?, self_value : Value?, arg_types : Array(Type), values : Array(Value)) : Nil
   set_ensure_exception_handler(low, node)
-  unless def_node.block_arg.nil?
+  if def_node.uses_block_arg?
     pending_visit_node("a call to a def with a &block parameter (hosted call.cr: codegen_call_with_block_as_fun_literal, closures)")
   end
   if ret.is_a?(VoidType)
