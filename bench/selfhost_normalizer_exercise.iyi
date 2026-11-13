@@ -271,7 +271,14 @@ module BenchSelfhostNormalizerExercise
       receiver_s = node.receiver ? " receiver" : ""
       abstract_s = node.abstract ? " abstract=true" : ""
       splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
-      defer_s = node.iyi_defer? ? " iyi_defer=true" : ""
+      defer_s = ""
+      if node.iyi_defer?
+        at_s = "none"
+        if loc = node.location
+          at_s = "#{loc.line_number}:#{loc.column_number}"
+        end
+        defer_s = " iyi_defer=true at=#{at_s}"
+      end
       s = "#{p}Def name=#{escape_s(node.name)}#{receiver_s}#{abstract_s}#{splat_s}#{defer_s}\n"
       if r = node.receiver
         s += "#{p}  receiver:\n" + dump_ast(r, indent + 2)

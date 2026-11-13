@@ -293,7 +293,12 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     receiver_s = node.receiver ? " receiver" : ""
     abstract_s = node.abstract? ? " abstract=true" : ""
     splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
-    defer_s = node.iyi_defer? ? " iyi_defer=true" : ""
+    defer_s = ""
+    if node.iyi_defer?
+      loc = node.location
+      at_s = loc ? "#{loc.line_number}:#{loc.column_number}" : "none"
+      defer_s = " iyi_defer=true at=#{at_s}"
+    end
     s = "#{p}Def name=#{escape_s(node.name)}#{receiver_s}#{abstract_s}#{splat_s}#{defer_s}\n"
     if r = node.receiver
       s += "#{p}  receiver:\n" + dump_ast(r, indent + 2)
@@ -631,6 +636,8 @@ run_proof "defer stops becoming an exception handler"   "defer_handler(Nop.new, 
 run_proof "the handler a defer becomes is not marked as defer's"   "handler.iyi_defer = true"   "handler.iyi_defer = false"
 
 run_proof "the proc a defer registers is not marked as defer's"   "cleanup.iyi_defer = true"   "cleanup.iyi_defer = false"
+
+run_proof "the proc a defer registers has no location"   "cleanup.at(deferred)"   "cleanup.at(Nop.new)"
 
 run_proof "a chained comparison stops joining with and"   "and_node = And.new(left, right).at(left)"   "and_node = right"
 
