@@ -30,6 +30,7 @@ pub def abi_name(low : Lowerer, suffix : String) : String
     return "__crystal_#{suffix}"
   end
   "__iyi_#{suffix}"
+end
 
 # The hosted `int1(n)`: an i1 constant of `value` (0 or 1).
 pub def int1(low : Lowerer, value : Int64) : Value
