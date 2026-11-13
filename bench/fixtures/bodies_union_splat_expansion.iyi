@@ -1,12 +1,12 @@
 class UnionSplatLeft
   def count(*values)
-    values.size
+    values
   end
 end
 
 class UnionSplatRight
   def count(*values)
-    values.size + 1
+    values
   end
 end
 
