@@ -482,6 +482,21 @@ else
   echo "FAIL: unmutated bare return does not match the hosted module"
   status=1
 fi
+visibility_check() {
+  "$IYI" build -o "$WORK/port-vis" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/vis.build.log" 2>&1 || return 1
+  "$WORK/port-vis" lower "$REPO/bench/fixtures/lower_visibility.iyi" "$WORK/lower_visibility.oracle.ll" > "$WORK/vis.out" 2> "$WORK/vis.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/vis.out"
+}
+if visibility_check; then
+  prove_mutation "visibility wrappers do not visit their expression" "$REPO/src/compiler/lower/lower.iyi" \
+    '    codegen_node(low, node.as(VisibilityModifier).exp)' \
+    '    low.last = llvm_nil(low)' -- visibility_check || status=1
+else
+  echo "FAIL: visibility wrapper fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/vis.err" "$WORK/vis.out" "$WORK/vis.build.log"
+  status=1
+fi
+
 
 # naming lane (mangled_name)
 # The program-level lower of lower_name_owner waits: call.iyi refuses a call inherited
