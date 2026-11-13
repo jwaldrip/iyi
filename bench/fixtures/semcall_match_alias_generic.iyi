@@ -1,7 +1,10 @@
 alias MatchBytes = Array(UInt8)
 
-def match_alias_generic(value : Tuple(MatchBytes, T)) : Nil forall T
+class MatchAliasPair(A, B)
 end
 
-# call match_alias_generic(instance(Tuple(Array(UInt8), Int32)))
-# call match_alias_generic(instance(Tuple(Array(Int32), Int32)))
+def match_alias_generic(value : MatchAliasPair(MatchBytes, T)) : Nil forall T
+end
+
+# bound match_alias_generic(instance(MatchAliasPair(Array(UInt8), Int32)))
+# bound match_alias_generic(instance(MatchAliasPair(Array(Int32), Int32)))
