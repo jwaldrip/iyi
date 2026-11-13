@@ -15,7 +15,7 @@ module bench/lib/primitive_stand_in
 # and the marker reads in primitives.iyi, when the semantic pass gives primitive defs their
 # own body.
 
-import compiler/syntax/ast::{ASTNode, Arg, Def, Expressions, Metaclass, Path, Primitive, Self}
+import compiler/syntax/ast::{ASTNode, Arg, Def, Expressions, Metaclass, Path, Primitive, Self, Splat}
 import compiler/semantic/top_level::{GenericClassType, NonGenericClassType, SemanticProgram}
 import compiler/semantic/main_visitor::{MainVisitor}
 pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : MainVisitor) : Nil
@@ -57,13 +57,15 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
   object = prog.lookup_type_node(Path.new("Object"), prog).as(NonGenericClassType)
   object.add_def(primitive_def("crystal_type_id", [] of Arg, Path.new("Int32"), "object_crystal_type_id"))
   declare_pointer_primitives(prog)
+  # src/primitives.cr 412-415: the real variadic Proc declaration. Raises only
+  # controlled unwinding in the hosted compiler, which iyi does not emit.
+  proc_owner = prog.lookup_type_node(Path.new("Proc"), prog).as(GenericClassType)
+  proc_call = primitive_def("call", [Arg.new("args", nil, Splat.new(Path.new("T")))] of Arg, Path.new("R"), "proc_call")
+  proc_call.splat_index = 0
+  proc_owner.add_def(proc_call)
   # The literal-index fixture alone installs its concrete tuple primitive.
   if root.is_a?(Expressions)
     root.as(Expressions).expressions.each do |item|
-      if item.is_a?(Def) && item.as(Def).name == "apply"
-        proc_owner = prog.lookup_type_node(Path.new("Proc"), prog).as(GenericClassType)
-        proc_owner.add_def(primitive_def("call", [Arg.new("arg", nil, Path.new("Int32"))] of Arg, Path.new("Int32"), "proc_call"))
-      end
       next unless item.is_a?(Def) && item.as(Def).name == "pick_tuple_member"
       tuple = prog.lookup_type_node(Path.new("Tuple"), prog).as(GenericClassType)
       tuple.add_def(Def.new("[]", [Arg.new("index", nil, Path.new("Int32"))] of Arg, Primitive.tuple_indexer(1, 1), nil, nil, Path.new("Int32")))
