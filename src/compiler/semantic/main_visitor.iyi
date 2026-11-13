@@ -1389,14 +1389,14 @@ pub class MainVisitor < TypeNodeHost
   def splice_def_inline_sites(node : Expressions) : Nil
     return nil if @current_def.nil?
     return nil unless node.expressions.any? { |exp| inline_site?(exp) }
-    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope))
+    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true)
     nil
   end
 
   def splice_def_body(node : ASTNode) : ASTNode
     return node if @current_def.nil?
     return node unless inline_site?(node)
-    splice_body_node(node, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope))
+    splice_body_node(node, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true)
   end
 
   # An inline macro site that is the whole value of a constant (`CHANNEL_WAIT = {% if ... %}512{% else %}2048{% end %}`)

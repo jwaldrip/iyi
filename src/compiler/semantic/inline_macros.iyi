@@ -162,10 +162,12 @@ end
 # Replaces every inline macro site among `nodes` (the children of one Expressions: a file's top
 # level, a type body, or the body of a def or fun) with its expansion, recursively, so the tree the
 # later passes read holds the expansion and not the macro node. A site the engine refuses stays in
-# the tree, so the pass that reads it refuses it too; an empty expansion is removed. The ledger
-# tells the two apart. `locals` names what is declared before the first node, and grows with each
-# node that declares one.
-pub def splice_inline_sites(nodes : Array(ASTNode), scope_name : String, filename : String, in_lib : Bool, locals : Array(String) = [] of String, bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil) : Array(ASTNode)
+# the tree, so the pass that reads it refuses it too. An empty expansion is removed at the top
+# level. In a def body (`keep_empty`) it stays: hosted parse_macro_source still parses an empty
+# expansion (macros.cr 2128-2143) and expand_inline_macro binds that tree to the site
+# (semantic_visitor.cr 2221-2226), so a site that writes nothing is still an expression, typed Nil.
+# `locals` names what is declared before the first node, and grows with each node that declares one.
+pub def splice_inline_sites(nodes : Array(ASTNode), scope_name : String, filename : String, in_lib : Bool, locals : Array(String) = [] of String, bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil, keep_empty : Bool = false) : Array(ASTNode)
   out = [] of ASTNode
   nodes.each do |n|
     unless n.is_a?(MacroIf) || n.is_a?(MacroFor) || n.is_a?(MacroExpression)
@@ -177,22 +179,30 @@ pub def splice_inline_sites(nodes : Array(ASTNode), scope_name : String, filenam
     if expanded.nil?
       sites = InlineMacroLedger.sites
       last = sites[sites.size - 1]
-      out << n unless last.reason.nil?
+      if last.reason.nil?
+        out << n if keep_empty
+      else
+        out << n
+      end
       next
     end
     inner = [expanded.as(ASTNode)] of ASTNode
     if expanded.is_a?(Expressions)
       inner = expanded.as(Expressions).expressions
     end
-    out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts))
+    if keep_empty && inner.empty?
+      out << n
+      next
+    end
+    out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts, keep_empty))
   end
   out
 end
 
 # A body that is one inline macro node (a class, module or lib body) has no Expressions around it,
 # so splice_inline_sites is never asked about it. Wrap it in an Expressions and splice it as a body
-# of several nodes is spliced. A site the engine refuses stays.
-pub def splice_body_node(body : ASTNode, scope_name : String, filename : String, in_lib : Bool, locals : Array(String) = [] of String, bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil) : ASTNode
+# of several nodes is spliced. A site the engine refuses stays. `keep_empty` is the def-body rule above.
+pub def splice_body_node(body : ASTNode, scope_name : String, filename : String, in_lib : Bool, locals : Array(String) = [] of String, bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil, keep_empty : Bool = false) : ASTNode
   return body unless body.is_a?(MacroIf) || body.is_a?(MacroFor) || body.is_a?(MacroExpression)
-  Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals, bindings, facts))
+  Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals, bindings, facts, keep_empty))
 end
