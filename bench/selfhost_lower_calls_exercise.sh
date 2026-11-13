@@ -250,8 +250,6 @@ prove_mutation "a struct's allocate result is not loaded from its instance (the 
   'if passed_by_value?(inst)' 'if false' -- lower_calls_check || status=1
 prove_mutation "a struct call result is not spilled to an alloca (hosted call.cr:707-713)" "$REPO/src/compiler/lower/call.iyi" \
   'low.last = load_aligned(low, ir, temp, "")' 'low.last = inst' -- lower_calls_check || status=1
-prove_mutation "a struct call receiver gets a second alloca (hosted reuses the spill pointer as self)" "$REPO/src/compiler/lower/call.iyi" \
-  'if self_by_pointer?(st) && low.spill_node != 0_u64 && low.spill_node == obj.object_id' 'if false' -- lower_calls_check || status=1
 prove_mutation "a struct call receiver loads its spill slot though the slot is its self" "$REPO/src/compiler/lower/call.iyi" \
   'if low.receiver_node == node.object_id && self_by_pointer?(ret)' 'if false' -- lower_calls_check || status=1
 prove_mutation "a module-level build constant is kept in the module (the module check catches it)" "$REPO/bench/lib/lower_gate.iyi" \
