@@ -37,11 +37,12 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_nilable_proc lowglob_cvar_pointer"
+WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_nilable_proc lowglob_cvar_pointer lowglob_cvar_struct"
 # The body pass does not flag an untyped @[ThreadLocal] declaration.
 # The lazy fixture's indirect Proc call waits on body typing's splat binding.
 # The nilable Proc fixture waits for declaration typing to instantiate Proc's arguments.
 # The pointer fixture waits for the same generic declaration resolution.
+# The nilable struct fixture waits for declaration type resolution and aggregate initialization.
 #
 # The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
 
