@@ -1035,24 +1035,21 @@ pub def codegen_primitive_convert(low : Lowerer, from : Type, to : Type, value :
   value
 end
 
-# The hosted integer-to-integer `codegen_convert`. The same width is the value (a checked
-# change of signedness at that width needs a range check, refused); a wider target extends,
-# with the source's signedness (hosted `extend_int`), and a checked widening from a signed
-# source to an unsigned target needs a range check, refused; a narrower target truncates,
-# and a checked truncation needs a range check, refused.
+# The hosted integer-to-integer `codegen_convert` checks the target's range before
+# an equal-width signedness change, a signed-to-unsigned widening, or truncation.
 pub def codegen_convert_int(low : Lowerer, from : Type, to : Type, value : Value, checked : Bool) : Value
   from_bytes = primitive_bytes(from)
   to_bytes = primitive_bytes(to)
   to_ir = low.typer.llvm_type(to)
   if from_bytes == to_bytes
     if checked && from.full_name != to.full_name
-      pending_visit_node("checked conversion #{from.full_name} to #{to.full_name} at one width (hosted codegen_convert, range check)")
+      raise_overflow_cond(low, codegen_int_out_of_range(low, from, to, value))
     end
     return value
   end
   if from_bytes < to_bytes
     if checked && is_signed?(from) && !is_signed?(to)
-      pending_visit_node("checked conversion #{from.full_name} to #{to.full_name} (hosted codegen_convert, range check)")
+      raise_overflow_cond(low, codegen_int_out_of_range(low, from, to, value))
     end
     if is_signed?(from)
       return low.builder.sext(value, to_ir)
@@ -1060,9 +1057,37 @@ pub def codegen_convert_int(low : Lowerer, from : Type, to : Type, value : Value
     return low.builder.zext(value, to_ir)
   end
   if checked
-    pending_visit_node("checked conversion #{from.full_name} to #{to.full_name} (hosted codegen_convert, range check)")
+    raise_overflow_cond(low, codegen_int_out_of_range(low, from, to, value))
   end
   low.builder.trunc(value, to_ir)
+end
+
+# Hosted codegen_out_of_range (primitives.cr 320-326): compare against both
+# bounds using the same mixed-sign comparison as ordinary integer operators.
+pub def codegen_int_out_of_range(low : Lowerer, from : Type, to : Type, value : Value) : Value
+  source = int_shape(low, from)
+  target = int_shape(low, to)
+  minimum = integer_bound(low, target, false)
+  maximum = integer_bound(low, target, true)
+  below = codegen_binary_op_lt(low, source, target, value, minimum)
+  above = codegen_binary_op_gt(low, source, target, value, maximum)
+  low.builder.build_or(below, above)
+end
+
+pub def integer_bound(low : Lowerer, shape : IntShape, maximum : Bool) : Value
+  if shape.bytes == 16
+    if shape.signed
+      hi = maximum ? 9223372036854775807_i64 : (-9223372036854775807_i64 - 1_i64)
+      lo = maximum ? -1_i64 : 0_i64
+      return low.builder.const_wide(shape.ir, hi, lo)
+    end
+    return low.builder.const_wide(shape.ir, maximum ? -1_i64 : 0_i64, maximum ? -1_i64 : 0_i64)
+  end
+  if shape.signed
+    minimum = sign_bit_value(shape.bytes)
+    return int_const(low, maximum ? (minimum ^ -1_i64) : minimum, shape)
+  end
+  int_const(low, maximum ? unsigned_max_value(shape.bytes) : 0_i64, shape)
 end
 
 # The primitive name of a def: from its body when the semantic pass gives it a primitive body

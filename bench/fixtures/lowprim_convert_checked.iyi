@@ -1,0 +1,25 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+fun __crystal_raise_overflow : NoReturn
+  LibC.exit(99)
+end
+
+def narrow(value : Int64) : Int32
+  value.to_i32
+end
+
+def same_width(value : Int32) : UInt32
+  value.to_u32
+end
+
+def widen_unsigned(value : Int32) : UInt64
+  value.to_u64
+end
+
+if same_width(3) == 3_u32 && widen_unsigned(4) == 4_u64
+  LibC.exit(narrow(5_i64))
+else
+  LibC.exit(1)
+end

@@ -25,6 +25,10 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
     ["&+", "&-", "&*", "+", "-", "*", "|", "&", "^", "unsafe_shl", "unsafe_shr", "unsafe_div", "unsafe_mod"].each do |op|
       owner.add_def(binary_def(op, tn, tn))
     end
+    # Checked integer conversion declarations used by the primitive lowering gate.
+    owner.add_def(primitive_def("to_i32", [] of Arg, Path.new("Int32"), "convert"))
+    owner.add_def(primitive_def("to_u32", [] of Arg, Path.new("UInt32"), "convert"))
+    owner.add_def(primitive_def("to_u64", [] of Arg, Path.new("UInt64"), "convert"))
     ["==", "!=", "<", "<=", ">", ">="].each do |op|
       owner.add_def(binary_def(op, tn, "Bool"))
     end
