@@ -540,6 +540,20 @@ else
   awk 'NR<=8' "$WORK/array.err" "$WORK/array.out" "$WORK/array.build.log"
   status=1
 fi
+interpolation_check() {
+  "$IYI" build -o "$WORK/port-interpolation" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/interpolation.build.log" 2>&1 || return 1
+  "$WORK/port-interpolation" lower "$REPO/bench/fixtures/lower_interpolation.iyi" "$WORK/lower_interpolation.oracle.ll" > "$WORK/interpolation.out" 2> "$WORK/interpolation.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/interpolation.out"
+}
+if interpolation_check; then
+  prove_mutation "an interpolation ignores its typed expansion" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if node.is_a?(StringInterpolation)' \
+    '  if false' -- interpolation_check || status=1
+else
+  echo "FAIL: interpolation fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/interpolation.err" "$WORK/interpolation.out" "$WORK/interpolation.build.log"
+  status=1
+fi
 
 
 
