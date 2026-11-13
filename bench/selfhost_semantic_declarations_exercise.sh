@@ -676,6 +676,11 @@ prove_mutation "explicit instance variables are recorded in reverse declaration 
   "@pending_ivars.reversed.each do |pi|" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "guessed variables are recorded before explicit variables" "$MUT_SEM" \
+  '    [true, false].each do |explicit_pass|' \
+  '    [false, true].each do |explicit_pass|' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an initialize argument instance variable is recorded ahead of the class body's" "$MUT_SEM" \
   "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, true)" \
   "@pending_ivars.unshift(PendingIvar.new(@current_type, ivar_name, r, nil, true))" \
