@@ -276,6 +276,45 @@ owner_mutant_at_expected() {
   sort "$WORK/owner_mutant.unsorted" > "$WORK/owner_mutant.actual" || return 0
   diff -u "$owner_expected" "$WORK/owner_mutant.actual"
 }
+echo
+echo "== 2e. A recursive call targets the instance still being typed"
+recursion_probe="$WORK/recursion_target_probe"
+"$IYI" build -o "$recursion_probe" "$REPO/bench/selfhost_recursion_target_probe.iyi" > "$WORK/recursion_probe_build.log" 2>&1 || {
+  cat "$WORK/recursion_probe_build.log"
+  echo "  RECURSION: failed to build the target probe"
+  exit 1
+}
+recursion_targets_ok() {
+  "$recursion_probe" "$REPO/bench/fixtures/lowcall_recursion_top.iyi" "$REPO/src" > "$WORK/recursion_top.txt" 2>"$WORK/recursion_top.err" || return 1
+  grep -q '^cycle_a target=.* typed-params Bool$' "$WORK/recursion_top.txt" || return 1
+  "$recursion_probe" "$REPO/bench/fixtures/sem_bodies_recursion_state.iyi" "$REPO/src" > "$WORK/recursion_state.txt" 2>"$WORK/recursion_state.err" || return 1
+  awk '/^lock target=/ { id = $2; sub("target=", "", id); if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 2 && kinds == 1) }' "$WORK/recursion_state.txt"
+}
+if recursion_targets_ok; then
+  echo "  recursive calls share the in-progress typed instance"
+else
+  echo "  RECURSION: a cycle call does not target the in-progress instance"
+  status=1
+fi
+recursion_fresh_clone() {
+  if ! "$IYI" build -o "$WORK/recursion_mutant" "$REPO/bench/selfhost_recursion_target_probe.iyi" > "$WORK/recursion_mutant_build.log" 2>&1; then
+    echo "INVALID MUTANT: recursion probe failed to build" >&2
+    cat "$WORK/recursion_mutant_build.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  if ! "$WORK/recursion_mutant" "$REPO/bench/fixtures/lowcall_recursion_top.iyi" "$REPO/src" > "$WORK/recursion_mutant.txt" 2>"$WORK/recursion_mutant.err"; then
+    echo "INVALID MUTANT: recursion probe failed to run" >&2
+    cat "$WORK/recursion_mutant.err" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  if grep -q '^cycle_a target=.* untyped-params' "$WORK/recursion_mutant.txt"; then return 1; fi
+  return 0
+}
+prove_mutation "a recursive call targets a fresh clone" "$MAIN_VISITOR" \
+  "remember_def_instance(cache_key, target_def, provisional)" \
+  "nil" -- recursion_fresh_clone || status=1
 prove_mutation_all "program defs use their declared owner" "$MAIN_VISITOR" \
   "instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)" \
   "instance_owner = rec_type if declared_owner.is_a?(SemanticProgram)" -- owner_mutant_at_expected || status=1
@@ -339,9 +378,9 @@ prove_mutation "while cond narrows its variable in the loop body" "$MAIN_VISITOR
 prove_mutation "early exit in then branch narrows the rest of the body" "$MAIN_VISITOR" \
   "        elsif then_unreachable" \
   "        elsif false" -- bodies_at_floor || status=1
-prove_mutation "a refused body with declared return is cached" "$MAIN_VISITOR" \
-  "        remember_def_instance(cache_key, target_def, declared_ret)" \
-  "        nil" -- bodies_at_floor || status=1
+prove_mutation_all "a refused body with declared return is cached" "$MAIN_VISITOR" \
+  "remember_def_instance(cache_key, target_def," \
+  "nil # " -- bodies_at_floor || status=1
 prove_mutation "a generic pointer restriction is not bound from the receiver" "$MAIN_VISITOR" \
   "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
   "found = LookupError.new(\"unbound\")" -- bodies_at_floor || status=1
