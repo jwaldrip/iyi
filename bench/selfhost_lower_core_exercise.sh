@@ -483,6 +483,22 @@ prove_mutation "an inherited method drops its defining owner" "$REPO/src/compile
   'shown + "^" + defined_spell' \
   'shown' -- name_owner_check || status=1
 
+name_metaclass_check() {
+  "$IYI" build -o "$WORK/name-meta-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-meta.build.log" 2>&1 || return 1
+  "$WORK/name-meta-port" "$REPO/bench/fixtures/lower_name_metaclass.iyi" "$WORK/lower_name_metaclass.oracle.ll" metaclass > "$WORK/name-meta.out" 2> "$WORK/name-meta.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-meta.out"
+}
+if name_metaclass_check; then
+  echo "  lower_name_metaclass: *NameOwner::class_flag<Int32>:Int32"
+else
+  echo "  lower_name_metaclass: metaclass name differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-meta.err" "$WORK/name-meta.out" "$WORK/name-meta.build.log"
+  status=1
+fi
+prove_mutation "a metaclass is named as an instance" "$REPO/src/compiler/lower/fun.iyi" \
+  '      if st.is_a?(MetaclassType)' \
+  '      if false' -- name_metaclass_check || status=1
+
 echo
 echo
 if [ "$status" -eq 0 ]; then
