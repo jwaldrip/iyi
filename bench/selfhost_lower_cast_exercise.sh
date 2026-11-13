@@ -42,9 +42,11 @@ else
   status=1
 fi
 
-# Fixtures waiting on another slice, by name (none now: the three cast fixtures are identical).
+# lowcast_proc_result waits on S1d24Bodies' Proc(Nil) freeze. It must keep
+# refusing by this exact text. lowcast_proc_noreturn already types and lowers.
 waiting_on() {
   case "$1" in
+    lowcast_proc_result) echo "typing expected type Proc(Nil), got Proc(Int32) (S1d24Bodies)" ;;
   esac
 }
 
@@ -65,6 +67,11 @@ for fixture in "$REPO"/bench/fixtures/lowcast_*.iyi; do
 
   if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
     if [ -n "$(waiting_on "$name")" ]; then
+      if ! grep -Fq 'expected type Proc(Nil), got Proc(Int32)' "$WORK/$name.port.err"; then
+        echo "  $name: stopped refusing by the named typing error: $(awk 'NR==1' "$WORK/$name.port.err")"
+        diverged=$((diverged + 1))
+        continue
+      fi
       echo "  $name: WAITING, $(waiting_on "$name"): $(awk 'NR==1' "$WORK/$name.port.err")"
       waiting=$((waiting + 1))
       continue
@@ -187,6 +194,29 @@ prove_mutation "a union local receives a zero aggregate" "$REPO/src/compiler/low
 if [ ! -f "$WORK/aggregate_mut.exit" ] || [ "$(cat "$WORK/aggregate_mut.exit")" != 200 ]; then
   echo "  NOT PROVEN: aggregate mutant did not build, link and exit 200"
   status=1
+fi
+proc_result_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  : > "$WORK/proc_mutant_built"
+  "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_proc_result.iyi" "$WORK/lowcast_proc_result.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
+}
+if [ -n "$(waiting_on lowcast_proc_result)" ]; then
+  if ! grep -Fq 'expected type Proc(Nil), got Proc(Int32)' "$WORK/lowcast_proc_result.port.err"; then
+    echo "  NOT PROVEN: proc result stopped refusing by the named typing error"
+    status=1
+  else
+    echo "  proc result assignment remains the named typing refusal"
+  fi
+else
+  proc_result_check || { echo "  baseline: proc result assignment fixture differs"; status=1; }
+  rm -f "$WORK/proc_mutant_built"
+  prove_mutation "a proc result assignment is refused" "$REPO/src/compiler/lower/cast.iyi" \
+    '  if target.is_a?(ProcInstanceType) && value_type.is_a?(ProcInstanceType)' '  if false' -- proc_result_check || status=1
+  if [ ! -f "$WORK/proc_mutant_built" ]; then
+    echo "  NOT PROVEN: proc result mutant failed to build"
+    status=1
+  fi
 fi
 no_return_check || { echo "  baseline: no-return union fixture differs"; status=1; }
 prove_mutation "a no-return union assignment stores a value" "$REPO/src/compiler/lower/cast.iyi" \
