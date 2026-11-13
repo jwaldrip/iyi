@@ -29,7 +29,7 @@ import compiler/types/types::{GenericClassInstanceType}
 import compiler/syntax/ast::{ASTNode, Var}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
-import compiler/lower/cast::{assign, downcast}
+import compiler/lower/cast::{assign, downcast, to_rhs}
 import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node, refuse_port}
 
@@ -206,6 +206,7 @@ pub def store_instance_var(low : Lowerer, name : String, value : Value, value_ty
     return
   end
   if !value_type.is_a?(NilType)
-    store_aligned(low, value, ptr)
+    stored = value.type.pointer? ? to_rhs(low, value, value_type) : value
+    store_aligned(low, stored, ptr)
   end
 end
