@@ -336,11 +336,6 @@ prove_mutation_all "no spliced inline macro expansion is ever declared (top-leve
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a required file finishes its pending ivars at once, before a later file declares them" "$MUT_SEM" \
-  "inner.exp_nest = 1" \
-  "inner.exp_nest = 0" \
-  -- check_inline_fixtures_diverge || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a site inside a lib body is parsed as an ordinary body" "$MUT_INL" \
   "parsed = in_lib ? parser.parse_lib_body : parser.parse" \
@@ -421,6 +416,12 @@ else
 fi
 
 if [ "$COMPARE_REACH" -eq 1 ]; then
+prove_mutation "a required file finishes its pending ivars at once, before a later file declares them" "$MUT_PROG" \
+  "inner.finish" \
+  "inner.finish; declare_guessed_instance_vars(prog)" \
+  -- check_reach_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "the fixture's required file is parsed again instead of read from the pipeline's own tree" "$MUT_SEM" \
   "nodes = @program.unit_tree_or_parse(file)" \
   "nodes = Parser.new(File.read(file), file).parse" \
