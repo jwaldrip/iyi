@@ -8020,7 +8020,7 @@ Chaos mode: combining `--cached` with chaos testing (`--chaos`, `--chaos=SEED`, 
 - *Windows:* Nothing on Windows is reusable yet. Its platform arms are not classified (RG3 below), so every test reaches an unclassified site and runs. macOS and Linux are classified.
 - *Host questions:* A test that asks the machine something through an `@[Effect(:host)]` def (its name, its page size, who the program runs as, an account or a group) is never reused. The answer is recorded, but a check has no way to ask the question again, so the receipt is not one it can validate and the test runs.
 - *Chaos mode:* `--cached` cannot be combined with `--chaos`, `--chaos=SEED`, or `--chaos-runs`; chaos runs always execute fresh.
-- *No speedup promised:* No speedup is promised or claimed. A fast serve starts no compiler; what that saves on a suite is measured below, not promised.
+- *No speedup for every change:* A cached run is faster than plain `iyi test` when most tests are untouched, and slower when a file every test reads changed or on the first run. Both are measured below.
 
 **Verification gates (RG1-RG10).**
 
@@ -8074,7 +8074,20 @@ Acceptance rows from design section 12: rows 1-22 and 25-59 are automated in `be
 | std_int_exercise.iyi | 1.798s | 63.267s | 3.946s | 2065 | 91 B | 8011 B | 7823 B |
 | std_bit_array_exercise.iyi | 2.668s | 67.103s | N/A | 1913 | 0 B | 0 B | 8051 B |
 
-A `--cached` check took 3.6 to 4.8 s there, against 1.2 to 2.1 s to build and run the same program: a hit is slower than the run it saves for each of the six. On `hello.iyi` the check spent 0.512 s hashing the call path and build key, 0.286 s and 0.250 s in the two semantic passes, and ran no codegen. A fast serve starts no compiler, so it spends none of that time. MEASUREMENT PENDING: the fast path's per-serve time and the 1,000-test table, by hand on darwin arm64 with an unoptimized compiler, beside the plain 117.0 s and `--fresh` 1,254.8 s baseline.
+A `--cached` check took 3.6 to 4.8 s there, against 1.2 to 2.1 s to build and run the same program: a hit is slower than the run it saves for each of the six. On `hello.iyi` the check spent 0.512 s hashing the call path and build key, 0.286 s and 0.250 s in the two semantic passes, and ran no codegen. A fast serve starts no compiler, so it spends none of that time.
+
+**A suite, as measured.** By hand on darwin arm64 with an unoptimized compiler, over 1,000 generated tests (`python3 bench/stale_suite_speed.py --tests 1000`), on a machine other work was loading: the load average ran between 120 and 700 across these runs, so the seconds are weather and the ratios are the finding.
+
+| Case | Plain `iyi test` | `iyi test --cached` | Served | Compilers started |
+|---|---|---|---|---|
+| first run (`--fresh`) | 243.0 s | 639.8 s | 0 | 1,000 |
+| nothing changed | 234.0 s | 3.0 s | 1,000 | 0 |
+| one test edited | 242.0 s | 8.9 s | 999 | 1 |
+| one module edited (20 tests import it) | 276.4 s | 20.6 s | 980 | 20 |
+| a shared def no test reaches, edited | 242.2 s | 437.5 s | 1,000 | 1,000 |
+| a shared def every test reaches, edited | 153.5 s | 381.8 s | 0 | 1,000 |
+
+The cached run served exactly the tests it should in every case. Before the fast path and the parallel runner, the same suite took 117.0 s plain and 1,254.8 s under `--fresh` (load average 36 to 180), and on a second run 176.7 s and 3,526.7 s (load 70 to 400). Linux was not measured.
 
 **Census as measured (historical, original 141-program corpus).** Measured on macOS arm64 on this machine across 141 programs (27 C2 samples/iyi, 114 C3 bench/std_*_exercise), before four std exercises became tests; not taken again on darwin since:
 - Runtime reusable on second run: 87 of 141 (61.7%). C2: 25 of 27 (92.6%). C3: 62 of 114 (54.4%).
@@ -8112,14 +8125,14 @@ Top not-reusable reasons:
 
 `--fresh` starts from an empty private cache, so it includes compiling the runtime with `-Diyi_observe`. `--cached` is the second run in that cache, validated against the first run's receipt. `std_bit_array_exercise.iyi` was not reusable, so it has no cached validation time or receipt. The normal and preanalysed-prelude consumer runs both hit with exit 0 and no codegen.
 
-No speedup is claimed by these historical numbers. No warm-cache `--fresh` numbers were measured. MEASUREMENT PENDING: the fast path's numbers, by hand, with the machine and compiler named.
+No speedup is claimed by these historical numbers. No warm-cache `--fresh` numbers were measured. The fast path's numbers are the 1,000-test table above.
 
 **Completion status (design section 13).** Completion is NOT met and the default stays off:
 - Rows 23-24 and RG6 need master CI.
 - The census has two opaque program constructs that prevent reuse, and one internal reason: a test that asks the host a question is recorded and never reused.
 - Consumption and audit on master are unproven.
 - Cross-machine hits and hits across commits wait on RG1 in CI.
-- A check that starts a compiler costs more than the build and run it replaces, for every program measured. A fast serve starts none. MEASUREMENT PENDING: its cost per serve, by hand, with the machine and compiler named.
+- A check that starts a compiler costs more than the build and run it replaces, for every program measured. A fast serve starts none: 1,000 tests were served in 3.0 s (darwin arm64, unoptimized compiler, the table above). A change to a file every test reads still sends every test to the compiler check, and that run is slower than plain.
 One thing was a bug rather than a design question: `iyi tool` printed
 `Usage: crystal tool`, because the name fix reached the top-level commands and
 not the subcommand's own usage. It prints `Usage: iyi tool` now.

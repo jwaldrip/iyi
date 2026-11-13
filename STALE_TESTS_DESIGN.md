@@ -408,7 +408,20 @@ Overhead reported as measured with no thresholds and no promised speedup:
 * Reached elements and encoded bytes per program, and the reruns RG8 attributes to over-approximation.
 * Fast-path serves: `builds` (compiler processes started) and wall time of an unchanged suite, against plain `iyi test` and `--fresh` on the same suite.
 
-MEASUREMENT PENDING: the 1,000-test table after the fast path, by hand on darwin arm64 with an unoptimized compiler (`python3 bench/stale_suite_speed.py --tests 1000 --expect-faster`, all six scenarios). Before it, plain `iyi test` took 117.0 s and `--fresh` 1,254.8 s for 1,000 generated tests on the same machine and compiler.
+Measured by hand on darwin arm64 with an unoptimized compiler, over 1,000 generated tests (`python3 bench/stale_suite_speed.py --tests 1000`), on a machine other work was loading: the load average ran between 120 and 700 across these runs, so the seconds are weather and the ratios are the finding.
+
+| Case | Plain `iyi test` | `iyi test --cached` | Served | Compilers started |
+|---|---|---|---|---|
+| first run (`--fresh`) | 243.0 s | 639.8 s | 0 | 1,000 |
+| nothing changed | 234.0 s | 3.0 s | 1,000 | 0 |
+| one test edited | 242.0 s | 8.9 s | 999 | 1 |
+| one module edited (20 tests import it) | 276.4 s | 20.6 s | 980 | 20 |
+| a shared def no test reaches, edited | 242.2 s | 437.5 s | 1,000 | 1,000 |
+| a shared def every test reaches, edited | 153.5 s | 381.8 s | 0 | 1,000 |
+
+The cached run served exactly the tests it should in every case. Before the fast path and the parallel runner, the same suite took 117.0 s plain and 1,254.8 s under `--fresh` (load average 36 to 180), and on a second run 176.7 s and 3,526.7 s (load 70 to 400).
+
+A cached run is faster than plain when most tests are untouched. It is slower in two cases: when a file every test reads changed, because no record can vouch for any test, each takes the compiler check, and a check costs more than building and running a small test; and on the first run.
 
 Completion requires all of:
 1. Every §12 row automated and green on every enabled platform.
@@ -441,6 +454,6 @@ If the census shows almost all real tests always running, work is not marked com
 * Cross-machine hits are expected only between runners configured alike (matching kernel release, rlimits, cgroup memory limit, and loader variables).
 * Hits across commits wait on RG1.
 * Environment mutations (`ENV.[]=`, `ENV.delete`, `__iyi_set_environ`) over-approximate by recording `env_all`, so any change to the runner's environment reruns a test that sets a variable. `ENV.[]=` and `ENV.delete` also name the variable (`__iyi_observe_env_write`), and a later read of it is the test's own value, not an input (row 6).
-* No speedup is promised. A fast serve starts no compiler; what that saves on a suite is measured in §13, not promised.
+* No speedup is promised for every change. A cached run is faster than plain when most tests are untouched, and slower when a file every test reads changed or on the first run (§13).
 * Chaos mode: chaos options cannot be combined with stale-runner options; chaos runs execute without receipt reuse.
 * Windows: no platform arm is classified, so no Windows test is reusable (RG3 holds on macOS arm64 and Linux x86_64 and aarch64 only). Windows writes no fast-path records, so no fast serve happens there.
