@@ -2428,6 +2428,14 @@ pub class MainVisitor < TypeNodeHost
       return most_specific.first
     end
 
+    # A resolved restriction can still contain a free variable, as in
+    # Pointer(T). Let the calls matcher bind it before reporting a mismatch.
+    if count_matches.any? { |d| !d.free_vars.nil? }
+      if matched = match_splat_with_calls(rec_type, name, args, call_node)
+        return matched
+      end
+    end
+
     if ur = unresolved_restriction
       if rescued = match_splat_with_calls(rec_type, name, args, call_node)
         return rescued
