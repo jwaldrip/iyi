@@ -587,8 +587,8 @@ prove_mutation "a declared instance variable keeps its bare type: the virtual ty
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an initialize argument instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
-  "@pending_ivars << PendingIvar.new(@current_type, arg.name, r, nil, true)" \
-  "@pending_ivars << PendingIvar.new(@current_type, arg.name, r, nil, false)" \
+  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, true)" \
+  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, false)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic class's guessed instance variables are not declared on the generic" "$MUT_IVARS" \
