@@ -6,4 +6,7 @@ alias AliasBytes = AliasBuffer(UInt8)
 
 class AliasHolder
   @bytes : AliasBytes
+
+  def initialize(@bytes : AliasBytes)
+  end
 end
