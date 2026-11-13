@@ -2506,13 +2506,19 @@ pub class MainVisitor < TypeNodeHost
     # Array(T).new(size) is the generated initialize new; Array(T).new(size) { }
     # is the yielding overload. Matching the other leaves the receiver untyped.
     wants_block = !call_node.block.nil?
-    yield_matched = [] of Def
-    candidates.each do |d|
-      if CallMatch.yields?(d) == wants_block
-        yield_matched << d
+    write_at = 0
+    read_at = 0
+    while read_at < candidates.size
+      keep = CallMatch.yields?(candidates[read_at]) == wants_block
+      if keep
+        candidates[write_at] = candidates[read_at]
+        write_at += 1
       end
+      read_at += 1
     end
-    candidates = yield_matched
+    while candidates.size > write_at
+      candidates.pop
+    end
 
     if candidates.empty?
       if obj_node = call_node.obj

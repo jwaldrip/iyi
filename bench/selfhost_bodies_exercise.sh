@@ -778,16 +778,16 @@ atomic_free_at_floor() {
    fi
    return 1
  }
- prove_mutation "a block call matches only a yielding new" "$MAIN_VISITOR" \
-  "      if CallMatch.yields?(d) == wants_block" \
-   "      if true" -- array_new_yields || status=1
+prove_mutation "a block call matches only a yielding new" "$MAIN_VISITOR" \
+  "      keep = CallMatch.yields?(candidates[read_at]) == wants_block" \
+  "      keep = true" -- array_new_yields || status=1
 if ! atomic_free_at_floor; then
   echo "  ATOMIC: one of the instantiated atomic bodies was refused or not reached"
   status=1
 fi
-prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
-  "    if count_matches.any? { |d| !d.free_vars.nil? }" \
-  "    if false" -- atomic_free_at_floor || status=1
+prove_mutation "a resolved pointer restriction binds its free variable" "$REPO/src/compiler/semantic/match.iyi" \
+  "      maybe_bound = FreeBindings.of_def(definition, signature.arg_types, ts)" \
+  "      maybe_bound = nil" -- atomic_free_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"
