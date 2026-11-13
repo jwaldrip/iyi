@@ -28,16 +28,16 @@ SLICE_OWNER = {
     "declarations": "agent://S1b19Declarations",
     "calls": "agent://S1c10Calls",
     "macros": "agent://S1bInlineMacros12",
-    "lowering core": "agent://S2a13Core",
-    "lowering": "agent://S2a13Core",
+    "lowering core": "agent://S2a14Core",
+    "lowering": "agent://S2a14Core",
     "unassigned": "unassigned (no rule in typed_owner)",
 }
 STRUCTURAL = {
     "entry": "agent://S3lPipeline (program assembly)",
-    "proc": "agent://S2a13Core (closures)",
+    "proc": "agent://S2a14Core (closures)",
     "const": "globals lane (no live owner)",
-    "generic": "agent://S2a13Core (mangled_name: ^Generic(T) segment)",
-    "shim": "agent://S2a13Core (runtime shims)",
+    "generic": "agent://S2a14Core (mangled_name: ^Generic(T) segment)",
+    "shim": "agent://S2a14Core (runtime shims)",
 }
 
 
