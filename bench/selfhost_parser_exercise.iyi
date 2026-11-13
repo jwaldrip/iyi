@@ -151,6 +151,11 @@ module BenchSelfhostParserExercise
       arg_names = node.args.map(&.name).join(", ")
       splat = node.splat_index ? node.splat_index.to_s : "none"
       s = "#{p}Block args=[#{arg_names}] splat=#{splat}:\n"
+      if unpacks = node.unpacks
+        unpacks.each do |index, expressions|
+          s += "#{p}  unpack[#{index}]:\n" + dump_ast(expressions, indent + 2)
+        end
+      end
       s += dump_ast(node.body, indent + 1)
       s
     when Assign
