@@ -1292,8 +1292,22 @@ pub class MainVisitor < TypeNodeHost
       elsif c_type = type_of?(c.value)
         set_type(node, c_type)
       else
+        # A constant's initializer resolves in its declaring file and namespace, not the reader's.
+        saved_type = @current_type
+        saved_scope = @scope
+        saved_imports = @program.current_imports
+        saved_import_defs = @program.current_import_defs
+        if owner = c.namespace
+          @current_type = owner
+          @scope = owner
+        end
+        enter_file_scope(c.value)
         splice_const_value(c)
         c.value.accept(self)
+        @current_type = saved_type
+        @scope = saved_scope
+        @program.current_imports = saved_imports
+        @program.current_import_defs = saved_import_defs
         if c_type = child_type(c.value)
           set_type(node, c_type)
         end

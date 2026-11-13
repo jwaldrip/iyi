@@ -1,0 +1,5 @@
+module bodies_const_owner
+
+import bodies_const_values::{NUMBER}
+
+pub RESULT = NUMBER

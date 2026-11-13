@@ -964,8 +964,13 @@ else
   status=1
 fi
 prove_mutation "a generic alias loses its instantiated arguments" "$MUT_SEM" \
-  '      if @value.is_a?(Generic) && @program.merge_hook.nil?' \
-  '      if @value.is_a?(Generic)' \
+  '      resolved = if @value.is_a?(Generic) && @program.merge_hook.nil?' \
+  '      resolved = if @value.is_a?(Generic)' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an alias loses its declaring file imports" "$MUT_SEM" \
+  '    alias_type.imports = @program.current_imports' \
+  '    alias_type.imports = nil' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
