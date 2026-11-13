@@ -416,7 +416,13 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     return
   end
   if node.is_a?(Call)
-    codegen_call_node(low, node.as(Call))
+    # The hosted cleanup replaces expanded calls before codegen (call.cr:4-7).
+    # Declaration macros remain on their Call nodes in the port.
+    if expanded = node.as(Call).expanded
+      codegen_node(low, expanded)
+    else
+      codegen_call_node(low, node.as(Call))
+    end
     return
   end
   if node.is_a?(Yield)
