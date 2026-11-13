@@ -317,6 +317,28 @@ primitive_table_check() {
   awk '/^table: hello lowering .*visit\(Primitive/ { bad = 1 } END { exit bad }' "$WORK/prim_hello.probe"
 }
 
+# A yielding def without a captured block is inlined by the hosted compiler, not
+# emitted as a standalone function. Its caller and ordinary defs remain probeable.
+yield_table_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/yield_tool"; then return 1; fi
+  "$WORK/yield_tool" "$REPO/bench/fixtures/pipeline_yield_probe.iyi" -o "$WORK/yield_probe" --pipeline typed --probe-phase --keep-going > "$WORK/yield_probe.log" 2>&1
+  [ -f "$WORK/yield_probe.refusals" ] || return 1
+  awk -F '\t' '
+    $1 == "reached" && $2 ~ /identity$/ { ordinary = 1 }
+    $1 == "reached" && $2 ~ /emit_once$/ { yielding = 1 }
+    END { exit !(ordinary && !yielding) }
+  ' "$WORK/yield_probe.refusals"
+}
+echo "  the yielding-def table check passes on the unmutated code:"
+if yield_table_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL"
+  status=1
+fi
+prove_mutation "the table probes a noncapturing yielding def" "$PROGRAM_SRC" \
+  'next if noncapturing_yield?(d)' 'next if false' -- yield_table_check || status=1
+
 # The entry: a prelude-free program's top-level code is `__crystal_main` (lower.iyi main_function_name), and the C `main` is
 # emitted once, by the pipeline only when the program has no `fun main` of its own. Checked on IR text from --emit ir, on two
 # prelude-free fixtures (no main, and one with its own main). The check returns 0 only on the unmutated behaviour.

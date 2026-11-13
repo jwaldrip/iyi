@@ -26,6 +26,7 @@ module compiler/lower/program
 import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral, InstanceVar}
 import compiler/semantic/top_level::{LibType, MetaclassType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
 import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance}
+import compiler/semantic/match::{YieldFinder}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
@@ -362,6 +363,15 @@ pub def refusal_table(typed : TypedProgram, root : String, refused : Array(Strin
   lines
 end
 
+# Hosted inlines a yielding def at its call site instead of emitting a standalone
+# function. Captured block functions are real functions and remain probeable.
+def noncapturing_yield?(definition : Def) : Bool
+  return false if definition.captured_block?
+  finder = YieldFinder.new
+  definition.body.accept(finder)
+  finder.found
+end
+
 # The lowering column of the table (PIPELINE.md): every reached def's instance lowered alone into one module, the way the
 # lowering reaches it (lower_def_probe). A def is lowered clean when each of its instances lowers with no refusal. A
 # lowering refusal names its def, not a node: the lowering carries no location yet.
@@ -386,6 +396,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
     # neither probes it nor counts it, so it is no refusal row and no clean def.
     next unless primitive_name(d.body).nil?
+    next if noncapturing_yield?(d)
     refused << "reached\t#{lowering_example(d, inst.self_type)}\t-\t-"
     before = [] of String
     m.functions.each { |fn| before << fn.name }
@@ -468,6 +479,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
     # neither probes it nor counts it, so it is no refusal row and no clean def.
     next unless primitive_name(inst.definition.body).nil?
+    next if noncapturing_yield?(inst.definition)
     label = instance_label(inst.definition, inst.self_type, inst.arg_types)
     unless seen_label.has_key?(label)
       seen_label[label] = true
