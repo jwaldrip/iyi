@@ -185,7 +185,7 @@ module BenchSelfhostSemanticCallsExercise
     body = wrapper.as(Def).body
     if body.is_a?(Expressions)
       body.as(Expressions).expressions.each do |item|
-        statements << item.to_s
+        statements << (item.is_a?(Expressions) ? "generated body" : item.to_s)
       end
     else
       statements << body.to_s

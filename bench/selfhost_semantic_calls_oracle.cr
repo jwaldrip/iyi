@@ -372,7 +372,7 @@ def wrapper_text(program : Iyi::Program, expr : String) : String
   expansion.body.as(Iyi::Expressions).expressions.each do |item|
     assign = item
     assign = item.as(Iyi::AssignWithRestriction).assign if item.is_a?(Iyi::AssignWithRestriction)
-    statements << assign.to_s
+    statements << (assign.is_a?(Iyi::Expressions) ? "generated body" : assign.to_s)
   end
   "#{expansion.name}(#{names.join(", ")}) { #{statements.join("; ")} }"
 rescue ex : Exception
