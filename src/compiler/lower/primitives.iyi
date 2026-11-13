@@ -217,6 +217,15 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
       low.last = bool_stored
       return
     end
+    # Hosted to_rhs for a type that is not passed by value is the value itself
+    # (a class, a nilable reference, a pointer). A by-value struct is copied
+    # (codegen.cr store_value / copy_value), not ported here.
+    if !passed_by_value?(elem)
+      ref_stored = values[1]
+      store_aligned(low, ref_stored, values[0])
+      low.last = ref_stored
+      return
+    end
     pending_visit_node("pointer_set of #{elem.full_name} (hosted assign, primitives.cr 927)")
     return
   end

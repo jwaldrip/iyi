@@ -196,6 +196,8 @@ prove_mutation "a nilable reference union reads the nil id from the object" "$RE
   "    phi.add(low, object_type_id(low, value), true)" "    phi.add(low, type_id_value(low, low.analysed.program.nil_type), true)" -- lower_primitives_check || status=1
 prove_mutation "an implicit-self primitive uses a constant instead of self" "$REPO/src/compiler/lower/primitives.iyi" \
   "    recv = sv.as(LowerVar).pointer" "    recv = int1(low, 0_i64)" -- lower_primitives_check || status=1
+prove_mutation "a reference pointer_set stores the pointer slot" "$REPO/src/compiler/lower/primitives.iyi" \
+  "      ref_stored = values[1]" "      ref_stored = values[0]" -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
