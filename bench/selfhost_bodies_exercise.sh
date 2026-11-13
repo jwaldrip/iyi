@@ -15,7 +15,15 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
-IYI="$REPO/bin/iyi"
+probe="$(mktemp)"
+printf 'import compiler/syntax/ast::{ASTNode}\n' > "$probe.iyi"
+if [ -x "$REPO/.build/iyi" ] && "$REPO/.build/iyi" build -o "$probe" "$probe.iyi" >/dev/null 2>&1; then
+  IYI="$REPO/.build/iyi"
+else
+  IYI="${IYI_COMPILER:-/Users/jwaldrip/.local/state/ovnfs/uppers/s2a25-closure-int/.build/iyi}"
+fi
+rm -f "$probe" "$probe.iyi"
+export IYI_PATH="$REPO/src"
 CRYSTAL="${CRYSTAL:-crystal}"
 FLOOR_FILE="$REPO/bench/selfhost_bodies.floor"
 RAISE="${BODIES_RAISE:-0}"
