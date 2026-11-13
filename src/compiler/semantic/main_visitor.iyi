@@ -2576,7 +2576,7 @@ pub class MainVisitor < TypeNodeHost
     if owner.is_a?(GenericInstanceType)
       owner = owner.as(GenericInstanceType).generic_type
     end
-    if owner.is_a?(ModuleType) && !owner.is_a?(SemanticProgram)
+    if owner.is_a?(ModuleType)
       @current_type = owner.as(ModuleType)
     end
     nil
@@ -3126,13 +3126,19 @@ pub class MainVisitor < TypeNodeHost
         return false if target_def.nil?
         instantiated_def = target_def.clone
         @program.copy_def_owner(target_def, instantiated_def)
-        dkey = def_instance_key(target_def, ut, node)
+        instance_owner : Type = ut
+        if node.obj.nil?
+          if declared_owner = @program.def_owner(target_def)
+            instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)
+          end
+        end
+        dkey = def_instance_key(target_def, instance_owner, node)
         ret_t : Type? = nil
         if hit = cached_instance(dkey)
           instantiated_def = hit.definition
           ret_t = hit.return_type
         else
-          ret_t = type_method_body(instantiated_def, ut, node.args, node.block, node, dkey, node)
+          ret_t = type_method_body(instantiated_def, instance_owner, node.args, node.block, node, dkey, node)
         end
         return false if ret_t.nil?
         if first_target_def.nil?
@@ -3181,7 +3187,16 @@ pub class MainVisitor < TypeNodeHost
     end
     instantiated_def = target_def.clone
     @program.copy_def_owner(target_def, instantiated_def)
-    dkey = def_instance_key(target_def, rec_type, node)
+    # A receiverless fallback to a program def is instantiated by the program,
+    # not by the type that happened to call it. Methods retain the actual
+    # receiver, including generic instances and inherited methods.
+    instance_owner : Type = rec_type
+    if node.obj.nil?
+      if declared_owner = @program.def_owner(target_def)
+        instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)
+      end
+    end
+    dkey = def_instance_key(target_def, instance_owner, node)
     body_ret : Type? = nil
     if hit = cached_instance(dkey)
       # A cached instance: the call records its clone and takes its return type. Its block breaks
@@ -3194,7 +3209,7 @@ pub class MainVisitor < TypeNodeHost
       if blk = node.block
         @block_breaks[blk] = [] of Type?
       end
-      body_ret = type_method_body(instantiated_def, rec_type, node.args, node.block, nil, dkey, node)
+      body_ret = type_method_body(instantiated_def, instance_owner, node.args, node.block, nil, dkey, node)
     end
     ret_type = call_result(node, body_ret)
     if ret_type
