@@ -2223,6 +2223,10 @@ pub class MainVisitor < TypeNodeHost
       # in `File.chmod(path : String | Path)` is that file's import.
       old_imports = @program.current_imports
       old_import_defs = @program.current_import_defs
+      old_candidate_type = @current_type
+      if owner = @program.def_owner(d)
+        @current_type = owner if owner.iyi_unit
+      end
       enter_file_scope(d)
       all_args_match = true
       i = 0
@@ -2243,6 +2247,7 @@ pub class MainVisitor < TypeNodeHost
         end
         i = i + 1
       end
+      @current_type = old_candidate_type
       @program.current_imports = old_imports
       @program.current_import_defs = old_import_defs
       if all_args_match
