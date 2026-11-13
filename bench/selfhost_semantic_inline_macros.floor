@@ -143,10 +143,10 @@ src/compiler/semantic/call_nodes.iyi 4
 src/compiler/semantic/cleanup.iyi 7
 src/compiler/semantic/default_arguments.iyi 14
 src/compiler/semantic/inline_macros.iyi 26
-src/compiler/semantic/instance_vars.iyi 35
+src/compiler/semantic/instance_vars.iyi 36
 src/compiler/semantic/lib_call.iyi 22
 src/compiler/semantic/literal_expander.iyi 64
-src/compiler/semantic/main_visitor.iyi 186
+src/compiler/semantic/main_visitor.iyi 187
 src/compiler/semantic/match.iyi 35
 src/compiler/semantic/math_interpreter.iyi 51
 src/compiler/semantic/method_lookup.iyi 24
