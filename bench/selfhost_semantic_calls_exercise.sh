@@ -344,6 +344,11 @@ prove_mutation "a number literal is not matched when its value fits" "$MATCH_FIL
   '      return false' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an inherited method's target forgets the type it was found on" "$CALL_FILE" \
+  'return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, single.defining)' \
+  'return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, nil)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 

@@ -8,8 +8,8 @@
 #
 #   # call <expr>   =>  <expr> => <matches> | none | error: <first line of the message>
 #   # error <expr>  =>  <expr> => ok | error: <first line of the message>
+#   # defining <expr> => <expr> => defining=<found-on> owner=<receiver>
 #   # expand <call>  =>  <call> => <argument list> (the one match's arguments after default expansion)
-#
 # A call is `name(args)` (the program's own defs and the prelude's), `Type.name(args)`
 # (the metaclass of a type: its class methods and the ones it inherits), or
 # `<receiver call>.name(args)` (an instance: the receiver call must have exactly
@@ -235,6 +235,24 @@ def match_text(m : Iyi::Match) : String
   "#{m.context.instantiated_type.to_s}::#{m.def.name}(#{restrictions.join(", ")}) -> #{ret_text}"
 end
 
+# The type the one match was found on, and the receiver it was invoked on.
+# They differ when the method is inherited (match.cr: defining_type vs instantiated_type).
+def defining_text(program : Iyi::Program, expr : String) : String
+  node = Iyi::Parser.new(expr).parse
+  raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
+  call = node.as(Iyi::Call)
+  receiver = call_scope(program, expr)
+  found, _ = dispatch_matches(receiver, signature_of(program, call))
+  if found.empty? && wants_numeric_autocast?(program, call)
+    found, _ = dispatch_matches(receiver, signature_autocast(program, call), true)
+  end
+  raise "expected one match" unless found.size == 1
+  m = found[0]
+  "defining=#{m.context.defining_type} owner=#{m.context.instantiated_type}"
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 def evaluate(program : Iyi::Program, expr : String) : String
   node = Iyi::Parser.new(expr).parse
   raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
@@ -353,6 +371,9 @@ begin
     elsif line.starts_with?("# error ")
       expr = line[8..].strip
       puts "#{expr} => #{error_text(path, source, expr)}"
+    elsif line.starts_with?("# defining ")
+      expr = line[11..].strip
+      puts "#{expr} => #{defining_text(program, expr)}"
     elsif line.starts_with?("# expand ")
       expr = line[9..].strip
       puts "#{expr} => #{expand_text(program, expr)}"
