@@ -1391,9 +1391,13 @@ class ModuleImporter
   # LLVM has one convention for both of the IR's (SPEC 2.1): the hosted compiler emits a def and a C function
   # alike as `ccc`, with a def's aggregates passed whole and a C function's already lowered to the platform ABI.
   # The name tells them apart: a def or a proc is mangled with a leading `*` or `~`, and nothing C can be named
-  # so. A def is `Iyi`; a `fun`, a lib function and the runtime's entry points are `C`.
+  # so. A def is `Iyi`; a `fun`, a lib function and the runtime's entry points are `C`. The program's entry
+  # body (`__crystal_main`, or `__iyi_main` under iyi's prelude) is a def in all but name: the hosted compiler
+  # gives it the root expression's type as its result, aggregates included, and its one caller drops that
+  # value (codegen.cr 303-308, 737), which a C-convention signature cannot carry unlowered. It is `Iyi`.
   def convention_of(name : String) : CallConv
     return CallConv::Iyi if name.starts_with?("*") || name.starts_with?("~")
+    return CallConv::Iyi if name == "__crystal_main" || name == "__iyi_main"
     CallConv::C
   end
 

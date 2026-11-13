@@ -157,6 +157,7 @@ src/compiler/lower/block.iyi parse
 src/compiler/lower/call.iyi parse
 src/compiler/lower/cond.iyi parse
 src/compiler/lower/context.iyi parse
+src/compiler/lower/ensure.iyi parse
 src/compiler/lower/fun.iyi parse
 src/compiler/lower/helpers.iyi parse
 src/compiler/lower/lower.iyi parse
