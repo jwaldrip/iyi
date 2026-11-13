@@ -47,6 +47,12 @@ pub abstract class Type
     full_name
   end
 
+  # The type with a virtual wrapper removed. The hosted printer calls this unless
+  # it is printing an IR name. A type that is not virtual is itself.
+  def devirtualize : Type
+    self
+  end
+
   # Records a place this type is declared, as the hosted pass does (`attach_doc`).
   def add_location(location : Location) : Nil
     if @locations.nil?
@@ -490,40 +496,6 @@ pub abstract class ModuleType < NamedType
   end
 end
 
-pub class MetaclassType < ModuleType
-  getter instance_type : Type
-
-  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @instance_type : Type)
-    super(program, namespace, name)
-    # The hosted rule: a class's metaclass inherits from its superclass's metaclass, an
-    # enum's from Enum's, and anything else (a class with no superclass, Object) from Class.
-    if @instance_type.is_a?(ClassType)
-      sc = @instance_type.as(ClassType).superclass
-      if sc
-        @parents << sc.as(ModuleType).metaclass
-      else
-        @parents << program.types["Class"]
-      end
-    elsif @instance_type.is_a?(EnumType)
-      @parents << program.enum_type.metaclass
-    else
-      @parents << program.types["Class"]
-    end
-  end
-
-  def full_name : String
-    "#{@instance_type.to_s}.class"
-  end
-
-  def to_s : String
-    full_name
-  end
-
-  def type_desc : String
-    "metaclass"
-  end
-end
-
 pub abstract class ClassType < ModuleType
   property superclass : Type?
   property superclass_display : String?
@@ -563,6 +535,64 @@ pub abstract class ClassType < ModuleType
       @parents << sc
       sc.register_subclass(self)
     end
+  end
+end
+
+pub class MetaclassType < ClassType
+  getter instance_type : Type
+
+  # iyi: as the hosted MetaclassType is a ClassType (types.cr), the metaclass records its superclass too.
+  # iyi: a metaclass is abstract when its instance type is (hosted MetaclassType delegates abstract?, types.cr 3310).
+  def abstract? : Bool
+    if @instance_type.is_a?(ModuleType)
+      return @instance_type.as(ModuleType).abstract?
+    end
+    false
+  end
+
+  # iyi: a module's or trait's metaclass is not a class (hosted: a trait's metaclass takes the module rule, SPEC II.6).
+  def class? : Bool
+    @instance_type.is_a?(ClassType) && !@struct
+  end
+
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @instance_type : Type)
+    super(program, namespace, name)
+    # The hosted rule: a class's metaclass inherits from its superclass's metaclass, an
+    # enum's from Enum's, and anything else (a class with no superclass, Object) from Class.
+    # iyi: Class itself is the metaclass of Value (program.cr 1423). Its parent, Object's metaclass,
+    # is set by the program once Class is registered, since building it needs types["Class"].
+    if name == "Class"
+      # superclass and parent set after registration
+    elsif @instance_type.is_a?(ClassType)
+      sc = @instance_type.as(ClassType).superclass
+      if sc
+        meta_sc = sc.as(ModuleType).metaclass
+        @superclass = meta_sc
+        @parents << meta_sc
+      else
+        @superclass = program.types["Class"]
+        @parents << program.types["Class"]
+      end
+    elsif @instance_type.is_a?(EnumType)
+      @superclass = program.enum_type.metaclass
+      @parents << program.enum_type.metaclass
+    else
+      @superclass = program.types["Class"]
+      @parents << program.types["Class"]
+    end
+  end
+
+  def full_name : String
+    return "Class" if @name == "Class"
+    "#{@instance_type.to_s}.class"
+  end
+
+  def to_s : String
+    full_name
+  end
+
+  def type_desc : String
+    "metaclass"
   end
 end
 
@@ -1385,21 +1415,27 @@ pub class SemanticProgram < NonGenericModuleType
     num.struct = true
     num.abstract = true
     @types["Number"] = num
+    nil_t = NilType.new(self, self, "Nil", val)
+    @types["Nil"] = nil_t
+    bool_t = NonGenericClassType.new(self, self, "Bool", val)
+    bool_t.struct = true
+    @types["Bool"] = bool_t
+    char_t = NonGenericClassType.new(self, self, "Char", val)
+    char_t.struct = true
+    @types["Char"] = char_t
 
     int_t = NonGenericClassType.new(self, self, "Int", num)
     int_t.struct = true
     int_t.abstract = true
     @types["Int"] = int_t
 
-    i32 = NonGenericClassType.new(self, self, "Int32", int_t)
-    i32.struct = true
-    @int32_type = i32
-    @types["Int32"] = i32
-
-    ["Int8", "UInt8", "Int16", "UInt16", "UInt32", "Int64", "UInt64", "Int128", "UInt128"].each do |tname|
+    ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Int128", "UInt128"].each do |tname|
       t = NonGenericClassType.new(self, self, tname, int_t)
       t.struct = true
       @types[tname] = t
+      if tname == "Int32"
+        @int32_type = t
+      end
     end
 
     flt = NonGenericClassType.new(self, self, "Float", num)
@@ -1413,18 +1449,21 @@ pub class SemanticProgram < NonGenericModuleType
     f64.struct = true
     @types["Float64"] = f64
 
-    char_t = NonGenericClassType.new(self, self, "Char", val)
-    char_t.struct = true
-    @types["Char"] = char_t
-    bool_t = NonGenericClassType.new(self, self, "Bool", val)
-    bool_t.struct = true
-    @types["Bool"] = bool_t
-    nil_t = NilType.new(self, self, "Nil", val)
-    @types["Nil"] = nil_t
-
     sym_t = NonGenericClassType.new(self, self, "Symbol", val)
     sym_t.struct = true
     @types["Symbol"] = sym_t
+    ptr = GenericClassType.new(self, self, "Pointer", ["T"], nil, val)
+    ptr.struct = true
+    @types["Pointer"] = ptr
+    tup = GenericClassType.new(self, self, "Tuple", ["T"], 0, val)
+    tup.struct = true
+    @types["Tuple"] = tup
+    named_tup = GenericClassType.new(self, self, "NamedTuple", ["T"], nil, val)
+    named_tup.struct = true
+    @types["NamedTuple"] = named_tup
+    static_array = GenericClassType.new(self, self, "StaticArray", ["T", "N"], nil, val)
+    static_array.struct = true
+    @types["StaticArray"] = static_array
 
     @types["String"] = NonGenericClassType.new(self, self, "String", ref)
 
@@ -1444,37 +1483,32 @@ pub class SemanticProgram < NonGenericModuleType
     @enum_type = en
     @types["Enum"] = en
 
-    klass = NonGenericClassType.new(self, self, "Class", val)
-    klass.abstract = true
+    # iyi: Class is the metaclass of Value, as the hosted program makes it (program.cr 1423). Its parent
+    # is Value itself: the hosted chain prints Object.class under Class under Value (bench oracle --chain).
+    klass = MetaclassType.new(self, self, "Class", val)
     @types["Class"] = klass
+    klass.superclass = val
+    klass.superclass_display = val.full_name
+    klass.abstract = true
+    klass.parents << val
     @types["Array"] = GenericClassType.new(self, self, "Array", ["T"], nil, ref)
     @types["Hash"] = GenericClassType.new(self, self, "Hash", ["K", "V"], nil, ref)
-    ptr = GenericClassType.new(self, self, "Pointer", ["T"], nil, val)
-    ptr.struct = true
-    @types["Pointer"] = ptr
     proc_t = GenericClassType.new(self, self, "Proc", ["T", "R"], 0, val)
     proc_t.struct = true
     @types["Proc"] = proc_t
-    tup = GenericClassType.new(self, self, "Tuple", ["T"], 0, val)
-    tup.struct = true
-    @types["Tuple"] = tup
-    named_tup = GenericClassType.new(self, self, "NamedTuple", ["T"], nil, val)
-    named_tup.struct = true
-    @types["NamedTuple"] = named_tup
-    slice_t = GenericClassType.new(self, self, "Slice", ["T"], nil, st)
-    slice_t.struct = true
-    @types["Slice"] = slice_t
+    # iyi: Range before Slice, as the hosted program creates them (program.cr 1435, 1437): the
+    # order of Struct's subclasses is the order the type-id walk numbers them.
     range_t = GenericClassType.new(self, self, "Range", ["B", "E"], nil, st)
     range_t.struct = true
     @types["Range"] = range_t
+    slice_t = GenericClassType.new(self, self, "Slice", ["T"], nil, st)
+    slice_t.struct = true
+    @types["Slice"] = slice_t
     @types["Enumerable"] = GenericModuleType.new(self, self, "Enumerable", ["T"])
     @types["Indexable"] = GenericModuleType.new(self, self, "Indexable", ["T"])
     @types["Crystal"] = NonGenericModuleType.new(self, self, "Crystal")
-    @types["Exception"] = NonGenericClassType.new(self, self, "Exception", ref)
     @types["Regex"] = NonGenericClassType.new(self, self, "Regex", ref)
-    static_array = GenericClassType.new(self, self, "StaticArray", ["T", "N"], nil, val)
-    static_array.struct = true
-    @types["StaticArray"] = static_array
+    @types["Exception"] = NonGenericClassType.new(self, self, "Exception", ref)
     union_t = GenericClassType.new(self, self, "Union", ["T"], 0, val)
     union_t.struct = true
     @types["Union"] = union_t
@@ -1590,7 +1624,12 @@ pub class SemanticProgram < NonGenericModuleType
     if base.is_a?(GenericClassType)
       gc = base.as(GenericClassType)
       return false if gc.full_name == "NamedTuple" || gc.full_name == "StaticArray"
-      return false unless gc.splat_index.nil?
+      # iyi: Tuple's splat takes every argument it is written with. Its arguments resolve through
+      # lookup_type_node, which sees this file's imports; the hook's own lookup does not, so a
+      # Tuple(String, IrType, Bool) named in an imported file stays unresolved there (codegen.iyi 651).
+      if !gc.splat_index.nil?
+        return gc.full_name == "Tuple" && g.type_vars.all? { |t| type_node?(t) }
+      end
       return gc.type_vars.size == g.type_vars.size && g.type_vars.all? { |t| type_node?(t) }
     end
     if base.is_a?(GenericModuleType)
@@ -1611,7 +1650,22 @@ pub class SemanticProgram < NonGenericModuleType
       lookup_type_path?(node.as(Path), current_type)
     elsif node.is_a?(Generic)
       g = node.as(Generic)
-      lookup_type_node?(g.name, current_type)
+      base_type = lookup_type_node?(g.name, current_type)
+      return nil unless base_type
+      if hook = @merge_hook
+        if base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType)
+          if plain_generic?(g, base_type)
+            type_args = [] of Type
+            g.type_vars.each do |t|
+              arg = lookup_type_node?(t, current_type)
+              return nil unless arg
+              type_args << arg
+            end
+            return hook.instantiate_type(base_type, type_args)
+          end
+        end
+      end
+      base_type
     elsif node.is_a?(Union)
       u = node.as(Union)
       resolved = [] of Type
@@ -1641,6 +1695,18 @@ pub class SemanticProgram < NonGenericModuleType
     end
   end
 
+  # A type the compiler declared and no source has written (no locations) is a name, not a
+  # definition. An import of that name wins (hosted path_lookup.cr: `import x::{Array}` beats
+  # the empty Array). A type a file has reopened keeps its locations and is not replaced.
+  def imported_over_shell(found : Type, name : String) : Type
+    if found.locations.nil?
+      if imported = @current_imports[name]?
+        return imported
+      end
+    end
+    found
+  end
+
   def lookup_type_path?(path : Path, current_type : ModuleType) : Type?
     if path.global
       return lookup_path_names(path.names, self)
@@ -1648,6 +1714,9 @@ pub class SemanticProgram < NonGenericModuleType
 
     first_name = path.names.first
     t = current_type.lookup_type(first_name)
+    if t
+      t = imported_over_shell(t, first_name)
+    end
     if t.nil? && current_type.name == first_name
       t = current_type
     end
@@ -1708,6 +1777,9 @@ pub class SemanticProgram < NonGenericModuleType
 
     # 1. Search in current_type
     t = current_type.lookup_type(first_name)
+    if t
+      t = imported_over_shell(t, first_name)
+    end
 
     # 2. Check if current_type has this name
     if t.nil? && current_type.name == first_name
@@ -1819,11 +1891,14 @@ pub class PendingIvar
   property name : String
   property restriction : ASTNode
   property initializer : ASTNode?
-  # An explicit `@x : T` is typed by T's virtual type (hosted declare_instance_var).
+  # An explicit `@x : T` or initialize-arg `@x` is typed by T's virtual type (hosted
+  # declare_instance_var / type_guess_visitor check_can_be_stored).
   property virtual : Bool
+  # Only an explicit `@x : T` declaration overrides an initialize-argument guess for the same ivar.
+  property explicit : Bool
   property imports : Hash(String, Type)? = nil
 
-  def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode? = nil, @virtual : Bool = false)
+  def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode? = nil, @virtual : Bool = false, @explicit : Bool = false)
   end
 end
 
@@ -1879,10 +1954,10 @@ pub class TopLevelVisitor < Visitor
     # variable that exists.
     explicit = [] of String
     @pending_ivars.each do |found|
-      explicit << "#{found.owner.full_name} #{found.name}" if found.virtual
+      explicit << "#{found.owner.full_name} #{found.name}" if found.explicit
     end
     @pending_ivars.each do |pi|
-      next if !pi.virtual && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
+      next if !pi.explicit && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
       if imports = pi.imports
         @program.current_imports = imports
       else
@@ -2153,6 +2228,20 @@ pub class TopLevelVisitor < Visitor
     if ex = existing
       if ex.is_a?(AliasType)
         ex = ex.as(AliasType).process_value
+      end
+      # iyi: `class Class` reopens the metaclass of Value (primitives.iyi; hosted program.cr 1423), so
+      # its methods (==, ===, self.|) are added to that metaclass, as the hosted program adds them.
+      if ex.is_a?(MetaclassType) && name == "Class"
+        meta = ex.as(MetaclassType)
+        if loc = node.location
+          meta.add_location(loc)
+        end
+        old_meta_scope = @current_type
+        @program.type_bodies << TypeBody.new(meta, node.body)
+        @current_type = meta
+        node.body.accept(self)
+        @current_type = old_meta_scope
+        return false
       end
 
       unless ex.is_a?(ClassType)
@@ -2817,7 +2906,7 @@ pub class TopLevelVisitor < Visitor
       node.args.each do |arg|
         if arg.name.starts_with?("@")
           if r = arg.restriction
-            @pending_ivars << PendingIvar.new(@current_type, arg.name, r)
+            @pending_ivars << PendingIvar.new(@current_type, arg.name, r, nil, true)
           end
         end
       end
@@ -2839,7 +2928,7 @@ pub class TopLevelVisitor < Visitor
             node.args.each do |arg|
               if arg.name == vname
                 if r = arg.restriction
-                  @pending_ivars << PendingIvar.new(@current_type, ivar_name, r)
+                  @pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, true)
                 end
               end
             end
@@ -2913,7 +3002,7 @@ pub class TopLevelVisitor < Visitor
         raise("can only declare instance variables of a non-generic class, not a main (<Program>)")
       end
       ivar_name = node.var.as(InstanceVar).name
-      @pending_ivars << PendingIvar.new(@current_type, ivar_name, node.declared_type, node.value, true)
+      @pending_ivars << PendingIvar.new(@current_type, ivar_name, node.declared_type, node.value, true, true)
     elsif node.var.is_a?(ClassVar)
       if @current_type.is_a?(SemanticProgram)
         raise("can't use class variables at the top level")
@@ -3163,7 +3252,9 @@ pub def dump_lib_fun(f : LibFun, io : String::Builder, indent : String) : Nil
 end
 
 pub def dump_type(t : Type, io : String::Builder, indent : String, entry : String? = nil) : Nil
-  io << indent << "Type: " << t.full_name << " (" << t.type_desc << ")\n"
+  # iyi: the kind a dump prints follows the class, as the hosted dump does (a MetaclassType is a ClassType there).
+  kind = t.is_a?(ClassType) ? (t.as(ClassType).struct? ? "struct" : "class") : t.type_desc
+  io << indent << "Type: " << t.full_name << " (" << kind << ")\n"
   vis_str = t.private? ? "private" : "public"
   io << indent << "  visibility: " << vis_str << "\n"
   io << indent << "  abstract: " << (t.abstract? ? "true" : "false") << "\n"
