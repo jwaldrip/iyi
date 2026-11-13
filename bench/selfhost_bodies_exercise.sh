@@ -323,6 +323,18 @@ imported_generic_at_floor() {
 prove_mutation "imported generic uses its typed lexical base" "$REPO/src/compiler/semantic/type_nodes.iyi" \
   "  if typed_base = visitor.child_type(node.name)" \
   "  if typed_base = visitor.child_type(node)" -- imported_generic_at_floor || status=1
+writer_type_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  fixture="$REPO/bench/fixtures/sem_bodies_block_writer_type.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+  matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_block_writer_type.iyi" { print $2 }' "$FLOOR_FILE")
+  [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
+}
+prove_mutation "block body uses the writer's current type" "$MAIN_VISITOR" \
+  "          @current_type = writer_type" \
+  "          nil" -- writer_type_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"
