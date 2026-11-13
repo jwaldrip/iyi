@@ -258,7 +258,7 @@ fi
 pointer_malloc_check() {
   "$IYI" build -o "$WORK/port-n" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/n.build.log" 2>&1 || return 1
   "$WORK/port-n" emit "$REPO/bench/fixtures/lower_pointer_malloc.iyi" "$WORK/lower_pointer_malloc.oracle.ll" > "$WORK/ptr_malloc.ir" 2>/dev/null || return 1
-  awk '/call ptr @malloc\(i64/ { m = 1 } /call void @llvm\.memset\.p0\.i64/ { s = 1 } END { exit !(m && s) }' "$WORK/ptr_malloc.ir"
+  awk '/call ptr.*@malloc\(i64/ { m = 1 } /intrinsic llvm\.memset\.p0\.i64/ { s = 1 } END { exit !(m && s) }' "$WORK/ptr_malloc.ir"
 }
 echo "  Pointer(UInt8).malloc emits C malloc and memset:"
 if pointer_malloc_check; then
