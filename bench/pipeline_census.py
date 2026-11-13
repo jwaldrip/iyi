@@ -13,9 +13,10 @@ Subcommands:
       the resulting .names and .refusals sidecars into <outdir>.
 
   report <outdir> [--hosted <hosted.ll>] [--write-dir <dir>]
-      Print the census summary line, scaffold failures by reason, and
-      the ranked refusal-shape table. Optionally write census.txt,
-      shapes.tsv, and by_function.tsv to --write-dir.
+      Print the census summary, scaffold failures, the ranked refusal
+      table, and the un-normalised method and restriction pairs.
+      Optionally write census.txt, shapes.tsv, by_function.tsv, and
+      verbatim.tsv to --write-dir.
 """
 from __future__ import annotations
 
@@ -436,6 +437,145 @@ def normalize_reason(reason: str) -> str:
     s = re.sub(r"<Type>\s*(?:\|\s*<Type>\s*)+", "<Type>", s)
     return s
 
+_PRIMITIVES = {
+    "Nil", "Bool", "Char", "Int8", "Int16", "Int32", "Int64", "Int128",
+    "UInt8", "UInt16", "UInt32", "UInt64", "UInt128", "Float32", "Float64",
+    "Symbol", "Void", "NoReturn",
+}
+
+
+def _split_top(text: str, sep: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in "([{<":
+            depth += 1
+        elif ch in ")]}>":
+            depth = max(0, depth - 1)
+        elif ch == sep and depth == 0:
+            parts.append(text[start:i].strip())
+            start = i + 1
+    parts.append(text[start:].strip())
+    return [part for part in parts if part]
+
+
+def _unwrap(text: str) -> str:
+    s = text.strip()
+    if len(s) >= 2 and s[0] == "(" and s[-1] == ")":
+        depth = 0
+        for i, ch in enumerate(s):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and i != len(s) - 1:
+                    return s
+        return s[1:-1].strip()
+    return s
+
+
+def type_kind(text: str) -> str:
+    """Classify a type as written in a refusal reason.
+
+    A path with no `+`, union, `.class`, or type argument is a plain class.
+    A module is not distinguishable from a class in that text, so it is not guessed.
+    """
+    s = _unwrap(text)
+    if "|" in s:
+        members = [_unwrap(part) for part in _split_top(s, "|")]
+        nilish = {"Nil", "::Nil", "Nil.class"}
+        if any(member in nilish or member.endswith("::Nil") for member in members):
+            return "union with Nil"
+        return "other union"
+    if s.endswith(".class"):
+        return "metaclass"
+    if s.endswith("+"):
+        return "virtual"
+    if "(" in s:
+        return "generic instance"
+    base = s.split("::")[-1]
+    if base in _PRIMITIVES or s in _PRIMITIVES:
+        return "primitive"
+    return "plain class"
+
+
+def filter_miss_owner(owner: str, reason: str) -> str:
+    """The compile-time undefined-method form is a flow-filter miss, not a lookup miss."""
+    if reason.startswith("undefined method ") and "(compile-time type is " in reason:
+        return "bodies"
+    return owner
+
+
+def parse_undefined(reason: str) -> tuple[str, str] | None:
+    match = re.match(
+        r"undefined method '([^']*)' for (.+?)(?: \(compile-time type is .+)?$",
+        reason,
+    )
+    if not match:
+        return None
+    return match.group(1), match.group(2).strip()
+
+
+def parse_expected(reason: str) -> tuple[str, str, str] | None:
+    if reason.startswith("expected argument "):
+        match = re.match(r"expected argument #\d+ to '[^']*' to be (.+), not (.+)$", reason)
+        if not match:
+            return None
+        return ("argument", match.group(1).strip(), type_kind(match.group(2).strip()))
+    if reason.startswith("expected type, got "):
+        got = reason[len("expected type, got "):].strip().rstrip(".")
+        return ("type", got, type_kind(got))
+    return None
+
+
+def _note_pair(bucket, examples, key, hosted: str, reason: str) -> None:
+    bucket[key].add(hosted)
+    examples.setdefault(key, reason)
+
+
+def note_verbatim_pairs(hosted: str, reason: str, undef_funcs, undef_ex, expect_funcs, expect_ex) -> None:
+    parsed = parse_undefined(reason)
+    if parsed:
+        method, receiver = parsed
+        _note_pair(undef_funcs, undef_ex, (method, type_kind(receiver)), hosted, reason)
+    expected = parse_expected(reason)
+    if expected:
+        _note_pair(expect_funcs, expect_ex, expected, hosted, reason)
+
+
+def append_pair_sections(lines, undef_funcs, undef_ex, expect_funcs, expect_ex) -> None:
+    lines.append("")
+    lines.append("== Undefined methods by (method, receiver kind) ==")
+    lines.append("Receiver kind is the type after 'for', not the compile-time type.")
+    lines.append("virtual: lookup on a virtual type does not reach a superclass def (calls typing).")
+    lines.append("A compile-time form whose receiver is Nil is a flow filter that did not narrow (bodies), not a lookup miss.")
+    lines.append("Module is not guessed: a path with no marker is a plain class.")
+    ranked_undef = sorted(undef_funcs, key=lambda key: (-len(undef_funcs[key]), key[0], key[1]))
+    for method, kind in ranked_undef[:40]:
+        key = (method, kind)
+        lines.append(f"  stopped={len(undef_funcs[key]):5d} method='{method}' kind={kind}")
+        lines.append(f"         e.g. {undef_ex[key]}")
+    if len(ranked_undef) > 40:
+        lines.append(f"  ... ({len(ranked_undef) - 40} more pairs)")
+
+    lines.append("")
+    lines.append("== Expected mismatch by (restriction text, given type kind) ==")
+    lines.append("argument: restriction is the 'to be' type, kind is the 'not' type.")
+    lines.append("type: the message omits the expected type, so the restriction text is the 'got' type.")
+    for family, title in (("argument", "expected argument"), ("type", "expected type, got")):
+        ranked = sorted(
+            (key for key in expect_funcs if key[0] == family),
+            key=lambda key: (-len(expect_funcs[key]), key[1], key[2]),
+        )
+        lines.append(f"  -- {title} --")
+        for key in ranked[:40]:
+            _family, restriction, kind = key
+            lines.append(f"  stopped={len(expect_funcs[key]):5d} restriction={restriction} kind={kind}")
+            lines.append(f"         e.g. {expect_ex[key]}")
+        if len(ranked) > 40:
+            lines.append(f"  ... ({len(ranked) - 40} more pairs)")
+
 
 def cmd_names(args: argparse.Namespace) -> int:
     in_scope, out_scope = extract_hosted_defines(args.hosted_ll)
@@ -701,21 +841,30 @@ def cmd_report(args: argparse.Namespace) -> int:
     shape_verbatim: dict[tuple[str, str], str] = {}
     func_shapes: dict[str, set[tuple[str, str]]] = {}
     refused_functions: set[str] = set()
+    undef_funcs: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
+    undef_ex: dict[tuple[str, str], str] = {}
+    expect_funcs: dict[tuple[str, str, str], set[str]] = collections.defaultdict(set)
+    expect_ex: dict[tuple[str, str, str], str] = {}
+    verbatim_rows: list[str] = ["hosted_name\tstatus\tverbatim_reason\tunnormalised"]
 
     superset_collisions = 0
     for h in asked:
         if h in clean_asked:
             if h in census_failures:
                 superset_collisions += 1
+            verbatim_rows.append(f"{h}\tclean\t\t")
             by_fn_rows.append(f"{h}\tclean\t\t")
             continue
         if h in census_failures:
             reason = census_failures[h]
             scaffold_failed.append((h, reason))
+            note_verbatim_pairs(h, reason, undef_funcs, undef_ex, expect_funcs, expect_ex)
+            verbatim_rows.append(f"{h}\tscaffold\t{reason}\t{reason}")
             by_fn_rows.append(f"{h}\tscaffold\t{normalize_reason(reason)}\t")
             continue
         if h in prerequisites:
             owner, reason = prerequisites[h]
+            verbatim_rows.append(f"{h}\tprerequisite\t{reason}\t{reason}")
             by_fn_rows.append(f"{h}\tprerequisite\t{reason}\t")
             continue
 
@@ -725,16 +874,21 @@ def cmd_report(args: argparse.Namespace) -> int:
             refused_functions.add(h)
             fshapes: set[tuple[str, str]] = set()
             first_shape = ""
+            first_raw = ""
             for _phase, owner, raw_reason in rows:
+                owner = filter_miss_owner(owner, raw_reason)
+                note_verbatim_pairs(h, raw_reason, undef_funcs, undef_ex, expect_funcs, expect_ex)
                 shp = normalize_reason(raw_reason)
                 if not first_shape:
                     first_shape = shp
+                    first_raw = raw_reason
                 sk = (shp, owner)
                 fshapes.add(sk)
                 shape_funcs[sk].add(h)
                 if h not in shape_examples[sk] and len(shape_examples[sk]) < 3:
                     shape_examples[sk].append(h)
                 shape_verbatim.setdefault(sk, raw_reason)
+            verbatim_rows.append(f"{h}\trefused\t{first_raw}\t{first_raw}")
             func_shapes[h] = fshapes
             all_shapes = "|".join(f"{owner}: {shape}".replace("|", "\\|") for shape, owner in sorted(fshapes))
             by_fn_rows.append(f"{h}\trefused\t{first_shape}\t{all_shapes}")
@@ -750,6 +904,7 @@ def cmd_report(args: argparse.Namespace) -> int:
                 if len(shape_examples[sk]) < 3:
                     shape_examples[sk].append(h)
                 shape_verbatim.setdefault(sk, f"{h} -> {pn}")
+                verbatim_rows.append(f"{h}\tnaming\t{h} -> {pn}\t{h} -> {pn}")
                 by_fn_rows.append(f"{h}\tnaming\t{diff_cls}: {pn}\t")
             else:
                 raise RuntimeError(f"unclassified exact direct result: {h}")
@@ -762,6 +917,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             if len(shape_examples[sk]) < 3:
                 shape_examples[sk].append(h)
             shape_verbatim.setdefault(sk, instance_silent.get(h, "no direct instance result"))
+            silent_reason = instance_silent.get(h, "no direct instance result")
+            verbatim_rows.append(f"{h}\tsilent\t{silent_reason}\t{silent_reason}")
             by_fn_rows.append(f"{h}\tsilent\t{shp}\t")
 
     only_counts: collections.Counter[tuple[str, str]] = collections.Counter()
@@ -843,6 +1000,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         for ex in exs:
             lines.append(f"         e.g. {ex}")
         lines.append(f"         verbatim: {verb}")
+    append_pair_sections(lines, undef_funcs, undef_ex, expect_funcs, expect_ex)
     lines.append("")
     lines.append("== cumulative ==")
     lines.append("Upper bound per row set: fixing a row can uncover another refusal in the same function.")
@@ -886,7 +1044,8 @@ def cmd_report(args: argparse.Namespace) -> int:
         (wdir / "census.txt").write_text(report_text, encoding="utf-8")
         (wdir / "shapes.tsv").write_text("\n".join(shape_tsv) + "\n", encoding="utf-8")
         (wdir / "by_function.tsv").write_text("\n".join(by_fn_rows) + "\n", encoding="utf-8")
-        print(f"wrote {wdir}/census.txt, shapes.tsv, by_function.tsv", file=sys.stderr)
+        (wdir / "verbatim.tsv").write_text("\n".join(verbatim_rows) + "\n", encoding="utf-8")
+        print(f"wrote {wdir}/census.txt, shapes.tsv, by_function.tsv, verbatim.tsv", file=sys.stderr)
     return 0
 
 
