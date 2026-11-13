@@ -877,6 +877,11 @@ prove_mutation "an external variable's setter is not added" "$MUT_SEM" \
   "    setter_fun.external_var = false" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an external variable keeps its uninstantiated type" "$MUT_SEM" \
+  '    @external_var_funs.each do |f|' \
+  '    ([] of LibFun).each do |f|' \
+  -- check_lib_types_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an enum member loses its enum type" "$MUT_SEM" \
   "    c.enum_value_type = self" \
   "    c.enum_value_type = nil" \
