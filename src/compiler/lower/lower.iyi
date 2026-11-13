@@ -275,7 +275,7 @@ end
 # The declaration may come from any unit, not just the entry root.
 pub def emit_well_known_funs(low : Lowerer) : Nil
   if pool_reached?(low)
-    pending_visit_node("loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)")
+    refuse_reached_pool(low)
     return
   end
   low.analysed.program.global_funs.each do |record|
@@ -296,6 +296,10 @@ end
 
 def well_known_fun?(low : Lowerer, name : String) : Bool
   name == abi_name(low, "malloc64") || name == abi_name(low, "malloc_atomic64") || name == abi_name(low, "realloc64") || name == abi_name(low, "raise") || name == abi_name(low, "personality") || name == abi_name(low, "get_exception") || name == abi_name(low, "raise_overflow") || name == abi_name(low, "raise_cast_failed") || name == abi_name(low, "once_init") || name == abi_name(low, "once") || name == "__iyi_write_barrier_begin" || name == "__iyi_write_barrier" || name == "__iyi_preempt"
+end
+
+def refuse_reached_pool(low : Lowerer) : Nil
+  pending_visit_node("loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)")
 end
 
 def pool_reached?(low : Lowerer) : Bool
@@ -602,7 +606,7 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     # Declaration macros remain on their Call nodes in the port.
     call = node.as(Call)
     if pool_start_call?(low, call)
-      pending_visit_node("loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)")
+      refuse_reached_pool(low)
       return
     end
     if expanded = call.expanded
