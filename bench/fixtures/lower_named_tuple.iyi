@@ -5,6 +5,6 @@ end
 
 if LibC.getpid == -1
   tuple = {first: 1_i64, second: 2}
-  tuple
+  nil
 end
 LibC.exit(0)
