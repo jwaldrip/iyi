@@ -310,11 +310,15 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   end
   errors = facts.refusals(target)
   raise "lower: #{errors[0]}" unless errors.empty?
+  parent_context : LowerContext? = nil
   if outer = closure_context
     outer_vars = outer.closure_vars
     outer_type = outer.closure_type
     raise "BUG: closure has no enclosing frame" if outer_vars.nil? || outer_type.nil?
     setup_closure_vars(low, target, outer_vars.as(Array(ClosureVar)), outer, outer_type.as(IrType), fn.param(0))
+    parent_context = LowerContext.new(outer.fun, outer.fun_type, outer.type, outer.vars)
+    parent_context.copy_closure_from(outer)
+    parent_context.closure_ptr = fn.param(0)
   end
   first = closure_context.nil? ? 0 : 1
   if st = self_type
@@ -338,7 +342,7 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
     slot = low.alloca(low.typer.llvm_type(var.type), var.name)
     low.current_context.vars[var.name] = LowerVar.new(slot, var.type)
   end
-  malloc_closure(low, low.current_context, frame.as(ClosureFrame).closured, nil, frame.as(ClosureFrame).self_closured)
+  malloc_closure(low, low.current_context, target_frame.closured, parent_context, target_frame.self_closured)
   assigned = collect_assigned_vars(target.body)
   i = 0
   while i < target.args.size

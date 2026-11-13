@@ -1,0 +1,14 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def run(&block : -> Int32) : Int32
+  block.call
+end
+
+def outer(n : Int32) : Int32
+  k = n
+  run { k }
+end
+
+LibC.exit(outer(7))

@@ -701,11 +701,14 @@ pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
   raise "BUG: the analysed program has no type for a declared variable (hosted codegen.cr: declare_var)" if decl.nil?
   dt = decl.as(Type)
   existing = low.current_context.vars[var_node.name]?
-  if !existing.nil?
-    refuse_port("lower: variable #{var_node.name} is declared twice (hosted codegen.cr: declare_var)")
-  end
-  pointer = low.alloca(low.typer.llvm_type(dt), var_node.name)
-  low.current_context.vars[var_node.name] = LowerVar.new(pointer, dt, false)
+  pointer = if existing
+              raise "BUG: declared variable #{var_node.name} has incompatible storage" if existing.already_loaded || existing.type.full_name != dt.full_name
+              existing.pointer
+            else
+              slot = low.alloca(low.typer.llvm_type(dt), var_node.name)
+              low.current_context.vars[var_node.name] = LowerVar.new(slot, dt, false)
+              slot
+            end
   value = node.value
   if value.nil?
     low.last = llvm_nil(low)
