@@ -412,15 +412,18 @@ pub class Primitive < ASTNode
   # the visitor and the transformer dispatch by node class.
   property tuple_index : Int32 = 0
   property tuple_last : Int32 = 0
+  # Scalar (i, i) and singleton range (i, i) differ; an empty range is (0, -1).
+  property tuple_range : Bool = false
 
   def initialize(@name : String)
   end
 
   # The body of the def a tuple's literal index resolves to (hosted types.cr 2855-2860).
-  def self.tuple_indexer(first : Int32, last : Int32) : Primitive
+  def self.tuple_indexer(first : Int32, last : Int32, is_range : Bool) : Primitive
     node = Primitive.new("tuple_indexer_known_index")
     node.tuple_index = first
     node.tuple_last = last
+    node.tuple_range = is_range
     node
   end
 
@@ -428,11 +431,12 @@ pub class Primitive < ASTNode
     node = Primitive.new(@name)
     node.tuple_index = @tuple_index
     node.tuple_last = @tuple_last
+    node.tuple_range = @tuple_range
     node
   end
 
   def ==(other : self) : Bool
-    (@name == other.name) && (@tuple_index == other.tuple_index) && (@tuple_last == other.tuple_last)
+    (@name == other.name) && (@tuple_index == other.tuple_index) && (@tuple_last == other.tuple_last) && (@tuple_range == other.tuple_range)
   end
 
   def ==(other : ASTNode) : Bool
@@ -448,6 +452,7 @@ pub class Primitive < ASTNode
     h = 31 &* h &+ hash_val(@name)
     h = 31 &* h &+ @tuple_index
     h = 31 &* h &+ @tuple_last
+    h = 31 &* h &+ hash_val(@tuple_range)
     h
   end
 
@@ -1484,6 +1489,9 @@ end
 
 pub class Return < ControlExpression
   property from_propagate : Bool = false
+  # The def this returns from. Typing sets it (hosted semantic/ast.cr 697-699, main_visitor.cr 2096) and lowering
+  # runs the pending `defer` cleanups up to it (codegen.cr 1179). A clone does not carry it.
+  property target : Def? = nil
 
   def initialize(exp : ASTNode? = nil)
     super(exp)
@@ -1506,6 +1514,11 @@ pub class Return < ControlExpression
 end
 
 pub class Break < ControlExpression
+  # What this leaves: the Call whose block it is in, or the While. Typing sets it (hosted semantic/ast.cr 689-691,
+  # main_visitor.cr 2764, 2770) and lowering runs the pending `defer` cleanups up to it (codegen.cr 1446-1456).
+  # A clone does not carry it.
+  property target : ASTNode? = nil
+
   def initialize(exp : ASTNode? = nil)
     super(exp)
   end
@@ -1524,6 +1537,11 @@ pub class Break < ControlExpression
 end
 
 pub class Next < ControlExpression
+  # What this continues: the Block, the While, or the def of a captured block. Typing sets it (hosted
+  # semantic/ast.cr 693-695, main_visitor.cr 2796, 2803, 2810) and lowering runs the pending `defer` cleanups up
+  # to it (codegen.cr 1470-1480). A clone does not carry it.
+  property target : ASTNode? = nil
+
   def initialize(exp : ASTNode? = nil)
     super(exp)
   end
@@ -1619,6 +1637,23 @@ pub class Expressions < ASTNode
   property keyword : Keyword
 
   def initialize(@expressions : Array(ASTNode) = [] of ASTNode, @keyword : Keyword = Keyword::None)
+  end
+
+  # Hosted syntax/ast.cr 236-241: an unlocated sequence uses its boundary expressions.
+  def location : Location?
+    if loc = @location
+      return loc
+    end
+    return nil if @expressions.empty?
+    @expressions[0].location
+  end
+
+  def end_location : Location?
+    if loc = @end_location
+      return loc
+    end
+    return nil if @expressions.empty?
+    @expressions.last.end_location
   end
 
   def self.from(nodes : Array(ASTNode)) : ASTNode
@@ -2167,6 +2202,13 @@ pub class ExceptionHandler < ASTNode
   property ensure : ASTNode?
   property suffix : Bool
   property implicit : Bool = false
+  # The handler a `defer` is normalized to (hosted syntax/ast.cr 2967). iyi refuses a written `ensure`;
+  # this one is the defer registry's pop and is not refused.
+  property iyi_defer : Bool = false
+
+  def iyi_defer? : Bool
+    @iyi_defer
+  end
 
   def initialize(body : ASTNode? = nil, @rescues : Array(Rescue)? = nil, @else : ASTNode? = nil, @ensure : ASTNode? = nil, @suffix : Bool = false)
     @body = body || Nop.new
@@ -2178,7 +2220,10 @@ pub class ExceptionHandler < ASTNode
     else
       cloned_rescues = nil
     end
-    ExceptionHandler.new(@body.clone, cloned_rescues, clone_node(@else), clone_node(@ensure), @suffix)
+    ex = ExceptionHandler.new(@body.clone, cloned_rescues, clone_node(@else), clone_node(@ensure), @suffix)
+    ex.implicit = @implicit
+    ex.iyi_defer = @iyi_defer
+    ex
   end
 
   def accept_children(visitor) : Nil
@@ -3387,6 +3432,9 @@ pub class Def < ASTNode
   property next : Def? = nil
   # Set on the `->` def of a captured block's literal (hosted semantic/ast.cr 151). A clone does not carry it.
   property captured_block : Bool = false
+  # The `->` def of the proc a `defer` registers under the iyi prelude (hosted syntax/ast.cr 1658): it runs
+  # only when its frame will never resume.
+  property iyi_defer : Bool = false
 
   def calls_super? : Bool
     @calls_super
@@ -3406,6 +3454,10 @@ pub class Def < ASTNode
 
   def captured_block? : Bool
     @captured_block
+  end
+
+  def iyi_defer? : Bool
+    @iyi_defer
   end
 
   def initialize(
@@ -3454,6 +3506,7 @@ pub class Def < ASTNode
     d.uses_block_arg = @uses_block_arg
     # Hosted syntax Def#clone_without_location does not copy previous or next.
     # The semantic reopening copies previous only; iyi cannot reopen that class.
+    d.iyi_defer = @iyi_defer
     d
   end
 
