@@ -208,7 +208,7 @@ pub class DefaultArguments
 
     receiver = rec_def.receiver
     return_type = rec_def.return_type
-    wrapper = Def.new(new_name, new_args, Expressions.new(body_list), DefaultArguments.copy_node(receiver), nil, DefaultArguments.copy_node(return_type), false, false, nil, nil, nil, false)
+    wrapper = Def.new(new_name, new_args, Expressions.new(body_list), DefaultArguments.copy_node(receiver), nil, DefaultArguments.copy_node(return_type), false, false, nil, nil, nil, false).at(rec_def)
     wrapper.free_vars = DefaultArguments.copy_free_vars(rec_def.free_vars)
     wrapper
   end
