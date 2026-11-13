@@ -26,6 +26,7 @@ import compiler/ir/builder::{Builder}
 import compiler/ir/types::{IrType}
 import compiler/lower/typer::{LowerTyper}
 import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/closures::{ClosureFacts, ClosureVar}
 import compiler/semantic/top_level::{Type}
 import compiler/lower/type_id::{LowerTypeIds}
 import compiler/lower/globals::{LowerGlobals}
@@ -79,6 +80,12 @@ pub class LowerContext
   property return_target : ASTNode?
   property break_target : ASTNode?
   property next_target : ASTNode?
+  property closure_vars : Array(ClosureVar)?
+  property closure_type : IrType?
+  property closure_ptr : Value?
+  property closure_skip_parent : Bool
+  property closure_parent_context : LowerContext?
+  property closure_self : Type?
 
   def initialize(@fun : Function, @fun_type : IrType, @type : Type?, @vars : Hash(String, LowerVar))
     @return_type = nil
@@ -92,6 +99,25 @@ pub class LowerContext
     @return_target = nil
     @break_target = nil
     @next_target = nil
+    reset_closure
+  end
+
+  def reset_closure : Nil
+    @closure_vars = nil
+    @closure_type = nil
+    @closure_ptr = nil
+    @closure_skip_parent = false
+    @closure_parent_context = nil
+    @closure_self = nil
+  end
+
+  def copy_closure_from(other : LowerContext) : Nil
+    @closure_vars = other.closure_vars
+    @closure_type = other.closure_type
+    @closure_ptr = other.closure_ptr
+    @closure_skip_parent = other.closure_skip_parent
+    @closure_parent_context = other.closure_parent_context
+    @closure_self = other.closure_self
   end
 end
 
@@ -168,6 +194,8 @@ pub class Lowerer
   # The hosted `@proc_counts`: the literals of each name the module has lowered, so a second literal of one name is
   # `~proc2...` (proc.iyi, proc_literal_name).
   property proc_counts : Hash(String, Int32)
+  property closure_counter : Int32
+  property closures : ClosureFacts?
   # Per-function ensure state. Keys use node identity, not structural AST equality.
   property ensure_nodes : Array(ExceptionHandler)
   property ensure_contexts : Array(LowerContext)
@@ -200,9 +228,20 @@ pub class Lowerer
     @emitting = Hash(String, Bool).new
     @unused_fun_defs = [] of FunDef
     @proc_counts = Hash(String, Int32).new
+    @closure_counter = 0
+    @closures = nil
     @ensure_nodes = [] of ExceptionHandler
     @ensure_contexts = [] of LowerContext
     @ensure_boundaries = Hash(UInt64, Int32).new
+  end
+
+  def closure_facts : ClosureFacts
+    if facts = @closures
+      return facts
+    end
+    facts = ClosureFacts.new(@analysed)
+    @closures = facts
+    facts
   end
 
   # The function being lowered (the hosted `context`). Raises when none is.
