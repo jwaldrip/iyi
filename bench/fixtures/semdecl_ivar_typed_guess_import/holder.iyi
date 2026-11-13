@@ -1,4 +1,4 @@
-import item::{Item}
+import inventory::{Item}
 
 pub class Holder
   def initialize

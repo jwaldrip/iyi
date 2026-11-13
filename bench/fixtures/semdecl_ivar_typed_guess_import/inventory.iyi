@@ -1,4 +1,4 @@
-module item
+module inventory
 
 pub class Item
 end
