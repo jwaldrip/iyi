@@ -1456,7 +1456,7 @@ rm -rf "$CACHE/tests-v1"
 (cd "$r58" && R58_CTL="$r58_ctl" exec "$IYI" test --fresh --json -p 4 .) > "$r58/interrupted.json" 2> "$r58/interrupted.err" &
 r58_pid=$!
 r58_ready=0
-for i in $(seq 1 600); do
+for i in $(seq 1 1800); do
   r58_receipts="$(find "$CACHE/tests-v1" -path '*/records/*' -name '*.json' 2>/dev/null | wc -l)" || r58_receipts=0
   if [ "$r58_receipts" -ge 2 ] && [ -f "$r58_ctl/started-slow_a" ] && [ -f "$r58_ctl/started-slow_b" ]; then
     r58_ready=1
@@ -1490,7 +1490,14 @@ for name in slow_a slow_b; do
   expect_eq "$gone" 1 "test $name (pid $pid) is gone after the interrupt"
 done
 touch "$r58_ctl/release"
-r58_after="$(cd "$r58" && "$IYI" test --cached --json -p 4 .)"
+set +e
+r58_after="$(cd "$r58" && R58_CTL="$r58_ctl" "$IYI" test --cached --json -p 4 .)"
+r58_after_status=$?
+set -e
+if [ "$r58_after_status" -ne 0 ]; then
+  printf '%s\n' "$r58_after" >&2
+  fail "the rerun after the interrupt exited $r58_after_status"
+fi
 expect_eq "$(printf '%s' "$r58_after" | json_cached)" 2 "the two finished tests keep their receipts"
 expect_eq "$(printf '%s' "$r58_after" | json_failed)" 0 "the released tests pass on rerun"
 
