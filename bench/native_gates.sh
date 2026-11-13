@@ -69,6 +69,9 @@ echo "== 1. Running the native gates in order (logs: $LOGDIR)"
 run_gate native_ir any bench/native_ir_exercise.sh
 run_gate native_obj any bench/native_obj_exercise.sh
 run_gate native_link any bench/native_link_exercise.sh aarch64-apple-darwin
+run_gate native_encode any bench/native_encode_exercise.sh
+run_gate native_regalloc darwin-arm64 bench/native_regalloc_exercise.sh
+run_gate native_codegen darwin-arm64 bench/native_codegen_exercise.sh
 run_gate native_x86_64 any bench/native_x86_64_exercise.sh
 
 echo
