@@ -390,8 +390,12 @@ pub abstract class ModuleType < NamedType
       i = 0
       while i < l.size
         if same_def_signature?(l[i], a_def)
+          old = l[i]
+          a_def.previous = old
+          old.next = a_def
           l[i] = a_def
           replaced = true
+          break
         end
         i = i + 1
       end
@@ -3229,6 +3233,9 @@ pub def dump_def(d : Def, io : String::Builder, indent : String) : Nil
               "nil"
             end
   io << indent << "  return_type: " << ret_str << "\n"
+  if prev = d.previous
+    io << indent << "  previous: " << prev.name << "\n"
+  end
 end
 
 pub def dump_lib_fun(f : LibFun, io : String::Builder, indent : String) : Nil

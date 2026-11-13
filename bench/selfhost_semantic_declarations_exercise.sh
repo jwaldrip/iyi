@@ -745,6 +745,11 @@ prove_mutation "a nilable pointer prints without its element type" "$MUT_TYPES" 
   'Pointer' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a replaced def is not reachable from the def that replaced it" "$MUT_SEM" \
+  "          a_def.previous = old" \
+  "          a_def.previous = nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
 
