@@ -1,0 +1,196 @@
+module compiler/ir/function
+
+import compiler/ir/types::{IrType}
+import compiler/ir/values::{Value, Param, SymbolTable}
+import compiler/ir/inst::{Attribute, Block, CallConv, Inst}
+
+pub enum Linkage
+  External
+  Internal
+  Private
+  LinkOnceOdr
+  Weak
+  ExternalWeak
+end
+
+# LLVM's visibility: `default` is the one nothing is printed for.
+pub enum Visibility
+  Default
+  Hidden
+  Protected
+end
+
+pub enum TlsModel
+  None
+  LocalExec
+  InitialExec
+  LocalDynamic
+  GeneralDynamic
+end
+
+pub class DebugSubprogram
+  getter display_name : String # what a PDB S_GPROC32 carries ("inner")
+  getter linkage_name : String # the mangled symbol ("*Named^Named::inner<Int32>:Int32")
+  getter file : Int32
+  getter line : Int32
+
+  def initialize(@display_name : String, @linkage_name : String, @file : Int32, @line : Int32)
+  end
+end
+
+# A function. Its value type (`type`) is a pointer, as an operand; `fn_type` is its signature.
+pub class Function < Value
+  getter fn_type : IrType
+  property cc : CallConv
+  property linkage : Linkage
+  property attrs : Array(Attribute)
+  property param_attrs : Array(Array(Attribute))
+  property ret_attrs : Array(Attribute)
+  property import_library : String?
+  property visibility : Visibility
+  property dso_local : Bool
+  property personality : Value?
+  property section : String?
+  property alignment : Int32
+  property subprogram : DebugSubprogram?
+  getter params : Array(Param)
+  getter blocks : Array(Block)
+
+  def initialize(name : String, @fn_type : IrType, ptr_type : IrType, @cc : CallConv = CallConv::Iyi)
+    super(ptr_type, name)
+    @linkage = Linkage::External
+    @attrs = [] of Attribute
+    @param_attrs = [] of Array(Attribute)
+    @ret_attrs = [] of Attribute
+    @import_library = nil
+    @visibility = Visibility::Default
+    @dso_local = false
+    @personality = nil
+    @section = nil
+    @alignment = 0
+    @subprogram = nil
+    @params = [] of Param
+    @blocks = [] of Block
+    @symbols = SymbolTable.new
+  end
+
+  def function_type : IrType
+    @fn_type
+  end
+
+  def to_value : Value
+    self
+  end
+
+  def declaration? : Bool
+    @blocks.empty?
+  end
+
+  def param_count : Int32
+    @params.size
+  end
+
+  def param(index : Int32) : Param
+    @params[index]
+  end
+
+  def personality_function=(value : Value) : Nil
+    @personality = value
+  end
+
+  def call_convention : CallConv
+    @cc
+  end
+
+  def call_convention=(cc : CallConv) : Nil
+    @cc = cc
+  end
+
+  def entry_block : Block?
+    @blocks.empty? ? nil : @blocks.first
+  end
+
+  def first_basic_block : Block?
+    entry_block
+  end
+
+  def basic_blocks : Array(Block)
+    @blocks
+  end
+
+  # Appends a block. Its name is claimed in this function, so a repeated name gets a fresh suffix.
+  def append_basic_block(name : String) : Block
+    block = Block.new(@symbols.claim(name))
+    block.symbols = @symbols
+    @blocks << block
+    block
+  end
+
+  # The text parser's block, with the name it was written with.
+  def append_basic_block_as_written(name : String) : Block
+    @symbols.register(name)
+    block = Block.new(name)
+    block.symbols = @symbols
+    @blocks << block
+    block
+  end
+
+  # Recomputes every block's predecessors from the terminators.
+  def relink : Nil
+    @blocks.each { |b| b.clear_preds }
+    @blocks.each do |b|
+      next unless b.terminated?
+      b.terminator.targets.each { |t| t.add_pred(b) }
+    end
+  end
+
+  # Adds a parameter. Its name is claimed in this function: a repeated name gets a fresh suffix, as LLVM gives it.
+  def add_param(param : Param) : Nil
+    param.name = @symbols.claim(param.name)
+    @params << param
+  end
+
+  # The text parser's parameter, with the name it was written with. The verifier refuses a repeated name.
+  def add_param_as_written(param : Param) : Nil
+    @symbols.register(param.name)
+    @params << param
+  end
+
+  # Names a parameter that already exists, claiming the name in this function as add_param does.
+  def name_param(param : Param, name : String) : Nil
+    param.name = @symbols.claim(name)
+  end
+end
+
+# A global: its address (`type`) is a pointer; its contents have `value_type`.
+pub class Global < Value
+  getter value_type : IrType
+  property initializer : Value?
+  property linkage : Linkage
+  property constant : Bool
+  property tls : TlsModel
+  property alignment : Int32
+  property section : String?
+  property unnamed_addr : Bool
+  property import_library : String?
+  property visibility : Visibility
+  property dso_local : Bool
+
+  def initialize(name : String, @value_type : IrType, ptr_type : IrType)
+    super(ptr_type, name)
+    @initializer = nil
+    @linkage = Linkage::External
+    @constant = false
+    @tls = TlsModel::None
+    @alignment = 0
+    @section = nil
+    @unnamed_addr = false
+    @import_library = nil
+    @visibility = Visibility::Default
+    @dso_local = false
+  end
+
+  def global_constant=(constant : Bool) : Nil
+    @constant = constant
+  end
+end

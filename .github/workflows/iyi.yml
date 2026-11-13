@@ -3868,6 +3868,107 @@ jobs:
       # environment before they look for llvm-config on the PATH.
       - name: The self-host gates
         run: LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config" bash bench/selfhost_gates.sh
+
+  # The compiler's own back end: the IR (later PRs add the code generator,
+  # object writer and linker). On Linux the gates check everything that is
+  # bytes and text; what must run an arm64 darwin program runs in
+  # `native-darwin`.
+  native:
+    needs: [plan, build]
+    if: ${{ contains(fromJSON(needs.plan.outputs.jobs), 'native') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: crystallang/crystal:1.21.0-build
+    name: "The native back end's gates, on Linux"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v5
+        with:
+          name: crystal
+          path: .build
+      - run: chmod +x .build/crystal
+
+      # The round-trip gate builds a tool that links LibLLVM, so it needs
+      # llvm-config. The self-host job provisions it the same way.
+      - name: Provision llvm-config
+        run: |
+          cfg="$(src/llvm/ext/find-llvm-config.sh 2>/dev/null || true)"
+          if [ -n "$cfg" ] && [ -x "$cfg" ]; then
+            [ "$cfg" != "/usr/local/bin/llvm-config" ] && ln -sf "$cfg" /usr/local/bin/llvm-config
+            [ "$cfg" != "/usr/bin/llvm-config" ] && ln -sf "$cfg" /usr/bin/llvm-config
+            echo "LLVM_CONFIG=$cfg" >> "$GITHUB_ENV"
+          elif command -v llvm-config-20 >/dev/null 2>&1; then
+            cfg="$(command -v llvm-config-20)"
+            [ "$cfg" != "/usr/local/bin/llvm-config" ] && ln -sf "$cfg" /usr/local/bin/llvm-config
+            [ "$cfg" != "/usr/bin/llvm-config" ] && ln -sf "$cfg" /usr/bin/llvm-config
+            echo "LLVM_CONFIG=$cfg" >> "$GITHUB_ENV"
+          fi
+
+      # The x86_64 gate's oracle is the LLVM assembler and its reader is
+      # llvm-objdump: test-time tools that sit beside llvm-config.
+      - name: Put LLVM's tools on the PATH
+        run: |
+          if [ -n "${LLVM_CONFIG:-}" ]; then
+            "$LLVM_CONFIG" --bindir >> "$GITHUB_PATH"
+            ls "$("$LLVM_CONFIG" --bindir)" | grep -E '^llvm-(mc|objdump|readelf)' || echo "no llvm-mc, llvm-objdump or llvm-readelf beside llvm-config"
+          fi
+
+      - name: Build `iyi`
+        run: make -o .build/crystal iyi
+
+      - name: The native gates
+        run: bash bench/native_gates.sh
+
+  native-darwin:
+    needs: plan
+    if: ${{ contains(fromJSON(needs.plan.outputs.jobs), 'native-darwin') }}
+    # macos-15, pinned, as the darwin job is. This is the job that runs what
+    # the back end builds: a program compiled, linked and signed with no host
+    # tool, compared with the hosted compiler's build of the same program.
+    runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.4"
+    timeout-minutes: 90
+    name: "The native back end's gates, on darwin arm64"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the bootstrap toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          python3 --version
+          brew install crystal coreutils pkgconf
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Restore the static LLVM
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/llvm-static
+          key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
+      - name: Build the static LLVM (cache miss)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+
+      # The gates read objects back with llvm-objdump and assemble their
+      # x86_64 oracle with llvm-mc. The static LLVM installs both; Xcode's
+      # toolchain has neither under those names.
+      - name: Put LLVM's tools on the PATH
+        run: |
+          echo "$HOME/llvm-static/bin" >> "$GITHUB_PATH"
+          ls "$HOME/llvm-static/bin" | grep -E '^llvm-(mc|objdump|readelf)' || echo "no llvm-mc, llvm-objdump or llvm-readelf in the static LLVM"
+
+      - name: Build `iyi`
+        run: make iyi LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config"
+
+      - name: The native gates
+        run: LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config" bash bench/native_gates.sh
   # The editor client is the only artifact here that is published somewhere
   # else, so it is proven the same way as the rest: every run packages it,
   # which is the one check that the manifest parses, the files it names
@@ -3977,7 +4078,8 @@ jobs:
             darwin-std-siblings, darwin-std, windows-probe, windows-collector, windows-runtime,
             windows-native, windows-native-gates, windows-native-surfaces, windows-std,
             windows-std-platforms, windows-std-siblings, windows-gates, windows-compiler-specs,
-            wasi-run, wasm32-collector, binary, clean-room, vscode, selfhost, selfhost-darwin]
+            wasi-run, wasm32-collector, binary, clean-room, vscode, selfhost, selfhost-darwin,
+            native, native-darwin]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5

@@ -79,6 +79,13 @@ FAST = ["build", "iyi", "compiler-specs", "stdlib-specs", "targets",
 # any of those selects both jobs, whatever else it touches. They run the
 # gates on Linux and on darwin; a job the workflow does not have is skipped.
 SELFHOST = ["selfhost", "selfhost-darwin"]
+
+# The native gates check the compiler's own back end: the IR, the aarch64
+# code generator, the object writer and the linker (`src/compiler/native/`,
+# `src/compiler/ir/`, `src/compiler/backend/`), the tools built on them, and
+# the bench files and fixtures those gates read. A change to any of those
+# selects both jobs; a job the workflow does not have is skipped.
+NATIVE = ["native", "native-darwin"]
 # Not selected by this script: `plan` is the script, `result` reads every
 # selected job's outcome, and `release` gates itself on a `v*` tag.
 NOT_PLANNED = {"plan", "result", "release"}
@@ -201,6 +208,13 @@ def is_selfhost(path):
     return ((path.startswith("src/compiler/") and path.endswith(".iyi"))
             or path.startswith(("bench/selfhost_", "bench/fixtures/")))
 
+
+def is_native(path):
+    return (path.startswith(("src/compiler/native/", "src/compiler/ir/", "src/compiler/backend/",
+                             "src/compiler/tools/"))
+            or path.startswith(("bench/native_", "bench/lib/", "bench/fixtures/native_",
+                                "bench/fixtures/ir/", "bench/fixtures/llvm_roundtrip/")))
+
 def code(text):
     """*text* without its whole-line comments, in YAML, shell and Python alike."""
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
@@ -306,12 +320,16 @@ def plan(jobs, event, ref, files, bench):
     selfhost = any(is_selfhost(f) for f in code_files)
     if selfhost:
         selected |= {name for name in SELFHOST if name in jobs}
+    native = any(is_native(f) for f in code_files)
+    if native:
+        selected |= {name for name in NATIVE if name in jobs}
     if len(changed_bench) == len(code_files) and all(running.values()):
         return close_over_needs(jobs, selected), "only bench files changed, each run by a job"
     selected |= set(FAST)
-    reason = "the fast tier, and the jobs that run a changed bench file"
-    if selfhost:
-        reason = "the fast tier, the self-host gates, and the jobs that run a changed bench file"
+    extra = [label for label, on in (("the self-host gates", selfhost), ("the native gates", native)) if on]
+    reason = ", ".join(["the fast tier"] + extra + ["and the jobs that run a changed bench file"])
+    if not extra:
+        reason = "the fast tier, and the jobs that run a changed bench file"
     return close_over_needs(jobs, selected), reason
 
 
@@ -332,6 +350,9 @@ def main():
     missing = [name for name in SELFHOST if name not in jobs]
     if missing:
         sys.exit(f"ci_plan: SELFHOST names jobs the workflow does not have: {', '.join(missing)}")
+    missing = [name for name in NATIVE if name not in jobs]
+    if missing:
+        sys.exit(f"ci_plan: NATIVE names jobs the workflow does not have: {', '.join(missing)}")
     # `result` is the one check a ruleset requires, so a job it does not
     # need could fail and still let a change through.
     unread = sorted(set(jobs) - NOT_PLANNED - set(jobs["result"]["needs"]))

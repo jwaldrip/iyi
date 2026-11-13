@@ -89,6 +89,21 @@ for files, what in [
     reason, jobs = planned(*files)
     check(f"{what} selects both self-host jobs", {"selfhost", "selfhost-darwin"} <= jobs, f"{reason}: {sorted(jobs)}")
 
+# The native gates: a back-end source, an IR source, a gate and a fixture each select both jobs.
+for files, what in [
+    (["src/compiler/native/aarch64/encode.iyi"], "a native back-end source"),
+    (["src/compiler/ir/verifier.iyi"], "an IR source"),
+    (["bench/native_codegen_exercise.sh"], "a native gate"),
+    (["bench/fixtures/native_cg/arith.ir"], "a fixture the native gates read"),
+    (["bench/native_gates.sh", "src/compiler/native/link/link.iyi"], "a mixed change to the native gates and the linker"),
+]:
+    reason, jobs = planned(*files)
+    check(f"{what} selects both native jobs", {"native", "native-darwin"} <= jobs, f"{reason}: {sorted(jobs)}")
+
+reason, jobs = planned("src/compiler/syntax/lexer.iyi")
+check("a front-end source selects the self-host jobs and not the native ones",
+      {"selfhost", "selfhost-darwin"} <= jobs and not ({"native", "native-darwin"} & jobs), f"{reason}: {sorted(jobs)}")
+
 print()
 print("== a workflow and a bench directory of this exercise's own")
 
