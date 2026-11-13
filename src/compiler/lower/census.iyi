@@ -162,7 +162,7 @@ pub def split_hosted_name(full : String) : ParsedHostedName | String
   end
 
   named_labels = [] of String
-  if method_name.includes?(':')
+  if method_name.includes?(":")
     parts = [] of String
     start = 0
     k = 0
