@@ -48,8 +48,8 @@ import compiler/lower/fun::{visit_node}
 import compiler/lower/helpers::{int1}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
-import compiler/semantic/top_level::{ClassType, MetaTypeVar, MetaclassType, Type}
-import compiler/types/types::{PointerInstanceType, VirtualType}
+import compiler/semantic/top_level::{ClassType, MetaTypeVar, MetaclassType, ModuleType, Type}
+import compiler/types/types::{GenericClassInstanceType, PointerInstanceType, VirtualType}
 import compiler/lower/helpers::{store_aligned, load_aligned}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/lower/headed::{headed?}
@@ -956,9 +956,12 @@ pub def iyi_gc_arena?(low : Lowerer) : Bool
 end
 
 # The hosted `pointerful` of allocate_aggregate (codegen.cr 2764-2765): a class with an instance
-# variable that holds pointers, by the core's has_inner_pointers? (layouts.iyi).
+# variable that holds pointers, by the core's has_inner_pointers? (layouts.iyi). A generic class
+# instance is not a ClassType. Its declared variables live on the generic class (`Array(T)`), and
+# ones recorded on the instance are merged over them. Casting the instance to ClassType is the
+# census raise `Cast from GenericClassInstanceType to ClassType+` (primitives.iyi, root row 17).
 pub def class_pointerful?(t : Type) : Bool
-  ivars = t.as(ClassType).all_instance_vars
+  ivars = class_instance_vars(t)
   names = ivars.keys
   i = 0
   while i < names.size
@@ -970,6 +973,30 @@ pub def class_pointerful?(t : Type) : Bool
     i += 1
   end
   false
+end
+
+# Instance variables the pointerful check reads. A ClassType has all_instance_vars. A generic
+# instance merges the generic class's variables with any recorded on the instance.
+pub def class_instance_vars(t : Type) : Hash(String, MetaTypeVar)
+  if t.is_a?(ClassType)
+    return t.as(ClassType).all_instance_vars
+  end
+  if t.is_a?(GenericClassInstanceType)
+    inst = t.as(GenericClassInstanceType)
+    merged = Hash(String, MetaTypeVar).new
+    generic = inst.generic_type
+    if generic.is_a?(ModuleType)
+      generic.as(ModuleType).all_instance_vars.each do |k, v|
+        merged[k] = v
+      end
+    end
+    inst.instance_vars.each do |k, v|
+      merged[k] = v
+    end
+    return merged
+  end
+
+  Hash(String, MetaTypeVar).new
 end
 
 # A program that defines its own malloc is allocated through it by the hosted crystal_malloc_fun, which
