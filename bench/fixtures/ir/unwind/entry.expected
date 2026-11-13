@@ -7,11 +7,9 @@ declare external i32 @putchar(i32)
 define internal iyicc { i32, i32 } @__crystal_main(i32 %argc, ptr %argv) {
 entry:
   %0 = call i32 (i32) @putchar(i32 101)
-  br label %invoke_out
-invoke_out:
   br label %exit
 exit:
-  %1 = phi i32 [ 7, label %invoke_out ]
+  %1 = phi i32 [ 7, label %entry ]
   %2 = call i32 (i32) @putchar(i32 100)
   %3 = insertvalue { i32, i32 } undef, i32 %1, 0
   %4 = insertvalue { i32, i32 } %3, i32 %2, 1

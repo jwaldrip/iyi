@@ -145,22 +145,34 @@ pub class Function < Value
   end
 
   # Drops every unwind edge: iyi emits no unwinding (SPEC 2.2), and the oracle's module is compared with the
-  # lowering's only after this. An invoke becomes the call it makes, followed by a branch to its normal
-  # successor. A block that only an unwind edge reached is removed, a phi loses the pairs that came from one,
-  # and the personality goes with the pads. Nothing else changes: blocks are not merged and a phi left with
-  # one pair stays a phi, so what remains is the normal path as it was written. `void` is the module's void
-  # type. Returns the reason when an unwinding instruction is still reachable, which no producer writes.
+  # lowering's only after this. An invoke becomes the call it makes. The oracle opens a fresh block after every
+  # invoke; with the edge gone that block is the rest of the invoking one, so a normal successor that nothing
+  # else reaches and that starts with no phi is merged into it, and a phi that named it names the invoking
+  # block. A call inside a handler is then one instruction where it stands, which is what a lowering with no
+  # unwinding writes without knowing which calls the oracle thought could raise. Any other normal successor
+  # is branched to. A block that only an unwind edge reached is removed, a phi loses the pairs that came from
+  # one, and the personality goes with the pads. Nothing else changes: no other block is merged and a phi
+  # left with one pair stays a phi. `void` is the module's void type. Returns the reason when an unwinding
+  # instruction is still reachable, which no producer writes.
   def drop_unwind_edges(void : IrType) : String?
     return nil if @blocks.empty?
+    relink
     @blocks.each do |b|
-      next unless b.terminated?
-      t = b.terminator
-      next unless t.op == Op::Invoke
-      normal = t.targets[0]
-      t.demote_invoke
-      branch = Inst.new(Op::Br, void, [] of Value, 0_i64, nil, [normal], [] of Int64, "")
-      branch.loc = t.loc
-      b.insts << branch
+      while b.terminated? && b.terminator.op == Op::Invoke
+        t = b.terminator
+        normal = t.targets[0]
+        t.demote_invoke
+        if normal != b && normal.preds.size == 1 && normal.terminated? && normal.insts[0].op != Op::Phi
+          normal.insts.each { |moved| b.insts << moved }
+          @blocks.each do |other|
+            other.insts.each { |inst| inst.move_incoming(normal, b) if inst.op == Op::Phi }
+          end
+        else
+          branch = Inst.new(Op::Br, void, [] of Value, 0_i64, nil, [normal], [] of Int64, "")
+          branch.loc = t.loc
+          b.insts << branch
+        end
+      end
     end
     position = Hash(Block, Int32).new
     seen = [] of Bool

@@ -357,6 +357,16 @@ pub class Inst < Value
     @targets = blocks
   end
 
+  # A phi's pairs that came from `old` come from `block` instead: `old` was merged into it.
+  def move_incoming(old : Block, block : Block) : Nil
+    raise "#{@op} is not a phi" unless @op == Op::Phi
+    k = 0
+    while k < @targets.size
+      @targets[k] = block if @targets[k] == old
+      k = k + 1
+    end
+  end
+
   # The alignment in bytes: an alloca's, or a memory op's. Zero means the default.
   def alignment : Int32
     return @aux_int.to_i32 if @op == Op::Alloca

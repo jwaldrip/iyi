@@ -334,10 +334,10 @@ else
 fi
 
 # ---- 5d. unwind edges --------------------------------------------------------------------------
-echo "== 5d. a module with its unwind edges dropped is the normal path as it was written"
+echo "== 5d. a module with its unwind edges dropped is its normal path, a call where each invoke stood"
 out=$("$DRV" roundtrip bench/fixtures/ir/unwind/ensure.ir 2>&1) || fail "unwind/ensure.ir does not round-trip: $out"
 if unwind_check "$DRV"; then
-  echo "unwind edges dropped: an invoke is a call and a branch, the pads and what only they named are gone, a phi keeps its live pairs"
+  echo "unwind edges dropped: an invoke is the call it makes and the block opened after it is the rest of its own, the pads and what only they named are gone, a phi keeps its live pairs"
 else
   fail "unwind/ensure.ir without its unwind edges is not unwind/ensure.expected, or a reachable pad was accepted: $("$DRV" drop-unwind bench/fixtures/ir/unwind/ensure.ir 2>&1 | diff - bench/fixtures/ir/unwind/ensure.expected | head -n 12)"
 fi
@@ -480,10 +480,30 @@ prove_mutation "unwind: an invoke is left an invoke" \
   '    @op = Op::Call' \
   '    @op = Op::Invoke' \
   unwind_check
-prove_mutation "unwind: the branch goes to the unwind successor" \
+prove_mutation "unwind: the call continues into the unwind successor" \
   src/compiler/ir/function.iyi \
-  '      normal = t.targets[0]' \
-  '      normal = t.targets[1]' \
+  '        normal = t.targets[0]' \
+  '        normal = t.targets[1]' \
+  unwind_check
+prove_mutation "unwind: the block opened after an invoke stays a block" \
+  src/compiler/ir/function.iyi \
+  'normal.preds.size == 1 && normal.terminated?' \
+  'normal.preds.size == 0 && normal.terminated?' \
+  unwind_check
+prove_mutation "unwind: a successor another block reaches is merged" \
+  src/compiler/ir/function.iyi \
+  'normal.preds.size == 1 && normal.terminated?' \
+  'normal.preds.size >= 1 && normal.terminated?' \
+  unwind_check
+prove_mutation "unwind: a successor that starts with a phi is merged" \
+  src/compiler/ir/function.iyi \
+  'normal.insts[0].op != Op::Phi' \
+  'normal.insts[0].op != Op::LandingPad' \
+  unwind_check
+prove_mutation "unwind: a phi still names the merged block" \
+  src/compiler/ir/function.iyi \
+  'inst.move_incoming(normal, b) if inst.op == Op::Phi' \
+  'inst.move_incoming(normal, normal) if inst.op == Op::Phi' \
   unwind_check
 prove_mutation "unwind: a block only an unwind edge reached is kept" \
   src/compiler/ir/function.iyi \

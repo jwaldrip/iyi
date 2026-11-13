@@ -9,11 +9,9 @@ declare external i32 @never_named(ptr)
 define internal iyicc i32 @work() {
 entry:
   %0 = call i32 (i32) @putchar(i32 101)
-  br label %invoke_out
-invoke_out:
   br label %exit
 exit:
-  %1 = phi i32 [ 7, label %invoke_out ]
+  %1 = phi i32 [ 7, label %entry ]
   %2 = call i32 (i32) @putchar(i32 100)
   ret i32 %1
 }
@@ -21,11 +19,35 @@ exit:
 define internal iyicc i32 @joined() {
 entry:
   %0 = call i32 (i32) @putchar(i32 97)
-  br label %ok
-ok:
   br label %join
 join:
-  %1 = phi i32 [ %0, label %ok ]
+  %1 = phi i32 [ %0, label %entry ]
+  ret i32 %1
+}
+
+define internal iyicc i32 @shared(i1 %c) {
+entry:
+  br i1 %c, label %a, label %next
+a:
+  %0 = call i32 (i32) @putchar(i32 98)
+  br label %next
+next:
+  ret i32 1
+}
+
+define internal iyicc i32 @twice() {
+entry:
+  %0 = call i32 (i32) @putchar(i32 99)
+  %1 = call i32 (i32) @putchar(i32 100)
+  ret i32 %1
+}
+
+define internal iyicc i32 @phi_first() {
+entry:
+  %0 = call i32 (i32) @putchar(i32 102)
+  br label %after
+after:
+  %1 = phi i32 [ %0, label %entry ]
   ret i32 %1
 }
 
