@@ -36,6 +36,8 @@ LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" \
   CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
     -o "$WORK/oracle" "$REPO/bench/selfhost_semantic_calls_oracle.cr" || { echo "oracle build failed"; exit 1; }
 "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_semantic_calls_exercise.iyi" || { echo "port driver build failed"; exit 1; }
+"$IYI" build -o "$WORK/block_arg" "$REPO/bench/selfhost_call_block_arg_exercise.iyi" || { echo "block argument driver build failed"; exit 1; }
+"$WORK/block_arg" || { echo "block argument behavior failed"; exit 1; }
 
 echo
 echo "== 2. Each fixture's call sites, hosted oracle against the port"
@@ -86,6 +88,20 @@ check_calls_diverge() {
   done
   return 0
 }
+check_block_arg_mutation() {
+  "$IYI" build -o "$WORK/block_arg_m" "$REPO/bench/selfhost_call_block_arg_exercise.iyi" >/dev/null 2>&1 || {
+    echo "    mutation failed to build, not a behavioral catch"
+    return 0
+  }
+  "$WORK/block_arg_m" >/dev/null 2>&1
+}
+
+prove_mutation "forwarding loses its captured proc" "$CALL_FILE" \
+  '    block.fun_literal = arg' \
+  '    block.fun_literal = nil' \
+  -- check_block_arg_mutation || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 
 prove_mutation "exact match does not end the lookup" "$LOOKUP_FILE" \
   "    return own if own.cover_all? || own.error" \
