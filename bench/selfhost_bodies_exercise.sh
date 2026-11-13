@@ -626,6 +626,21 @@ prove_mutation "a value-position macro expansion is not typed" "$MAIN_VISITOR" \
     if et = child_type(expanded)" \
   "    nil
     if et = child_type(expanded)" -- macro_value_at_floor || status=1
+macro_empty_at_floor() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1; then
+    echo "INVALID MUTANT: typed dump did not build"
+    cat "$WORK/mut_build.log"
+    return 0
+  fi
+  fixture="$REPO/bench/fixtures/sem_bodies_macro_empty.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
+  matched=$(comm -12 "$WORK/eo.txt" "$WORK/ep.txt" | wc -l | tr -d ' ')
+  [ "$matched" -ge 18 ]
+}
+prove_mutation "an empty def-body macro is dropped, so the preceding expression types the def" "$REPO/src/compiler/semantic/inline_macros.iyi" \
+  "        out << n if keep_empty" \
+  "        nil" -- macro_empty_at_floor || status=1
 macro_uninitialized_at_floor() {
   "$IYI" build -o "$WORK/macro_uninitialized" "$REPO/bench/selfhost_macro_uninitialized_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   "$WORK/macro_uninitialized" "$REPO/bench/fixtures/sem_bodies_macro_uninitialized.iyi"

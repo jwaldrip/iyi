@@ -35,6 +35,7 @@ bench/fixtures/sem_bodies_jumps.iyi 20
 bench/fixtures/sem_bodies_libcall.iyi 15
 bench/fixtures/sem_bodies_macro_annotations.iyi 12
 bench/fixtures/sem_bodies_macro_bindings.iyi 44
+bench/fixtures/sem_bodies_macro_empty.iyi 18
 bench/fixtures/sem_bodies_macro_enum_facts.iyi 6
 bench/fixtures/sem_bodies_macro_ivars.iyi 10
 bench/fixtures/sem_bodies_magic_constant.iyi 4
