@@ -1,5 +1,5 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Call, Var}
+import compiler/syntax/ast::{ASTNode, Block, Call, Var}
 import compiler/semantic/call::{CallBlockArg}
 import compiler/semantic/top_level::{SemanticProgram, Type}
 import compiler/types/types::{ProcInstanceType}
@@ -11,7 +11,7 @@ proc_type = ProcInstanceType.new(program, [int, string] of Type, int)
 node = Parser.new("run(&block)", "forward.iyi").parse.as(Call)
 arg = node.block_arg.as(ASTNode)
 raise "forward rejected" unless CallBlockArg.replace(node, proc_type, program).nil?
-block = node.block.not_nil!
+block = node.block.as(Block)
 raise "original expression lost" unless block.fun_literal == arg
 raise "wrong synthetic arity" unless block.args.size == 2
 raise "wrong synthetic parameters" unless block.args[0].name == "__arg0" && block.args[1].name == "__arg1"
