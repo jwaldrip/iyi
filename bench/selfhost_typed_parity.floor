@@ -49,7 +49,7 @@ src/compiler/ir/inst.iyi 41
 src/compiler/ir/intrinsics.iyi 22
 src/compiler/ir/layout.iyi 22
 src/compiler/ir/module.iyi 29
-src/compiler/ir/parser.iyi 100
+src/compiler/ir/parser.iyi 101
 src/compiler/ir/printer.iyi 52
 src/compiler/ir/types.iyi 60
 src/compiler/ir/values.iyi 28

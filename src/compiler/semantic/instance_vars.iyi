@@ -4,7 +4,7 @@ import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, Generic, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
+import compiler/semantic/top_level::{ClassType, DeclaredIvar, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
 import compiler/semantic/type_nodes::{type_node_system}
 
 # Instance variables typed only by assignment, as the hosted front end declares
@@ -271,8 +271,24 @@ class GuessVisitor < Visitor
       return nil
     end
     if node.is_a?(InstanceVar)
-      if declared = @og.owner.instance_vars[node.as(InstanceVar).name]?
+      name = node.as(InstanceVar).name
+      if declared = @og.owner.instance_vars[name]?
         return declared.var_type
+      end
+      [true, false].each do |declaration_pass|
+        @program.pending_ivars.each do |pi|
+          next unless pi.owner == @og.owner && pi.name == name && pi.explicit == declaration_pass
+          saved = @program.current_imports
+          if imports = pi.imports
+            @program.current_imports = imports
+          end
+          found = @program.declared_ivar_type?(pi.restriction, pi.owner, pi.virtual)
+          @program.current_imports = saved
+          return found if found
+        end
+      end
+      if guessed = @og.guesses[name]?
+        return guessed.type
       end
       return nil
     end
@@ -504,10 +520,9 @@ def re_resolve_explicit_ivars(program : SemanticProgram) : Nil
   type_node_system(program)
 end
 
-# Guesses and declares the instance variables of every class body the program's
-# top-level pass recorded, in hierarchy order. Explicit declarations must already
-# be in place: the pass runs after the top-level visit and its pending
-# declarations are resolved.
+# Process each owner from the root of the hierarchy: written declarations
+# precede inferred ones for that owner, before moving to a subclass (hosted
+# type_declaration_processor.cr:245-264).
 pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
   # The hosted pass declares instance variables with a type system already
   # installed, so `@resolved_modules : Array(ModuleInfo)` is `Array(ModuleInfo)`.
@@ -516,14 +531,34 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
   # the lowered-types own-source load, get that re-resolution here. Installing
   # the type system before the visit takes hook paths that are not ported.
   re_resolve_explicit_ivars(program)
+  # During the transition finish may already have installed these records.
+  # Remove only those records, then install them in hierarchy order below.
+  previous = {} of String => MetaTypeVar
+  program.pending_ivars.each do |pi|
+    if existing = pi.owner.instance_vars[pi.name]?
+      previous["#{pi.owner.full_name} #{pi.name}"] = existing
+    end
+    pi.owner.instance_vars.delete(pi.name)
+  end
+  retained = program.declared_ivars.reject do |di|
+    program.pending_ivars.any? { |pi| pi.owner == di.owner && pi.name == di.name }
+  end
+  program.declared_ivars.clear
+  retained.each { |di| program.declared_ivars << di }
   owners = [] of OwnerGuesses
+  saved_imports = program.current_imports
+  program.pending_ivars.each do |pi|
+    owner_guesses_for(owners, pi.owner)
+  end
   program.type_bodies.each do |body|
+    program.current_imports = body.imports
     owner = owner_guesses_for(owners, body.type)
     if owner.owner.is_a?(NonGenericClassType) || owner.owner.is_a?(GenericClassType)
       visitor = GuessVisitor.new(program, owner)
       body.body.accept(visitor)
     end
   end
+  program.current_imports = saved_imports
 
   max_depth = 0
   owners.each do |og|
@@ -534,12 +569,40 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
   depth = 0
   while depth <= max_depth
     owners.each do |og|
-      next unless og.owner.is_a?(NonGenericClassType) || og.owner.is_a?(GenericClassType)
       next unless class_depth(og.owner) == depth
+      [true, false].each do |explicit_pass|
+        program.pending_ivars.each do |pi|
+          next unless pi.owner == og.owner && pi.explicit == explicit_pass
+          next if og.owner.lookup_instance_var?(pi.name)
+          if imports = pi.imports
+            program.current_imports = imports
+          else
+            program.current_imports = saved_imports
+          end
+          arg_type = program.declared_ivar_type?(pi.restriction, pi.owner, pi.virtual)
+          # Quiet lookup can retain an unbound splat generic where strict lookup
+          # instantiated it. Keep the already resolved type in that case.
+          if !arg_type || (arg_type.is_a?(GenericClassType) && pi.restriction.is_a?(Generic))
+            if old = previous["#{pi.owner.full_name} #{pi.name}"]?
+              arg_type = old.type
+            else
+              arg_type = program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
+            end
+          end
+          mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
+          mv.owner = pi.owner
+          pi.owner.instance_vars[pi.name] = mv
+          program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, program.current_imports)
+        end
+      end
       compute_nonnil(owners, og)
-      declare_guessed(program, owners, og)
+      if og.owner.is_a?(NonGenericClassType) || og.owner.is_a?(GenericClassType)
+        declare_guessed(program, owners, og)
+      end
     end
     depth = depth + 1
   end
+  program.current_imports = saved_imports
+  program.pending_ivars.clear
   nil
 end

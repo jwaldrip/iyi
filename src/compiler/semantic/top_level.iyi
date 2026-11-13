@@ -2053,8 +2053,9 @@ end
 pub class TypeBody
   getter type : ModuleType
   getter body : ASTNode
+  getter imports : Hash(String, Type)
 
-  def initialize(@type : ModuleType, @body : ASTNode)
+  def initialize(@type : ModuleType, @body : ASTNode, @imports : Hash(String, Type))
   end
 end
 
@@ -2132,18 +2133,22 @@ pub class TopLevelVisitor < Visitor
     @pending_ivars.each do |found|
       explicit << "#{found.owner.full_name} #{found.name}" if found.explicit
     end
-    @pending_ivars.each do |pi|
-      next if !pi.explicit && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
-      if imports = pi.imports
-        @program.current_imports = imports
-      else
-        @program.current_imports = saved
+    # The hosted processor declares explicit variables before guessed ones for each owner.
+    [true, false].each do |explicit_pass|
+      @pending_ivars.each do |pi|
+        next if pi.explicit != explicit_pass
+        next if !pi.explicit && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
+        if imports = pi.imports
+          @program.current_imports = imports
+        else
+          @program.current_imports = saved
+        end
+        arg_type = @program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
+        mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
+        mv.owner = pi.owner
+        pi.owner.instance_vars[pi.name] = mv
+        @program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)
       end
-      arg_type = @program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
-      mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
-      mv.owner = pi.owner
-      pi.owner.instance_vars[pi.name] = mv
-      @program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)
     end
     @program.current_imports = saved
     @pending_ivars.clear
@@ -2407,7 +2412,7 @@ pub class TopLevelVisitor < Visitor
           meta.add_location(loc)
         end
         old_meta_scope = @current_type
-        @program.type_bodies << TypeBody.new(meta, node.body)
+        @program.type_bodies << TypeBody.new(meta, node.body, @program.current_imports)
         @current_type = meta
         node.body.accept(self)
         @current_type = old_meta_scope
@@ -2517,7 +2522,7 @@ pub class TopLevelVisitor < Visitor
     old_type = @current_type
     @current_type = type
     node.body = splice_body(node.body)
-    @program.type_bodies << TypeBody.new(type, node.body)
+    @program.type_bodies << TypeBody.new(type, node.body, @program.current_imports)
     node.body.accept(self)
     @current_type = old_type
     false
