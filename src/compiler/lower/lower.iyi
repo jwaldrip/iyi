@@ -45,7 +45,8 @@ import compiler/lower/block::{branch_to_phi, lower_yield}
 import compiler/lower/ensure::{lower_exception_handler, execute_ensures_until, set_ensure_exception_handler}
 import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun, clear_fun_emission_done}
 import compiler/ir/verifier::{verify_function}
-import compiler/lower/primitives::{define_headed_bytes}
+import compiler/lower/primitives::{iyi_gc_arena?}
+import compiler/lower/gc_layouts::{define_gc_layouts}
 import compiler/lower/proc::{lower_proc_literal}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
@@ -172,9 +173,8 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
     low.builder.call(entry_type, fn, [main_fn.param(0), main_fn.param(1)] of Value, "")
     low.builder.ret(low.builder.const_int(i32, 0))
   end
-  # The hosted `iyi_define_headed_bytes` (gc_layouts.cr 187), after every def: the census reads
-  # virtual types codegen made late, and every allocation loaded the global this fills.
-  define_headed_bytes(low)
+  # The arena's table and headed bytes are emitted together after all defs.
+  define_gc_layouts(low) if iyi_gc_arena?(low)
   function_attributes(m)
 end
 

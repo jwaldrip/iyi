@@ -1,0 +1,31 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+class IyiRuntimeLock
+end
+
+class IyiHeap
+end
+
+class Leaf
+end
+
+class Container
+  @number : Int32
+  @child : Leaf
+
+  def initialize(@number : Int32, @child : Leaf)
+  end
+end
+
+class Box(T)
+  @value : T
+
+  def initialize(@value : T)
+  end
+end
+
+slot : Box(Leaf)
+
+LibC.exit(7)
