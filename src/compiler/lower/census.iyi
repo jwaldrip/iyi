@@ -582,22 +582,22 @@ pub def run_census(typed : TypedProgram, census_path : String, refused : Array(S
         refused << "census\t#{line}\tcensus\tcall resolved no target def"
       end
     else
-      target = visitor.target_def?(call_node).as(Def)
-      direct = typed.visitor.typed_instances.find { |inst| inst.definition.object_id == target.object_id }
+      direct_target = visitor.target_def?(call_node).as(Def)
+      direct = typed.visitor.typed_instances.find { |inst| inst.definition.object_id == direct_target.object_id }
       if direct.nil?
         refused << "instance-silent\t#{line}\t-\tno typed instance for resolved target"
         next
       end
       inst = direct.as(TypedInstance)
       ids = NodeIds.new
-      target.accept(ids)
+      direct_target.accept(ids)
       visitor.refusals.each do |r|
         if ids.ids.has_key?(r.node.node_id)
           reason = census_first_line(r.reason)
           refused << "instance-body\t#{line}\t#{typed_owner(reason)}\t#{reason}"
         end
       end
-      if !primitive_name(target.body).nil?
+      if !primitive_name(direct_target.body).nil?
         refused << "instance-silent\t#{line}\t-\tprimitive lowered at call site"
         next
       end
@@ -609,7 +609,7 @@ pub def run_census(typed : TypedProgram, census_path : String, refused : Array(S
       mod = made.as(Module)
       typer = LowerTyper.new(mod.types, mod.layout, true)
       lowered = group do |g|
-        task = g.spawn { lower_def_probe(target, inst.self_type, inst.arg_types, visitor, typer, mod) }
+        task = g.spawn { lower_def_probe(direct_target, inst.self_type, inst.arg_types, visitor, typer, mod) }
         task.value
       end
       if lowered.is_a?(Panicked)
@@ -618,8 +618,8 @@ pub def run_census(typed : TypedProgram, census_path : String, refused : Array(S
       elsif !lowered.nil?
         reason = census_first_line(lowered.as(String))
         refused << "instance-lowering\t#{line}\t#{typed_owner(reason)}\t#{reason}"
-      elsif body_t = visitor.type_of?(target.body)
-        actual = mangled_name(target.name, inst.self_type, inst.arg_types, body_t)
+      elsif body_t = visitor.type_of?(direct_target.body)
+        actual = mangled_name(direct_target.name, inst.self_type, inst.arg_types, body_t)
         if fn = mod.get_function?(actual)
           if fn.declaration?
             refused << "instance-silent\t#{line}\t-\tlowering emitted declaration only"
