@@ -69,10 +69,12 @@ pub def malloc_closure(low : Lowerer, ctx : LowerContext, vars : Array(ClosureVa
     captured.each_with_index do |var, i|
       ctx.vars[var.name] = LowerVar.new(closure_field(low, type, ptr, i, var.name), var.type)
     end
-    if parent_type
-      parent_ptr = parent.as(LowerContext).closure_ptr
-      raise "BUG: closure parent has no pointer" if parent_ptr.nil?
-      store_aligned(low, parent_ptr.as(Value), closure_field(low, type, ptr, captured.size, "parent"))
+    if outer = parent
+      if parent_type
+        parent_ptr = outer.closure_ptr
+        raise "BUG: closure parent has no pointer" if parent_ptr.nil?
+        store_aligned(low, parent_ptr.as(Value), closure_field(low, type, ptr, captured.size, "parent"))
+      end
     end
     if self_closured
       self_var = ctx.vars["self"]?
