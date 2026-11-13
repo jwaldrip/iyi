@@ -1,3 +1,4 @@
+@[Unsafe("declares the exit function for the fixture")]
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
