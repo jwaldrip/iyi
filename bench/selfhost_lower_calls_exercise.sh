@@ -227,7 +227,7 @@ prove_mutation "a call's result is discarded for nil" "$REPO/src/compiler/lower/
   "    low.last = inst" "    low.last = llvm_nil(low)" -- lower_calls_check || status=1
 prove_mutation "a lib call omits the unreachable after NoReturn" "$REPO/src/compiler/lower/call.iyi" \
   "    low.builder.unreachable" "    low.last = llvm_nil(low)" -- lower_calls_check || status=1
-prove_mutation "the return after a terminated block is not skipped" "$REPO/src/compiler/lower/lower.iyi" \
+prove_mutation "the return after a terminated block is not skipped" "$REPO/src/compiler/lower/fun.iyi" \
   "  return if block_ended?(low)" "  low.last = low.last" -- lower_calls_check || status=1
 prove_mutation "a def's unwind table is async on aarch64" "$REPO/src/compiler/lower/fun.iyi" \
   'return "sync"' 'return "async"' -- lower_calls_check || status=1
@@ -256,9 +256,9 @@ prove_mutation "a block branch's value is merged as the last branch" "$REPO/src/
 prove_mutation "a block branch's value is dropped" "$REPO/src/compiler/lower/block.iyi" \
   "      value = v.as(Value)" "      value = nil" -- lower_calls_check || status=1
 prove_mutation "a break from a block drops its value" "$REPO/src/compiler/lower/lower.iyi" \
-  "    branch_to_phi(low, block_phi.as(BranchPhi), node.exp)" "    branch_to_phi(low, block_phi.as(BranchPhi), nil)" -- lower_calls_check || status=1
+  "    branch_to_phi(low, block_phi.as(BranchPhi), node.exp, jump_target(node, low.current_context.break_target))" "    branch_to_phi(low, block_phi.as(BranchPhi), nil, jump_target(node, low.current_context.break_target))" -- lower_calls_check || status=1
 prove_mutation "a return from an inlined def drops its value" "$REPO/src/compiler/lower/lower.iyi" \
-  "    branch_to_phi(low, rp.as(BranchPhi), node.exp)" "    branch_to_phi(low, rp.as(BranchPhi), nil)" -- lower_calls_check || status=1
+  "    branch_to_phi(low, rp.as(BranchPhi), node.exp, jump_target(node, low.current_context.return_target))" "    branch_to_phi(low, rp.as(BranchPhi), nil, jump_target(node, low.current_context.return_target))" -- lower_calls_check || status=1
 prove_mutation "a method's receiver is not passed to the call" "$REPO/src/compiler/lower/call.iyi" \
   "    out << sv.as(Value)" "    out.size" -- lower_calls_check || status=1
 prove_mutation "a method's mangled name has no owner" "$REPO/src/compiler/lower/fun.iyi" \
