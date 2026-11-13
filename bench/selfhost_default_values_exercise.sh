@@ -25,13 +25,14 @@ cmp "$WORK/expected.out" "$WORK/hosted.out"
 cmp "$WORK/hosted.out" "$WORK/native.out"
 echo 'magic call-site literals and executable output match'
 fixture="$REPO/bench/fixtures/bodies_union_magic_mismatch.iyi"
-if "$WORK/native" "$fixture" -o "$WORK/union" --pipeline typed --probe-phase > "$WORK/union.log" 2>&1; then
-  echo "union magic defaults now compile: remove this named waiting case"
+"$IYI" build -o "$WORK/typed" "$REPO/src/compiler/tools/typed_dump.iyi"
+if "$WORK/typed" "$fixture" "$REPO/src" > "$WORK/union-typed.log" 2>&1; then
+  echo "union magic defaults now type: remove this named waiting case"
   exit 1
 fi
-if ! grep -Fx 'iyi-compile-native: bodies: not ported: differing union call-site defaults' "$WORK/union.log"; then
+if ! grep -F 'not ported: differing union call-site defaults' "$WORK/union-typed.log"; then
   echo "union magic defaults refused for a different reason:"
-  cat "$WORK/union.log"
+  cat "$WORK/union-typed.log"
   exit 1
 fi
 echo 'WAITING: differing union call-site defaults'
