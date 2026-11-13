@@ -408,9 +408,9 @@ prove_mutation "a nilable restriction drops Nil" "$RESTRICT_FILE" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a type lookup leaves aliases unexpanded" "$REPO/src/compiler/types/lookup.iyi" \
+prove_mutation "a type lookup resolves an alias to the wrong type" "$REPO/src/compiler/types/lookup.iyi" \
   '      return expand(target.as(Type))' \
-  '      return type' \
+  '      return program.types["Nil"].as(Type)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
