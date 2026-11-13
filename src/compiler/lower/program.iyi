@@ -461,6 +461,8 @@ pub def refusal_table(typed : TypedProgram, root : String, refused : Array(Strin
   clean = 0
   labels.each do |label|
     clean += 1 unless dirty.has_key?(label)
+    # The instances defs-reached counts, by name, so two trees' reach can be compared as sets (sidecar only).
+    refused << "instance\t#{label}"
   end
   lines << "table: #{root} defs-reached=#{labels.size} defs-typed-clean=#{clean} root-refusals=#{root_refusals} refusal-sites=#{sites.size}"
   ranked_rows(root, "refusal", reasons, counts, examples).each { |line| lines << line }
