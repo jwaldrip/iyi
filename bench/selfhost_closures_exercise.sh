@@ -50,8 +50,16 @@ compare_fixtures() {
 
 printf '%s\n' '== 2. Comparing closure facts'
 compare_fixtures || exit 1
+refusal_check() {
+  "$PORT" --refusals bench/fixtures/semclos_literal_changing.iyi > "$WORK/refusals.out" 2>&1 || return 1
+  awk '/^refusal: closured variable value assigned values of more than one type$/ { found=1 } END { exit !found }' "$WORK/refusals.out"
+}
+if ! refusal_check; then
+  printf '%s\n' 'MISSING REFUSAL: changing captured variable type'
+  exit 1
+fi
 mutation_check() {
-  build_port && compare_fixtures
+  build_port && compare_fixtures && refusal_check
 }
 
 printf '%s\n' '== 3. Mutation proofs'
@@ -70,6 +78,10 @@ prove_mutation 'instance variable does not capture self' "$REPO/src/compiler/sem
     nil' -- mutation_check || status=1
 prove_mutation 'reassignment after capture is not mutable' "$REPO/src/compiler/semantic/closures.iyi" \
   'elsif assignment && binding.captured' 'elsif false && assignment && binding.captured' -- mutation_check || status=1
+prove_mutation 'changing captured variable is not refused' "$REPO/src/compiler/semantic/closures.iyi" \
+  'if binding.assigned_types.size > 1' 'if false && binding.assigned_types.size > 1' -- mutation_check || status=1
+prove_mutation 'shadowed parameters lose outer insertion order' "$REPO/src/compiler/semantic/closures.iyi" \
+  'parent.visible_names' '[] of String' -- mutation_check || status=1
 if [ "$status" -ne 0 ]; then
   printf '%s\n' '== SOME CLOSURE CHECKS FAILED'
   exit 1

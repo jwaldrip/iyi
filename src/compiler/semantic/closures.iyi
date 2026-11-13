@@ -1,9 +1,10 @@
 module compiler/semantic/closures
 
-import compiler/syntax/ast::{ASTNode, Assign, Block, Def, InstanceVar, NodeMap, ProcLiteral, Self, Var}
+import compiler/syntax/ast::{ASTNode, Assign, Block, Break, Def, InstanceVar, Next, NodeMap, ProcLiteral, Return, Self, Var, While, Yield}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{MetaclassType, SemanticProgram, Type}
 import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/types/unification::{TypeUnification}
 
 pub enum FrameKind
   Program
@@ -14,7 +15,7 @@ end
 
 pub class ClosureVar
   getter name : String
-  getter type : Type
+  property type : Type
   property mutably : Bool
 
   def initialize(@name : String, @type : Type, @mutably : Bool = false)
@@ -25,8 +26,17 @@ end
 pub class ClosureBinding
   getter variable : ClosureVar
   property captured : Bool = false
+  getter assigned_types : Array(Type)
 
   def initialize(@variable : ClosureVar)
+    @assigned_types = [@variable.type] of Type
+  end
+
+  def record_type(type : Type, program : SemanticProgram) : Nil
+    unless @assigned_types.any? { |item| item.full_name == type.full_name }
+      @assigned_types << type
+      @variable.type = TypeUnification.union_of(program, @assigned_types)
+    end
   end
 end
 
@@ -65,10 +75,31 @@ pub class ClosureFrame
     nil
   end
 
+  # Hosted duplicates the visible hash, so a shadowing parameter retains its
+  # outer name's position rather than its position in the parameter list.
+  def visible_names : Array(String)
+    names = if parent = @parent
+              parent.visible_names
+            else
+              [] of String
+            end
+    @bindings.each do |binding|
+      names << binding.variable.name unless names.includes?(binding.variable.name)
+    end
+    names
+  end
+
   def finish : Nil
     @closured.clear
-    @bindings.each do |binding|
-      @closured << binding.variable if binding.captured
+    visible_names.each do |name|
+      binding = local?(name)
+      next unless binding
+      if binding.captured
+        @closured << binding.variable
+        if binding.assigned_types.size > 1
+          @errors << "closured variable #{binding.variable.name} assigned values of more than one type"
+        end
+      end
     end
   end
 end
@@ -78,7 +109,7 @@ end
 pub class ClosureWalk < Visitor
   getter frame : ClosureFrame
 
-  def initialize(@facts : ClosureFacts, @visitor : MainVisitor, @frame : ClosureFrame)
+  def initialize(@facts : ClosureFacts, @visitor : MainVisitor, @frame : ClosureFrame, @inside_while : Bool = false)
   end
 
   def visit(node : Def) : Bool
@@ -92,14 +123,61 @@ pub class ClosureWalk < Visitor
       variable = target.as(Var)
       binding = @frame.resolve?(variable.name)
       if binding
+        if type = @visitor.type_of?(node.value)
+          binding.record_type(type, @visitor.program)
+        end
+        binding.variable.mutably = true if @inside_while
         capture(variable.name, true)
       elsif type = @visitor.type_of?(variable) || @visitor.type_of?(node.value)
         @frame.bindings << ClosureBinding.new(ClosureVar.new(variable.name, type))
+        @frame.bindings.last.variable.mutably = true if @inside_while
       end
     else
       target.accept(self)
     end
     false
+  end
+
+  def visit(node : While) : Bool
+    previous = @inside_while
+    @inside_while = true
+    node.accept_children(self)
+    @inside_while = previous
+    false
+  end
+
+  def refuse_inside_proc(reason : String, captured_only : Bool) : Nil
+    current : ClosureFrame? = @frame
+    while frame = current
+      if frame.kind == FrameKind::Proc
+        def_node = frame.node.as(Def)
+        if !captured_only || def_node.captured_block?
+          frame.errors << reason
+        end
+        return
+      end
+      current = frame.parent
+    end
+  end
+
+  def visit(node : Yield) : Bool
+    refuse_inside_proc("yield inside a proc literal or captured block", false)
+    true
+  end
+
+  def visit(node : Break) : Bool
+    refuse_inside_proc("break inside a captured block", true)
+    true
+  end
+
+  def visit(node : Return) : Bool
+    refuse_inside_proc("return inside a captured block", true)
+    true
+  end
+
+  def visit(node : Next) : Bool
+    refuse_inside_proc("next inside a captured block", true)
+    true
   end
 
   def visit(node : Var) : Bool
@@ -194,7 +272,7 @@ pub class ClosureWalk < Visitor
         frame.bindings << ClosureBinding.new(ClosureVar.new(arg.name, type))
       end
     end
-    node.body.accept(ClosureWalk.new(@facts, @visitor, frame))
+    node.body.accept(ClosureWalk.new(@facts, @visitor, frame, @inside_while))
     frame.finish
     false
   end
@@ -202,12 +280,13 @@ pub class ClosureWalk < Visitor
   def visit(node : ProcLiteral) : Bool
     proc_def = node.def
     frame = @facts.add_frame(FrameKind::Proc, proc_def, @frame)
+    refuse_inside_proc("nested proc literal", false)
     proc_def.args.each do |arg|
       if type = @visitor.type_of?(arg)
         frame.bindings << ClosureBinding.new(ClosureVar.new(arg.name, type))
       end
     end
-    proc_def.body.accept(ClosureWalk.new(@facts, @visitor, frame))
+    proc_def.body.accept(ClosureWalk.new(@facts, @visitor, frame, @inside_while))
     frame.finish
     false
   end
