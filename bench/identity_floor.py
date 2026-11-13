@@ -115,6 +115,11 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     # still bootstrapped from, and requires the normalised trees identical.
     # The other language is what is being compared against, so it is named.
     (r"^bench/selfhost_parser_exercise\.sh$", "the frontend the selfhost parser is checked against"),
+    # The self-hosting bind tool's oracle, for the same reason as the
+    # normalizer's: it analyzes each fixture with the iyi bind tool and with
+    # the frontend iyi is still bootstrapped from, and requires the bound
+    # methods identical. The other language is the thing being compared against.
+    (r"^bench/selfhost_bind_exercise\.sh$", "the frontend the selfhost bind tool is checked against"),
 ]
 
 # Lines that name Crystal legitimately inside a file that is otherwise iyi's.
