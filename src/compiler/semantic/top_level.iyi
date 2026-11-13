@@ -7,6 +7,7 @@ import compiler/syntax/token::{NumberKind}
 import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, ExternalVar, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
+import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/semantic/inline_macros::{expand_inline_macro, splice_body_node, splice_inline_sites}
 
 pub class TypeException
@@ -2791,10 +2792,9 @@ pub class TopLevelVisitor < Visitor
     wrapped_def.members
   end
 
-  # The flags of the host this compiler builds on: macOS on arm64. A flag it does not
-  # name is off, as `flag?` answers for an unknown flag.
+  # Use the same target flags as the macro engine for the compiler's host.
   def iyi_host_flag?(name : String) : Bool
-    name == "darwin" || name == "aarch64" || name == "unix"
+    MacroTargetFlags.for_triple(MacroTargetFlags.compile_time_triple, [] of String).includes?(name)
   end
 
   # `flag?(:name)` joined by `!`, `&&` and `||`: every condition an enum body in the

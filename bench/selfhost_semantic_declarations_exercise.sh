@@ -410,6 +410,17 @@ awk -F'\t' '
   $1 == "RAISE THE FLOOR" { printf "  RAISE THE FLOOR: %s matched %s, floor %s. Raise the floor in bench/selfhost_semantic_declarations.floor (SEMDECL_RAISE=1).\n", $3, $5, $7 }
   $1 == "NO FLOOR"        { printf "  NO FLOOR: %s has no floor entry. Add it (SEMDECL_RAISE=1).\n", $3 }
 ' "$VERDICTS"
+while IFS= read -r rel; do
+  echo "  Declaration differences for $rel (first 20 lines; < oracle, > port):"
+  if [ "$rel" = "<initial>" ]; then
+    "$ORACLE" --initial > "$WORK/below_o.txt" 2>&1
+    "$PORT" --initial > "$WORK/below_p.txt" 2>&1
+  else
+    "$ORACLE" "$REPO/$rel" > "$WORK/below_o.txt" 2>&1
+    "$PORT" "$REPO/$rel" > "$WORK/below_p.txt" 2>&1
+  fi
+  diff "$WORK/below_o.txt" "$WORK/below_p.txt" | head -n 20
+done < <(awk -F'\t' '$1 == "BELOW FLOOR" { print $3 }' "$VERDICTS")
 echo "  $fails file(s) below or missing their floor"
 if [ "$fails" -gt 0 ]; then
   status=1
@@ -834,6 +845,11 @@ prove_mutation "only the last annotation is read for a primitive" "$MUT_SEM" \
   "    @pending_annotations.each do |ann|" \
   "    if ann = @pending_annotations.last?" \
   -- check_primitive_annotations_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "enum host flags select the wrong platform branch" "$MUT_SEM" \
+  '    MacroTargetFlags.for_triple(MacroTargetFlags.compile_time_triple, [] of String).includes?(name)' \
+  '    !MacroTargetFlags.for_triple(MacroTargetFlags.compile_time_triple, [] of String).includes?(name)' \
+  -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
