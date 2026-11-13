@@ -28,6 +28,7 @@ import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
 import compiler/lower/cast::{assign}
 import compiler/lower/context::{BranchPhi, Lowerer, LowerContext, LowerVar}
+import compiler/lower/closure::{malloc_closure}
 import compiler/lower/fun::{block_ended?, visit_node}
 import compiler/lower/helpers::{llvm_nil, store_aligned}
 import compiler/lower/pending::{pending_visit_node, refuse_port}
@@ -140,6 +141,9 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
   unless block.splat_index.nil?
     pending_visit_node("a block with a splat argument (hosted codegen.cr: visit(Yield), splat_index)")
   end
+  if block_frame = low.closure_facts.frame?(block)
+    malloc_closure(low, caller, block_frame.closured, caller.closure_parent_context, false)
+  end
 
   wants = low.needs_value
   exp_values = [] of Value
@@ -190,6 +194,7 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
   # The hosted `with_cloned_context(block_context)`: the body's context shares the block context's
   # variables and its return; `break` is the call's value, `next` is this yield's phi.
   body = LowerContext.new(caller.fun, caller.fun_type, caller.type, caller.vars)
+  body.copy_closure_from(caller)
   body.top_level = caller.top_level
   body.return_type = caller.return_type
   body.return_phi = caller.return_phi

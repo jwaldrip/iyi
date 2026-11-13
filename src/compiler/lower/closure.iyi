@@ -38,6 +38,9 @@ private def closure_field(low : Lowerer, type : IrType, pointer : Value, index :
 end
 
 private def closure_malloc(low : Lowerer, type : IrType, pointerful : Bool) : Value
+  unless low.analysed.program.types["IyiHeap"]?.nil?
+    raise "lower: closure allocation through the iyi arena is not ported"
+  end
   # Runtime allocators and their barriers must not silently fall back to C malloc.
   ["__iyi_malloc64", "__crystal_malloc64", "__iyi_malloc_atomic64", "__crystal_malloc_atomic64"].each do |name|
     unless low.module.get_function?(name).nil?
