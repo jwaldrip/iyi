@@ -2840,6 +2840,15 @@ pub class MainVisitor < TypeNodeHost
         self_t = rec_type
       end
       @typed_instances << TypedInstance.new(target_def, self_t, inst_args)
+      # Hosted Call#instantiate registers the typed def before visiting its body
+      # (semantic/call.cr 628-630, body at 714). A recursive call must target this
+      # object, whose parameters already carry their instantiated types, not a fresh clone.
+      provisional : Type = @program.no_return_type
+      if declared = target_def.return_type
+        provisional = lookup_def_return(declared, rec_type, target_def)
+      end
+      set_type(target_def, provisional)
+      remember_def_instance(cache_key, target_def, provisional)
     end
     body = splice_def_body(body.as(ASTNode))
     target_def.body = body.as(ASTNode)

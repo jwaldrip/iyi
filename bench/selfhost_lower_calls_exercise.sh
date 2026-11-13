@@ -115,6 +115,27 @@ if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
 fi
 
 echo
+echo "== 3b. A recursive call targets the instance still being typed"
+if [ -x "$WORK/compile_native" ]; then
+  for fixture in "$REPO"/bench/fixtures/sem_bodies_recursion_mutual.iyi "$REPO"/bench/fixtures/sem_bodies_recursion_state.iyi; do
+    name="$(basename "$fixture" .iyi)"
+    IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.probe.exe" --pipeline typed --probe-phase --keep-going > "$WORK/$name.probe" 2>&1 || true
+    if grep -E 'untyped instantiated parameter|no type for the call' "$WORK/$name.probe"; then
+      echo "  $name: a cycle call targets an untyped clone"
+      status=1
+    elif ! awk '/^table: .* defs-lowered-clean=/ { found = 1 } END { exit !found }' "$WORK/$name.probe"; then
+      echo "  $name: probe produced no lowering table"
+      status=1
+    else
+      echo "  $name: every probe root lowered without a missing call target"
+    fi
+  done
+else
+  echo "  recursion probe skipped: the native tool did not build"
+  status=1
+fi
+
+echo
 echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires every call fixture
 # to match the hosted module exactly. It returns 0 only on the unmutated behaviour.
@@ -234,6 +255,26 @@ prove_mutation "a restriction the argument implements is refused (the nil argume
   'unless at.implements?(restricted.as(Type))' 'if at.implements?(restricted.as(Type))' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'values << (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))' 'values << value.as(Value)' -- lower_calls_check || status=1
+recursion_owner_check() {
+  if ! "$IYI" build -o "$WORK/recursion_mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/recursion_mut.build.log" 2>&1; then
+    echo "INVALID MUTANT: recursion driver failed to build" >&2
+    cat "$WORK/recursion_mut.build.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  local fixture name
+  for fixture in "$REPO"/bench/fixtures/lowcall_recursion_*.iyi; do
+    name="$(basename "$fixture" .iyi)"
+    if ! "$WORK/recursion_mut" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/recursion_mut.out" 2> "$WORK/recursion_mut.err"; then
+      return 1
+    fi
+    awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/recursion_mut.out" || return 1
+  done
+  return 0
+}
+prove_mutation "a recursive call targets a fresh clone" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  "remember_def_instance(cache_key, target_def, provisional)" \
+  "nil" -- recursion_owner_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
