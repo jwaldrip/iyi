@@ -23,7 +23,7 @@ module compiler/semantic/new
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, DoubleSplat, Expressions, Generic, If, NamedArgument, Nop, Path, RespondsTo, Splat, Var, Visibility}
 import compiler/semantic/method_lookup::{MethodLookup}
-import compiler/semantic/top_level::{GenericClassType, NamedType, NonGenericClassType, SemanticProgram, Type}
+import compiler/semantic/top_level::{GenericClassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, Type}
 
 # `allocate` with no receiver, for every class. The hosted expansion names a generic class's
 # type (`Box(T).allocate`) so that `T` is bound in the body. The port's body typer does not
@@ -138,13 +138,27 @@ pub def define_default_new_single(program : SemanticProgram, type : NonGenericCl
   nil
 end
 
+# Hosted new.cr:87-104 copies initializers only from the first ancestor that
+# defines them, not from every ancestor with an initializer.
+pub def first_initializer_defs(type : ModuleType) : Array(Def)
+  if own = type.defs["initialize"]?
+    return own unless own.empty?
+  end
+  MethodLookup.parents_of(type).each do |parent|
+    next unless parent.is_a?(ModuleType)
+    found = first_initializer_defs(parent.as(ModuleType))
+    return found unless found.empty?
+  end
+  [] of Def
+end
+
 # Hosted define_default_new_single gives a generic class its own new, even
 # when an ancestor already has one, by copying inherited initializers.
 pub def define_default_generic_new(program : SemanticProgram, type : GenericClassType) : Nil
   return if builtin_for_new?(program, type)
   own_inits = type.defs["initialize"]?
   return if own_inits && !own_inits.empty?
-  inits = MethodLookup.all_defs(type, "initialize", [] of Def)
+  inits = first_initializer_defs(type)
   if !inits.empty?
     inits.each do |init|
       existing = type.metaclass.defs["new"]?
