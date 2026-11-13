@@ -295,8 +295,8 @@ class GuessVisitor < Visitor
     nil
   end
 
-  # `Foo.new` is Foo. A class with subclasses has a virtual type, which this pass
-  # does not compute, so its guess is left out.
+  # A constructor's class is the default guess (hosted type_guess_visitor.cr:640-651).
+  # The constructor's explicit return annotation is not yet resolved here.
   def guess_call(node : Call) : Type?
     if expanded = node.expanded
       return guess_type(expanded)
@@ -304,7 +304,7 @@ class GuessVisitor < Visitor
     obj = node.obj
     if node.name == "new" && obj && obj.is_a?(Path)
       found = @program.lookup_type_node?(obj, @og.owner)
-      if found && found.is_a?(NonGenericClassType) && found.as(NonGenericClassType).subclasses.empty?
+      if found && found.is_a?(NonGenericClassType)
         return found
       end
     end
