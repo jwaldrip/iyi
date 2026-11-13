@@ -291,6 +291,26 @@ if ARGV[0]? == "--link-annotations"
   exit 0
 end
 
+if ARGV[0]? == "--virtual-subtype"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  base = program.types["SubtypeNode"].as(Iyi::ClassType)
+  leaf = program.types["SubtypeLeaf"].as(Iyi::ClassType)
+  other = program.types["SubtypeOther"].as(Iyi::ClassType)
+  virtual = base.virtual_type
+  virtual_meta = virtual.metaclass
+  puts "leaf virtual #{leaf.implements?(virtual)}"
+  puts "base virtual #{base.implements?(virtual)}"
+  puts "other virtual #{other.implements?(virtual)}"
+  puts "virtual leaf #{virtual.implements?(leaf)}"
+  puts "leaf meta virtual #{leaf.metaclass.implements?(virtual_meta)}"
+  puts "other meta virtual #{other.metaclass.implements?(virtual_meta)}"
+  puts "virtual meta leaf #{virtual_meta.implements?(leaf.metaclass)}"
+  exit 0
+end
+
 typed_mode = ARGV[0]? == "--typed"
 path = (typed_mode ? ARGV[1]? : ARGV[0]?) || abort("usage: selfhost_semantic_declarations_oracle [--typed] <file.iyi>")
 entry = File.expand_path(path)

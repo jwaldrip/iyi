@@ -170,6 +170,9 @@ pub abstract class Type
 
   def subtype_of?(other : Type) : Bool
     return true if self == other
+    # Hosted types.cr:421-433 unwraps virtual restriction types before checking parents.
+    target = other.devirtualize
+    return subtype_of?(target) unless target == other
     if other.is_a?(UnionType)
       ut = other.as(UnionType)
       i = 0

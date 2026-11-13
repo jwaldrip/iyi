@@ -3,7 +3,7 @@ import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader, Path, Primitive
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, EnumType, dump_program_declarations, dump_type, dir_of, normalize_path, declared_in?}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/type_nodes::{type_node_system}
-import compiler/types/types::{GenericClassInstanceType}
+import compiler/types/types::{GenericClassInstanceType, VirtualType}
 
 # Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
 #
@@ -266,6 +266,20 @@ elsif Program.args[0] == "--scope-lookup"
   scope = prog.types[Program.args[2]].as(ModuleType).metaclass
   found = prog.lookup_type_path(Path.new(Program.args[3]), scope)
   print "#{found.full_name}\n"
+elsif Program.args[0] == "--virtual-subtype"
+  prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_typed_program(Program.args[1])
+  base = prog.types["SubtypeNode"].as(ClassType)
+  leaf = prog.types["SubtypeLeaf"].as(ClassType)
+  other = prog.types["SubtypeOther"].as(ClassType)
+  virtual = base.program.merge_hook.not_nil!.virtual_of(base)
+  virtual_meta = virtual.as(VirtualType).metaclass
+  print "leaf virtual #{leaf.subtype_of?(virtual)}\n"
+  print "base virtual #{base.subtype_of?(virtual)}\n"
+  print "other virtual #{other.subtype_of?(virtual)}\n"
+  print "virtual leaf #{virtual.subtype_of?(leaf)}\n"
+  print "leaf meta virtual #{leaf.metaclass.subtype_of?(virtual_meta)}\n"
+  print "other meta virtual #{other.metaclass.subtype_of?(virtual_meta)}\n"
+  print "virtual meta leaf #{virtual_meta.subtype_of?(leaf.metaclass)}\n"
 elsif Program.args[0] == "--typed"
   print BenchSelfhostSemanticDeclarationsExercise.dump_file_typed(Program.args[1])
 elsif Program.args[0] == "--typed-reresolve"
