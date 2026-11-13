@@ -2146,6 +2146,13 @@ pub class ExceptionHandler < ASTNode
   property ensure : ASTNode?
   property suffix : Bool
   property implicit : Bool = false
+  # The handler a `defer` is normalized to (hosted syntax/ast.cr 2967). iyi refuses a written `ensure`;
+  # this one is the defer registry's pop and is not refused.
+  property iyi_defer : Bool = false
+
+  def iyi_defer? : Bool
+    @iyi_defer
+  end
 
   def initialize(body : ASTNode? = nil, @rescues : Array(Rescue)? = nil, @else : ASTNode? = nil, @ensure : ASTNode? = nil, @suffix : Bool = false)
     @body = body || Nop.new
@@ -2157,7 +2164,10 @@ pub class ExceptionHandler < ASTNode
     else
       cloned_rescues = nil
     end
-    ExceptionHandler.new(@body.clone, cloned_rescues, clone_node(@else), clone_node(@ensure), @suffix)
+    ex = ExceptionHandler.new(@body.clone, cloned_rescues, clone_node(@else), clone_node(@ensure), @suffix)
+    ex.implicit = @implicit
+    ex.iyi_defer = @iyi_defer
+    ex
   end
 
   def accept_children(visitor) : Nil
@@ -3347,6 +3357,9 @@ pub class Def < ASTNode
   property uses_block_arg : Bool = false
   # Set on the `->` def of a captured block's literal (hosted semantic/ast.cr 151). A clone does not carry it.
   property captured_block : Bool = false
+  # The `->` def of the proc a `defer` registers under the iyi prelude (hosted syntax/ast.cr 1658): it runs
+  # only when its frame will never resume.
+  property iyi_defer : Bool = false
 
   def calls_super? : Bool
     @calls_super
@@ -3366,6 +3379,10 @@ pub class Def < ASTNode
 
   def captured_block? : Bool
     @captured_block
+  end
+
+  def iyi_defer? : Bool
+    @iyi_defer
   end
 
   def initialize(
@@ -3412,6 +3429,7 @@ pub class Def < ASTNode
     d.calls_initialize = @calls_initialize
     d.calls_previous_def = @calls_previous_def
     d.uses_block_arg = @uses_block_arg
+    d.iyi_defer = @iyi_defer
     d
   end
 
