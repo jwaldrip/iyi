@@ -37,12 +37,11 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_nilable_proc lowglob_cvar_pointer lowglob_cvar_nilable_pointer lowglob_cvar_struct"
+WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_pointer lowglob_cvar_nilable_pointer lowglob_cvar_struct"
 # The body pass does not flag an untyped @[ThreadLocal] declaration.
 # The lazy fixture's indirect Proc call waits on body typing's splat binding.
-# The nilable Proc fixture waits for declaration typing to instantiate Proc's arguments.
-# The pointer fixtures wait for the same generic declaration resolution.
-# The nilable struct fixture waits for declaration type resolution and aggregate initialization.
+# Pointer and nilable struct declarations now resolve, but their aggregate globals
+# and initializer values are not yet lowered.
 #
 # The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
 
@@ -133,15 +132,9 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
         *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
       esac
     fi
-    if [ "$name" = lowglob_cvar_nilable_proc ]; then
-      case "$reason" in
-        *"class variable @@resolver is not an integer"*) ;;
-        *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
-      esac
-    fi
     if [ "$name" = lowglob_cvar_pointer ]; then
       case "$reason" in
-        *"uninstantiated generic type Pointer"*) ;;
+        *"class variable @@ptr is not an integer"*) ;;
         *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
       esac
     fi
@@ -259,8 +252,8 @@ prove_mutation "indirect calls are left without a function type" "$REPO/bench/li
   "  if (at == 0) return line" "  if (indirect || at == 0) return line" -- lowglob_check || status=1
 prove_mutation "lazy initializer ignores the once flag" "$REPO/bench/fixtures/lowglob_cvar_lazy.iyi" \
   "  if !flag.value" "  if true" -- hosted_once_check || status=1
-prove_mutation "an unresolved generic class variable is silently lowered" "$REPO/src/compiler/lower/class_var.iyi" \
-  "  if cvar.type.is_a?(GenericClassType)" "  if false" -- lowglob_check || status=1
+prove_mutation "a nilable Proc initializer is not discarded" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  node.is_a?(NilLiteral) && cvar.type.is_a?(NilableProcType)" "  false" -- lowglob_check || status=1
 prove_mutation "a floating constant global is initialized to zero" "$REPO/src/compiler/lower/const.iyi" \
   "    global.initializer = low.builder.const_float(ir, const.value.as(NumberLiteral).value.to_f)" \
   "    global.initializer = low.builder.const_float(ir, 0.0)" -- lowglob_check || status=1
