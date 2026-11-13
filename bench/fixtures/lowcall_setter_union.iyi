@@ -1,0 +1,31 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+class Holder
+  @x : Fiber | Nil
+
+  def initialize(@x : Fiber | Nil)
+  end
+
+  def x : Fiber | Nil
+    @x
+  end
+
+  def x=(v : Fiber | Nil)
+    @x = v
+  end
+end
+
+class Fiber
+  def initialize
+  end
+end
+
+h = Holder.new(nil)
+f = Fiber.new
+u = h.x
+h.x = u
+h.x = nil
+h.x = f
+LibC.exit(42)

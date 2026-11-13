@@ -40,7 +40,7 @@ module compiler/lower/call
 # The AST node is named `Compiler::Syntax::Ast::Call` because this module is itself
 # `compiler/lower/call`, and inside it the name `Call` means this module.
 
-import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, InstanceVar, Nop, NilLiteral, NumberLiteral, Out, Path, RespondsTo, Var}
+import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, Generic, InstanceVar, Metaclass, Nop, NilLiteral, NumberLiteral, Out, Path, RespondsTo, Self, Union, Var}
 import compiler/ir/function::{Function}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
@@ -53,12 +53,13 @@ import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/helpers::{int1}
-import compiler/semantic/top_level::{ClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, Type, UnionType, VoidType}
+import compiler/semantic/top_level::{ClassType, GenericClassType, GenericModuleType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, Type, UnionType, VoidType}
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
-import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType}
+import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType, GenericInstanceType}
 import compiler/semantic/lib_call::{LibCallTarget}
+import compiler/semantic/restrictions::{FreeBindings}
 
 # A body that is a literal or nothing (`Nop`, an empty def), which the hosted call inlines (`try_inline_call`:
 # `when Nop, NilLiteral, BoolLiteral, CharLiteral, StringLiteral, NumberLiteral, SymbolLiteral`).
@@ -155,8 +156,9 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     end
   end
 
+  call_owner : Type? = self_type || class_owner
   if block = node.block
-    arg_types, values = lower_args(low, node, def_node)
+    arg_types, values = lower_args(low, node, def_node, call_owner)
     # Hosted `visit(Call)`: an argument that never returns leaves the block ended, and the call is not made.
     if block_ended?(low)
       low.last = llvm_nil(low)
@@ -170,7 +172,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   # Hosted `try_inline_call` (call.cr:561): a body that is a literal is inlined where the call
   # stands, and no function is emitted. The arguments are still evaluated, in order.
   if literal_body?(body)
-    lower_args(low, node, def_node)
+    lower_args(low, node, def_node, call_owner)
     if block_ended?(low)
       low.last = llvm_nil(low)
       return
@@ -184,7 +186,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   end
   # Hosted `try_inline_call`: a body that is `self` is the receiver, when its type is the call's.
   if body.is_a?(Var) && body.as(Var).name == "self" && !self_type.nil?
-    lower_args(low, node, def_node)
+    lower_args(low, node, def_node, call_owner)
     if block_ended?(low)
       low.last = llvm_nil(low)
       return
@@ -210,7 +212,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     if st.nil? || sv.nil?
       pending_visit_node("a getter #{node.name} with no receiver (hosted call.cr: try_inline_call, read_instance_var)")
     end
-    lower_args(low, node, def_node)
+    lower_args(low, node, def_node, call_owner)
     if block_ended?(low)
       low.last = llvm_nil(low)
       return
@@ -228,7 +230,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     return
   end
 
-  arg_types, values = lower_args(low, node, def_node)
+  arg_types, values = lower_args(low, node, def_node, call_owner)
   if block_ended?(low)
     low.last = llvm_nil(low)
     return
@@ -738,7 +740,7 @@ end
 # A restriction that converts an argument is refused, NoReturn included: the analysis types a
 # block call that breaks with a value as NoReturn (the hosted call is Int32), so a NoReturn
 # argument cannot be told from a converted one yet (NEEDS.md, lowering calls row 44).
-pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node : Def) : {Array(Type), Array(Value)}
+pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node : Def, owner : Type? = nil) : {Array(Type), Array(Value)}
   arg_types = [] of Type
   values = [] of Value
   wants = low.needs_value
@@ -752,7 +754,13 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
       # Hosted restrict: a restriction the argument implements leaves the argument's own type as the parameter's
       # (a Nil argument into `Fiber | Nil` is a Nil parameter, and the callee is named by it). Only an argument
       # that does not implement the restriction would convert, and that is refused by name.
-      restricted = low.analysed.program.lookup_type_node(restriction.as(ASTNode), low.analysed.program)
+      bound_free : Hash(String, Type)? = nil
+      if free = def_node.free_vars
+        fv = Hash(String, Type).new
+        FreeBindings.bind(restriction.as(ASTNode), at, free, fv)
+        bound_free = fv if fv.size > 0
+      end
+      restricted = resolve_restriction_type(low, restriction.as(ASTNode), owner, def_node, bound_free)
       unless at.implements?(restricted.as(Type))
         pending_visit_node("a restriction that does not hold for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)")
       end
@@ -769,6 +777,93 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
   end
   low.needs_value = wants
   {arg_types, values}
+end
+
+# Resolves a parameter's restriction AST node in the def's owner and file scope, binding generic
+# type parameters from *owner* (`Atomic(UInt64)#set(value : T)`) and any free variables from the call.
+pub def resolve_restriction_type(low : Lowerer, node : ASTNode, owner : Type?, def_node : Def, free_vars : Hash(String, Type)? = nil) : Type
+  prog = low.analysed.program
+  inst_owner = owner
+  if inst = inst_owner
+    if inst.is_a?(MetaclassType)
+      inst_owner = inst.as(MetaclassType).instance_type
+    end
+  end
+  scope : ModuleType = prog
+  if io = inst_owner
+    if io.is_a?(GenericInstanceType)
+      gt = io.as(GenericInstanceType).generic_type
+      scope = gt.as(ModuleType) if gt.is_a?(ModuleType)
+    elsif io.is_a?(ModuleType)
+      scope = io.as(ModuleType)
+    end
+  end
+  saved_imports = prog.current_imports
+  if loc = def_node.location
+    if fi = prog.file_imports[loc.filename]?
+      prog.current_imports = fi
+    end
+  end
+  result = resolve_restriction_node(low, node, inst_owner, scope, free_vars)
+  prog.current_imports = saved_imports
+  result
+end
+
+def resolve_restriction_node(low : Lowerer, node : ASTNode, inst_owner : Type?, scope : ModuleType, free_vars : Hash(String, Type)?) : Type
+  prog = low.analysed.program
+  if node.is_a?(Path)
+    path = node.as(Path)
+    if !path.global && path.names.size == 1
+      pname = path.names[0]
+      if fv = free_vars
+        if bound = fv[pname]?
+          return bound
+        end
+      end
+      if io = inst_owner
+        if io.is_a?(GenericInstanceType)
+          if bound = io.as(GenericInstanceType).type_vars[pname]?
+            return bound
+          end
+        end
+      end
+    end
+    return prog.lookup_type_node(node, scope)
+  end
+  if node.is_a?(Self)
+    if io = inst_owner
+      return io
+    end
+    return prog.lookup_type_node(node, scope)
+  end
+  if node.is_a?(Union)
+    members = [] of Type
+    node.as(Union).types.each do |sub|
+      members << resolve_restriction_node(low, sub, inst_owner, scope, free_vars)
+    end
+    return prog.type_merge(members)
+  end
+  if node.is_a?(Generic)
+    g = node.as(Generic)
+    base_type = resolve_restriction_node(low, g.name, inst_owner, scope, free_vars)
+    if hook = prog.merge_hook
+      if (base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType)) && prog.plain_generic?(g, base_type)
+        type_args = [] of Type
+        g.type_vars.each do |tv|
+          type_args << resolve_restriction_node(low, tv, inst_owner, scope, free_vars)
+        end
+        return hook.instantiate_type(base_type, type_args)
+      end
+    end
+    return prog.lookup_type_node(node, scope)
+  end
+  if node.is_a?(Metaclass)
+    base = resolve_restriction_node(low, node.as(Metaclass).name, inst_owner, scope, free_vars)
+    if base.is_a?(ModuleType)
+      return base.as(ModuleType).metaclass
+    end
+  end
+  prog.lookup_type_node(node, scope)
 end
 
 # The hosted `responds_to?` (RespondsTo, expanded by the hosted typer to a Bool literal): true when the

@@ -1,0 +1,13 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+struct Pointer(T)
+  def check(v : T) : Int32
+    42
+  end
+end
+
+x = 7
+p = pointerof(x)
+LibC.exit(p.check(42))
