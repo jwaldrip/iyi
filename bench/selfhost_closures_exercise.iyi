@@ -7,7 +7,7 @@ import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/closures::{ClosureFacts}
 
 def analyse(source : String, filename : String, prelude : String? = nil, show_refusals : Bool = false) : Array(String)
-  root = Normalizer.new(NormalizerProgram.new(false)).normalize(Parser.new(source, filename).parse)
+  root = Normalizer.new(NormalizerProgram.new(true)).normalize(Parser.new(source, filename).parse)
   program = SemanticProgram.new
   declarations = TopLevelVisitor.new(program, filename)
   if text = prelude

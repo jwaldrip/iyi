@@ -1,0 +1,14 @@
+def __iyi_defer_push(cleanup : Proc(Nil)) : Nil
+  nil
+end
+
+def __iyi_defer_pop_run : Nil
+  nil
+end
+
+def with_defer(value : Int32) : Int32
+  defer value
+  value
+end
+
+with_defer(7)
