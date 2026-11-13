@@ -331,7 +331,7 @@ for fixture in "$REPO"/bench/fixtures/sem_*.iyi; do
     diff -u "$WORK/crystal.ast" "$WORK/iyi.ast" | head -20
     status=1
   else
-    decl_count=$("$WORK/exercise" "$fixture" --count)
+    decl_count=$(awk '/^ *(Type|Def): / { n++ } END { print n+0 }' "$WORK/iyi.ast")
     echo "  $fixture_name: identical ($decl_count declarations match front end)"
     total_matched_declarations=$((total_matched_declarations + decl_count))
   fi
