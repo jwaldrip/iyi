@@ -422,24 +422,8 @@ pub class Compiler
     funs = [] of FunDef
     defs = Hash(String, Def).new
     libs = [] of LibDef
-    flags = MacroTargetFlags.for_triple(triple, [] of String)
-    resolved.each do |mod_info|
-      Compiler.extract_declarations(mod_info.ast, classes, funs, defs, libs, [] of ASTNode, flags)
-    end
-    # Declarations splice inline macros into each unit, so runtime code must be collected after that pass.
-    # extract_declarations keeps one def per name, so an overload would be lost: every top-level def of the units is
-    # collected here, in order, and any def only the hash holds (one behind a macro condition) is added after them.
     all_defs = [] of Def
-    resolved.each do |mod_info|
-      tops = [mod_info.ast]
-      if mod_info.ast.is_a?(Expressions)
-        tops = mod_info.ast.as(Expressions).expressions
-      end
-      Compiler.typed_top_defs(tops, all_defs)
-    end
-    defs.each_value do |d|
-      all_defs << d unless all_defs.any? { |x| x.object_id == d.object_id }
-    end
+    flags = MacroTargetFlags.for_triple(triple, [] of String)
     top_level = [] of ASTNode
     # The program is read the way the declarations gate reads one (bench/selfhost_semantic_declarations_exercise.iyi):
     # the loader's search path, and the entry's project root (its header root, else its directory).
@@ -458,15 +442,27 @@ pub class Compiler
       units << mod_info unless mod_info.filename.ends_with?("/iyi/prelude.iyi")
     end
     typed = declare_program(classes, libs, all_defs, funs, top_level, links, !prelude, prog, units)
-    Loader.initialiser_order(resolved).each do |mod_info|
+    # Inline declarations now hold the nodes registered by the declarations pass.
+    # Classify each unit once, hoisting declarations and keeping its runtime order.
+    runtime_by_unit = Hash(String, Array(ASTNode)).new
+    resolved.each do |mod_info|
       runtime = [] of ASTNode
-      scratch_classes = [] of ClassDef
-      scratch_funs = [] of FunDef
-      scratch_defs = Hash(String, Def).new
-      scratch_libs = [] of LibDef
-      Compiler.extract_declarations(mod_info.ast, scratch_classes, scratch_funs, scratch_defs, scratch_libs, runtime, flags)
-      Compiler.module_runtime_code(mod_info.ast, runtime, flags)
-      runtime.each { |node| top_level << node }
+      tops = [] of ASTNode
+      Compiler.unit_tops(mod_info.ast, tops)
+      tops.each do |top|
+        if md = Compiler.top_module(top)
+          parts = Compiler.module_parts(md, flags)
+          classes << ClassDef.new(md.name, Expressions.from(parts[0]), nil, md.type_vars, false, false)
+          runtime << ModuleDef.new(md.name, Expressions.from(parts[1])) unless parts[1].empty?
+        else
+          Compiler.extract_declarations(top, classes, funs, defs, libs, runtime, flags)
+          Compiler.typed_top_defs([top] of ASTNode, all_defs)
+        end
+      end
+      runtime_by_unit[mod_info.filename] = runtime
+    end
+    Loader.initialiser_order(resolved).each do |mod_info|
+      top_level.concat(runtime_by_unit[mod_info.filename])
     end
     root = assemble_root(classes, libs, all_defs, funs, top_level)
     TypedProgram.new(root, typed.prog, typed.visitor, typed.links)
@@ -485,28 +481,60 @@ pub class Compiler
     end
   end
 
-  # A `module` header makes the whole file one module: the parser wraps the file's body in a ModuleDef. The module
-  # keeps its declarations (extract_declarations turns it into a class), but its runtime code, such as a call at the
-  # foot of a tool's file, would otherwise be lost. The runtime nodes are kept here as a module of the same name.
-  def self.module_runtime_code(node : ASTNode, top_level : Array(ASTNode), flags : Array(String)) : Nil
-    tops = [node]
+  # Flatten unit-level expression groups without entering a declaration's scope.
+  def self.unit_tops(node : ASTNode, tops : Array(ASTNode)) : Nil
     if node.is_a?(Expressions)
-      tops = node.as(Expressions).expressions
+      node.as(Expressions).expressions.each { |child| Compiler.unit_tops(child, tops) }
+    elsif !node.is_a?(Nop)
+      tops << node
     end
-    tops.each do |top|
-      if top.is_a?(ModuleDef)
-        md = top.as(ModuleDef)
-        runtime = [] of ASTNode
-        scratch_classes = [] of ClassDef
-        scratch_funs = [] of FunDef
-        scratch_defs = Hash(String, Def).new
-        scratch_libs = [] of LibDef
-        Compiler.extract_declarations(md.body, scratch_classes, scratch_funs, scratch_defs, scratch_libs, runtime, flags)
-        if runtime.size > 0
-          top_level << ModuleDef.new(md.name, Expressions.from(runtime))
-        end
+  end
+
+  def self.top_module(node : ASTNode) : ModuleDef?
+    if node.is_a?(ModuleDef)
+      node.as(ModuleDef)
+    elsif node.is_a?(VisibilityModifier)
+      Compiler.top_module(node.as(VisibilityModifier).exp)
+    else
+      nil
+    end
+  end
+
+  # A file header is also a ModuleDef. Keep its declarations in the hoisted
+  # class wrapper and its runtime nodes only in the source-position wrapper.
+  def self.module_parts(md : ModuleDef, flags : Array(String)) : {Array(ASTNode), Array(ASTNode)}
+    declarations = [] of ASTNode
+    runtime = [] of ASTNode
+    annotations = [] of ASTNode
+    children = [] of ASTNode
+    Compiler.unit_tops(md.body, children)
+    classes = [] of ClassDef
+    funs = [] of FunDef
+    defs = Hash(String, Def).new
+    libs = [] of LibDef
+    found = [] of ASTNode
+    children.each do |child|
+      if child.is_a?(Annotation)
+        annotations << child
+        next
       end
+      classes.clear
+      funs.clear
+      defs.clear
+      libs.clear
+      found.clear
+      Compiler.extract_declarations(child, classes, funs, defs, libs, found, flags)
+      if found.empty?
+        declarations.concat(annotations)
+        declarations << child
+      else
+        runtime.concat(annotations)
+        runtime.concat(found)
+      end
+      annotations.clear
     end
+    declarations.concat(annotations)
+    {declarations, runtime}
   end
 
   # --- Helper utilities ---
