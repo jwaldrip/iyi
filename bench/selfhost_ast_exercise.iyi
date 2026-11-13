@@ -1,6 +1,7 @@
 import compiler/foundation/location::{Location}
 import compiler/foundation/enums
 import compiler/syntax/token::{Keyword, TokenKind, NumberKind}
+import compiler/syntax/ast::{Primitive}
 import compiler/syntax/ast::{Alias, AlignOf, And, Annotation, AnnotationDef, Arg, ArrayLiteral, Asm, AsmOperand, Assign, AssocTypeDecl, Block, BoolLiteral, Break, CStructOrUnionDef, Call, Case, Cast, CharLiteral, ClassDef, ClassVar, Def, Defer, DoubleSplat, EnumDef, ExceptionHandler, Expressions, Extend, ExternalVar, FunDef, Generic, Global, HashLiteral, If, ImplDef, ImplicitObj, ImportDecl, Include, InstanceAlignOf, InstanceSizeOf, InstanceVar, IsA, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MagicConstant, Metaclass, ModuleDef, ModuleHeader, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, NilableCast, Nop, Not, NumberLiteral, OffsetOf, OpAssign, Or, Out, Path, PointerOf, ProcLiteral, ProcNotation, ProcPointer, Propagate, RangeLiteral, ReadInstanceVar, Recover, RegexLiteral, Require, Rescue, RespondsTo, Return, Select, Self, SizeOf, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TraitDef, TupleLiteral, TypeDeclaration, TypeDef, TypeOf, Underscore, UninitializedVar, Unless, Until, UsingDecl, Var, VisibilityModifier, When, While, Yield, ASTNode, BinaryOp, UnaryExpression, ControlExpression, NodeMap, StringBuilder, Visibility, RegexOptions}
 import compiler/syntax/visitor::{Visitor, ToSVisitor, NodeCounterVisitor}
 import compiler/syntax/transformer::{Transformer}
@@ -664,6 +665,16 @@ module BenchSelfhostAstExercise
     assert(unlocated_edges.location.nil?, "sequence does not skip an unlocated first expression")
     unlocated_edges = Expressions.new([first_expression, Var.new("unknown")] of ASTNode)
     assert(unlocated_edges.end_location.nil?, "sequence does not skip an unlocated last expression")
+    scalar_indexer = Primitive.tuple_indexer(0, 0, false)
+    singleton_indexer = Primitive.tuple_indexer(0, 0, true)
+    empty_indexer = Primitive.tuple_indexer(0, -1, true)
+    assert(!(scalar_indexer == singleton_indexer), "scalar and singleton tuple indices have distinct identity")
+    assert(!(singleton_indexer == empty_indexer), "singleton and empty tuple ranges have distinct identity")
+    assert(scalar_indexer.hash != singleton_indexer.hash, "tuple index form participates in hashing")
+    cloned_indexer = singleton_indexer.clone.as(Primitive)
+    assert(cloned_indexer == singleton_indexer, "cloning preserves tuple range identity")
+    assert(cloned_indexer.tuple_range, "cloning preserves the tuple range discriminator")
+    assert(empty_indexer.clone == empty_indexer, "cloning preserves an empty tuple range")
     orig_Extend = Extend.new(Path.new("ClassMethods"))
     orig_Extend.at(loc).at_end(end_loc)
     orig_Extend.doc = "documentation for Extend"
