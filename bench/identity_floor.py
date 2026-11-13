@@ -133,6 +133,18 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     # requires the artifacts and dumps identical. The other language is the
     # frontend being compared against.
     (r"^bench/selfhost_iyimod_exercise\.sh$", "the frontend the selfhost artifact format is checked against"),
+    # The self-hosting artifact wiring oracle. It verifies that the pure iyi
+    # artifact tool wired behind --selfhost produces output identical to the
+    # frontend across all corpus modules.
+    (r"^bench/selfhost_mod_wiring_exercise\.sh$", "the frontend the selfhost artifact wiring is checked against"),
+    # The self-hosting formatter wiring oracle. It verifies that the pure iyi
+    # formatter tool wired behind --selfhost produces output identical to the
+    # frontend across all corpus files.
+    (r"^bench/selfhost_format_wiring_exercise\.sh$", "the frontend the selfhost formatter wiring is checked against"),
+    # The self-hosting parser wiring oracle. It verifies that the pure iyi
+    # front end wired behind --selfhost produces output identical to the
+    # frontend across the parser fixtures and samples tree.
+    (r"^bench/selfhost_parser_wiring_exercise\.sh$", "the frontend the selfhost parser wiring is checked against"),
 ]
 
 # Lines that name Crystal legitimately inside a file that is otherwise iyi's.
