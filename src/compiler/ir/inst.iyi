@@ -160,6 +160,29 @@ pub def terminator_op?(op : Op) : Bool
   end
 end
 
+# The mnemonic of an opcode that exists only for unwinding, or nil for every other opcode. Nothing iyi lowers
+# reaches one: Function#drop_unwind_edges removes them from a module the oracle wrote.
+pub def unwind_only_op(op : Op) : String?
+  case op
+  when Op::LandingPad
+    "landingpad"
+  when Op::Resume
+    "resume"
+  when Op::CatchSwitch
+    "catchswitch"
+  when Op::CatchPad
+    "catchpad"
+  when Op::CatchRet
+    "catchret"
+  when Op::CleanupPad
+    "cleanuppad"
+  when Op::CleanupRet
+    "cleanupret"
+  else
+    nil
+  end
+end
+
 pub struct Attribute
   getter name : String # LLVM's name: "noinline", "naked", "byval", "sret", "zeroext", "frame-pointer" ...
   getter int_value : UInt64
@@ -306,6 +329,42 @@ pub class Inst < Value
   def add_incoming(value : Value, block : Block) : Nil
     @args << value
     @targets << block
+  end
+
+  # An invoke whose unwind edge is dropped is the call it makes: the same callee, operands, convention and
+  # attributes, and no successors. The instruction keeps its identity, so every use of its result stands.
+  def demote_invoke : Nil
+    raise "#{@op} is not an invoke" unless @op == Op::Invoke
+    @op = Op::Call
+    @targets = [] of Block
+  end
+
+  # A phi keeps only the incoming pairs whose block is one of `preds`.
+  def keep_incoming(preds : Array(Block)) : Nil
+    raise "#{@op} is not a phi" unless @op == Op::Phi
+    values = [] of Value
+    blocks = [] of Block
+    k = 0
+    while k < @targets.size
+      from = @targets[k]
+      if preds.any? { |p| p == from }
+        values << @args[k]
+        blocks << from
+      end
+      k = k + 1
+    end
+    @args = values
+    @targets = blocks
+  end
+
+  # A phi's pairs that came from `old` come from `block` instead: `old` was merged into it.
+  def move_incoming(old : Block, block : Block) : Nil
+    raise "#{@op} is not a phi" unless @op == Op::Phi
+    k = 0
+    while k < @targets.size
+      @targets[k] = block if @targets[k] == old
+      k = k + 1
+    end
   end
 
   # The alignment in bytes: an alloca's, or a memory op's. Zero means the default.
