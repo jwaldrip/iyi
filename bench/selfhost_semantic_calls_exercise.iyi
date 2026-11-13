@@ -190,7 +190,7 @@ module BenchSelfhostSemanticCallsExercise
     else
       statements << body.to_s
     end
-    "#{wrapper.as(Def).name}(#{names.join(", ")}) { #{statements.join("; ")} }"
+    "#{wrapper.as(Def).name}(#{names.join(", ")}) { #{statements.join("; ")} } location=#{!wrapper.as(Def).location.nil? && wrapper.as(Def).location == definition.location}"
   end
 
   def self.evaluate(prog : SemanticProgram, ts : TypeSystem, expr : String) : String

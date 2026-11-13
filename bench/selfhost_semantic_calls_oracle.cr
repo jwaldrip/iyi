@@ -374,7 +374,7 @@ def wrapper_text(program : Iyi::Program, expr : String) : String
     assign = item.as(Iyi::AssignWithRestriction).assign if item.is_a?(Iyi::AssignWithRestriction)
     statements << (assign.is_a?(Iyi::Expressions) ? "generated body" : assign.to_s)
   end
-  "#{expansion.name}(#{names.join(", ")}) { #{statements.join("; ")} }"
+  "#{expansion.name}(#{names.join(", ")}) { #{statements.join("; ")} } location=#{!expansion.location.nil? && expansion.location == definition.location}"
 rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end

@@ -379,6 +379,11 @@ prove_mutation "default expansion returns the unexpanded definition" "$DEFAULT_F
   '    rec_def' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "default expansion loses the defining location" "$DEFAULT_FILE" \
+  ').at(rec_def)' \
+  ')' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # matching lane (match.iyi, restrictions.iyi)
 prove_mutation "a generic restriction does not bind free vars from the instance type arguments" "$RESTRICT_FILE" \
