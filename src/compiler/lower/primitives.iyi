@@ -183,11 +183,14 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
     return
   end
   if name == "pointer_get"
-    if elem_kind == "int" || elem_kind == "char" || elem_kind == "float"
-      low.last = load_aligned(low, low.typer.llvm_type(elem), values[0])
+    # Hosted `to_lhs` (codegen.cr 3405-3408): a by-value aggregate is already the pointer;
+    # anything else is loaded at the embedded type. Atomic(UInt64) is a struct, so the
+    # census row `pointer_get of Atomic(UInt64)` takes the by-value branch.
+    if passed_by_value?(elem)
+      low.last = values[0]
       return
     end
-    pending_visit_node("pointer_get of #{elem.full_name} (hosted to_lhs, primitives.cr 938)")
+    low.last = load_aligned(low, low.typer.llvm_embedded_type(elem), values[0])
     return
   end
   if name == "pointer_set"

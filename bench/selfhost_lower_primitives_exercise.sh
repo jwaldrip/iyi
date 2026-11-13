@@ -184,6 +184,8 @@ prove_mutation "a sign extension is a zero extension" "$REPO/src/compiler/lower/
   "    return low.builder.sext(value, to.ir)" "    return low.builder.zext(value, to.ir)" -- lower_primitives_check || status=1
 prove_mutation "a mixed-sign less-than uses the unsigned predicate" "$REPO/src/compiler/lower/primitives.iyi" \
   "      widened = low.builder.icmp(IntPredicate::SLT, p1, extend_int(low, t2, t1, p2))" "      widened = low.builder.icmp(IntPredicate::ULT, p1, extend_int(low, t2, t1, p2))" -- lower_primitives_check || status=1
+prove_mutation "a by-value pointer_get loads" "$REPO/src/compiler/lower/primitives.iyi" \
+  "      low.last = values[0]" "      low.last = load_aligned(low, low.typer.llvm_embedded_type(elem), values[0])" -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \

@@ -16,7 +16,7 @@ module bench/lib/primitive_stand_in
 # own body.
 
 import compiler/syntax/ast::{ASTNode, Arg, Def, Path}
-import compiler/semantic/top_level::{NonGenericClassType, SemanticProgram}
+import compiler/semantic/top_level::{NonGenericClassType, GenericClassType, SemanticProgram}
 import compiler/semantic/main_visitor::{MainVisitor}
 
 pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : MainVisitor) : Nil
@@ -41,6 +41,10 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
       end
     end
   end
+  pointer = prog.lookup_type_node(Path.new("Pointer"), prog).as(GenericClassType)
+  value = Def.new("value", [] of Arg, nil, nil, nil, Path.new("T"))
+  value.free_vars = ["# primitive: pointer_get"] of String
+  pointer.add_def(value)
   bool = prog.lookup_type_node(Path.new("Bool"), prog).as(NonGenericClassType)
   ["==", "!="].each do |op|
     bool.add_def(binary_def(op, "Bool", "Bool"))
