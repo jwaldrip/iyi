@@ -489,8 +489,10 @@ pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
     if bt = body_type
       merged = visitor.program.type_merge(bt, rt_type)
       # Hosted main_visitor.cr:2358 checks this only when the declared return is not Nil.
-      if !rt_type.is_a?(NilType) && merged != rt_type
-        return visitor.refuse(node, "expected fun to return #{rt_type.full_name} but it returned #{merged.full_name}")
+      unless rt_type.is_a?(NilType)
+        if merged != rt_type
+          return visitor.refuse(node, "expected fun to return #{rt_type.full_name} but it returned #{merged.full_name}")
+        end
       end
     end
   end
