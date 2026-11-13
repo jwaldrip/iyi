@@ -363,10 +363,15 @@ pub def make_cvar_init_function(low : Lowerer, cvar : MetaTypeVar, init_name : S
   if val.is_a?(Inst) && (val.as(Inst).op == Op::ConstInt || val.as(Inst).op == Op::ConstFloat)
     global.initializer = val
   else
-    global.initializer = low.builder.const_zero(ir)
     if passed_by_value?(cvar.type)
-      store_aligned(low, load_aligned(low, ir, val), global)
+      global.initializer = low.builder.const_zero(ir)
+      if val.type.pointer?
+        store_aligned(low, load_aligned(low, ir, val), global)
+      else
+        store_aligned(low, val, global)
+      end
     else
+      global.initializer = low.builder.const_null(ir)
       store_aligned(low, val, global)
     end
   end
