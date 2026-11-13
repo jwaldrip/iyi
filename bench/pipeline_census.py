@@ -654,13 +654,11 @@ def cmd_report(args: argparse.Namespace) -> int:
         for line in (outdir / "merged.names").read_text(encoding="utf-8").splitlines()
         if line.strip()
     }
-    clean_asked = asked_set & port_clean_all
-    extra_clean = sorted(port_clean_all - asked_set)
 
     census_failures: dict[str, str] = {}
-    reached_labels: set[str] = set()
-    refusals_by_label: dict[str, list[tuple[str, str, str]]] = collections.defaultdict(list)
-    seen_label_reason: dict[str, set[tuple[str, str]]] = collections.defaultdict(set)
+    instance_clean: dict[str, str] = {}
+    instance_silent: dict[str, str] = {}
+    refusals_by_instance: dict[str, list[tuple[str, str, str]]] = collections.defaultdict(list)
 
     for line in (outdir / "merged.refusals").read_text(encoding="utf-8", errors="replace").splitlines():
         parts = line.split("\t")
@@ -670,17 +668,15 @@ def cmd_report(args: argparse.Namespace) -> int:
         if phase == "census":
             if label not in census_failures:
                 census_failures[label] = reason
-        elif phase == "reached":
-            reached_labels.add(label)
-        elif phase in ("body", "lowering"):
-            key = (owner, reason)
-            if key not in seen_label_reason[label]:
-                seen_label_reason[label].add(key)
-                refusals_by_label[label].append((phase, owner, reason))
-    port_by_lbl: dict[str, list[str]] = collections.defaultdict(list)
-    for pn in sorted(port_clean_all):
-        port_by_lbl[label_of(pn)].append(pn)
-    extra_set = set(extra_clean)
+        elif phase == "instance-clean":
+            instance_clean[label] = reason
+        elif phase == "instance-silent":
+            instance_silent[label] = reason
+        elif phase in ("instance-body", "instance-lowering"):
+            refusals_by_instance[label].append((phase, owner, reason))
+    clean_asked = {h for h, actual in instance_clean.items()
+                   if actual == h and h not in refusals_by_instance and h not in census_failures}
+    extra_clean = sorted(port_clean_all - asked_set)
 
     scaffold_failed: list[tuple[str, str]] = []
     naming_pairs: list[tuple[str, str, str]] = []
@@ -706,8 +702,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             by_fn_rows.append(f"{h}\tscaffold\t{normalize_reason(reason)}")
             continue
 
-        lbl = label_of(h)
-        rows = refusals_by_label.get(lbl, [])
+        rows = refusals_by_instance.get(h, [])
         if rows:
             refused_count += 1
             fshapes: set[tuple[str, str]] = set()
@@ -724,10 +719,9 @@ def cmd_report(args: argparse.Namespace) -> int:
                 shape_verbatim.setdefault(sk, raw_reason)
             func_shapes[h] = fshapes
             by_fn_rows.append(f"{h}\trefused\t{first_shape}")
-        elif lbl in reached_labels:
-            cands = port_by_lbl.get(lbl, [])
-            if cands:
-                pn = pick_port_match(h, cands, extra_set)
+        elif h in instance_clean:
+            pn = instance_clean[h]
+            if pn != h:
                 diff_cls = classify_naming_diff(h, pn)
                 naming_pairs.append((h, pn, diff_cls))
                 shp = f"NAMING: {diff_cls}"
@@ -739,25 +733,17 @@ def cmd_report(args: argparse.Namespace) -> int:
                 shape_verbatim.setdefault(sk, f"{h} -> {pn}")
                 by_fn_rows.append(f"{h}\tnaming\t{diff_cls}: {pn}")
             else:
-                silent_funcs.append(h)
-                shp = "SILENT: reached, no refusal row, no clean name of any spelling"
-                sk = (shp, "lowering")
-                func_shapes[h] = {sk}
-                shape_funcs[sk].add(h)
-                if len(shape_examples[sk]) < 3:
-                    shape_examples[sk].append(h)
-                shape_verbatim.setdefault(sk, f"reached label {lbl}, no refusal, no .names entry")
-                by_fn_rows.append(f"{h}\tsilent\t{shp}")
+                raise RuntimeError(f"unclassified exact direct result: {h}")
         else:
-            refused_count += 1
-            shp = "<no refusal recorded under label>"
-            sk = (shp, "unassigned")
+            silent_funcs.append(h)
+            shp = "SILENT: no direct clean name or refusal"
+            sk = (shp, "lowering")
             func_shapes[h] = {sk}
             shape_funcs[sk].add(h)
             if len(shape_examples[sk]) < 3:
                 shape_examples[sk].append(h)
-            shape_verbatim.setdefault(sk, f"label {lbl} not in reached or refusals")
-            by_fn_rows.append(f"{h}\trefused\t{shp}")
+            shape_verbatim.setdefault(sk, instance_silent.get(h, "no direct instance result"))
+            by_fn_rows.append(f"{h}\tsilent\t{shp}")
 
     only_counts: collections.Counter[tuple[str, str]] = collections.Counter()
     for _h, sks in func_shapes.items():

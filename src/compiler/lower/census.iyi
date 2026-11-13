@@ -20,7 +20,15 @@ import compiler/semantic/type_nodes::{type_node_metaclass, type_node_system}
 import compiler/types/types::{NamedArgumentType, TypeQueries, VirtualType}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/types/merge::{TypeMerge}
-import compiler/lower/program::{TypedProgram}
+import compiler/lower/program::{TypedProgram, NodeIds, typed_owner}
+import compiler/lower/lower::{lower_def_probe}
+import compiler/lower/typer::{LowerTyper}
+import compiler/lower/primitives::{primitive_name}
+import compiler/lower/fun::{mangled_name}
+import compiler/semantic/top_level::{MetaclassType}
+import compiler/ir/module::{Module}
+import compiler/ir/layout::{LayoutError}
+import compiler/platform/target::{Target}
 import std/file
 
 # Parsed form of one hosted function name: `kind` is "instance", "class", or "top".
@@ -404,7 +412,7 @@ end
 
 # Seeds every hosted function name listed in `census_path` directly into `typed.visitor` in total mode.
 # Scaffold failures are appended to `refused` as `census\t<name>\tcensus\t<reason>`.
-pub def run_census(typed : TypedProgram, census_path : String, refused : Array(String)) : Nil
+pub def run_census(typed : TypedProgram, census_path : String, refused : Array(String), triple : String) : Nil
   unless File.exists?(census_path)
     refused << "census\t#{census_path}\tcensus\tcensus file not found"
     return nil
@@ -563,6 +571,57 @@ pub def run_census(typed : TypedProgram, census_path : String, refused : Array(S
         refused << "census\t#{line}\tcensus\tmacro call (expanded as macro)"
       else
         refused << "census\t#{line}\tcensus\tcall resolved no target def"
+      end
+    else
+      target = visitor.target_def?(call_node).as(Def)
+      direct = typed.visitor.typed_instances.find { |inst| inst.definition.object_id == target.object_id }
+      if direct.nil?
+        refused << "instance-silent\t#{line}\t-\tno typed instance for resolved target"
+        next
+      end
+      inst = direct.as(Compiler::Semantic::MainVisitor::TypedInstance)
+      ids = NodeIds.new
+      target.accept(ids)
+      visitor.refusals.each do |r|
+        if ids.ids.has_key?(r.node.node_id)
+          reason = census_first_line(r.reason)
+          refused << "instance-body\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+        end
+      end
+      if !primitive_name(target.body).nil?
+        refused << "instance-silent\t#{line}\t-\tprimitive lowered at call site"
+        next
+      end
+      made = Module.for_target("census", Target.new(triple))
+      if made.is_a?(LayoutError)
+        refused << "instance-lowering\t#{line}\tunassigned\t#{made.as(LayoutError).to_s}"
+        next
+      end
+      mod = made.as(Module)
+      typer = LowerTyper.new(mod.types, mod.layout, true)
+      lowered = group do |g|
+        task = g.spawn { lower_def_probe(target, inst.self_type, inst.arg_types, visitor, typer, mod) }
+        task.value
+      end
+      if lowered.is_a?(Panicked)
+        reason = census_first_line(lowered.as(Panicked).message)
+        refused << "instance-lowering\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+      elsif !lowered.nil?
+        reason = census_first_line(lowered.as(String))
+        refused << "instance-lowering\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+      elsif body_t = visitor.type_of?(target.body)
+        actual = mangled_name(target.name, inst.self_type, inst.arg_types, body_t)
+        if fn = mod.get_function?(actual)
+          if fn.declaration?
+            refused << "instance-silent\t#{line}\t-\tlowering emitted declaration only"
+          else
+            refused << "instance-clean\t#{line}\t-\t#{actual}"
+          end
+        else
+          refused << "instance-silent\t#{line}\t-\tlowered name absent from module"
+        end
+      else
+        refused << "instance-silent\t#{line}\t-\tlowered body has no type"
       end
     end
   end

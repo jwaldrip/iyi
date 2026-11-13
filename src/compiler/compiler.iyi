@@ -323,7 +323,7 @@ pub class Compiler
       root_name = Compiler.module_name_from_path(root_filename)
       refused = [] of String
       if cf = @config.census_file
-        run_census(typed, cf, refused)
+        run_census(typed, cf, refused, triple)
       end
       refusal_table(typed, root_name, refused).each { |line| puts line }
       names = [] of String
