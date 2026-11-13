@@ -20,7 +20,7 @@ ClassVariableLiteral.installed
 module ClassVariableLiteral
   @@installed = false
 
-  def self.installed : Bool
+  def self.installed
     @@installed
   end
 end
