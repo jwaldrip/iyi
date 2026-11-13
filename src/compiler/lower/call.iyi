@@ -185,7 +185,23 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       low.last = llvm_nil(low)
       return
     end
-    codegen_call_with_block(low, node, block.as(Block), def_node, ret, self_type, self_value, arg_types, values)
+    if (literal = block.fun_literal) && def_node.uses_block_arg?
+      wants = low.needs_value
+      low.needs_value = true
+      visit_node(low, literal)
+      low.needs_value = wants
+      if block_ended?(low)
+        low.last = llvm_nil(low)
+        return
+      end
+      value = low.last
+      raise "BUG: captured block literal produced no value" if value.nil?
+      values << value.as(Value)
+      func = target_def_fun(low, def_node, self_type, arg_types, ret, class_owner)
+      emit_def_call(low, node, func, self_value, values, ret)
+    else
+      codegen_call_with_block(low, node, block.as(Block), def_node, ret, self_type, self_value, arg_types, values)
+    end
     return
   end
 
@@ -257,6 +273,11 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     return
   end
   func = target_def_fun(low, def_node, self_type, arg_types, ret, class_owner)
+  emit_def_call(low, node, func, self_value, values, ret)
+end
+
+# Emit the call after its receiver, arguments and optional captured block are evaluated.
+pub def emit_def_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, func : Function, self_value : Value?, values : Array(Value), ret : Type) : Nil
   inst = low.builder.call(func.fn_type, func, call_arguments(self_value, values), "")
   # Hosted codegen_call_or_invoke: a NoReturn call ends its block with `unreachable`, and its value is nil.
   if ret.is_a?(NoReturnType)

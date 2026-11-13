@@ -279,6 +279,8 @@ prove_mutation "an implicit builtin class call is refused" "$REPO/src/compiler/l
   '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)' '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""' -- lower_calls_check || status=1
 prove_mutation "a computed metaclass receiver is not evaluated" "$REPO/src/compiler/lower/call.iyi" \
   '      unless node.obj.as(ASTNode).is_a?(Path)' '      if false' -- lower_calls_check || status=1
+prove_mutation "a captured block precedes self in the call" "$REPO/src/compiler/lower/call.iyi" \
+  '      emit_def_call(low, node, func, self_value, values, ret)' '      emit_def_call(low, node, func, nil, call_arguments(self_value, values).reverse, ret)' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

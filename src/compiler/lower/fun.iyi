@@ -215,7 +215,14 @@ end
 # function already in the module when there is one, otherwise a new one, emitted now. A method's
 # self is the first parameter, of the owner's type (hosted `codegen_fun_signature_non_external`).
 pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : Function
-  name = mangled_name(target.name, self_type, arg_types, ret, class_owner)
+  block_type : Type? = nil
+  if target.uses_block_arg?
+    block_arg = target.block_arg
+    raise "BUG: captured block parameter is missing" if block_arg.nil?
+    block_type = low.analysed.type_of?(block_arg.as(ASTNode))
+    raise "BUG: captured block parameter has no type" if block_type.nil?
+  end
+  name = mangled_name(target.name, self_type, arg_types, ret, class_owner, block_type)
   if existing = low.module.get_function?(name)
     return existing.as(Function) if fun_emission_done?(low.module, name) || low.emitting[name]?
     low.module.remove_function(existing.as(Function))
@@ -231,6 +238,9 @@ pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types
   end
   arg_types.each do |t|
     params << low.typer.llvm_type(t)
+  end
+  if bt = block_type
+    params << low.typer.llvm_type(bt)
   end
   ret_ir = low.typer.llvm_return_type(ret)
   fn_type = low.module.types.func(params, ret_ir)
