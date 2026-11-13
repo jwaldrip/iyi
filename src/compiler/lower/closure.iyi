@@ -1,0 +1,125 @@
+module compiler/lower/closure
+
+# Closure frame layout and access, corresponding to llvm_typer.cr:565-594,
+# codegen.cr:2628-2675, and fun.cr:858-910.
+import compiler/ir/inst::{CallConv, Op}
+import compiler/ir/types::{IrType}
+import compiler/ir/values::{Value}
+import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
+import compiler/lower/helpers::{load_aligned, store_aligned}
+import compiler/lower/layouts::{has_inner_pointers?}
+import compiler/semantic/closures::{ClosureVar}
+import compiler/semantic/top_level::{Type}
+import compiler/syntax/ast::{Def}
+
+pub def closure_struct(low : Lowerer, vars : Array(ClosureVar), parent_type : IrType?, self_type : Type?) : {IrType, Bool}
+  low.closure_counter += 1
+  result = low.module.types.named_struct("closure_#{low.closure_counter}")
+  fields = [] of IrType
+  pointerful = !parent_type.nil?
+  vars.each do |var|
+    fields << low.typer.llvm_type(var.type)
+    pointerful ||= has_inner_pointers?(var.type)
+  end
+  fields << low.module.types.ptr(0) unless parent_type.nil?
+  if self_type
+    fields << low.typer.llvm_type(self_type)
+    pointerful ||= has_inner_pointers?(self_type)
+  end
+  low.module.types.set_body(result, fields, false)
+  {result, pointerful}
+end
+
+private def closure_field(low : Lowerer, type : IrType, pointer : Value, index : Int32, name : String) : Value
+  i32 = low.module.types.int32
+  zero = low.builder.const_int(i32, 0_i64).as(Value)
+  offset = low.builder.const_int(i32, index.to_i64).as(Value)
+  low.builder.inbounds_gep(type, pointer, [zero, offset] of Value, name)
+end
+
+private def closure_malloc(low : Lowerer, type : IrType, pointerful : Bool) : Value
+  # Runtime allocators and their barriers must not silently fall back to C malloc.
+  ["__iyi_malloc64", "__crystal_malloc64", "__iyi_malloc_atomic64", "__crystal_malloc_atomic64"].each do |name|
+    unless low.module.get_function?(name).nil?
+      raise "lower: closure allocation through program allocator is not ported"
+    end
+  end
+  fn = low.module.get_function?("malloc")
+  if fn.nil?
+    signature = low.module.types.func([low.module.types.int64] of IrType, low.module.types.ptr(0))
+    fn = low.module.add_function("malloc", signature, CallConv::C)
+  end
+  null_ptr = low.builder.const_null_pointer
+  one = low.builder.const_int(low.module.types.int32, 1_i64)
+  element = low.builder.const_gep(type, null_ptr, [one] of Value)
+  size = low.builder.const_cast(Op::PtrToInt, element, low.typer.size_t)
+  low.builder.call(fn.fn_type, fn, [size] of Value)
+end
+
+pub def malloc_closure(low : Lowerer, ctx : LowerContext, vars : Array(ClosureVar)?, parent : LowerContext?, self_closured : Bool) : Nil
+  parent_type = parent.nil? ? nil : parent.as(LowerContext).closure_type
+  if (!vars.nil? && !vars.as(Array(ClosureVar)).empty?) || self_closured
+    captured = vars || ([] of ClosureVar)
+    self_type = self_closured ? ctx.type : nil
+    type, pointerful = closure_struct(low, captured, parent_type, self_type)
+    ptr = closure_malloc(low, type, pointerful)
+    captured.each_with_index do |var, i|
+      ctx.vars[var.name] = LowerVar.new(closure_field(low, type, ptr, i, var.name), var.type)
+    end
+    if parent_type
+      parent_ptr = parent.as(LowerContext).closure_ptr
+      raise "BUG: closure parent has no pointer" if parent_ptr.nil?
+      store_aligned(low, parent_ptr.as(Value), closure_field(low, type, ptr, captured.size, "parent"))
+    end
+    if self_closured
+      self_var = ctx.vars["self"]?
+      raise "BUG: captured self is unavailable" if self_var.nil?
+      index = captured.size + (parent_type.nil? ? 0 : 1)
+      store_aligned(low, self_var.pointer, closure_field(low, type, ptr, index, "self"))
+      ctx.closure_self = self_type
+    end
+    ctx.closure_vars = captured
+    ctx.closure_type = type
+    ctx.closure_ptr = ptr
+    ctx.closure_skip_parent = false
+  elsif parent && parent.closure_type
+    ctx.copy_closure_from(parent)
+    ctx.closure_parent_context = parent
+    ctx.closure_skip_parent = true
+  else
+    ctx.reset_closure
+  end
+end
+
+pub def setup_closure_vars(low : Lowerer, proc_def : Def, vars : Array(ClosureVar), ctx : LowerContext, closure_type : IrType, closure_ptr : Value) : Nil
+  if ctx.closure_skip_parent
+    parent = ctx.closure_parent_context
+    raise "BUG: skipped closure has no parent" if parent.nil?
+    outer = parent.as(LowerContext)
+    outer_vars = outer.closure_vars
+    raise "BUG: closure parent has no variables" if outer_vars.nil?
+    setup_closure_vars(low, proc_def, outer_vars.as(Array(ClosureVar)), outer, closure_type, closure_ptr)
+    return
+  end
+  vars.each_with_index do |var, i|
+    next unless low.closure_facts.visible_closured?(proc_def, var.name)
+    next if low.current_context.vars.has_key?(var.name)
+    low.current_context.vars[var.name] = LowerVar.new(closure_field(low, closure_type, closure_ptr, i, var.name), var.type)
+  end
+  if parent = ctx.closure_parent_context
+    if parent_vars = parent.closure_vars
+      parent_type = parent.closure_type
+      raise "BUG: closure parent has no type" if parent_type.nil?
+      slot = closure_field(low, closure_type, closure_ptr, vars.size, "parent_ptr")
+      ptr = load_aligned(low, low.module.types.ptr(0), slot)
+      setup_closure_vars(low, proc_def, parent_vars, parent, parent_type.as(IrType), ptr)
+      return
+    end
+  end
+  if self_type = ctx.closure_self
+    index = vars.size + (ctx.closure_parent_context.nil? ? 0 : 1)
+    slot = closure_field(low, closure_type, closure_ptr, index, "self")
+    value = load_aligned(low, low.typer.llvm_type(self_type), slot)
+    low.current_context.vars["self"] = LowerVar.new(value, self_type, true)
+  end
+end
