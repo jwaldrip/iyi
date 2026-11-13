@@ -212,9 +212,10 @@ pub def codegen_primitive_proc_call(low : Lowerer, node : Call, receiver_type : 
   context_block = low.new_block("ctx_is_not_null")
   is_null = low.builder.icmp(IntPredicate::EQ, ctx, low.builder.const_null_pointer)
   low.builder.cond_br(is_null, null_block, context_block)
-  ret_type = low.typer.llvm_return_type(proc_type.return_type)
-  # Hosted Phi#add does not collect a value for Nil or Void (phi.cr:62-66).
-  phi = LowerPhi.new(wants && !ret_type.void?, ret_type)
+  # Proc function types use llvm_type even for Nil, unlike ordinary def returns.
+  # Hosted llvm_typer.cr 516-526, phi.cr 62-66: Nil has no phi value.
+  ret_type = low.typer.llvm_type(proc_type.return_type)
+  phi = LowerPhi.new(wants && !proc_type.return_type.nil_type? && !ret_type.void?, ret_type)
   low.builder.position_at_end(null_block)
   plain_type = low.module.types.func(params, ret_type)
   plain = low.builder.call_aux(CallAux.new(plain_type, CallConv::Iyi), fun_ptr, args)
