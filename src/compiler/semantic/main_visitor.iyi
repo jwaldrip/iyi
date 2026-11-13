@@ -7,7 +7,7 @@ import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
 import compiler/macros/interpreter::{MacroFreeBinding}
-import compiler/types/types::{TupleInstanceType, NamedTupleInstanceType}
+import compiler/types/types::{TupleInstanceType, NamedTupleInstanceType, VirtualType}
 import compiler/semantic/inline_macros::{splice_body_node, splice_fun_body, splice_inline_sites}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
@@ -3114,6 +3114,11 @@ pub class MainVisitor < TypeNodeHost
       end
     end
 
+    # PROBE (Main, not for merge): a call on a virtual type finds the method its base type defines. Typing only,
+    # no dispatch over the subtypes' overrides: the calls owner's virtual target lookup is the real change.
+    if rec_type.is_a?(VirtualType)
+      rec_type = rec_type.as(VirtualType).base_type
+    end
     # PROBE (Main, not for merge): a tuple indexed by a literal is its member (hosted call.cr check_tuple_indexer
     # 881-985). Typing only, no target def: the real change is /tmp/iyi-selfhost-keep/briefs/contract-tuple-indexer.md.
     if rec_type.is_a?(TupleInstanceType) && node.name == "[]" && node.args.size == 1
@@ -3147,11 +3152,22 @@ pub class MainVisitor < TypeNodeHost
     if node.named_args.nil? && DefaultArguments.supported?(target_def, node.args, nil)
       original_count = node.args.size
       node.args = DefaultArguments.expand(target_def, node.args, nil)
+      # PROBE (Main, not for merge): a default value is written in the DEF's file and type, and hosted types it
+      # there (default_arguments.cr 169-197, 258-287: it becomes an assignment of the expansion def's own body),
+      # so a constant only the def's file imports or declares is in scope for it.
+      probe_da_imports = @program.current_imports
+      probe_da_import_defs = @program.current_import_defs
+      probe_da_type = @current_type
+      enter_file_scope(target_def)
+      enter_owner_scope(rec_type)
       i = original_count
       while i < node.args.size
         node.args[i].accept(self)
         i = i + 1
       end
+      @current_type = probe_da_type
+      @program.current_imports = probe_da_imports
+      @program.current_import_defs = probe_da_import_defs
     end
     instantiated_def = target_def.clone
     dkey = def_instance_key(target_def, rec_type, node)
