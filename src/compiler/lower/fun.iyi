@@ -453,7 +453,7 @@ end
 
 # Whether the target is darwin, where the hosted code asks for frame pointers (fun.cr:445).
 pub def darwin_triple?(triple : String) : Bool
-  triple.includes?("darwin")
+  triple.includes?("darwin") || triple.includes?("macosx")
 end
 
 # The attributes a function with a body carries (hosted codegen_fun, fun.cr:437-450): the unwind

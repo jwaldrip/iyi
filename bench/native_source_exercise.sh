@@ -26,8 +26,10 @@ PORT_SRC="$REPO/src/compiler/tools/compile.iyi"
 FIXTURES="$REPO/bench/fixtures"
 . "$REPO/bench/lib/tripwire.sh"
 . "$REPO/bench/lib/mutation.sh"
+. "$REPO/bench/lib/native_signature.sh"
 
 WORK="$(mktemp -d /tmp/iyi-native-source.XXXXXX)"
+export NATIVE_SIGNATURE_FAILURE_FILE="$WORK/signature-failure"
 trap 'rm -rf "$WORK"' EXIT
 
 status=0
@@ -73,6 +75,7 @@ compare_run() {
   local ref="$1" exe="$2" label="$3" name="$4" ref_out exe_out ref_rc exe_rc problems libs
   ref_out=$(timeout 30 "$ref" </dev/null 2>/dev/null)
   ref_rc=$?
+  native_signature_ok "${5:-$exe}" || return 1
   exe_out=$(timeout 30 "$exe" </dev/null 2>/dev/null)
   exe_rc=$?
   if [ "$ref_out" != "$exe_out" ] || [ "$ref_rc" != "$exe_rc" ]; then
@@ -80,7 +83,9 @@ compare_run() {
     return 1
   fi
   problems=""
-  codesign -v --strict "$exe" >/dev/null 2>&1 || problems="$problems codesign;"
+  if [ "$(uname -s)" = Darwin ]; then
+    native_signature_ok "${5:-$exe}" || problems="$problems codesign;"
+  fi
   libs=$(otool -L "$exe" | awk 'NR > 1 { print $1 }')
   if [ "$libs" != "/usr/lib/libSystem.B.dylib" ]; then problems="$problems libs=$libs;"; fi
   if [ -n "$problems" ]; then
@@ -254,6 +259,7 @@ fi
 check_subtraction_output() {
   "$IYI" build -o "$WORK/mut-b-tool" "$TOOL_SRC" >/dev/null 2>&1 || return 0
   "$WORK/mut-b-tool" "$FIXTURES/compile_arith.iyi" -o "$WORK/mut-b-exe" >/dev/null 2>&1 || return 0
+  native_signature_ok "$WORK/mut-b-exe" || return 1
   local out rc
   out=$(timeout 30 "$WORK/mut-b-exe" </dev/null 2>/dev/null)
   rc=$?
@@ -308,7 +314,7 @@ echo "  self-check of compare_run (not a compiler mutation):"
 sample_exe="$WORK/nat/compile_arith"
 printf '#!/bin/sh\n"%s"\nrc=$?\nexit $((rc + 1))\n' "$sample_exe" >"$WORK/selfcheck_status"
 chmod +x "$WORK/selfcheck_status"
-if compare_run "$WORK/ref/compile_arith" "$WORK/selfcheck_status" "self-check" "exit off by one" >/dev/null 2>&1; then
+if compare_run "$WORK/ref/compile_arith" "$WORK/selfcheck_status" "self-check" "exit off by one" "$sample_exe" >/dev/null 2>&1; then
   status=1
   echo "FAIL: compare_run accepted an exit status off by one"
 else
@@ -316,7 +322,7 @@ else
 fi
 printf '#!/bin/sh\n"%s"\nrc=$?\necho extra-line\nexit $rc\n' "$sample_exe" >"$WORK/selfcheck_stdout"
 chmod +x "$WORK/selfcheck_stdout"
-if compare_run "$WORK/ref/compile_arith" "$WORK/selfcheck_stdout" "self-check" "extra stdout" >/dev/null 2>&1; then
+if compare_run "$WORK/ref/compile_arith" "$WORK/selfcheck_stdout" "self-check" "extra stdout" "$sample_exe" >/dev/null 2>&1; then
   status=1
   echo "FAIL: compare_run accepted extra stdout"
 else
@@ -341,6 +347,7 @@ if [ -z "${NATIVE_SOURCE_NO_SELFCHECK:-}" ]; then
   fi
 fi
 
+if [ -e "$NATIVE_SIGNATURE_FAILURE_FILE" ]; then status=1; fi
 echo
 if [ "$status" -eq 0 ]; then
   echo "ALL NATIVE SOURCE CHECKS PASSED!"

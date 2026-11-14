@@ -27,6 +27,8 @@ trap restore_all EXIT INT TERM
 
 failed=0
 fail() { echo "FAIL: $*"; failed=1; }
+. bench/lib/native_signature.sh
+export NATIVE_SIGNATURE_FAILURE_FILE="$WORK/signature-failure"
 
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:"$PATH"
 export LIBRARY_PATH=${LIBRARY_PATH:-/opt/homebrew/opt/bdw-gc/lib}
@@ -70,6 +72,7 @@ native_run() {
   local drv=$1 alloc=$2 ir=$3 prefix=$4
   IYI_NATIVE_REGALLOC=$alloc "$drv" obj "$ir" "$prefix.o" >"$prefix.obj.log" 2>&1 || return 1
   cc "$prefix.o" bench/fixtures/native_cg/rt_stub.c -o "$prefix.bin" >"$prefix.link.log" 2>&1 || return 2
+  native_signature_ok "$prefix.bin" || return 3
   # A mis-allocated program may loop forever, so the run is bounded: its alarm ends it with status 142.
   perl -e 'alarm 20; exec @ARGV' "$prefix.bin" >"$prefix.out" 2>/dev/null
   echo $? >"$prefix.status"
@@ -288,6 +291,7 @@ prove_mutation "linear: a value live into a block that starts with a call is not
   '        cross = @call_prefix[@ends[v]] - @call_prefix[@starts[v]] > 0' \
   '        cross = @call_prefix[@ends[v]] - @call_prefix[@starts[v] + 1] > 0'
 echo "a mutation that changes nothing is refused by the proof helper:"
+[ ! -e "$NATIVE_SIGNATURE_FAILURE_FILE" ] || fail "a native executable failed signature verification"
 if mutate src/compiler/native/regalloc_linear.iyi "$WORK/noop.src" \
   'def member?(list : Array(Int32), x : Int32) : Bool' 'def member?(list : Array(Int32), x : Int32) : Bool' >/dev/null 2>&1; then
   fail "the proof helper accepted a mutation that changes nothing"
