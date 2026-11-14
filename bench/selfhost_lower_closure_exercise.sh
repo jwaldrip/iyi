@@ -51,6 +51,19 @@ check_macro_mutant() {
   grep -qx 'SUMMARY identical=6 total=6 module=1' "$WORK/macro-mutant.out"
 }
 
+check_defer_mutant() {
+  if ! "$IYI" build -o "$WORK/core-mutant" bench/selfhost_lower_core_exercise.iyi > "$WORK/core-mutant.log" 2>&1; then
+    echo 'INVALID: defer mutant driver failed to build'
+    return 0
+  fi
+  if ! "$WORK/core-mutant" lower bench/fixtures/lower_defer_closure.iyi "$WORK/defer.normalized.ll" > "$WORK/defer-mutant.out" 2>&1; then
+    echo 'INVALID: defer mutant could not lower fixture'
+    return 0
+  fi
+  grep -qx 'SUMMARY identical=7 total=7 module=1' "$WORK/defer-mutant.out"
+}
+
+
 check_mark() {
   "$WORK/stage1" bench/fixtures/closure_gc_marking.iyi -o "$WORK/mark" --pipeline typed --prelude > "$WORK/mark.build.log" 2>&1 || return 1
   codesign -v --strict "$WORK/mark" || return 1
@@ -88,6 +101,10 @@ for fixture in lower_closure_top_level lower_closure_nested_block lower_pointero
   fi
 done
 check_macro_ir || { cat "$WORK/macro.out"; exit 1; }
+"$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/defer" bench/fixtures/lower_defer_closure.iyi > "$WORK/defer.log" 2>&1 || exit 1
+awk "$CALL_TYPES" "$WORK/defer.ll" > "$WORK/defer.normalized.ll"
+"$WORK/core" lower bench/fixtures/lower_defer_closure.iyi "$WORK/defer.normalized.ll" > "$WORK/defer.out" 2>&1 || exit 1
+grep -qx 'SUMMARY identical=7 total=7 module=1' "$WORK/defer.out" || { cat "$WORK/defer.out"; exit 1; }
 "$IYI" build -o "$WORK/mark-host" bench/fixtures/closure_gc_marking.iyi > "$WORK/mark.host.log" 2>&1 || { cat "$WORK/mark.host.log"; exit 1; }
 "$WORK/mark-host" > "$WORK/mark.host.out" 2>&1 || { cat "$WORK/mark.host.out"; exit 1; }
 grep -qx 'MARKING WHITE SHADED 42' "$WORK/mark.host.out" || exit 1
@@ -101,6 +118,10 @@ prove_mutation 'macro proc loses call-site location' "$REPO/src/compiler/lower/p
   'place = low.current_context.macro_origin || node.location' 'place = node.location' -- check_macro_mutant || status=1
 prove_mutation 'address-taken parameter is not spilled' "$REPO/src/compiler/lower/fun.iyi" \
   '@names.add(t.as(Var).name) if t.is_a?(Var)' 'nil' -- check_mutant lower_pointerof_arg || status=1
+prove_mutation 'defer drops its personality' "$REPO/src/compiler/lower/ensure.iyi" \
+  'low.current_context.fun.personality = personality' 'nil' -- check_defer_mutant || status=1
+prove_mutation 'Darwin personality is internal' "$REPO/src/compiler/lower/lower.iyi" \
+  '(low.module.target.darwin? && name == abi_name(low, "personality"))' 'false' -- check_defer_mutant || status=1
 prove_mutation 'captured reference store lacks marking barrier' "$REPO/src/compiler/lower/cast.iyi" \
   'if low.analysed.program.types["IyiHeap"]?.nil? || !has_inner_pointers?(target) || stack_pointer?(pointer) || begin_fn.nil? || shade_fn.nil?' \
   'if true || low.analysed.program.types["IyiHeap"]?.nil? || !has_inner_pointers?(target) || stack_pointer?(pointer) || begin_fn.nil? || shade_fn.nil?' -- check_barrier_mutant || status=1
