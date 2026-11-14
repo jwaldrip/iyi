@@ -1,0 +1,18 @@
+@[Unsafe("accesses C globals and exits through a C runtime function")]
+lib LibC
+  $optind : Int32
+  $next_argument = optarg : UInt8*
+  fun exit(status : Int32) : NoReturn
+end
+
+slot = 0_u8
+initial = LibC.optind
+assigned = LibC.optind = 5
+LibC.next_argument = pointerof(slot)
+stored = LibC.next_argument.address == pointerof(slot).address
+LibC.next_argument = nil
+cleared = LibC.next_argument.address == 0_u64
+moved = LibC.optind == 5
+started = initial == 1
+kept = assigned == 5
+LibC.exit(started && kept && moved && stored && cleared ? 7 : 1)

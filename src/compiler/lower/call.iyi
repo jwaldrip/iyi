@@ -24,6 +24,7 @@ module compiler/lower/call
 #     lib gives it (`real_name`), with the C calling convention, and called with the arguments the
 #     analysis recorded for the call (`MainVisitor#lib_call_target`); a NoReturn call is followed by
 #     `unreachable` (hosted `codegen_extern_call` and `codegen_call_or_invoke`).
+#   - external lib-variable getters and setters load and store the declared C global.
 # The argument types are the analysed types of the argument nodes, which is how the
 # analysed program instantiates a def (main_visitor.iyi, type_method_body). A restriction
 # is honoured only when it names the argument's own type.
@@ -41,7 +42,7 @@ module compiler/lower/call
 # `compiler/lower/call`, and inside it the name `Call` means this module.
 
 import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, Generic, InstanceVar, Nop, NilLiteral, NumberLiteral, Out, Path, RespondsTo, SymbolLiteral, Var}
-import compiler/ir/function::{Function}
+import compiler/ir/function::{Function, Global, TlsModel}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -53,6 +54,7 @@ import compiler/lower/fun::{block_ended?, def_context_type, target_def_fun, visi
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
+import compiler/lower/proc::{make_fun}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/helpers::{int1}
 import compiler/semantic/top_level::{ClassType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, TraitType, Type, UnionType, VoidType}
@@ -863,6 +865,54 @@ pub def lib_import_library(low : Lowerer, node : Compiler::Syntax::Ast::Call) : 
   name
 end
 
+# Declare the C storage shared by a lib variable's getter, setter and pointerof.
+pub def declare_lib_var(low : Lowerer, lib_fun : LibFun, node : Compiler::Syntax::Ast::Call) : Global
+  found = lib_fun.resolved_return
+  raise "BUG: external variable #{lib_fun.real_name} has no resolved type" if found.nil?
+  var_type = found.as(Type)
+  storage = low.typer.llvm_c_return_type(var_type)
+  loaded = low.typer.llvm_embedded_c_type(var_type)
+  if storage.void? || loaded.key != storage.key || storage.key == low.typer.proc_struct.key
+    pending_visit_node("external variable #{lib_fun.real_name} of type #{var_type.full_name}, declared as #{storage} and read as #{loaded} (hosted declare_lib_var, extern_to_lhs; NEEDS.md row 4)")
+  end
+  global = low.module.get_global?(lib_fun.real_name)
+  return global.as(Global) unless global.nil?
+  made = low.module.add_global(lib_fun.real_name, storage)
+  made.tls = TlsModel::GeneralDynamic if lib_fun.thread_local
+  made.import_library = lib_import_library(low, node)
+  made
+end
+
+# The hosted external variable primitives load or store C storage, not a function.
+pub def codegen_lib_var(low : Lowerer, node : Compiler::Syntax::Ast::Call, lib_fun : LibFun, values : Array(Value)) : Nil
+  primitive = lib_fun.primitive
+  unless primitive == "external_var_get" || primitive == "external_var_set"
+    raise "BUG: external variable #{lib_fun.real_name} has an unexpected primitive"
+  end
+  found = lib_fun.resolved_return
+  raise "BUG: external variable #{lib_fun.real_name} has no resolved type" if found.nil?
+  var_type = found.as(Type)
+  check_lib_aggregate(var_type, "external variable")
+  if primitive == "external_var_set" && var_type.is_a?(ProcInstanceType)
+    pending_visit_node("a proc stored to the external variable #{lib_fun.real_name} (hosted prepare_call_args_external, check_proc_is_not_closure)")
+  end
+  global = declare_lib_var(low, lib_fun, node)
+  ir = low.typer.llvm_embedded_c_type(var_type)
+  if primitive == "external_var_get"
+    value = load_aligned(low, ir, global)
+    if var_type.is_a?(ProcInstanceType)
+      low.last = make_fun(low, var_type, value, low.builder.const_null(low.module.types.ptr(0)).as(Value))
+    else
+      low.last = value
+    end
+  else
+    raise "BUG: external variable #{lib_fun.real_name} setter expects one value" unless values.size == 1
+    raise "BUG: external variable #{lib_fun.real_name} setter has a mismatched value type" unless values[0].type.key == ir.key
+    store_aligned(low, values[0], global)
+    low.last = values[0]
+  end
+end
+
 # The hosted `codegen_extern_call` for a call on a fun of a lib, through the lib call record the analysis
 # made for the call (`MainVisitor#lib_call_target`, the port of Call#recalculate_lib_call). The fun's C
 # name is `real_name`, its parameters have their declared types, and the arguments are in the order the C
@@ -873,6 +923,7 @@ end
 # and its value is nil. An argument that never returns ends the block, and the call is not made. Refused by
 # name: an argument converted by its to_unsafe method, nil to a proc or a variadic argument, an `out`
 # argument that is not a variable, and a number argument that is not a literal.
+# External variables use the same evaluated arguments but load or store their C global.
 pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Type) : Nil
   record = low.analysed.lib_call_target(node)
   raise "BUG: the call to #{node.name} on a lib has no lib call record (hosted call.cr: codegen_extern_call)" if record.nil?
@@ -955,6 +1006,11 @@ pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret 
     low.last = llvm_nil(low)
     return
   end
+  if lib_fun.external_var
+    codegen_lib_var(low, node, lib_fun, values)
+    return
+  end
+
 
   check_lib_aggregate(ret, "result")
   real = lib_fun.real_name
