@@ -196,7 +196,11 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       if literal_body?(def_node.body) && node.block.nil?
         discard_receiver(low, node)
       else
-        if storage = receiver_storage(low, node, self_type.as(Type))
+        if recv_type.is_a?(NilType)
+          lower_receiver(low, node)
+          return if block_ended?(low)
+          self_value = low.builder.const_zero(low.typer.nil_type)
+        elsif storage = receiver_storage(low, node, self_type.as(Type))
           self_value = storage.as(Value)
         else
           recv = lower_receiver(low, node)
@@ -431,7 +435,7 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     low.builder.cond_br(matches, blocks[0], blocks[1])
     low.builder.position_at_end(blocks[0])
     concrete = downcast(low, receiver, arm.receiver, runtime_type, true)
-    self_value = self_argument(low, obj, concrete, arm.receiver)
+    self_value = arm.receiver.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : self_argument(low, obj, concrete, arm.receiver)
     low.needs_value = phi_wants
     emit_single_call(low, node, arm.definition, arm.return_type, arm.receiver, self_value, nil, arg_types, values)
     unless block_ended?(low)
@@ -609,10 +613,11 @@ def checked_dispatch_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call,
 end
 
 def checked_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : Type, target : Def?) : Type
+  return owner if owner.is_a?(NilType)
   if owner.is_a?(TraitType)
     pending_visit_node("a call on trait #{owner.full_name} (hosted call.cr: trait dispatch)")
   end
-  if owner.is_a?(UnionType) || owner.is_a?(MixedUnionType) || owner.is_a?(VirtualType) || owner.is_a?(NilableType) || owner.is_a?(NilableReferenceUnionType) || owner.is_a?(NilableProcType) || owner.is_a?(NilType)
+  if owner.is_a?(UnionType) || owner.is_a?(MixedUnionType) || owner.is_a?(VirtualType) || owner.is_a?(NilableType) || owner.is_a?(NilableReferenceUnionType) || owner.is_a?(NilableProcType)
     pending_visit_node("a call on a receiver of type #{owner.full_name} (hosted call.cr: prepare_call_args, owner is not a class or struct)")
   end
   if owner.is_a?(ModuleType)
