@@ -748,7 +748,7 @@ if virtual_ivar_check; then
     '  if node.is_a?(ReadInstanceVar)' '  if false' -- virtual_ivar_check || status=1
   prove_mutation "virtual receiver fields cannot be typed" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '    owner = owner.as(VirtualType).base_type if owner.is_a?(VirtualType)' \
-    '    owner = owner' -- virtual_ivar_check || status=1
+    '    owner = TypeIndirection.remove_indirection(owner)' -- virtual_ivar_check || status=1
 else
   echo "FAIL: virtual receiver field does not match the hosted module"
   status=1
