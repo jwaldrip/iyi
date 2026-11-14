@@ -26,6 +26,7 @@ import compiler/syntax/ast::{ExceptionHandler, Case}
 import compiler/syntax/ast::{MacroIf, MacroFor, MacroExpression, MacroVerbatim}
 import compiler/syntax/ast::{Include, Extend}
 import compiler/syntax/ast::{ModuleHeader, UsingDecl}
+import compiler/syntax/ast::{AssocTypeDecl}
 import compiler/types/types::{TupleInstanceType}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
@@ -495,6 +496,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   end
   if node.is_a?(NilLiteral)
     # The hosted `visit(NilLiteral)`: `@last = llvm_nil`.
+    low.last = llvm_nil(low)
+    return
+  end
+  if node.is_a?(AssocTypeDecl)
     low.last = llvm_nil(low)
     return
   end

@@ -1,0 +1,17 @@
+trait Producer
+  type Item
+  abstract def value : Item
+end
+
+class Source
+end
+
+impl Producer for Source
+  type Item = Int32
+
+  def value : Item
+    42
+  end
+end
+
+puts Source.new.value

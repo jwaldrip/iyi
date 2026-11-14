@@ -5,6 +5,7 @@ import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, ExternalVar, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{AssocTypeDecl}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 import compiler/macros/target_flags::{MacroTargetFlags}
@@ -1170,7 +1171,13 @@ pub class ImplRecord
   getter target_type : Type
   getter type_vars : Array(String)?
 
-  def initialize(@trait_type : Type, @target_type : Type, @type_vars : Array(String)? = nil)
+  getter assoc_types : Array(AssocTypeDecl)?
+
+  getter imports : Hash(String, Type)?
+
+  getter scope : ModuleType?
+
+  def initialize(@trait_type : Type, @target_type : Type, @type_vars : Array(String)? = nil, @assoc_types : Array(AssocTypeDecl)? = nil, @imports : Hash(String, Type)? = nil, @scope : ModuleType? = nil)
   end
 end
 
@@ -2728,6 +2735,28 @@ pub class TopLevelVisitor < Visitor
       return false
     end
 
+    if trait_type.is_a?(TraitType)
+      declared = trait_type.as(TraitType).assoc_types
+      answers = node.assoc_types || [] of AssocTypeDecl
+      declared.each do |name|
+        found = false
+        answers.each { |answer| found = true if answer.name == name && answer.value }
+        unless found
+          message = "impl #{trait_type.full_name} for #{target_type.full_name} does not answer an associated type the trait declares: #{name}"
+          raise(message) unless @program.total_mode
+          @program.carried_refusals << message
+          return false
+        end
+      end
+      answers.each do |answer|
+        unless declared.includes?(answer.name)
+          message = "#{trait_type.full_name} declares no associated type named #{answer.name}"
+          raise(message) unless @program.total_mode
+          @program.carried_refusals << message
+          return false
+        end
+      end
+    end
     target_mod = target_type.as(ModuleType)
 
     old_type = @current_type
@@ -2736,7 +2765,7 @@ pub class TopLevelVisitor < Visitor
     @current_type = old_type
 
     target_mod.include(trait_type)
-    @program.impls << ImplRecord.new(trait_type, target_mod, node.type_vars)
+    @program.impls << ImplRecord.new(trait_type, target_mod, node.type_vars, node.assoc_types, @program.current_imports, old_type)
 
     false
   end

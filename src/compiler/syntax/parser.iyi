@@ -5238,7 +5238,8 @@ pub class Parser < Lexer
 
     @type_nest = @type_nest - 1
 
-    impl_def = ImplDef.new(trait_path, target, body, type_vars, trait_args).at(location).at_end(end_location)
+    assoc_types = collect_impl_assoc_types(body)
+    impl_def = ImplDef.new(trait_path, target, body, type_vars, trait_args, assoc_types).at(location).at_end(end_location)
     impl_def
   end
 
@@ -5266,6 +5267,24 @@ pub class Parser < Lexer
     end
 
     AssocTypeDecl.new(name, value).at(location)
+  end
+
+  def collect_impl_assoc_types(body : ASTNode) : Array(AssocTypeDecl)?
+    answers : Array(AssocTypeDecl)? = nil
+    each_assoc_type_decl(body) do |decl|
+      unless decl.value
+        syntax_error("an impl answers an associated type with a value", decl.location)
+      end
+      entries = answers || [] of AssocTypeDecl
+      entries.each do |entry|
+        if entry.name == decl.name
+          syntax_error("duplicate associated type #{decl.name}", decl.location)
+        end
+      end
+      entries << decl
+      answers = entries
+    end
+    answers
   end
 
   def collect_trait_assoc_types(body : ASTNode) : Array(String)?

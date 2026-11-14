@@ -578,6 +578,35 @@ pub class MainVisitor < TypeNodeHost
         return found.as(Type) unless found.is_a?(LookupError)
       end
     end
+    if node.is_a?(Path)
+      path = node.as(Path)
+      if !path.global && path.names.size == 1
+        target = owner
+        target = target.as(MetaclassType).instance_type if target.is_a?(MetaclassType)
+        generic = target
+        generic = generic.as(GenericInstanceType).generic_type if generic.is_a?(GenericInstanceType)
+        @program.impls.each do |record|
+          if record.target_type == generic
+            if answers = record.assoc_types
+              answers.each do |answer|
+                if answer.name == path.names[0]
+                  if value = answer.value
+                    old_imports = @program.current_imports
+                    if imports = record.imports
+                      @program.current_imports = imports
+                    end
+                    scope = record.scope || @current_type
+                    found = ArgRestriction.lookup_bound(type_node_system(@program), scope, value, target)
+                    @program.current_imports = old_imports
+                    return found.as(Type) unless found.is_a?(LookupError)
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
     if instance = receiver_instance(owner)
       found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)
       return found.as(Type) unless found.is_a?(LookupError)

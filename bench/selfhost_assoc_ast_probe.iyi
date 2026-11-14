@@ -1,0 +1,26 @@
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/ast::{AssocTypeDecl, ImplDef}
+import compiler/syntax/visitor::{Visitor}
+
+class AssocWalk < Visitor
+  getter declarations : Int32 = 0
+  getter answers : Int32 = 0
+
+  def visit(node : AssocTypeDecl) : Bool
+    @declarations += 1
+    true
+  end
+
+  def visit(node : ImplDef) : Bool
+    if answers = node.assoc_types
+      @answers += answers.size
+    end
+    true
+  end
+end
+
+path = Program.args[0]
+node = Parser.new(File.read(path), path).parse
+walk = AssocWalk.new
+node.accept(walk)
+puts "declarations=#{walk.declarations} answers=#{walk.answers}"

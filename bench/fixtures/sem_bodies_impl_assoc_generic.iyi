@@ -1,0 +1,28 @@
+trait Producer
+  type Item
+  type Flag
+  abstract def flag : Flag
+  abstract def value : Item
+end
+
+class Source(T)
+  def initialize(@value : T)
+  end
+end
+
+impl Producer for Source(T) forall T
+  type Item = T
+  type Flag = Bool
+
+  def flag : Flag
+    true
+  end
+
+  def value : Item
+    @value
+  end
+end
+
+puts Source(Int32).new(42).value
+puts Source(String).new("text").value
+puts Source(Int32).new(42).flag
