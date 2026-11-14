@@ -721,6 +721,38 @@ else
   echo "FAIL: struct join does not match the hosted module"
   status=1
 fi
+struct_cast_check() {
+  "$IYI" build -o "$WORK/port-struct-cast" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/struct-cast.build.log" 2>&1 || return 1
+  for name in lower_case_nilable_struct lower_same_struct_cast; do
+    "$WORK/port-struct-cast" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/struct-cast.out" 2> "$WORK/struct-cast.err" || return 1
+    awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/struct-cast.out" || return 1
+  done
+}
+if struct_cast_check; then
+  prove_mutation "a narrowed struct cast reads the union tag as the struct" "$REPO/src/compiler/lower/lower.iyi" \
+    '      if !lv.already_loaded && TypeIndirection.remove_indirection(lv.type).full_name == obj_type.full_name' \
+    '      if !lv.already_loaded' -- struct_cast_check || status=1
+else
+  echo "FAIL: struct casts do not match hosted modules"
+  status=1
+fi
+virtual_ivar_check() {
+  "$IYI" build -o "$WORK/port-virtual-ivar" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/virtual-ivar.build.log" 2>&1 || return 1
+  "$WORK/port-virtual-ivar" lower "$REPO/bench/fixtures/lower_virtual_ivar_read.iyi" "$WORK/lower_virtual_ivar_read.oracle.ll" > "$WORK/virtual-ivar.out" 2> "$WORK/virtual-ivar.err" || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/virtual-ivar.out"
+}
+if virtual_ivar_check; then
+  prove_mutation "virtual receiver fields have no base type" "$REPO/src/compiler/lower/lower.iyi" \
+    '    if owner.is_a?(VirtualType)' '    if false' -- virtual_ivar_check || status=1
+  prove_mutation "explicit instance-variable reads are not lowered" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if node.is_a?(ReadInstanceVar)' '  if false' -- virtual_ivar_check || status=1
+  prove_mutation "virtual receiver fields cannot be typed" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    owner = owner.as(VirtualType).base_type if owner.is_a?(VirtualType)' \
+    '    owner = owner' -- virtual_ivar_check || status=1
+else
+  echo "FAIL: virtual receiver field does not match the hosted module"
+  status=1
+fi
 generic_ivar_check() {
   "$IYI" build -o "$WORK/port-g" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/g.build.log" 2>&1 || return 1
   "$WORK/port-g" lower "$REPO/bench/fixtures/lower_generic_ivar.iyi" "$WORK/lower_generic_ivar.oracle.ll" > "$WORK/g.out" 2> "$WORK/g.err" || return 1

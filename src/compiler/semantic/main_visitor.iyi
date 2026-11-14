@@ -3925,6 +3925,7 @@ pub class MainVisitor < TypeNodeHost
     ot = child_type(node.obj)
     return false if ot.nil?
     owner : Type = ot.as(Type)
+    owner = owner.as(VirtualType).base_type if owner.is_a?(VirtualType)
     if owner.is_a?(ModuleType)
       if ivar = owner.as(ModuleType).lookup_instance_var?(node.name)
         set_type(node, ivar.type)

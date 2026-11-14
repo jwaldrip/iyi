@@ -1580,7 +1580,9 @@ end
 def eval_cast_operand(low : Lowerer, obj : ASTNode, obj_type : Type) : Value?
   if obj.is_a?(Var) && passed_by_value?(obj_type)
     if lv = low.current_context.vars[obj.as(Var).name]?
-      return lv.pointer unless lv.already_loaded
+      if !lv.already_loaded && TypeIndirection.remove_indirection(lv.type).full_name == obj_type.full_name
+        return lv.pointer
+      end
     end
   end
   wants = low.needs_value

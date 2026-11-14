@@ -1,3 +1,9 @@
+struct Int32
+  def ===(other : Int32) : Bool
+    self == other
+  end
+end
+
 struct Point
   def initialize(@x : Int32)
   end
