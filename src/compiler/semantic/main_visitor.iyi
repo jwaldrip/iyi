@@ -2630,14 +2630,41 @@ pub class MainVisitor < TypeNodeHost
     "#{method_name}(#{args_strs.join(", ")})"
   end
 
-  def min_args_count(d : Def) : Int32
-    count = 0
-    d.args.each do |arg|
-      if arg.default_value.nil?
-        count = count + 1
+  # Hosted Def#min_max_args_sizes counts positional arguments only.
+  def min_max_args_sizes(d : Def) : Tuple(Int32, Int32)
+    max_size = d.args.size
+    default_index = -1
+    i = 0
+    while i < d.args.size
+      if !d.args[i].default_value.nil?
+        default_index = i
+        break
+      end
+      i = i + 1
+    end
+    min_size = default_index >= 0 ? default_index : max_size
+    if splat_index = d.splat_index
+      min_size = splat_index
+      if default_index >= 0 && default_index < splat_index
+        min_size = default_index
+      end
+      splat = d.args[splat_index]
+      if splat.name.empty?
+        max_size = splat_index
+      else
+        if restriction = splat.restriction
+          if !restriction.is_a?(Splat) && !(default_index >= 0 && default_index < splat_index)
+            min_size = min_size + 1
+          end
+        end
+        max_size = 2147483647
       end
     end
-    count
+    {min_size, max_size}
+  end
+
+  def min_args_count(d : Def) : Int32
+    min_max_args_sizes(d)[0]
   end
 
   def def_more_specific?(d1 : Def, d2 : Def, args : Array(ASTNode), owner : Type) : Bool
@@ -2860,9 +2887,10 @@ pub class MainVisitor < TypeNodeHost
     # 1. Filter by argument count
     count_matches = [] of Def
     candidates.each do |d|
-      min_a = min_args_count(d)
-      max_a = d.args.size
-      if args.size >= min_a && args.size <= max_a
+      min_a, max_a = min_max_args_sizes(d)
+      # The variadic matcher above handles expanded named splats; the ordinary
+      # positional matcher below indexes d.args and cannot consume their tail.
+      if args.size >= min_a && args.size <= max_a && args.size <= d.args.size
         count_matches << d
       end
     end
@@ -3976,7 +4004,7 @@ pub class MainVisitor < TypeNodeHost
         return definition
       end
     end
-    if node.named_args.nil? && (target.splat_index || (node.args.size < target.args.size && DefaultArguments.supported?(target, node.args, nil)))
+    if target.splat_index || (node.named_args.nil? && node.args.size < target.args.size && DefaultArguments.supported?(target, node.args, nil))
       splat_names = [] of String
       if splat_index = target.splat_index
         count = node.args.size - splat_index
@@ -3986,10 +4014,16 @@ pub class MainVisitor < TypeNodeHost
           count -= 1
         end
       end
-      expanded = DefaultArguments.expand_for_call(target, node.args.size, nil, splat_names)
+      expanded = DefaultArguments.expand_for_call(target, node.args.size, node.named_args, splat_names)
       if expanded.is_a?(String)
         refuse_call(node, expanded)
         return nil
+      end
+      if named = node.named_args
+        named.each do |arg|
+          arg.value.accept(self)
+          node.args << arg.value
+        end
       end
       expanded.at(target)
       @program.copy_def_owner(target, expanded)

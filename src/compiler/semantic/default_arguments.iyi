@@ -15,8 +15,8 @@ import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, Expressions, Magic
 # node, unevaluated. The hosted expansion makes it a parameter filled from the
 # call site, so the call site's expansion of the constant is what runs.
 #
-# `supported?` and `expand` still refuse a splat or a double splat. A positional
-# splat with no named arguments is expanded by `expand_for_call` into ordinary
+# `supported?` and `expand` still refuse a splat or a double splat.
+# `expand_for_call` expands a splat and its named arguments into ordinary
 # parameters; a double splat stays refused. Also refused:
 # a named argument that names a parameter the positional arguments already fill,
 # or names no parameter, and a parameter with no default that no argument fills
@@ -32,8 +32,8 @@ pub class DefaultArguments
   # expansion in the original def's scope, rather than visiting defaults at
   # the call site. The caller must copy the original def's owner and file scope.
   def self.expand_for_call(rec_def : Def, given : Int32, named_args : Array(NamedArgument)?, splat_names : Array(String) = [] of String) : Def | String
-    if rec_def.splat_index && named_args.nil?
-      return expand_splat(rec_def, given, splat_names)
+    if rec_def.splat_index
+      return expand_splat(rec_def, given, splat_names, named_args)
     end
     return "not ported: splat or unmatched default arguments" unless supported_count?(rec_def, given, named_args)
     expansion = wrapper_def(rec_def, given, named_args)
@@ -42,15 +42,28 @@ pub class DefaultArguments
 
   # A positional splat becomes ordinary parameters. The retained body rebuilds
   # the splat local as a tuple. A primitive body stays bare for the lowerer.
-  def self.expand_splat(rec_def : Def, given : Int32, names : Array(String)) : Def | String
+  def self.expand_splat(rec_def : Def, given : Int32, names : Array(String), named_args : Array(NamedArgument)? = nil) : Def | String
     index = rec_def.splat_index
     return "not ported: no splat parameter" if index.nil?
     return "not ported: double splat arguments" if rec_def.double_splat
     index = index.as(Int32)
     before = given < index ? given : index
+    if rec_def.args[index].name.empty? && given > index
+      return "not ported: unmatched splat arguments"
+    end
+    if named_args
+      seen = [] of String
+      named_args.each do |named|
+        named_index = param_index(rec_def, named.name)
+        if named_index < before || named_index == index || seen.includes?(named.name)
+          return "not ported: unmatched splat arguments"
+        end
+        seen << named.name
+      end
+    end
     k = before
     while k < rec_def.args.size
-      if k != index && rec_def.args[k].default_value.nil?
+      if k != index && rec_def.args[k].default_value.nil? && !named_given?(named_args, rec_def.args[k].external_name)
         return "not ported: unmatched splat arguments"
       end
       k += 1
@@ -64,10 +77,18 @@ pub class DefaultArguments
       k += 1
     end
     names.each { |name| new_args << Arg.new(name) }
+    new_name = rec_def.name
+    if named_args
+      named_args.each do |named|
+        new_name = "#{new_name}:#{named.name}"
+        matching = rec_def.args[param_index(rec_def, named.name)]
+        new_args << Arg.new(matching.name, nil, nil, named.name)
+      end
+    end
     body = [] of ASTNode
     k = before
     while k < rec_def.args.size
-      if k != index
+      if k != index && !named_given?(named_args, rec_def.args[k].external_name)
         arg = rec_def.args[k]
         default = arg.default_value
         if default.is_a?(MagicConstant)
@@ -91,7 +112,7 @@ pub class DefaultArguments
                                 body << original.clone
                                 Expressions.new(body)
                               end
-    wrapper = Def.new(rec_def.name, new_args, expanded_body, copy_node(rec_def.receiver), copy_arg(rec_def.block_arg), copy_node(rec_def.return_type), rec_def.macro_def, rec_def.abstract, nil, nil, copy_free_vars(rec_def.free_vars), rec_def.uses_block_arg)
+    wrapper = Def.new(new_name, new_args, expanded_body, copy_node(rec_def.receiver), copy_arg(rec_def.block_arg), copy_node(rec_def.return_type), rec_def.macro_def, rec_def.abstract, nil, nil, copy_free_vars(rec_def.free_vars), rec_def.uses_block_arg)
     wrapper.calls_super = rec_def.calls_super
     wrapper.calls_initialize = rec_def.calls_initialize
     wrapper.calls_previous_def = rec_def.calls_previous_def
