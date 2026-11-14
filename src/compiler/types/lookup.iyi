@@ -1,7 +1,7 @@
 module compiler/types/lookup
 
 import compiler/syntax/ast::{ASTNode, Generic, Metaclass, NumberLiteral, Path, ProcNotation, Self, Splat, TypeOf, Underscore, Union}
-import compiler/semantic/top_level::{AliasType, GenericClassType, GenericModuleType, ModuleType, SemanticProgram, Type, TypeParameterType}
+import compiler/semantic/top_level::{AliasType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, SemanticProgram, Type, TypeParameterType}
 import compiler/types/types::{NamedArgumentType, TupleInstanceType, TypeQueries, TypeSplat}
 import compiler/types/instances::{TypeInstances}
 import compiler/types/merge::{TypeMerge}
@@ -76,15 +76,29 @@ pub class TypeLookup
   # ---- paths ----
 
   def lookup_path_node(scope : ModuleType, path : Path) : Type | LookupError
-    found = find_path(scope, path, path.iyi_synthetic)
+    lexical = instance_scope(scope)
+    found = find_path(lexical, path, path.iyi_synthetic)
     if found.nil?
-      hidden = find_path(scope, path, true)
+      hidden = find_path(lexical, path, true)
       if hidden
         return LookupError.new("private constant #{hidden.as(Type).full_name} referenced")
       end
       return LookupError.new("undefined constant #{path.to_s}")
     end
     expand(found.as(Type))
+  end
+
+  # A name written in a def owned by a metaclass (the generated `new`, a class method) is looked up in the scope of
+  # the instance type, where the class's own nested types (`Suffix` in `Generic::Suffix`) are visible. The
+  # program-level lookup (SemanticProgram#lookup_type_path?) does the same.
+  def instance_scope(scope : ModuleType) : ModuleType
+    if scope.is_a?(MetaclassType)
+      instance = scope.as(MetaclassType).instance_type
+      if instance.is_a?(ModuleType)
+        return instance.as(ModuleType)
+      end
+    end
+    scope
   end
 
   # The item a path names, or nil. A global path starts at the program; any other
