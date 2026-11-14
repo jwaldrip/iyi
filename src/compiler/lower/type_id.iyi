@@ -160,6 +160,9 @@ pub class LowerTypeIds
   # The hosted `assign_id_to_metaclass`: the metaclass of each class, depth first from *type*,
   # each taking the next id when it is first needed.
   def assign_metaclass_id(type : Type) : Nil
+    # Hosted add_subclass excludes unbound instances. The port's semantic
+    # subclass lists can still hold them, so filter this traversal too.
+    return nil if TypeQueries.unbound?(type)
     # A generic instance's metaclass is numbered like a class's (hosted
     # `assign_id_to_metaclass(GenericClassInstanceType | PrimitiveType)`), then its subclasses.
     if type.is_a?(GenericClassInstanceType)
