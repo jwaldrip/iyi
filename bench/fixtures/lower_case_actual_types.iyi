@@ -15,4 +15,14 @@ def number(value : Alpha | Beta | Gamma) : Int32
     3
   end
 end
-number(Alpha.new) &+ number(Beta.new) &+ number(Gamma.new)
+def choose(n : Int32) : Int32
+  value = if n == 0
+    Alpha.new
+  elsif n == 1
+    Beta.new
+  else
+    Gamma.new
+  end
+  number(value)
+end
+choose(0) &+ choose(1) &+ choose(2)

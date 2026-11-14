@@ -3,6 +3,10 @@ enum Kind
   Second
   Third
 
+  def ==(other : Kind) : Bool
+    value == other.value
+  end
+
   def ===(other : Kind) : Bool
     self == other
   end
