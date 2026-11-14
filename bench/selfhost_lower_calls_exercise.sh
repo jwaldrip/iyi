@@ -253,6 +253,7 @@ for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
 done
 for name in lowcallwait_uninferred_generic_new lowcallwait_generic_handwritten_make lowcallwait_generic_handwritten_new lowcallwait_generic_default_new; do
   fixture="$REPO/bench/fixtures/$name.iyi"
+  rm -f "$WORK/$name.native"
   if IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1 || [ -e "$WORK/$name.native" ]; then
     echo "  $name: expected refusal without an executable"
     status=1
