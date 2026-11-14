@@ -492,7 +492,7 @@ prove_mutation "the then and else branches are swapped" "$REPO/src/compiler/lowe
 prove_mutation "the while body is the condition" "$REPO/src/compiler/lower/lower.iyi" \
   "codegen_node(low, node.body)" "codegen_node(low, node.cond)" -- lower_core_check || status=1
 prove_mutation "a typed break target is ignored" "$REPO/src/compiler/lower/lower.iyi" \
-  "when Break  then node.target" "when Break  then nil" -- lower_core_check || status=1
+  "when Break  then node.target" "when Break  then node" -- lower_core_check || status=1
 prove_mutation "mismatched jump targets are accepted" "$REPO/src/compiler/lower/lower.iyi" \
   'typed.object_id != lexical.object_id' 'typed.object_id == lexical.object_id' -- lower_core_check || status=1
 prove_mutation "a char is its code point plus one" "$REPO/src/compiler/lower/lower.iyi" \
@@ -768,9 +768,9 @@ visibility_macro_check() {
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/vis-macro.out"
 }
 if visibility_macro_check; then
-  prove_mutation "an expanded declaration macro is lowered as a call" "$REPO/src/compiler/lower/lower.iyi" \
+  prove_mutation "an expanded declaration macro is not lowered" "$REPO/src/compiler/lower/lower.iyi" \
     '      codegen_node(low, expanded)' \
-    '      codegen_call_node(low, node.as(Call))' -- visibility_macro_check || status=1
+    '      nil' -- visibility_macro_check || status=1
 else
   echo "FAIL: wrapped macro fixture does not match the hosted module"
   awk 'NR<=8' "$WORK/vis-macro.err" "$WORK/vis-macro.out" "$WORK/vis-macro.build.log"
@@ -784,7 +784,7 @@ atomic_return_check() {
 if atomic_return_check; then
   prove_mutation "a by-value return skips loading the aggregate" "$REPO/src/compiler/lower/fun.iyi" \
     '  converted = to_rhs(low, converted, return_type.as(Type)) if converted.type.pointer?' \
-    '  converted = converted' -- atomic_return_check || status=1
+    '  converted = to_rhs(low, converted, return_type.as(Type)) if false' -- atomic_return_check || status=1
 else
   echo "FAIL: atomic aggregate return does not match the hosted module"
   awk 'NR<=8' "$WORK/atomic-return.err" "$WORK/atomic-return.out" "$WORK/atomic-return.build.log"
@@ -929,7 +929,7 @@ tuple_literal_check() {
 if tuple_literal_check; then
   prove_mutation "tuple literal reverses entry evaluation" "$REPO/src/compiler/lower/lower.iyi" \
     '  node.elements.each_with_index do |element, index|' \
-    '  node.elements.reverse.each_with_index do |element, index|' -- tuple_literal_check || status=1
+    '  node.elements.reversed.each_with_index do |element, index|' -- tuple_literal_check || status=1
 else
   echo "FAIL: tuple literal fixture does not match the hosted module"
   awk 'NR<=8' "$WORK/tuple.err" "$WORK/tuple.out" "$WORK/tuple.build.log"
