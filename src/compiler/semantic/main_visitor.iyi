@@ -2780,7 +2780,7 @@ pub class MainVisitor < TypeNodeHost
         arg_t = type_of(args[i])
         param = d.args[i]
         if r = param.restriction
-          exp_t = lookup_under(r, rec_type)
+          exp_t = lookup_restriction_in_file(r, rec_type, d)
           unless arg_t.subtype_of?(exp_t)
             first_mismatch = i
             break
@@ -2804,7 +2804,7 @@ pub class MainVisitor < TypeNodeHost
       count_matches.each do |d|
         param = d.args[mismatch_idx]
         if r = param.restriction
-          exp_t = lookup_under(r, rec_type)
+          exp_t = lookup_restriction_in_file(r, rec_type, d)
           expected_types_list << exp_t.full_name
         end
       end
@@ -2820,6 +2820,23 @@ pub class MainVisitor < TypeNodeHost
       plural = (args.size > 1) ? "s" : ""
       refuse_call(call_node, "no overload matches '#{method_disp}' with type#{plural} #{arg_types_strs.join(", ")}\n\n#{overloads_str}")
     end
+  end
+
+  # Overload diagnostics resolve restrictions in the same file and owner as
+  # matching, even when the caller is a generated definition probe.
+  def lookup_restriction_in_file(node : ASTNode, receiver : Type, definition : Def) : Type
+    old_imports = @program.current_imports
+    old_import_defs = @program.current_import_defs
+    old_type = @current_type
+    if owner = @program.def_owner(definition)
+      @current_type = owner if owner.iyi_unit
+    end
+    enter_file_scope(definition)
+    result = lookup_under(node, receiver)
+    @current_type = old_type
+    @program.current_imports = old_imports
+    @program.current_import_defs = old_import_defs
+    result
   end
 
   # A call the port cannot resolve: strict mode raises, total mode records the
