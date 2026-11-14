@@ -19,7 +19,7 @@ module compiler/lower/phi
 import compiler/ir/inst::{Block}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
-import compiler/semantic/top_level::{Type}
+import compiler/semantic/top_level::{NilType, Type, VoidType}
 import compiler/lower/context::{BranchPhi, Lowerer}
 import compiler/lower/helpers::{at_terminator?, llvm_nil}
 
@@ -44,7 +44,7 @@ pub class LowerPhi
   def add(low : Lowerer, value : Value?, last : Bool) : Nil
     return if at_terminator?(low)
     @count += 1
-    if @needs_value
+    if @needs_value && !@node_type.is_a?(NilType) && !@node_type.is_a?(VoidType)
       if v = value
         if here = low.builder.insert_block
           @values << v.as(Value)
