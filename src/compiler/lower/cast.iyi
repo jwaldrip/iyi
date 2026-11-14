@@ -276,7 +276,7 @@ pub def store_in_union(low : Lowerer, union_type : Type, union_pointer : Value, 
     bits = low.typer.size_of(area) * 8
     widened = bool_widened(low, value, low.module.types.int(bits.to_i32))
     stored = store_aligned(low, widened, field)
-    stored.alignment = low.typer.align_of(area)
+    stored.alignment = low.typer.pointer_size.to_i32
     return
   end
   if kind == "int" || kind == "char" || kind == "symbol" || kind == "float" || value_type.is_a?(EnumType)
