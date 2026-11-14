@@ -39,14 +39,14 @@ seen = 0
 i = 0
 while i < 3
   if last.is_a?(Node)
-    seen = seen + 1
+    seen = seen &+ 1
     last.next
   end
-  n = Node.new(i + 5)
-  links = links + link(last, n)
+  n = Node.new(i &+ 5)
+  links = links &+ link(last, n)
   last = n
-  t = t ? t + n.value : n.value
-  i = i + 1
+  t = t ? t &+ n.value : n.value
+  i = i &+ 1
 end
 
 a : Int32? = nil
@@ -55,12 +55,12 @@ c : Int32? = nil
 i = 0
 while i < 4
   if cc = c
-    cc + 1
+    cc &+ 1
   end
   c = b
   b = a
-  a = i + 10
-  i = i + 1
+  a = i &+ 10
+  i = i &+ 1
 end
 
 sum = 0
@@ -71,4 +71,4 @@ shifted = 0
 if cc = c
   shifted = cc
 end
-LibC.exit(links + seen + sum + shifted)
+LibC.exit(links &+ seen &+ sum &+ shifted)
