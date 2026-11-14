@@ -2,7 +2,7 @@ module compiler/semantic/match
 
 import compiler/syntax/ast::{ASTNode, Call, Def, NumberLiteral, Splat, Yield}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{ModuleType, NoReturnType, Type}
+import compiler/semantic/top_level::{GenericClassType, MetaclassType, ModuleType, NoReturnType, SemanticProgram, Type}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError}
@@ -27,6 +27,7 @@ pub class CallSignature
   # Set for the hosted second matching pass: the call's argument nodes, so a
   # number literal can be told from a typed integer of the same type.
   property autocast_nodes : Array(ASTNode)?
+  property infer_class_vars : Bool = false
 end
 
 # One def that accepts a call: the hosted Match. *arg_types* are the positional
@@ -101,6 +102,19 @@ end
 # splat names undefined: `undefined constant T`), a parameter after the splat, and a
 # double splat with a restriction.
 pub class CallMatch
+  def self.inferable_generic(program : SemanticProgram, owner : Type, defining : ModuleType?, definition : Def, given : Int32) : GenericClassType?
+    return nil unless program.generated_new?(definition)
+    return nil if defining.nil? || !defining.as(ModuleType).same?(owner)
+    return nil unless owner.is_a?(MetaclassType)
+    instance = owner.as(MetaclassType).instance_type
+    return nil unless instance.is_a?(GenericClassType)
+    generic = instance.as(GenericClassType)
+    return nil unless generic.splat_index.nil?
+    return nil unless given == definition.args.size
+    return nil unless definition.splat_index.nil? && definition.double_splat.nil? && definition.block_arg.nil?
+    generic
+  end
+
   def self.yields?(definition : Def) : Bool
     return true if definition.block_arg || definition.macro_yields
     finder = YieldFinder.new
@@ -140,8 +154,23 @@ pub class CallMatch
         si += 1
       end
     end
-    if free_names.size > 0
-      maybe_bound = FreeBindings.of_def(definition, signature.arg_types, ts)
+    class_vars : Array(String)? = nil
+    if signature.infer_class_vars
+      if generic = CallMatch.inferable_generic(ts.program, owner, defining, definition, given)
+        class_vars = generic.type_vars
+      end
+    end
+    match_free = free_names
+    if vars = class_vars
+      vars.each do |name|
+        unless match_free.includes?(name)
+          match_free = match_free.dup if match_free.same?(free_names)
+          match_free << name
+        end
+      end
+    end
+    if match_free.size > 0
+      maybe_bound = FreeBindings.of_def(definition, signature.arg_types, ts, class_vars)
       return MatchAttempt.none if maybe_bound.nil?
       bound = maybe_bound.as(Hash(String, Type))
     end
@@ -163,8 +192,8 @@ pub class CallMatch
       arg = definition.args[i]
       arg_type = signature.arg_types[i]
       written = arg.restriction
-      if written && FreeBindings.mentions?(written.as(ASTNode), free_names)
-        answer = ArgRestriction.restrict_argument(ts, defining, written.as(ASTNode), arg_type, owner, free_names, bound)
+      if written && FreeBindings.mentions?(written.as(ASTNode), match_free)
+        answer = ArgRestriction.restrict_argument(ts, defining, written.as(ASTNode), arg_type, owner, match_free, bound)
         if answer.error
           return MatchAttempt.failed(answer.error.to_s)
         end

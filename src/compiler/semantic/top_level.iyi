@@ -1220,6 +1220,7 @@ pub class SemanticProgram < NonGenericModuleType
   getter external_var_funs : Array(LibFun) = [] of LibFun
   # Defining scope, kept outside syntax nodes to avoid a semantic dependency in the AST.
   @def_owners : Hash(UInt64, ModuleType)
+  @generated_news : Set(UInt64)
   @primitive_return_types : Hash(UInt64, Type)
   # All unions the program made, keyed by the sorted object ids of their members (hosted program.unions).
   getter unions : Hash(Array(UInt64), Type)
@@ -1443,6 +1444,15 @@ pub class SemanticProgram < NonGenericModuleType
     nil
   end
 
+  def record_generated_new(definition : Def) : Nil
+    @generated_news << definition.node_id
+    nil
+  end
+
+  def generated_new?(definition : Def) : Bool
+    @generated_news.includes?(definition.node_id)
+  end
+
   # Result types carried by generated primitive definitions, independent of written annotations.
   def primitive_return_type(definition : Def) : Type?
     @primitive_return_types[definition.node_id]?
@@ -1594,6 +1604,7 @@ pub class SemanticProgram < NonGenericModuleType
     @const_initializers = [] of Const
     @lib_funs_by_node = Hash(UInt64, LibFun).new
     @def_owners = Hash(UInt64, ModuleType).new
+    @generated_news = Set(UInt64).new
     @primitive_return_types = Hash(UInt64, Type).new
     @unions = Hash(Array(UInt64), Type).new
     @declared_ivars = [] of DeclaredIvar
@@ -3241,6 +3252,7 @@ pub class TopLevelVisitor < Visitor
       new_def.block_arg = node.block_arg
       new_def.visibility = Visibility::Public
       target_type.metaclass.add_def(new_def)
+      @program.record_generated_new(new_def)
       @program.new_expansions << NewExpansion.new(node, new_def, target_type)
     end
 

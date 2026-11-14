@@ -233,6 +233,110 @@ if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
 fi
 
 echo
+echo "== 3a. Generic constructor inference and refusal boundaries"
+for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
+  fixture="$REPO/bench/fixtures/$name.iyi"
+  if ! "$IYI" build --prelude empty --no-debug -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1 ||
+     ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1; then
+    echo "  $name: compilation failed"
+    status=1
+    continue
+  fi
+  timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
+  timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
+  if [ "$hs" -ne 7 ] || [ "$ns" -ne "$hs" ] || ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out"; then
+    echo "  $name: hosted status $hs, native status $ns, or output differs"
+    status=1
+  else
+    echo "  $name: native and hosted status 7, stdout identical"
+  fi
+done
+for name in lowcallwait_uninferred_generic_new lowcallwait_generic_handwritten_make lowcallwait_generic_handwritten_new lowcallwait_generic_default_new; do
+  fixture="$REPO/bench/fixtures/$name.iyi"
+  rm -f "$WORK/$name.native"
+  if IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1 || [ -e "$WORK/$name.native" ]; then
+    echo "  $name: expected refusal without an executable"
+    status=1
+  elif [ "$name" = lowcallwait_uninferred_generic_new ]; then
+    if grep -Fq 'the receiver of new is the uninstantiated generic Hold(T).class: typing has not instantiated the owner' "$WORK/$name.native.log"; then
+      echo "  $name: uninstantiated generic refused without an executable"
+    else
+      echo "  $name: unexpected refusal"
+      status=1
+    fi
+  elif ! grep -Fq 'expected type, got T' "$WORK/$name.native.log"; then
+    echo "  $name: unexpected refusal"
+    status=1
+  else
+    echo "  $name: expected type, got T; no executable"
+  fi
+done
+if "$IYI" build --prelude empty -o "$WORK/uninferred.hosted" "$REPO/bench/fixtures/lowcallwait_uninferred_generic_new.iyi" > "$WORK/uninferred.hosted.log" 2>&1; then
+  echo "  uninferred generic: hosted compiler unexpectedly accepted"
+  status=1
+elif ! grep -Fq 'can'"'"'t infer `T`' "$WORK/uninferred.hosted.log" && ! grep -Fq "can't infer the type parameter T" "$WORK/uninferred.hosted.log"; then
+  echo "  uninferred generic: hosted compiler refused for another reason"
+  status=1
+else
+  echo "  uninferred generic: hosted compiler could not infer T"
+fi
+
+# A mutant that cannot build is invalid, not a caught regression. The marker
+# crosses the mutation helper's subprocess boundary and makes that case red.
+generic_constructor_check() {
+  local name fixture result
+  if ! "$IYI" build -o "$WORK/constructor.check.tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/constructor.check.build.log" 2>&1; then
+    : > "$WORK/constructor.invalid"
+    echo "INVALID MUTANT: constructor compiler did not build"
+    return 0
+  fi
+  for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
+    fixture="$REPO/bench/fixtures/$name.iyi"
+    rm -f "$WORK/constructor.check.exe"
+    IYI_PATH="$REPO/src" "$WORK/constructor.check.tool" "$fixture" -o "$WORK/constructor.check.exe" --pipeline typed > "$WORK/constructor.check.log" 2>&1 || return 1
+    timeout 30 "$WORK/constructor.check.exe" > "$WORK/constructor.check.out" 2>&1; result=$?
+    [ "$result" -eq 7 ] && cmp -s "$WORK/constructor.check.out" "$WORK/$name.hosted.out" || return 1
+  done
+  for name in lowcallwait_generic_handwritten_make lowcallwait_generic_handwritten_new lowcallwait_generic_default_new; do
+    fixture="$REPO/bench/fixtures/$name.iyi"
+    rm -f "$WORK/constructor.check.exe"
+    if IYI_PATH="$REPO/src" "$WORK/constructor.check.tool" "$fixture" -o "$WORK/constructor.check.exe" --pipeline typed > "$WORK/constructor.check.log" 2>&1; then
+      return 1
+    fi
+    [ ! -e "$WORK/constructor.check.exe" ] || return 1
+    grep -Fq 'expected type, got T' "$WORK/constructor.check.log" || return 1
+  done
+}
+
+constructor_prove() {
+  rm -f "$WORK/constructor.invalid"
+  prove_mutation "$@" -- generic_constructor_check
+  local result=$?
+  if [ -e "$WORK/constructor.invalid" ]; then
+    echo "  INVALID MUTANT: compiler did not build (see $WORK/constructor.check.build.log)"
+    return 1
+  fi
+  return "$result"
+}
+
+rm -f "$WORK/constructor.invalid"
+if generic_constructor_check && [ ! -e "$WORK/constructor.invalid" ]; then
+  echo "  constructor mutation baseline passed"
+  constructor_prove "handwritten methods infer class variables" "$REPO/src/compiler/semantic/match.iyi" \
+    '    return nil unless program.generated_new?(definition)' '    nil' || status=1
+  constructor_prove "omitted arguments infer class variables" "$REPO/src/compiler/semantic/match.iyi" \
+    '    return nil unless given == definition.args.size' '    nil' || status=1
+  constructor_prove "lowering ignores the inferred receiver" "$REPO/src/compiler/lower/call.iyi" \
+    '  if recorded = low.analysed.call_receiver?(node)' \
+    '  if recorded = (node.obj.nil? ? low.analysed.call_receiver?(node) : nil)' || status=1
+  constructor_prove "generic struct allocation leaves an address" "$REPO/src/compiler/lower/call.iyi" \
+    '      if passed_by_value?(allocated_type)' '      if passed_by_value?(inst)' || status=1
+else
+  echo "  constructor mutation baseline failed or did not build"
+  status=1
+fi
+
+echo
 echo "== 3b. A recursive call targets the instance still being typed"
 if [ -x "$WORK/compile_native" ]; then
   for fixture in "$REPO"/bench/fixtures/sem_bodies_recursion_mutual.iyi "$REPO"/bench/fixtures/sem_bodies_recursion_state.iyi; do
