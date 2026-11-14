@@ -1012,6 +1012,10 @@ pub class MainVisitor < TypeNodeHost
 
     if node.name == "class"
       if sc = @scope
+        if sc.is_a?(VirtualType)
+          set_type(node, sc.as(VirtualType).metaclass)
+          return false
+        end
         if sc.is_a?(ModuleType)
           set_type(node, sc.as(ModuleType).metaclass)
           return false
@@ -1202,6 +1206,7 @@ pub class MainVisitor < TypeNodeHost
                   else
                     target_scope
                   end
+    target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
     if target_type.is_a?(ModuleType)
       if ivar = target_type.as(ModuleType).lookup_instance_var?(node.name)
         set_type(node, ivar.type)
@@ -1227,6 +1232,7 @@ pub class MainVisitor < TypeNodeHost
                   else
                     target_scope
                   end
+    target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
     if target_type.is_a?(ModuleType)
       if cvar = target_type.as(ModuleType).lookup_class_var?(node.name)
         set_type(node, cvar.type)
@@ -1301,6 +1307,7 @@ pub class MainVisitor < TypeNodeHost
                     else
                       target_scope
                     end
+      target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
       if target_type.is_a?(ModuleType)
         mod_type = target_type.as(ModuleType)
         if ivar = mod_type.lookup_instance_var?(ivar_node.name)
@@ -1340,6 +1347,7 @@ pub class MainVisitor < TypeNodeHost
                     else
                       target_scope
                     end
+      target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
       if target_type.is_a?(ModuleType)
         mod_type = target_type.as(ModuleType)
         if cvar = mod_type.lookup_class_var?(cvar_node.name)
@@ -1456,6 +1464,7 @@ pub class MainVisitor < TypeNodeHost
                       else
                         target_scope
                       end
+        target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
           mod_type.instance_vars[ivar_node.name] = MetaTypeVar.new(ivar_node.name, decl_type, val)
@@ -1472,6 +1481,7 @@ pub class MainVisitor < TypeNodeHost
                       else
                         target_scope
                       end
+        target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
           replace_class_var(mod_type, cvar_node.name, MetaTypeVar.new(cvar_node.name, decl_type, val))
@@ -1496,6 +1506,7 @@ pub class MainVisitor < TypeNodeHost
                       else
                         target_scope
                       end
+        target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
           mod_type.instance_vars[ivar_node.name] = MetaTypeVar.new(ivar_node.name, decl_type, nil)
@@ -1512,6 +1523,7 @@ pub class MainVisitor < TypeNodeHost
                       else
                         target_scope
                       end
+        target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
           replace_class_var(mod_type, cvar_node.name, MetaTypeVar.new(cvar_node.name, decl_type, nil))
