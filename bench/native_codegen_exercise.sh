@@ -430,8 +430,14 @@ check_narrow_call() { check_fixture "$1" narrow_call; }
 check_narrow_i1() { check_fixture "$1" narrow_i1; }
 check_narrow_param() { check_fixture "$1" narrow_param; }
 check_narrow_asm() { check_fixture "$1" narrow_asm; }
+check_narrow_argext() { check_fixture "$1" narrow_argext; }
 
 echo "== 6. mutations are each caught"
+prove_mutation "call: do not zero-extend an attributed narrow argument" \
+  src/compiler/native/aarch64/isel.iyi \
+  '            vals[j] = zext(vals[j], loc.leaf_type)' \
+  '            vals[j] = zext(vals[j], loc.leaf_type) if false' \
+  check_narrow_argext
 prove_mutation "asm: leave a narrow result uncanonicalised" \
   src/compiler/native/aarch64/isel.iyi \
   '      out_regs[k] = canon(out_regs[k], out_types[k])' \
@@ -445,7 +451,7 @@ prove_mutation "cmpxchg: compare the zero-extended exclusive load" \
 prove_mutation "switch: retain the raw narrow case key" \
   src/compiler/native/aarch64/isel.iyi \
   'key = key - span if key >= span // 2_i64' \
-  'key = key' \
+  'key = key - span if false' \
   check_narrow_switch
 prove_mutation "call: leave a narrow result uncanonicalised" \
   src/compiler/native/aarch64/isel.iyi \
