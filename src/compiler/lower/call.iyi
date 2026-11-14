@@ -25,11 +25,12 @@ module compiler/lower/call
 #     analysis recorded for the call (`MainVisitor#lib_call_target`); a NoReturn call is followed by
 #     `unreachable` (hosted `codegen_extern_call` and `codegen_call_or_invoke`).
 #   - external lib-variable getters and setters load and store the declared C global.
+#   - receiverless super uses the dynamic instance self and the recorded defining owner.
 # The argument types are the analysed types of the argument nodes, which is how the
 # analysed program instantiates a def (main_visitor.iyi, type_method_body). A restriction
 # is honoured only when it names the argument's own type.
 #
-# Refused by name, at the call that reaches them (pending.iyi): a call with no receiver inside a class
+# Refused by name, at the call that reaches them (pending.iyi): previous_def, a call with no receiver inside a class
 # method, a call to a method inherited by an implicit self (hosted target_def.owner), a receiver that is a union, a
 # virtual type, nil or a metaclass, a method inherited from a superclass (the hosted owner is the
 # defining type, and the port does not record it), a getter whose body reads an instance variable
@@ -111,6 +112,9 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   # Proc#call's splat is the primitive's argument list, validated against the
   # Proc type by codegen_primitive_proc_call. Other unexpanded calls still refuse.
   primitive = primitive_name(def_node.body)
+  if node.obj.nil? && node.super? && !primitive.nil?
+    pending_visit_node("super to the primitive #{primitive} (hosted call.cr: codegen_primitive with the scope as owner)")
+  end
   if single_dispatch && !primitive.nil?
     pending_visit_node("a primitive dispatched on trait receiver #{single_dispatch.as(DispatchTarget).receiver.full_name} (hosted call.cr: trait dispatch)")
   end
@@ -147,8 +151,11 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     return
   end
 
-  if node.super? || node.previous_def?
-    pending_visit_node("super or previous_def (hosted call.cr: is_super, owner is the scope, match.cr codegen_dispatch)")
+  if node.previous_def?
+    pending_visit_node("previous_def (hosted call.cr: lookup_previous_def_matches)")
+  end
+  if node.obj.nil? && node.super? && low.current_context.vars["self"]?.nil?
+    pending_visit_node("super with no instance self (hosted call.cr:30: a super call's owner is the scope)")
   end
 
   # The receiver is evaluated before the arguments (hosted `prepare_call_args`), and is the callee's self.

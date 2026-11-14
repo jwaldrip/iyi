@@ -46,7 +46,8 @@ import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, Gen
 # not a plain identifier is not ported: the caller refuses such a name. `self_type` is nil for a
 # top-level def. A caller that still passes a metaclass as `self_type` and no `class_owner` is
 # the hosted metaclass owner: the instance type and `::`, not `Owner.class#`.
-pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil, block_type : Type? = nil) : String
+# The recorded defining owner overrides the nearest name match when it lies on the receiver's walk.
+pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil, block_type : Type? = nil, defining : Type? = nil) : String
   text = "*"
   named_self = self_type
   named_class = class_owner
@@ -59,10 +60,10 @@ pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), 
     end
   end
   if co = named_class
-    text = text + owner_segment(co, name, true) + "::"
+    text = text + owner_segment(co, name, true, defining) + "::"
   end
   if st = named_self
-    text = text + owner_segment(st, name, false) + "#"
+    text = text + owner_segment(st, name, false, defining) + "#"
   end
   text = text + name
   if arg_types.size > 0 || block_type
@@ -80,11 +81,14 @@ end
 
 # The receiver's name in a symbol, then `^` and the defining owner when the hosted compiler writes
 # that segment (codegen/ast.cr: original_owner != self_type). A class method compares instance types.
-def owner_segment(receiver : Type, name : String, class_method : Bool) : String
+def owner_segment(receiver : Type, name : String, class_method : Bool, defining : Type? = nil) : String
   shown = owner_spell(receiver)
   start = defining_walk_start(receiver, class_method)
   return shown if start.nil?
   found = defining_type(start.as(Type), name, [] of UInt64)
+  if recorded = defining
+    found = recorded if walk_reaches?(start.as(Type), recorded, [] of UInt64)
+  end
   return shown if found.nil?
   defined = found.as(Type)
   if class_method && defined.is_a?(MetaclassType)
@@ -136,6 +140,18 @@ def defining_walk_start(receiver : Type, class_method : Bool) : Type?
   end
   return receiver if receiver.is_a?(ModuleType)
   nil
+end
+
+def walk_reaches?(start : Type, target : Type, seen : Array(UInt64)) : Bool
+  return true if start.object_id == target.object_id
+  id = start.object_id
+  return false if seen.includes?(id)
+  seen << id
+  return false unless start.is_a?(ModuleType)
+  start.as(ModuleType).parents.each do |parent|
+    return true if walk_reaches?(parent, target, seen)
+  end
+  false
 end
 
 # The first type on the parent walk whose own defs declare *name* (hosted original_owner: the type
@@ -233,7 +249,7 @@ pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types
     block_type = low.analysed.type_of?(block_arg.as(ASTNode))
     raise "BUG: captured block parameter has no type" if block_type.nil?
   end
-  name = mangled_name(target.name, self_type, arg_types, ret, class_owner, block_type)
+  name = mangled_name(target.name, self_type, arg_types, ret, class_owner, block_type, low.analysed.program.def_owner(target))
   if existing = low.module.get_function?(name)
     return existing.as(Function) if fun_emission_done?(low.module, name) || low.emitting[name]?
     low.module.remove_function(existing.as(Function))

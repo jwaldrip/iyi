@@ -537,7 +537,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
             self_for = nil
           end
         end
-        name = mangled_name(d.name, self_for, inst.arg_types, result_t.as(Type), class_owner)
+        name = mangled_name(d.name, self_for, inst.arg_types, result_t.as(Type), class_owner, nil, typed.visitor.program.def_owner(d))
         # A body that is one instance variable is read where the call stands (hosted try_inline_call, call.cr 614; the
         # port's call.iyi 207): the lowering defines its function here only to lower it alone, and no call emits it.
         # Counted as lowered clean above, but not as a function the program defines.

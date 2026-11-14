@@ -274,6 +274,17 @@ pub class DefaultArguments
     wrapper
   end
 
+  # Mirrors wrapper_def's decision to forward rather than retain the original body.
+  def self.forwards?(rec_def : Def, given : Int32) : Bool
+    return false if rec_def.splat_index || rec_def.double_splat || rec_def.block_arg || rec_def.macro_def
+    return false if given >= rec_def.args.size || !supported_count?(rec_def, given, nil)
+    return false if all_magic_from?(rec_def, given)
+    rec_def.args.each do |arg|
+      return false if arg.default_value && arg.restriction
+    end
+    true
+  end
+
   # A copy of an optional node, or nil.
   def self.copy_node(node : ASTNode?) : ASTNode?
     return nil if node.nil?

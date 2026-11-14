@@ -246,6 +246,7 @@ pub class MainVisitor < TypeNodeHost
   property call_target_defs : NodeMap(Def)
   property call_dispatch_targets : NodeMap(Array(DispatchTarget))
   property current_def : Def?
+  property super_barrier : String? = nil
   property current_call_block : Block?
   property current_block_context_vars : Hash(String, Type)?
   property current_yield_nodes : Array(Yield)?
@@ -2278,7 +2279,10 @@ pub class MainVisitor < TypeNodeHost
       @jump_whiles = [] of While
       old_handler_direct_exit = @handler_direct_exit
       @handler_direct_exit = false
+      saved_super_barrier = @super_barrier
+      @super_barrier = "a block"
       blk.body.accept(self)
+      @super_barrier = saved_super_barrier
       @current_type = callee_type
       @jump_block = saved_jump_block
       @jump_whiles = saved_jump_whiles
@@ -2354,7 +2358,10 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Block) : Bool
+    saved_super_barrier = @super_barrier
+    @super_barrier = "a block"
     node.body.accept(self)
+    @super_barrier = saved_super_barrier
     if bt = child_type(node.body)
       set_type(node, bt)
     end
@@ -2617,22 +2624,34 @@ pub class MainVisitor < TypeNodeHost
     target.definition
   end
 
+  def pinned_allows?(pinned : Array(Def)?, candidate : Def) : Bool
+    return true if pinned.nil?
+    pinned.each do |definition|
+      return true if definition.object_id == candidate.object_id
+    end
+    false
+  end
+
   # The overload a call resolves to, or nil when it cannot: strict mode raises
   # the error, total mode records it on the call and returns nil.
-  def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def?
+  def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, pinned : Array(Def)? = nil) : Def?
     i = 0
     while i < args.size
       return nil if child_type(args[i]).nil?
       i = i + 1
     end
 
-    indexer = CallRecalculation.check_tuple_indexer(rec_type, name, args, type_node_system(@program), @current_type)
-    return indexer.as(Def) if indexer.is_a?(Def)
-    return refuse_call(call_node, indexer) if indexer.is_a?(String)
     candidates = [] of Def
-    visited = Set(String).new
-    collect_candidate_defs(rec_type, name, candidates, visited)
-    collect_scope_defs(rec_type, name, candidates, visited) if candidates.empty? && call_node.obj.nil?
+    if pinned
+      candidates = pinned.dup
+    else
+      indexer = CallRecalculation.check_tuple_indexer(rec_type, name, args, type_node_system(@program), @current_type)
+      return indexer.as(Def) if indexer.is_a?(Def)
+      return refuse_call(call_node, indexer) if indexer.is_a?(String)
+      visited = Set(String).new
+      collect_candidate_defs(rec_type, name, candidates, visited)
+      collect_scope_defs(rec_type, name, candidates, visited) if candidates.empty? && call_node.obj.nil?
+    end
     # Hosted method_lookup.cr:253-256: a call with a block matches only a def
     # that yields, and a call without one matches only a def that does not.
     # Array(T).new(size) is the generated initialize new; Array(T).new(size) { }
@@ -2653,6 +2672,9 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if candidates.empty?
+      unless pinned.nil?
+        return refuse_call(call_node, "undefined method '#{name}' for #{rec_type.full_name}")
+      end
       if obj_node = call_node.obj
         obj_t = type_of(obj_node)
         if obj_t.is_a?(UnionType)
@@ -2673,7 +2695,7 @@ pub class MainVisitor < TypeNodeHost
     # argument list; the ordinary positional overload loop cannot resolve *T.
     if candidates.any? { |d| !d.splat_index.nil? }
       if splat_match = match_splat_with_calls(rec_type, name, args, call_node)
-        return splat_match
+        return splat_match if pinned_allows?(pinned, splat_match)
       end
     end
 
@@ -2689,7 +2711,7 @@ pub class MainVisitor < TypeNodeHost
 
     if count_matches.empty?
       if rescued = match_splat_with_calls(rec_type, name, args, call_node)
-        return rescued
+        return rescued if pinned_allows?(pinned, rescued)
       end
       overload_lines = candidates.map { |d| " - #{format_overload_signature(rec_type, d)}" }
       overloads_str = "Overloads are:\n#{overload_lines.join("\n")}"
@@ -2759,7 +2781,7 @@ pub class MainVisitor < TypeNodeHost
     args.each { |arg| arg_types << type_of(arg) }
     signature = CallSignature.new(name, arg_types, nil, call_node.block != nil)
     widened = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args, call_node.iyi_synthetic)
-    if widened.error.nil? && widened.definition
+    if widened.error.nil? && widened.definition && pinned_allows?(pinned, widened.definition.as(Def))
       @matched_call_args[call_node] = widened.arg_types
       return widened.definition
     end
@@ -2862,6 +2884,9 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     key = "#{rec_type.full_name}##{target_def.name}(#{parts.join(",")})"
+    if owner = @program.def_owner(target_def)
+      key = key + "^#{owner.full_name}"
+    end
     if block
       key = key + "&#{block.node_id}"
     end
@@ -3049,7 +3074,10 @@ pub class MainVisitor < TypeNodeHost
                 end
                 @current_type = writer_type
                 enter_file_scope(blk)
+                saved_super_barrier = @super_barrier
+                @super_barrier = "a captured block"
                 blk.body.accept(self)
+                @super_barrier = saved_super_barrier
                 block_type = child_type(blk.body)
                 @vars = saved_vars
                 @current_type = saved_type
@@ -3298,7 +3326,10 @@ pub class MainVisitor < TypeNodeHost
     end
     body = splice_def_body(body.as(ASTNode))
     target_def.body = body.as(ASTNode)
+    saved_super_barrier = @super_barrier
+    @super_barrier = nil
     body.as(ASTNode).accept(self)
+    @super_barrier = saved_super_barrier
     body_type = merge_jump_values(child_type(body.as(ASTNode)), @return_types)
 
     if block && (ctx_vars = @current_block_context_vars)
@@ -3503,7 +3534,10 @@ pub class MainVisitor < TypeNodeHost
     @var_unions = Hash(String, Type).new
     @untyped_locals = Hash(String, String).new
     @while_break_vars = [] of Array(Hash(String, Type))
+    saved_super_barrier = @super_barrier
+    @super_barrier = "a block"
     blk.body.accept(self)
+    @super_barrier = saved_super_barrier
     answered = merge_jump_values(child_type(blk.body), @next_types)
     @vars = saved_vars
     @current_type = saved_current_type
@@ -3829,6 +3863,9 @@ pub class MainVisitor < TypeNodeHost
       arg.accept(self)
     end
     @needs_type_filters = saved_call_ntf
+    if node.obj.nil? && node.name == "super"
+      return visit_super(node)
+    end
     if rec_type.is_a?(LibType)
       return visit_lib_call(node, rec_type.as(LibType))
     end
@@ -3935,6 +3972,83 @@ pub class MainVisitor < TypeNodeHost
         instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)
       end
     end
+    instantiate_call_target(node, rec_type, instance_owner, original_def, trait_receiver)
+  end
+
+  # Hosted super starts at the lexical def owner, but retains the call's dynamic self.
+  def visit_super(node : Call) : Bool
+    target_def = super_target_def(node)
+    return false if target_def.nil?
+    scope = @scope.as(Type)
+    if node.named_args.nil? && node.args.size < target_def.args.size && DefaultArguments.forwards?(target_def, node.args.size)
+      owner = @program.def_owner(target_def).as(Type)
+      refuse_call(node, "not ported: super into #{format_method_display_name(owner, target_def.name)} with omitted defaults that forward to it by a call (hosted call.cr lookup_matches_checking_expansion resolves that call in the original owner)")
+      return false
+    end
+    instantiate_call_target(node, scope, scope, target_def, false)
+  end
+
+  def super_ancestors(owner : ModuleType, result : Array(Type)) : Nil
+    owner.parents.each do |parent|
+      result << parent
+      super_ancestors(parent.as(ModuleType), result) if parent.is_a?(ModuleType)
+    end
+  end
+
+  def super_declares?(owner : ModuleType, name : String) : Bool
+    if definitions = owner.defs[name]?
+      definitions.each do |definition|
+        return true unless CallMatch.yields?(definition)
+      end
+    end
+    false
+  end
+
+  def super_target_def(node : Call) : Def?
+    scope = @scope
+    return refuse_call(node, "there's no superclass in this scope") if scope.nil? || scope.is_a?(SemanticProgram)
+    if barrier = @super_barrier
+      return refuse_call(node, "not ported: super inside #{barrier} (hosted call.cr enclosing_def types it through the enclosing def)")
+    end
+    if node.block || node.block_arg
+      return refuse_call(node, "not ported: super with a block (hosted call.cr lookup_super_matches, lookup_first_def with the block)")
+    end
+    current = @current_def
+    return refuse_call(node, "can't use 'super' outside method") if current.nil?
+    owner = @program.def_owner(current)
+    return refuse_call(node, "not ported: super in #{current.name}, whose defining type is not recorded") if owner.nil?
+    unless owner.is_a?(NonGenericClassType)
+      return refuse_call(node, "not ported: super in a method of #{owner.full_name} (hosted call.cr lookup_super_matches: only a non-generic class owner is ported)")
+    end
+    unless scope.is_a?(NonGenericClassType)
+      return refuse_call(node, "not ported: super with the self #{scope.full_name} (hosted call.cr lookup_super_matches: only a non-generic class self is ported)")
+    end
+    owner_module = owner.as(ModuleType)
+    parents = [] of Type
+    super_ancestors(owner_module, parents)
+    return refuse_call(node, "there's no superclass in this scope") if parents.empty?
+    lookup_in = parents.last
+    parents.each do |parent|
+      unless parent.is_a?(ModuleType)
+        return refuse_call(node, "not ported: super through the generic ancestor #{parent.full_name} (hosted call.cr lookup_super_matches, lookup_first_def)")
+      end
+      if super_declares?(parent.as(ModuleType), current.name)
+        lookup_in = parent
+        break
+      end
+    end
+    candidates = [] of Def
+    if current.name == "initialize"
+      if definitions = lookup_in.as(ModuleType).defs[current.name]?
+        definitions.each { |definition| candidates << definition }
+      end
+    else
+      collect_candidate_defs(lookup_in, current.name, candidates, Set(String).new)
+    end
+    lookup_method_matching(lookup_in, current.name, node.args, node, candidates)
+  end
+
+  def instantiate_call_target(node : Call, rec_type : Type, instance_owner : Type, original_def : Def, trait_receiver : Bool) : Bool
     dkey = def_instance_key(original_def, instance_owner, node)
     expanded = defaults_expand_call(node, original_def)
     return false if expanded.nil?
@@ -4104,6 +4218,7 @@ pub class MainVisitor < TypeNodeHost
     # (hosted main_visitor.cr 1416-1423).
     inner.scope = @scope
     inner.current_def = def_node if def_node.captured_block?
+    inner.super_barrier = "a proc literal"
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(node)

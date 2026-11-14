@@ -109,6 +109,47 @@ if [ "$diverged" -gt 0 ] || [ "$passed" -eq 0 ]; then
   status=1
 fi
 
+super_refusal_checks() {
+  local driver="$1" fixture line rc
+  fixture="$REPO/bench/fixtures/lowcallwait_super_missing.iyi"
+  if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/super_missing" "$fixture" > "$WORK/super_missing.log" 2>&1; then
+    echo "  super missing: hosted unexpectedly accepted"
+    return 1
+  fi
+  line="$(awk '/Error: / { sub(/^.*Error: /, ""); print; exit }' "$WORK/super_missing.log")"
+  case "$line" in
+    *"undefined method 'greet'"*) ;;
+    *) echo "  super missing: unexpected hosted error: $line"; return 1 ;;
+  esac
+  if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/super_missing.out" 2> "$WORK/super_missing.err"; then
+    echo "  super missing: port unexpectedly accepted"
+    return 1
+  fi
+  grep -Fq -- "$line" "$WORK/super_missing.err" || return 1
+
+  fixture="$REPO/bench/fixtures/lowcallwait_super_forwarded_default.iyi"
+  "$IYI" build --prelude empty -o "$WORK/super_default" "$fixture" > "$WORK/super_default.log" 2>&1 || return 1
+  "$WORK/super_default" > "$WORK/super_default.run" 2>&1
+  rc=$?
+  [ "$rc" -eq 3 ] || return 1
+  if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/super_default.out" 2> "$WORK/super_default.err"; then
+    echo "  super default: port unexpectedly accepted"
+    return 1
+  fi
+  grep -Fq 'omitted defaults that forward' "$WORK/super_default.err" || return 1
+
+  fixture="$REPO/bench/fixtures/lowcallwait_previous_def_refused.iyi"
+  if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/previous_def.out" 2> "$WORK/previous_def.err"; then
+    echo "  previous_def: port unexpectedly accepted"
+    return 1
+  fi
+  grep -Fq "'previous_def'" "$WORK/previous_def.err" || return 1
+}
+if ! super_refusal_checks "$WORK/port"; then
+  echo "  super refusal checks failed"
+  status=1
+fi
+
 # An uninstantiated generic receiver is a typing gap, not an owner that lowering
 # may guess. The hosted compiler still accepts the source and emits its module.
 generic_fixture="$REPO/bench/fixtures/lowcallwait_uninstantiated_generic.iyi"
@@ -147,6 +188,11 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
     fi
     timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
     timeout 30 "$WORK/$name" > "$WORK/$name.hosted.out" 2>&1; hs=$?
+    if [ "$name" = lowcall_super ] && [ "$hs" -ne 42 ]; then
+      echo "  $name: hosted status $hs, expected 42"
+      e2e_fail=$((e2e_fail + 1))
+      continue
+    fi
     if [ "$ns" = "$hs" ] && cmp -s "$WORK/$name.native.out" "$WORK/$name.hosted.out"; then
       echo "  $name: native executable runs to the hosted result (status $hs, stdout identical)"
       e2e_pass=$((e2e_pass + 1))
@@ -204,6 +250,34 @@ lower_calls_check() {
   done
   return 0
 }
+
+super_check() {
+  "$IYI" build -o "$WORK/super_mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/super_mut.build.log" 2>&1 || return 1
+  "$WORK/super_mut" lower "$REPO/bench/fixtures/lowcall_super.iyi" "$WORK/lowcall_super.oracle.ll" > "$WORK/super_mut.out" 2> "$WORK/super_mut.err" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/super_mut.out" || return 1
+  super_refusal_checks "$WORK/super_mut"
+}
+if ! super_check; then
+  echo "  super baseline failed; mutations cannot prove coverage"
+  status=1
+else
+  prove_mutation "super uses dynamic scope instead of lexical owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    super_ancestors(owner_module, parents)' '    super_ancestors(scope.as(ModuleType), parents)' -- super_check || status=1
+  prove_mutation "super recursion key loses defining owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '      key = key + "^#{owner.full_name}"' '      key = key' -- super_check || status=1
+  prove_mutation "super symbol loses recorded owner" "$REPO/src/compiler/lower/fun.iyi" \
+    '    found = recorded if walk_reaches?(start.as(Type), recorded, [] of UInt64)' '    found = found if walk_reaches?(start.as(Type), recorded, [] of UInt64)' -- super_check || status=1
+  prove_mutation "bare super stops forwarding arguments" "$REPO/src/compiler/semantic/normalizer.iyi" \
+    '                node.args << Var.new(arg.name)' '                node.args.size' -- super_check || status=1
+  prove_mutation "missing super loses its method diagnostic" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '      unless pinned.nil?' '      unless true' -- super_check || status=1
+  prove_mutation "super types its body with static self" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    instantiate_call_target(node, scope, scope, target_def, false)' '    instantiate_call_target(node, @program.def_owner(target_def).as(Type), @program.def_owner(target_def).as(Type), target_def, false)' -- super_check || status=1
+  prove_mutation "super forwards an omitted default without its guard" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    'DefaultArguments.forwards?(target_def, node.args.size)' 'false && DefaultArguments.forwards?(target_def, node.args.size)' -- super_check || status=1
+  prove_mutation "lowering refuses super as previous_def" "$REPO/src/compiler/lower/call.iyi" \
+    '  if node.previous_def?' '  if node.previous_def? || node.super?' -- super_check || status=1
+fi
 # A mutation is caught only when the unmutated port matches the hosted module: a check that fails on the
 # unmutated tree would "catch" every patch, so the baseline must pass first.
 if ! lower_calls_check; then
@@ -283,7 +357,7 @@ prove_mutation "a return from an inlined def drops its value" "$REPO/src/compile
 prove_mutation "a method's receiver is not passed to the call" "$REPO/src/compiler/lower/call.iyi" \
   "    out << sv.as(Value)" "    out.size" -- lower_calls_check || status=1
 prove_mutation "a method's mangled name has no owner" "$REPO/src/compiler/lower/fun.iyi" \
-  'text = text + owner_segment(st, name, false) + "#"' 'text = text + "#"' -- lower_calls_check || status=1
+  'text = text + owner_segment(st, name, false, defining) + "#"' 'text = text + "#"' -- lower_calls_check || status=1
 prove_mutation "a block call does not bind self in the inlined def" "$REPO/src/compiler/lower/call.iyi" \
   '      frame.vars["self"] = LowerVar.new(sv.as(Value), st, !self_by_pointer?(st))' '      frame.vars.size' -- lower_calls_check || status=1
 prove_mutation "a method's self is not the first parameter" "$REPO/src/compiler/lower/fun.iyi" \
@@ -297,7 +371,7 @@ prove_mutation "a lib call's function type returns nil" "$REPO/src/compiler/lowe
 prove_mutation "a lib call's result is declared as an integer (a pointer result is caught)" "$REPO/src/compiler/lower/call.iyi" \
   'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)' 'fn_type = low.module.types.func(params, low.module.types.int32, lib_fun.varargs?)' -- lower_calls_check || status=1
 prove_mutation "a class method is named with the instance separator (# not ::)" "$REPO/src/compiler/lower/fun.iyi" \
-  'text = text + owner_segment(co, name, true) + "::"' 'text = text + owner_segment(co, name, true) + "#"' -- lower_calls_check || status=1
+  'text = text + owner_segment(co, name, true, defining) + "::"' 'text = text + owner_segment(co, name, true, defining) + "#"' -- lower_calls_check || status=1
 prove_mutation "a stored struct receiver is loaded, not passed by its address" "$REPO/src/compiler/lower/call.iyi" \
   'return nil if lv.already_loaded' 'return nil if true' -- lower_calls_check || status=1
 prove_mutation "an empty (Nop) body is not inlined" "$REPO/src/compiler/lower/call.iyi" \

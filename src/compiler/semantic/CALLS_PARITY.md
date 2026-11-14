@@ -60,7 +60,10 @@ bodies slice, which uses this lookup; the lookup is measured by the calls gate i
    in the port's source. Several prelude overloads are declared inside macro loops, which
    the declarations slice expands (`S1bInlineMacros`); until it lands these are not
    reachable.
-3. **`super` and `previous_def`** (81 and 3 occurrences in `src/compiler/**/*.iyi`).
+3. **`super`** is ported for non-generic class owners and dynamic selves. Named refusals cover
+   blocks, captured blocks, proc literals, calls with blocks, missing recorded owners, non-class
+   or generic owners and selves, generic ancestors, and omitted defaults that forward.
+   **`previous_def`** remains pending.
 4. **`call_error.cr`**: protected calls, named-argument errors, and the suggestions in
    `suggestions.cr`. `restrictions_augmenter.cr` and the rest of `call.cr` follow.
 5. **A restricted splat parameter** (`Array#push(*values : T)` with a restriction): the
