@@ -352,9 +352,6 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
   if node.super? || node.previous_def?
     pending_visit_node("super or previous_def dispatched over #{runtime_type.full_name}")
   end
-  if passed_by_value?(ret)
-    pending_visit_node("a dispatched call returning by value #{ret.full_name}")
-  end
   arg_types = [] of Type
   node.args.each do |arg|
     t = low.analysed.type_of?(arg)
@@ -418,7 +415,7 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
   end
   phi_wants = wants && !ret.is_a?(NilType) && !ret.is_a?(VoidType) && !ret.is_a?(NoReturnType)
   phi_type : IrType? = nil
-  phi_type = low.typer.llvm_type(ret) if phi_wants
+  phi_type = passed_by_value?(ret) ? low.module.types.ptr(0) : low.typer.llvm_type(ret) if phi_wants
   phi = LowerPhi.new(phi_wants, phi_type)
   targets.each do |arm|
     matches = match_type_id(low, runtime_type, arm.receiver, tid)
@@ -442,7 +439,7 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
       if phi_wants
         value = low.last
         raise "BUG: dispatched arm left no value" if value.nil?
-        low.last = upcast(low, value.as(Value), arm.return_type, ret)
+        low.last = passed_by_value?(ret) ? join_pointer(low, value.as(Value), arm.return_type, ret) : upcast(low, value.as(Value), arm.return_type, ret)
       end
       phi.add(low, low.last, false)
     end
