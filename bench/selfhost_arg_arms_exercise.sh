@@ -19,6 +19,16 @@ check_arms() {
 }
 
 check_arms || exit 1
+"$IYI" build -o "$WORK/compiler" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/compiler-build.log" 2>&1 || exit 1
+if [ "$(uname -s)" = Darwin ]; then
+  codesign -v --strict "$WORK/compiler" || exit 1
+fi
+IYI_ARGDISPATCH_TRACE=1 "$WORK/compiler" "$REPO/bench/fixtures/sem_arms_nil_eq.iyi" \
+  -o "$WORK/nil" --pipeline typed --prelude --probe-phase > "$WORK/nil.log" 2>&1 || exit 1
+grep -Fq 'targets=String#==(String);Reference#==(String);Object#==((String | Nil))' "$WORK/nil.log" || exit 1
+IYI_ARGDISPATCH_TRACE=1 "$WORK/compiler" "$REPO/bench/fixtures/sem_arms_path_join.iyi" \
+  -o "$WORK/path" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/path.log" 2>&1 || true
+grep -Fq 'targets=Std::Path::Path#join(String);Std::Path::Path#join(Std::Path::Path)' "$WORK/path.log" || exit 1
 status=0
 prove_mutation 'cover requires a matching arm for each combination' "$REPO/src/compiler/semantic/cover.iyi" \
   '        return true if accepted' '        return false if accepted' -- check_arms || status=1
