@@ -1,0 +1,25 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+abstract class Node
+end
+class A < Node
+end
+class B < Node
+end
+class C < Node
+end
+def choose(flag : Bool) : A | B
+  if flag
+    A.new
+  else
+    B.new
+  end
+end
+def use(flag : Bool)
+  item = C.new
+  item = choose(flag)
+  item
+end
+use(true)
+LibC.exit(9)

@@ -38,6 +38,7 @@ trap restore_codegen EXIT INT TERM
 
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:"$PATH"
 export LIBRARY_PATH=${LIBRARY_PATH:-/opt/homebrew/opt/bdw-gc/lib}
+. bench/lib/native_signature.sh
 
 WASMTIME=${WASMTIME:-$(command -v wasmtime 2>/dev/null || true)}
 if [ -z "$WASMTIME" ] && [ -x /Users/jwaldrip/.wasmtime/bin/wasmtime ]; then
@@ -127,6 +128,10 @@ else
         fail "$f: the darwin oracle does not build"
         continue
       fi
+      if ! native_signature_ok "$WORK/$f.bin"; then
+        fail "$f: invalid darwin oracle signature"
+        continue
+      fi
       "$WORK/$f.bin" >"$WORK/$f.dout" 2>/dev/null
       if ! cmp -s "$WORK/$f.dout" "$FIX/$f.expected"; then
         fail "$f: $FIX/$f.expected is stale against the darwin oracle"
@@ -171,6 +176,11 @@ for f in "$WORK"/cg/*.ir; do
     fi
     if ! "$WORK/cn" "$CG_FIX/$name.ir" -o "$WORK/cg/$name.bin" >"$WORK/cg/$name.dbuild" 2>&1; then
       echo "$name	built, but the darwin oracle does not build" >>"$cg_table"
+      cg_differ=$((cg_differ + 1))
+      continue
+    fi
+    if ! native_signature_ok "$WORK/cg/$name.bin"; then
+      fail "$name: invalid darwin oracle signature"
       cg_differ=$((cg_differ + 1))
       continue
     fi
