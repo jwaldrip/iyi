@@ -209,7 +209,14 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       end
     end
   end
-  if node.obj.nil? && !low.current_context.type.nil?
+  if node.obj.nil? && !node.super?
+    if defining = low.analysed.program.def_owner(def_node)
+      if defining.is_a?(ModuleType) && defining.as(ModuleType).iyi_unit
+        class_owner = defining
+      end
+    end
+  end
+  if node.obj.nil? && class_owner.nil? && !low.current_context.type.nil?
     ct = low.current_context.type.as(Type)
     if low.current_context.vars["self"]?.nil?
       # A non-generic class method has no self argument. An unqualified call to
@@ -351,6 +358,16 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
   end
   if node.super? || node.previous_def?
     pending_visit_node("super or previous_def dispatched over #{runtime_type.full_name}")
+  end
+  if runtime_type.is_a?(VirtualType) && node.args.empty?
+    all_class = true
+    targets.each do |arm|
+      all_class = false unless primitive_name(arm.definition.body) == "class"
+    end
+    if all_class
+      lower_primitive_call(low, node, targets[0].definition)
+      return
+    end
   end
   arg_types = [] of Type
   node.args.each do |arg|

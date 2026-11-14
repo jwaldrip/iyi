@@ -92,6 +92,7 @@ mkdir -p "$work/hosted" "$work/native"
 excluded_reason() {
   case "$1" in
     tls_threads) echo "calls __fixture_run_on_thread, a pthread helper in rt_stub.c (C, outside the native path)" ;;
+    narrow_argext|narrow_call|narrow_param|narrow_signext) echo "calls a C ABI probe helper in rt_stub.c (covered by native_codegen)" ;;
     *) echo "" ;;
   esac
 }

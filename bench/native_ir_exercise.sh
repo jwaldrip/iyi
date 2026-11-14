@@ -249,9 +249,18 @@ prove_mutation() {
   cat "$file" > "$backup"
   cmp -s "$file" "$backup" || { fail "$label: the backup of $file is not the file; nothing was patched"; return; }
   RESTORE+=("$file|$backup")
-  python3 -c 'import sys
+  if ! python3 -c 'import sys
 path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-open(path, "w").write(open(path).read().replace(old, new))' "$file" "$old" "$new"
+with open(path) as source:
+    text = source.read()
+with open(path, "w") as source:
+    source.write(text.replace(old, new))' "$file" "$old" "$new"; then
+    cat "$backup" > "$file"
+    cmp -s "$backup" "$file" || { echo "FAIL: $file WAS NOT RESTORED: what it held is in $backup"; trap - EXIT INT TERM; exit 2; }
+    RESTORE=()
+    fail "$label: could not write the mutation"
+    return
+  fi
   mutant_check "$check" >/dev/null 2>&1
   local caught=$?
   cat "$backup" > "$file"
@@ -429,7 +438,7 @@ echo "== 8. mutations are each caught"
 prove_mutation "layout: offset_of drops its alignment rounding" \
   src/compiler/ir/layout.iyi \
   'off = ((off + a - 1) // a) * a' \
-  'off = off' \
+  'off = off + 0' \
   struct_check
 prove_mutation "layout: an integer wider than 64 bits is 8-byte aligned, not 16" \
   src/compiler/ir/layout.iyi \

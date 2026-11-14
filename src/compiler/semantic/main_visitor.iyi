@@ -21,6 +21,7 @@ import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system, type_node_metaclass}
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries, NamedTupleInstanceType, TupleInstanceType, VirtualType}
+import compiler/types/types::{GenericModuleInstanceType}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/intersect::{TypeIntersect}
 import compiler/types/indirection::{TypeIndirection}
@@ -28,6 +29,9 @@ import compiler/types/restrictions::{TypeRestrictions}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature, CallMatch}
+import compiler/semantic/match::{Match, NumericAutocast}
+import compiler/semantic/method_lookup::{ArmWalk, Matches, MethodLookup}
+import compiler/semantic/cover::{CallCover}
 import compiler/semantic/call::{CallRecalculation}
 import compiler/semantic/new::{define_new_methods}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
@@ -2809,9 +2813,231 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  def trace_arg_dispatch(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, shortcut : Def?) : Nil
+    return nil unless ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
+    interesting = false
+    args.each do |arg|
+      if arg_type = child_type(arg)
+        if arg_type.is_a?(UnionType) || arg_type.is_a?(VirtualType) || arg_type.is_a?(NonGenericModuleType) || arg_type.is_a?(TraitType)
+          interesting = true
+        end
+      end
+    end
+    return nil unless interesting
+    found = lookup_call_arms(rec_type, rec_type, name, args, call_node, ArmWalk::Parents)
+    location = call_node.location
+    site = location.nil? ? "<generated>:0" : "#{location.as(Location).filename}:#{location.as(Location).line_number}"
+    first_diff = false
+    unless found.matches.empty?
+      first_diff = shortcut.nil? || shortcut.as(Def).object_id != found.matches[0].definition.object_id
+    end
+    shortcut_name = shortcut.nil? ? "<none>" : format_overload_signature(rec_type, shortcut.as(Def))
+    arm_names = [] of String
+    found.matches.each do |match|
+      arm_names << "#{match.defining.full_name}##{match.definition.name}(#{match.arg_types.map(&.full_name).join(",")})"
+    end
+    STDERR.puts "argdispatch #{site} #{name} arms=#{found.matches.size} first-diff=#{first_diff} shortcut=#{shortcut_name} targets=#{arm_names.join(";")}"
+    nil
+  end
+
+  # Hosted method_lookup.cr:71-108 and 217-243: retain a separate level for
+  # each owner so cover and module stopping happen at the same boundaries.
+  def collect_arm_levels(type : Type, name : String, walk : ArmWalk, levels : Array(Type), visited : Set(String)) : Nil
+    actual = type
+    actual = actual.as(VirtualType).base_type if actual.is_a?(VirtualType)
+    actual = actual.as(GenericInstanceType).generic_type if actual.is_a?(GenericInstanceType)
+    return nil unless actual.is_a?(ModuleType)
+    mod = actual.as(ModuleType)
+    return nil if visited.includes?(mod.full_name)
+    visited.add(mod.full_name)
+    levels << mod
+    return nil unless MethodLookup.walks_parents?(mod, name)
+    if walk == ArmWalk::Modules
+      mod.parents.each do |parent|
+        break unless parent.is_a?(NonGenericModuleType) || parent.is_a?(GenericModuleType) || parent.is_a?(GenericModuleInstanceType) || parent.is_a?(TraitType)
+        collect_arm_levels(parent, name, walk, levels, visited)
+      end
+    else
+      mod.parents.each { |parent| collect_arm_levels(parent, name, walk, levels, visited) }
+    end
+    nil
+  end
+
+  def lookup_call_arms(lookup_in : Type, owner : Type, name : String, args : Array(ASTNode), call_node : Call, walk : ArmWalk, infer_class_vars : Bool = false) : Matches
+    arg_types = [] of Type
+    args.each do |arg|
+      found = child_type(arg)
+      return Matches.new([] of Match, false, "argument has no analysed type") if found.nil?
+      arg_types << found.as(Type)
+    end
+    indexer = CallRecalculation.check_tuple_indexer(lookup_in, name, args, type_node_system(@program), @current_type)
+    if indexer.is_a?(String)
+      return Matches.new([] of Match, false, indexer.as(String))
+    end
+    if indexer.is_a?(Def)
+      definition = indexer.as(Def)
+      defining = @program.def_owner(definition) || @current_type
+      return Matches.new([Match.new(definition, arg_types, owner, defining, true)], true)
+    end
+    named_types : Array(NamedArgumentType)? = nil
+    if named = call_node.named_args
+      collected = [] of NamedArgumentType
+      named.each do |arg|
+        found = child_type(arg.value)
+        return Matches.new([] of Match, false, "named argument has no analysed type") if found.nil?
+        collected << NamedArgumentType.new(arg.name, found.as(Type))
+      end
+      named_types = collected
+    end
+    signature = CallSignature.new(name, arg_types, named_types, !call_node.block.nil?)
+    signature.infer_class_vars = infer_class_vars
+    levels = [] of Type
+    collect_arm_levels(lookup_in, name, walk, levels, Set(String).new)
+    if call_node.obj.nil?
+      has_candidates = false
+      levels.each do |level|
+        if level.is_a?(ModuleType) && MethodLookup.own_defs(level.as(ModuleType), name)
+          has_candidates = true
+        end
+      end
+      unless has_candidates
+        scoped = [] of Def
+        collect_scope_defs(lookup_in, name, scoped, Set(String).new)
+        unless scoped.empty?
+          if scope_owner = @program.def_owner(scoped[0])
+            owner = scope_owner
+            levels << scope_owner
+          end
+        end
+      end
+    end
+    found = lookup_arm_levels(levels, owner, name, args, call_node, walk, signature)
+    return found if found.error || !found.empty? || !NumericAutocast.any?(args, arg_types)
+    signature.autocast_nodes = args
+    widened = lookup_arm_levels(levels, owner, name, args, call_node, walk, signature)
+    signature.autocast_nodes = nil
+    if widened.matches.size > 1
+      value = "0"
+      args.each do |arg|
+        if arg.is_a?(NumberLiteral)
+          value = arg.as(NumberLiteral).value
+          break
+        end
+      end
+      names = [] of String
+      widened.matches.each do |match|
+        unless match.declared.empty?
+          text = match.declared[0].to_s
+          names << text unless names.includes?(text)
+        end
+      end
+      return Matches.new([] of Match, false, NumericAutocast.ambiguity(value, names))
+    end
+    widened
+  end
+
+  def arm_comparison_type(definition : Def, restriction : ASTNode, owner : Type, bound : Hash(String, Type)?) : Type
+    old_imports = @program.current_imports
+    old_defs = @program.current_import_defs
+    old_type = @current_type
+    if defining = @program.def_owner(definition)
+      @current_type = defining
+    end
+    enter_file_scope(definition)
+    result = comparison_restriction(restriction, owner, bound)
+    @current_type = old_type
+    @program.current_imports = old_imports
+    @program.current_import_defs = old_defs
+    result
+  end
+
+  def arm_more_specific?(first : Def, second : Def, args : Array(ASTNode), owner : Type) : Bool
+    return false if first.splat_index && !second.splat_index
+    return true if second.splat_index && !first.splat_index
+    if a = first.splat_index
+      if b = second.splat_index
+        return a.as(Int32) > b.as(Int32) if a != b
+      end
+    end
+    types = [] of Type
+    args.each { |arg| types << type_of(arg) }
+    bound1 = FreeBindings.of_def(first, types, type_node_system(@program))
+    bound2 = FreeBindings.of_def(second, types, type_node_system(@program))
+    strict = false
+    i = 0
+    while i < args.size && i < first.args.size && i < second.args.size
+      break if first.splat_index == i || second.splat_index == i
+      t1 : Type = @program.object_type
+      t2 : Type = @program.object_type
+      if r1 = first.args[i].restriction
+        t1 = arm_comparison_type(first, r1, owner, bound1)
+      end
+      if r2 = second.args[i].restriction
+        t2 = arm_comparison_type(second, r2, owner, bound2)
+      end
+      return false unless t1.subtype_of?(t2)
+      strict = true if t1 != t2
+      i += 1
+    end
+    strict
+  end
+
+  def lookup_arm_levels(levels : Array(Type), owner : Type, name : String, args : Array(ASTNode), call_node : Call, walk : ArmWalk, signature : CallSignature) : Matches
+    matches = [] of Match
+    first_error : String? = nil
+    levels.each do |level|
+      next unless level.is_a?(ModuleType)
+      mod = level.as(ModuleType)
+      defs = MethodLookup.own_defs(mod, name)
+      next if defs.nil?
+      ordered = [] of Def
+      defs.as(Array(Def)).each do |definition|
+        next if definition.abstract
+        next unless CallMatch.yields?(definition) == !call_node.block.nil?
+        if call_node.named_args.nil? && definition.splat_index.nil?
+          next if args.size < min_args_count(definition) || args.size > definition.args.size
+        end
+        at = 0
+        while at < ordered.size && !arm_more_specific?(definition, ordered[at], args, owner)
+          at += 1
+        end
+        ordered.insert(at, definition)
+      end
+      level_start = matches.size
+      ordered.each do |definition|
+        old_imports = @program.current_imports
+        old_defs = @program.current_import_defs
+        old_type = @current_type
+        defining = @program.def_owner(definition) || mod
+        @current_type = defining
+        enter_file_scope(definition)
+        attempt = CallMatch.attempt(type_node_system(@program), signature, definition, owner, defining)
+        @current_type = old_type
+        @program.current_imports = old_imports
+        @program.current_import_defs = old_defs
+        if error = attempt.error
+          first_error = error if first_error.nil?
+        elsif match = attempt.match
+          matches << match
+          return Matches.new(matches, true) if match.exact
+        end
+      end
+      return Matches.new(matches, CallCover.all?(signature, matches)) if walk == ArmWalk::Modules && matches.size > level_start
+      return Matches.new(matches, true) if CallCover.all?(signature, matches)
+    end
+    return Matches.new(matches, false, first_error) if matches.empty? && first_error
+    Matches.new(matches, CallCover.all?(signature, matches))
+  end
+
   # The overload a call resolves to, or nil when it cannot: strict mode raises
   # the error, total mode records it on the call and returns nil.
   def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, pinned : Array(Def)? = nil, infer_class_vars : Bool = false) : Def?
+    result = lookup_method_matching_impl(rec_type, name, args, call_node, pinned, infer_class_vars)
+    trace_arg_dispatch(rec_type, name, args, call_node, result)
+    result
+  end
+
+  def lookup_method_matching_impl(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, pinned : Array(Def)? = nil, infer_class_vars : Bool = false) : Def?
     i = 0
     while i < args.size
       return nil if child_type(args[i]).nil?
@@ -2959,7 +3185,9 @@ pub class MainVisitor < TypeNodeHost
 
     if exact_matches.size > 0
       most_specific = filter_most_specific_overloads(exact_matches, args, rec_type)
-      return most_specific.first
+      selected = most_specific.first
+      @matched_call_args.delete(call_node)
+      return selected
     end
 
     # The shared matcher handles splats, free variables and numeric widening
@@ -2983,6 +3211,27 @@ pub class MainVisitor < TypeNodeHost
     end
 
     # 4. Error reporting for no matching overload
+    refuse_uncovered_with_defs(call_node, rec_type, name, args, count_matches)
+  end
+
+  def refuse_uncovered(call_node : Call, rec_type : Type, name : String, args : Array(ASTNode)) : Nil
+    candidates = [] of Def
+    visited = Set(String).new
+    collect_candidate_defs(rec_type, name, candidates, visited)
+    if candidates.empty? && call_node.obj.nil?
+      collect_scope_defs(rec_type, name, candidates, visited)
+    end
+    count_matches = [] of Def
+    candidates.each do |definition|
+      if args.size >= min_args_count(definition) && args.size <= definition.args.size
+        count_matches << definition
+      end
+    end
+    refuse_uncovered_with_defs(call_node, rec_type, name, args, count_matches)
+    nil
+  end
+
+  def refuse_uncovered_with_defs(call_node : Call, rec_type : Type, name : String, args : Array(ASTNode), count_matches : Array(Def)) : Nil
     all_same_mismatch = true
     mismatch_idx = -1
     count_matches.each do |d|
@@ -3098,7 +3347,11 @@ pub class MainVisitor < TypeNodeHost
       parts << at.full_name
       i = i + 1
     end
-    key = "#{origin.node_id}|#{rec_type.full_name}(#{parts.join(",")})"
+    key_owner = rec_type
+    if owner = @program.def_owner(origin)
+      key_owner = owner if owner.iyi_unit
+    end
+    key = "#{origin.node_id}|#{key_owner.full_name}(#{parts.join(",")})"
     if blk = block
       key = key + "&#{blk.node_id}"
     end
@@ -3601,7 +3854,14 @@ pub class MainVisitor < TypeNodeHost
     @jump_whiles = saved_jump_whiles
     @typing_stack.pop
 
-    return nil unless params_typed
+    unless params_typed
+      if call = call_node
+        refuse(call, "cannot bind instantiated parameters of '#{target_def.name}'")
+      elsif report_site = site
+        refuse(report_site, "cannot bind instantiated parameters of '#{target_def.name}'")
+      end
+      return nil
+    end
     bt = body_type
     # A body that cannot be typed (its refusal is recorded on the body's own nodes)
     # still leaves a call its declared return type, as the oracle types it
@@ -4113,6 +4373,13 @@ pub class MainVisitor < TypeNodeHost
       if ot = child_type(obj)
         rec_type = ot
       else
+        # Total analysis still records independent argument nodes when the
+        # receiver cannot be typed. The call itself remains unresolved.
+        if @total
+          node.args.each do |arg|
+            arg.accept(self)
+          end
+        end
         @needs_type_filters = saved_call_ntf
         @type_filters = nil
         return false

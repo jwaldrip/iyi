@@ -59,6 +59,9 @@ for pair in 'parser:src/compiler/tools/parse.iyi' 'exercise:bench/selfhost_parse
     printf '%s\n' "$file" >"$case_dir/input.txt"
     args=(); [ -n "$file" ] && args=("$file")
     for impl in hosted bridge; do
+      if [ "$impl" = bridge ] && ! codesign -v --strict "$dir/bridge" >"$dir/bridge-sign.log" 2>&1; then
+        printf 'FAIL %s bridge signature (%s)\n' "$name" "$dir" | tee -a "$work/report.txt"; exit 1
+      fi
       perl -e 'alarm 30; exec @ARGV or exit 127' -- "$dir/$impl" "${args[@]}" >"$case_dir/$impl.out" 2>"$case_dir/$impl.err" </dev/null
       printf '%s\n' "$?" >"$case_dir/$impl.status"
     done
@@ -69,6 +72,9 @@ for pair in 'parser:src/compiler/tools/parse.iyi' 'exercise:bench/selfhost_parse
       printf 'DIFFER %s %s (%s)\n' "$name" "${file:-<no-argument>}" "$case_dir" | tee -a "$work/report.txt"
     fi
     if [ "$typed" -eq 1 ]; then
+      if ! codesign -v --strict "$dir/typed" >"$dir/typed-sign.log" 2>&1; then
+        printf 'FAIL %s typed signature (%s)\n' "$name" "$dir" | tee -a "$work/report.txt"; exit 1
+      fi
       perl -e 'alarm 30; exec @ARGV or exit 127' -- "$dir/typed" "${args[@]}" >"$case_dir/typed.out" 2>"$case_dir/typed.err" </dev/null
       printf '%s\n' "$?" >"$case_dir/typed.status"
       if [ "$( <"$case_dir/typed.status")" = 142 ] || ! cmp -s "$case_dir/hosted.status" "$case_dir/typed.status" || ! cmp -s "$case_dir/hosted.out" "$case_dir/typed.out" || ! cmp -s "$case_dir/hosted.err" "$case_dir/typed.err"; then

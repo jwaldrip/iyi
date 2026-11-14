@@ -578,7 +578,11 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
     lhs = low.builder.ptr_to_int(values[0], low.typer.size_t)
     rhs = low.builder.ptr_to_int(values[1], low.typer.size_t)
     bytes = low.builder.sub(lhs, rhs)
-    low.last = low.builder.exact_sdiv(bytes, sizeof_expr(low, low.typer.llvm_embedded_type(elem)))
+    zero = low.builder.const_null_pointer
+    one = low.builder.const_int(low.module.types.int32, 1_i64)
+    offset = low.builder.const_gep(low.typer.llvm_embedded_type(elem), zero, [one] of Value, true)
+    size = low.builder.const_cast(Op::PtrToInt, offset, low.typer.size_t)
+    low.last = low.builder.exact_sdiv(bytes, size)
     return
   end
   if name == "pointer_realloc"

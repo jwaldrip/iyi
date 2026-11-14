@@ -2,7 +2,7 @@
 # A count may only rise. Raise with: TYPED_PARITY_RAISE=1 bash bench/selfhost_typed_parity_exercise.sh
 samples/iyi/basics.iyi 40
 samples/iyi/calc.iyi 16
-samples/iyi/collections.iyi 62
+samples/iyi/collections.iyi 75
 samples/iyi/config.iyi 20
 samples/iyi/cores.iyi 19
 samples/iyi/derive.iyi 23
@@ -14,7 +14,7 @@ samples/iyi/formatting.iyi 33
 samples/iyi/generics.iyi 52
 samples/iyi/grid.iyi 19
 samples/iyi/hello.iyi 27
-samples/iyi/immutable.iyi 45
+samples/iyi/immutable.iyi 51
 samples/iyi/init_order.iyi 5
 samples/iyi/inventory.iyi 9
 samples/iyi/io.iyi 13
@@ -22,11 +22,11 @@ samples/iyi/modules.iyi 14
 samples/iyi/sessions.iyi 32
 samples/iyi/shapes.iyi 21
 samples/iyi/socket.iyi 18
-samples/iyi/std_iterator.iyi 29
+samples/iyi/std_iterator.iyi 34
 samples/iyi/std_text.iyi 28
 samples/iyi/std_time.iyi 36
 samples/iyi/visited.iyi 11
-samples/iyi/webapp.iyi 27
+samples/iyi/webapp.iyi 28
 samples/iyi/workers.iyi 13
 src/compiler/artifact/iyimod.iyi 206
 src/compiler/backend/backend.iyi 11

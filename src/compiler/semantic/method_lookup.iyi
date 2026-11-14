@@ -6,6 +6,11 @@ import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassIns
 import compiler/types/type_system::{TypeSystem}
 import compiler/semantic/match::{CallMatch, CallSignature, Match, NumericAutocast}
 
+pub enum ArmWalk
+  Parents
+  Modules
+end
+
 # The matches of a lookup, in the hosted order. *cover_all* says the first match
 # accepts every argument combination (an exact match, which ends the lookup
 # unless every overload is analysed). *error* is set when a restriction does not
