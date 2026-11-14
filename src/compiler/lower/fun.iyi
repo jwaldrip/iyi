@@ -37,7 +37,7 @@ import compiler/lower/typer::{passed_by_value?}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/rendering::{TypeRenderer}
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, MetaclassType, ModuleType, NilType, NoReturnType, Type, VoidType}
-import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceType, PointerInstanceType}
+import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceType, PointerInstanceType, VirtualType}
 
 # The hosted `Def#mangled_name` (codegen/ast.cr:13-31): `*`, then for a method the receiver's
 # name, `^` and the defining owner when that owner is not the receiver, then `#` (or `::` for a
@@ -83,6 +83,11 @@ end
 # that segment (codegen/ast.cr: original_owner != self_type). A class method compares instance types.
 def owner_segment(receiver : Type, name : String, class_method : Bool, defining : Type? = nil) : String
   shown = owner_spell(receiver)
+  if class_method && receiver.is_a?(ModuleType) && receiver.as(ModuleType).iyi_unit
+    if recorded = defining
+      return shown + "^" + owner_spell(recorded) if recorded.object_id == receiver.object_id
+    end
+  end
   start = defining_walk_start(receiver, class_method)
   return shown if start.nil?
   found : Type? = nil
@@ -120,6 +125,9 @@ end
 # type, not on the instance (method_lookup.iyi lookup_receiver). Starting on the instance would
 # see the delegated defs and omit `^`.
 def defining_walk_start(receiver : Type, class_method : Bool) : Type?
+  if receiver.is_a?(VirtualType)
+    return defining_walk_start(receiver.as(VirtualType).base_type, class_method)
+  end
   if class_method
     if receiver.is_a?(GenericClassInstanceType)
       generic = receiver.as(GenericClassInstanceType).generic_type
@@ -252,6 +260,12 @@ pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types
   end
   name = mangled_name(target.name, self_type, arg_types, ret, class_owner, block_type, low.analysed.program.def_owner(target))
   if existing = low.module.get_function?(name)
+    expected = arg_types.size
+    expected += 1 unless self_type.nil?
+    expected += 1 unless block_type.nil?
+    if existing.as(Function).function_type.params.size != expected
+      raise "BUG: incompatible arity reusing #{name}"
+    end
     return existing.as(Function) if fun_emission_done?(low.module, name) || low.emitting[name]?
     low.module.remove_function(existing.as(Function))
     clear_fun_emission_done(low.module, name)

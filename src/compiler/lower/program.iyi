@@ -25,6 +25,7 @@ module compiler/lower/program
 
 import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Primitive, Arg, Path, Annotation, StringLiteral, InstanceVar, And, Assign, Call, Case, ClassVar, If, Not, Or, Unless, Var, While}
 import compiler/semantic/top_level::{LibType, MetaclassType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
+import compiler/types/types::{GenericClassInstanceMetaclassType}
 import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance, node_class_name}
 import compiler/semantic/match::{YieldFinder}
 import compiler/syntax/visitor::{Visitor}
@@ -532,7 +533,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
         self_for = inst.self_type
         class_owner : Type? = nil
         if st = self_for
-          if st.is_a?(MetaclassType)
+          if st.is_a?(MetaclassType) && !st.is_a?(GenericClassInstanceMetaclassType)
             class_owner = st.as(MetaclassType).instance_type
             self_for = nil
           end

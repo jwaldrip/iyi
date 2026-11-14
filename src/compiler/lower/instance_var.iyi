@@ -25,7 +25,7 @@ import compiler/ir/values::{Value}
 import compiler/ir/function::{Global}
 import compiler/ir/types::{IrType}
 import compiler/semantic/top_level::{ClassType, NilType, Type, MetaTypeVar}
-import compiler/types/types::{GenericClassInstanceType}
+import compiler/types/types::{GenericClassInstanceType, VirtualType}
 import compiler/syntax/ast::{ASTNode, Var}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/typer::{passed_by_value?}
@@ -46,6 +46,9 @@ end
 
 # The instance variables of a class or a generic class instance (hosted all_instance_vars), or nil for any other owner.
 pub def owner_instance_vars(owner : Type) : Hash(String, MetaTypeVar)?
+  if owner.is_a?(VirtualType)
+    return owner_instance_vars(owner.as(VirtualType).base_type)
+  end
   if owner.is_a?(ClassType)
     return owner.as(ClassType).all_instance_vars
   end
@@ -57,6 +60,9 @@ end
 
 # Whether the owner is a struct (hosted struct?). A generic class instance answers for itself.
 pub def owner_struct?(owner : Type) : Bool
+  if owner.is_a?(VirtualType)
+    return owner_struct?(owner.as(VirtualType).base_type)
+  end
   if owner.is_a?(GenericClassInstanceType)
     return owner.as(GenericClassInstanceType).struct?
   end
@@ -125,6 +131,9 @@ end
 # The hosted `instance_var_ptr`: the address of an instance variable of `owner`, from the pointer to
 # the owner's storage (the object for a class, the struct for a struct self).
 pub def instance_var_pointer(low : Lowerer, owner : Type, name : String, pointer : Value) : Value
+  if owner.is_a?(VirtualType)
+    owner = owner.as(VirtualType).base_type
+  end
   instance_var_type(owner, name)
   index = instance_var_index(owner, name)
   # Hosted `instance_var_ptr`: under Crystal's layout a class's type id is an i32 in front of its fields.

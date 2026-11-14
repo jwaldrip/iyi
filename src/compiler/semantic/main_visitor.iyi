@@ -870,6 +870,16 @@ pub class MainVisitor < TypeNodeHost
     @in_type_args = @in_type_args - 1
     set_type(node, @program.bool_type)
     @type_filters = nil
+    if node.const.is_a?(Path)
+      if resolved = @program.lookup_type_path?(node.const.as(Path), @current_type)
+        if resolved.const?
+          comparison = Call.new(node.const.clone, "===", [node.obj.clone] of ASTNode)
+          comparison.accept(self)
+          @expansions[node] = comparison
+          return false
+        end
+      end
+    end
     if needs_type_filters?
       is_const = false
       if node.const.is_a?(Path)
@@ -4230,6 +4240,7 @@ pub class MainVisitor < TypeNodeHost
     ot = child_type(node.obj)
     return false if ot.nil?
     owner : Type = ot.as(Type)
+    owner = owner.as(VirtualType).base_type if owner.is_a?(VirtualType)
     if owner.is_a?(ModuleType)
       if ivar = owner.as(ModuleType).lookup_instance_var?(node.name)
         set_type(node, ivar.type)
