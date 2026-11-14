@@ -111,11 +111,12 @@ pub class LowerTypeIds
       put(type, id, id)
       return id
     end
-    # A generic class takes its non-unbound instantiated types and its subclasses (hosted
-    # `assign_id_impl(GenericClassType)`). The port's instantiated list holds bound types only.
+    # A generic class takes its bound instantiated types and its subclasses
+    # (hosted assign_id_impl(GenericClassType), llvm_id.cr:91-94).
     if type.is_a?(GenericClassType)
       subtypes = [] of Type
       type.as(GenericClassType).instantiated_types.each do |instance|
+        next if TypeQueries.unbound?(instance)
         subtypes << instance
       end
       subclasses_of(type).each do |sub|
@@ -177,6 +178,7 @@ pub class LowerTypeIds
       # A generic class also walks its instantiated types (hosted `assign_id_to_metaclass(GenericClassType)`).
       if type.is_a?(GenericClassType)
         type.as(GenericClassType).instantiated_types.each do |instance|
+          next if TypeQueries.unbound?(instance)
           assign_metaclass_id(instance)
         end
       end

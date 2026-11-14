@@ -1044,7 +1044,7 @@ pub class TypeQueries
   # of its arguments is; a virtual type is unbound when its base is. Anything else
   # is bound.
   def self.unbound?(type : Type) : Bool
-    if type.is_a?(TypeParameter)
+    if type.is_a?(TypeParameter) || type.is_a?(TypeParameterType)
       return true
     end
     if type.is_a?(VirtualType)
