@@ -3206,9 +3206,9 @@ pub class MainVisitor < TypeNodeHost
 
     if rt = target_def.return_type
       declared_ret = lookup_def_return(rt, rec_type, target_def)
-      # A Nil annotation discards the body's value; a body that never returns
-      # still gives the def NoReturn (hosted bindings.cr Def#map_type).
-      if declared_ret.nil_type? && bt.is_a?(NoReturnType)
+      # A non-returning body retains an error contract, but otherwise gives the
+      # def NoReturn (hosted bindings.cr Def#map_type).
+      if bt.is_a?(NoReturnType) && !error_contract?(declared_ret)
         set_type(target_def, bt)
         remember_def_instance(cache_key, target_def, bt)
         return bt
@@ -3329,6 +3329,15 @@ pub class MainVisitor < TypeNodeHost
   # The lib call record of a call on a lib (see visit_lib_call), or nil.
   def lib_call_target(node : Call) : LibCallTarget?
     @lib_call_targets[node]?
+  end
+
+  # Hosted Type#error? checks the declared members against the builtin Error.
+  # All sources in this port are iyi, so the hosted iyi_written? condition holds.
+  def error_contract?(declared : Type) : Bool
+    error = @program.types["Error"]?
+    return false if error.nil?
+    members = declared.is_a?(UnionType) ? declared.as(UnionType).union_types : [declared]
+    members.any? { |m| m.implements?(error.as(Type)) }
   end
 
   # The type of a body, block or call with the values its jumps carry merged in (hosted: `return`
