@@ -253,7 +253,7 @@ lower_calls_check() {
 
 super_check() {
   if ! "$IYI" build -o "$WORK/super_mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/super_mut.build.log" 2>&1; then
-    touch "$WORK/super.invalid"
+    cat "$WORK/super_mut.build.log" > "$WORK/super.invalid"
     return 1
   fi
   "$WORK/super_mut" lower "$REPO/bench/fixtures/lowcall_super.iyi" "$WORK/lowcall_super.oracle.ll" > "$WORK/super_mut.out" 2> "$WORK/super_mut.err" || return 1
@@ -285,7 +285,7 @@ else
 fi
 if [ -e "$WORK/super.invalid" ]; then
   echo "  FAIL: a super mutation did not compile; no behavioral detection was proved"
-  cat "$WORK/super_mut.build.log"
+  cat "$WORK/super.invalid"
   status=1
 fi
 # A mutation is caught only when the unmutated port matches the hosted module: a check that fails on the
@@ -382,8 +382,8 @@ prove_mutation "a lib call's result is declared as an integer (a pointer result 
   'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)' 'fn_type = low.module.types.func(params, low.module.types.int32, lib_fun.varargs?)' -- lower_calls_check || status=1
 prove_mutation "a class method is named with the instance separator (# not ::)" "$REPO/src/compiler/lower/fun.iyi" \
   'text = text + owner_segment(co, name, true, defining) + "::"' 'text = text + owner_segment(co, name, true, defining) + "#"' -- lower_calls_check || status=1
-prove_mutation "a stored struct receiver is loaded, not passed by its address" "$REPO/src/compiler/lower/call.iyi" \
-  'return nil if lv.already_loaded' 'return nil if true' -- lower_calls_check || status=1
+prove_mutation "a stored struct receiver is passed by value instead of address" "$REPO/src/compiler/lower/instance_var.iyi" \
+  '  passed_by_value?(s)' '  false' -- lower_calls_check || status=1
 prove_mutation "an empty (Nop) body is not inlined" "$REPO/src/compiler/lower/call.iyi" \
   'body.is_a?(Nop) || body.is_a?(NilLiteral)' 'body.is_a?(NilLiteral)' -- lower_calls_check || status=1
 prove_mutation "a def is emitted with the C calling convention (a struct result is then refused)" "$REPO/src/compiler/lower/fun.iyi" \
@@ -465,8 +465,8 @@ if ! generic_frame_check; then
 fi
 echo "  generic class-method context lowers a receiverless new"
 prove_mutation "a generic class method drops its metaclass context" "$REPO/src/compiler/lower/fun.iyi" \
-  '        ctx_type = co.as(GenericClassInstanceType).metaclass' \
-  '        ctx_type = co' -- generic_frame_check || status=1
+  '      return owner.as(GenericClassInstanceType).metaclass' \
+  '      return owner' -- generic_frame_check || status=1
 prove_mutation "a receiverless call in a generic class method is treated as builtin" "$REPO/src/compiler/lower/call.iyi" \
   '      elsif class_meta = receiverless_class_metaclass(ct)' \
   '      elsif class_meta = nil' -- generic_frame_check || status=1
