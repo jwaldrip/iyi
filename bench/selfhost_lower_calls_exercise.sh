@@ -664,7 +664,7 @@ prove_mutation "an inherited dispatch arm loses its defining owner" "$REPO/src/c
 prove_mutation "a nil receiver is not accepted" "$REPO/src/compiler/lower/call.iyi" \
   '  return owner if owner.is_a?(NilType)' '  pending_visit_node("nil receiver") if owner.is_a?(NilType)' -- lower_calls_check || status=1
 prove_mutation "an aggregate dispatch argument remains a pointer" "$REPO/src/compiler/lower/call.iyi" \
-  '    passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?' '    passed = passed' -- lower_calls_check || status=1
+  '      passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?' '      passed = values[i]' -- lower_calls_check || status=1
 prove_mutation "a nil block call collects its body value" "$REPO/src/compiler/lower/phi.iyi" \
   '    if @needs_value && !@node_type.is_a?(NilType) && !@node_type.is_a?(VoidType)' '    if @needs_value' -- lower_calls_check || status=1
 prove_mutation "an aggregate dispatch result uses a value phi" "$REPO/src/compiler/lower/call.iyi" \
@@ -674,6 +674,8 @@ prove_mutation "a typed block declaration is refused" "$REPO/src/compiler/lower/
   if collector.declared
     pending_visit_node("typed block declaration")
   end' -- lower_calls_check || status=1
+prove_mutation "primitive dispatch loses its receiver" "$REPO/src/compiler/lower/call.iyi" \
+  '      prim_values = [self_value] of Value' '      prim_values = [] of Value' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
