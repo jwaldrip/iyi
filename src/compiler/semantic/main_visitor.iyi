@@ -2931,7 +2931,7 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     body = target_def.body
-    if body.nil? || body.is_a?(Nop) || body.is_a?(MacroLiteral)
+    if body.nil? || body.is_a?(MacroLiteral)
       if rt = target_def.return_type
         return lookup_def_return(rt, rec_type, target_def)
       else
