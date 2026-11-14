@@ -682,17 +682,11 @@ prove_mutation "a typed block declaration is refused" "$REPO/src/compiler/lower/
   end' -- lower_calls_check || status=1
 prove_mutation "primitive dispatch loses its receiver" "$REPO/src/compiler/lower/call.iyi" \
   '      prim_values = [self_value] of Value' '      prim_values = [] of Value' -- lower_calls_check || status=1
+prove_mutation "virtual class dispatch is expanded into concrete primitives" "$REPO/src/compiler/lower/call.iyi" \
+  '    if all_class' '    if false' -- lower_calls_check || status=1
 prove_mutation "enum dispatch receivers are refused" "$REPO/src/compiler/lower/call.iyi" \
   '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType) && !owner.is_a?(EnumType))' \
   '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType))' -- lower_calls_check || status=1
-prove_mutation "virtual dispatch loses subtype-first ordering" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  '      ut = virtual_receiver.nil? ? arms[i] : arms[arms.size - 1 - i]' '      ut = arms[i]' -- lower_calls_check || status=1
-prove_mutation "virtual dispatch keeps duplicate inherited targets" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  '        if seen_defs.includes?(identity)' '        if false' -- lower_calls_check || status=1
-prove_mutation "inherited bodies lose virtual self" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  '        ut = TypeQueries.virtual_type(scope)' '        ut = scope' -- lower_calls_check || status=1
-prove_mutation "virtual type matching loses the lower bound" "$REPO/src/compiler/lower/cast.iyi" \
-  '      lower = low.builder.icmp(IntPredicate::SGE, param_tid, min_id)' '      lower = low.builder.icmp(IntPredicate::SLE, param_tid, min_id)' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \

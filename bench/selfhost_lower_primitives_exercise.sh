@@ -377,6 +377,32 @@ prove_mutation "float multiplication uses division" "$REPO/src/compiler/lower/pr
   '    result = low.builder.fmul(left, right)' '    result = low.builder.fdiv(left, right)' -- lower_primitives_check || status=1
 prove_mutation "float division uses multiplication" "$REPO/src/compiler/lower/primitives.iyi" \
   '    result = low.builder.fdiv(left, right)' '    result = low.builder.fmul(left, right)' -- lower_primitives_check || status=1
+prove_mutation "integer left float operand skips conversion" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return codegen_float_binary_op(low, op, t2, t2, codegen_primitive_convert(low, t1, t2, p1, false), p2)' '    return p1' -- lower_primitives_check || status=1
+prove_mutation "integer right float operand skips conversion" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return codegen_float_binary_op(low, op, t1, t1, p1, codegen_primitive_convert(low, t2, t1, p2, false))' '    return p2' -- lower_primitives_check || status=1
+prove_mutation "left narrow float skips extension" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    left = low.builder.fp_ext(left, low.typer.llvm_type(t2))' '    left = p1' -- lower_primitives_check || status=1
+prove_mutation "right narrow float skips extension" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    right = low.builder.fp_ext(right, low.typer.llvm_type(t1))' '    right = p2' -- lower_primitives_check || status=1
+prove_mutation "unsigned integer converts as signed float" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.ui_to_fp(value, low.typer.llvm_type(to))' '    return low.builder.si_to_fp(value, low.typer.llvm_type(to))' -- lower_primitives_check || status=1
+prove_mutation "float widening skips extension" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      return low.builder.fp_ext(value, low.typer.llvm_type(to))' '      return value' -- lower_primitives_check || status=1
+prove_mutation "float narrowing skips truncation" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      return low.builder.fp_trunc(value, low.typer.llvm_type(to))' '      return value' -- lower_primitives_check || status=1
+prove_mutation "mixed float result skips truncation" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fp_trunc(result, low.typer.llvm_type(t1))' '    return result' -- lower_primitives_check || status=1
+prove_mutation "pointer difference divides without exact" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    low.last = low.builder.exact_sdiv(bytes, size)' '    low.last = low.builder.sdiv(bytes, size)' -- lower_primitives_check || status=1
+prove_mutation "pointer difference omits inbounds" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    offset = low.builder.const_gep(low.typer.llvm_embedded_type(elem), zero, [one] of Value, true)' '    offset = low.builder.const_gep(low.typer.llvm_embedded_type(elem), zero, [one] of Value, false)' -- lower_primitives_check || status=1
+prove_mutation "static class returns the receiver type id" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      low.last = type_id_value(low, meta.as(Type))' '      low.last = type_id_value(low, t1)' -- lower_primitives_check || status=1
+prove_mutation "virtual class returns the runtime type id" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      low.last = primitive_metaclass_id(low, tid)' '      low.last = tid' -- lower_primitives_check || status=1
+prove_mutation "metaclass switch returns the type id" "$REPO/src/compiler/lower/primitives.iyi" \
+  '        low.builder.ret(low.builder.const_int(low.module.types.int32, meta.as(Int32).to_i64))' '        low.builder.ret(low.builder.const_int(low.module.types.int32, id.to_i64))' -- lower_primitives_check || status=1
 prove_mutation "checked UInt128 to Float32 must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
   '      pending_visit_node("checked UInt128 to Float32 (hosted codegen_out_of_range)")' '      return value' -- lower_primitives_check || status=1
 prove_mutation "checked float narrowing must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
