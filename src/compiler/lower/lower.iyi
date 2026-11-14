@@ -25,6 +25,7 @@ import compiler/syntax/ast::{TupleLiteral, Splat, Generic}
 import compiler/syntax/ast::{ExceptionHandler, Case}
 import compiler/syntax/ast::{MacroIf, MacroFor, MacroExpression, MacroVerbatim}
 import compiler/syntax/ast::{Include, Extend}
+import compiler/syntax/ast::{ModuleHeader, UsingDecl}
 import compiler/types/types::{TupleInstanceType}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
@@ -699,6 +700,12 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     low.last = llvm_nil(low)
     return
   end
+  if node.is_a?(ModuleHeader) || node.is_a?(UsingDecl)
+    # A module header only describes the file's scope; the hosted parser removes it.
+    # UsingDecl only imports names, and the hosted visitor emits nothing for it.
+    # Unit initializers are separate nodes, assembled in dependency order.
+    return
+  end
   if node.is_a?(Alias) || node.is_a?(Macro) || node.is_a?(Annotation)
     # The hosted `visit(Alias)` and `visit(Macro)`: nothing is emitted and the value is nil. The hosted
     # `visit(Annotation)` (codegen.cr:838) emits nothing and returns without setting `@last`; the value is
@@ -1093,7 +1100,6 @@ pub def lower_expanded_bool(low : Lowerer, node : ASTNode) : Nil
   end
   refuse_port("lower: a typed && or || has no recorded expansion (hosted cleanup_transformer.cr: transform(ExpandableNode))")
 end
-
 
 # The hosted `visit(And)` and `visit(Or)`: the normaliser's `If`. `a && b` is `if a then b else a`,
 # and `a || b` is `if a then a else b`; the left operand is lowered again in the branch that
