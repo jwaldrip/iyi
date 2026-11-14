@@ -358,19 +358,9 @@ pub class FreeBindings
   # (`*values : *T`), the splat elements are packed as a tuple and bound too.
   def self.of_def(definition : Def, arg_types : Array(Type), ts : TypeSystem? = nil, class_vars : Array(String)? = nil) : Hash(String, Type)?
     bound = Hash(String, Type).new
-    free_names = definition.free_vars
-    return bound if free_names.nil? && class_vars.nil?
-    free : Array(String)
-    if free_names.nil?
-      free = class_vars.as(Array(String))
-    elsif class_vars.nil? || class_vars.as(Array(String)).empty?
-      free = free_names.as(Array(String))
-    elsif free_names.as(Array(String)).empty?
-      free = class_vars.as(Array(String))
-    else
-      free = free_names.as(Array(String)).dup
-      class_vars.as(Array(String)).each { |name| free << name unless free.includes?(name) }
-    end
+    own = definition.free_vars
+    return bound if own.nil? && class_vars.nil?
+    free = FreeBindings.merged_free(own, class_vars)
     return bound if free.empty?
     splat = definition.splat_index
     prefix = splat ? splat.as(Int32) : definition.args.size
@@ -397,6 +387,36 @@ pub class FreeBindings
       end
     end
     bound
+  end
+
+  # The def's own free variables followed by any class type variables it does not already name. The def's own
+  # array is borrowed when nothing is added, and never modified.
+  def self.merged_free(own : Array(String)?, extra : Array(String)?) : Array(String)
+    if names = own
+      return FreeBindings.with_extra(names, extra)
+    end
+    if added = extra
+      return added
+    end
+    [] of String
+  end
+
+  def self.with_extra(names : Array(String), extra : Array(String)?) : Array(String)
+    if added = extra
+      free = names
+      copied = false
+      added.each do |name|
+        unless free.includes?(name)
+          unless copied
+            free = free.dup
+            copied = true
+          end
+          free << name
+        end
+      end
+      return free
+    end
+    names
   end
 
   def self.free?(name : String, free : Array(String)) : Bool
