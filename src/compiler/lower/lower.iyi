@@ -435,7 +435,7 @@ def codegen_tuple(low : Lowerer, node : TupleLiteral) : Nil
     assign(low, ptr, tuple_type.tuple_types[index], value_type.as(Type), low.last.as(Value))
   end
   low.needs_value = wants
-  low.last = load_aligned(low, ir_type, tuple)
+  low.last = tuple
 end
 
 pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
