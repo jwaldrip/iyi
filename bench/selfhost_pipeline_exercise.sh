@@ -374,6 +374,7 @@ root_comparison_check() {
   "$WORK/root_tool" "$fixture" -o "$WORK/root_test" --pipeline typed --probe-phase > "$WORK/root_test.log" 2>&1 || return 1
   [ "$(probe_phase "$WORK/root_test.log")" = "link" ] || return 1
   "$IYI" build --prelude empty -o "$WORK/root_hosted" "$fixture" > "$WORK/root_hosted.log" 2>&1 || return 1
+  codesign -v --strict "$WORK/root_test" > /dev/null 2>&1 || { echo "  lower_exit root: FAIL, native signature invalid"; return 1; }
   "$WORK/root_test" > "$WORK/root_test.out" 2>&1; local ts=$?
   "$WORK/root_hosted" > "$WORK/root_hosted.out" 2>&1; local hs=$?
   bash -c '. "$1"; pipeline_outputs_equal "$2" "$3" "$4" "$5"' _ "$REPO/bench/lib/pipeline_report.sh" "$ts" "$hs" "$WORK/root_test.out" "$WORK/root_hosted.out" || return 1

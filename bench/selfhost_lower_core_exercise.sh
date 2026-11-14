@@ -217,8 +217,8 @@ if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/pointer-lib-
    awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/pointer-lib.compare" &&
    "$WORK/port" emit "$pointer_fixture" "$WORK/pointer-lib-oracle.ll" > "$WORK/pointer-lib.ir" 2> "$WORK/pointer-lib-emit.err" &&
    "$WORK/compile_native" "$WORK/pointer-lib.ir" -o "$WORK/pointer-lib-native" > "$WORK/pointer-lib-native.log" 2>&1 &&
+   { timeout 30 "$WORK/pointer-lib-host" > "$WORK/pointer-lib-host.out" 2>&1; hs=$?; true; } &&
    codesign -v --strict "$WORK/pointer-lib-native" > /dev/null 2>&1; then
-  timeout 30 "$WORK/pointer-lib-host" > "$WORK/pointer-lib-host.out" 2>&1; hs=$?
   timeout 30 "$WORK/pointer-lib-native" > "$WORK/pointer-lib-native.out" 2>&1; ns=$?
   if [ "$hs" -eq 7 ] && [ "$ns" -eq 7 ] && cmp -s "$WORK/pointer-lib-host.out" "$WORK/pointer-lib-native.out"; then
     echo "  external variable address: IR identical, native and hosted status 7"
