@@ -166,7 +166,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   self_value : Value? = nil
   class_owner : Type? = nil
   unless node.obj.nil?
-    recv_type = single_dispatch ? checked_dispatch_receiver(low, node, single_dispatch.as(DispatchTarget).receiver) : receiver_owner(low, node)
+    recv_type = single_dispatch ? checked_dispatch_receiver(low, node, single_dispatch.as(DispatchTarget).receiver, single_dispatch.as(DispatchTarget).definition) : receiver_owner(low, node)
     if recv_type.is_a?(GenericClassInstanceMetaclassType)
       self_type = recv_type
       inferred_receiver = low.analysed.call_receiver?(node)
@@ -362,7 +362,7 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     arg_types << at
   end
   targets.each do |arm|
-    checked_dispatch_receiver(low, node, arm.receiver)
+    checked_dispatch_receiver(low, node, arm.receiver, arm.definition)
     if arm.definition.abstract
       pending_visit_node("a dispatched abstract def #{arm.definition.name} on #{arm.receiver.full_name}")
     end
@@ -598,17 +598,17 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
     end
     return owner
   end
-  return checked_receiver(low, node, owner, false)
+  return checked_receiver(low, node, owner, low.analysed.target_def?(node))
 end
 
-def checked_dispatch_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : Type) : Type
+def checked_dispatch_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : Type, target : Def?) : Type
   if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType))
     pending_visit_node("a dispatched call on unsupported receiver #{owner.full_name}")
   end
-  checked_receiver(low, node, owner, true)
+  checked_receiver(low, node, owner, target)
 end
 
-def checked_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : Type, dispatched : Bool) : Type
+def checked_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : Type, target : Def?) : Type
   if owner.is_a?(TraitType)
     pending_visit_node("a call on trait #{owner.full_name} (hosted call.cr: trait dispatch)")
   end
@@ -617,10 +617,7 @@ def checked_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : 
   end
   if owner.is_a?(ModuleType)
     if owner.as(ModuleType).defs[node.name]?.nil?
-      if dispatched
-        pending_visit_node("a dispatched call to #{node.name} inherited from a superclass of #{owner.full_name}")
-      end
-      if target = low.analysed.target_def?(node)
+      if target
         return owner if low.analysed.program.def_owner(target)
       end
       pending_visit_node("a call to #{node.name} inherited from a superclass of #{owner.full_name} (hosted call.cr: target_def.owner is the defining type)")

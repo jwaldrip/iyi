@@ -628,6 +628,8 @@ prove_mutation "a computed metaclass receiver is not evaluated" "$REPO/src/compi
   '      unless node.obj.as(ASTNode).is_a?(Path)' '      if false' -- lower_calls_check || status=1
 prove_mutation "an inherited call loses its defining owner" "$REPO/src/compiler/lower/call.iyi" \
   '    if defining = low.analysed.program.def_owner(target)' '    if defining = nil' -- lower_calls_check || status=1
+prove_mutation "an inherited dispatch arm loses its defining owner" "$REPO/src/compiler/lower/call.iyi" \
+  '        return owner if low.analysed.program.def_owner(target)' '        return owner if false' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
