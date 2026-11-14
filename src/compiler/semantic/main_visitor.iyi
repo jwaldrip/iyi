@@ -3069,7 +3069,11 @@ pub class MainVisitor < TypeNodeHost
       parts << at.full_name
       i = i + 1
     end
-    key = "#{origin.node_id}|#{rec_type.full_name}(#{parts.join(",")})"
+    key_owner = rec_type
+    if owner = @program.def_owner(origin)
+      key_owner = owner if owner.iyi_unit
+    end
+    key = "#{origin.node_id}|#{key_owner.full_name}(#{parts.join(",")})"
     if blk = block
       key = key + "&#{blk.node_id}"
     end
@@ -3566,7 +3570,14 @@ pub class MainVisitor < TypeNodeHost
     @jump_whiles = saved_jump_whiles
     @typing_stack.pop
 
-    return nil unless params_typed
+    unless params_typed
+      if call = call_node
+        refuse(call, "cannot bind instantiated parameters of '#{target_def.name}'")
+      elsif report_site = site
+        refuse(report_site, "cannot bind instantiated parameters of '#{target_def.name}'")
+      end
+      return nil
+    end
     bt = body_type
     # A body that cannot be typed (its refusal is recorded on the body's own nodes)
     # still leaves a call its declared return type, as the oracle types it
@@ -4150,6 +4161,13 @@ pub class MainVisitor < TypeNodeHost
     dispatch_targets = [] of DispatchTarget
     supplied_args = node.args.dup
     expanded_args : Array(ASTNode)? = nil
+    virtual_receiver : VirtualType? = nil
+    if obj = node.obj
+      receiver_type = type_of?(obj)
+      virtual_receiver = receiver_type.as(VirtualType) if receiver_type.is_a?(VirtualType)
+    end
+    seen_defs = Set(UInt64).new
+
 
     if blk = node.block
       @block_breaks[blk] = [] of Type?
@@ -4157,10 +4175,25 @@ pub class MainVisitor < TypeNodeHost
     i = 0
     while i < arms.size
       node.args = supplied_args.dup
-      ut = arms[i]
+      ut = virtual_receiver.nil? ? arms[i] : arms[arms.size - 1 - i]
       target_def = lookup_method_matching(ut, node.name, node.args, node)
       return false if target_def.nil?
       original_def = target_def
+      if virtual_type = virtual_receiver
+        identity = original_def.object_id
+        if seen_defs.includes?(identity)
+          i += 1
+          next
+        end
+        seen_defs.add(identity)
+        scope = virtual_type.as(VirtualType).base_type
+        if defining = @program.def_owner(original_def)
+          if (defining.is_a?(ClassType) || defining.is_a?(GenericClassInstanceType)) && defining.subtype_of?(scope)
+            scope = defining
+          end
+        end
+        ut = TypeQueries.virtual_type(scope)
+      end
       union_instance_owner : Type = ut
       if node.obj.nil?
         if declared_owner = @program.def_owner(target_def)

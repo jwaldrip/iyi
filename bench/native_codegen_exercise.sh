@@ -466,8 +466,10 @@ prove_mutation "call: leave a narrow result uncanonicalised" \
   check_narrow_call
 prove_mutation "signed i1: interpret one as positive" \
   src/compiler/native/aarch64/isel.iyi \
-  '    return v unless t.int? && t.bits == 1' \
-  '    return v' \
+  '  def signed_value(v : Int32, t : IrType) : Int32
+    return v unless t.int? && t.bits == 1' \
+  '  def signed_value(v : Int32, t : IrType) : Int32
+    return v' \
   check_narrow_i1
 prove_mutation "parameter: leave a narrow incoming value uncanonicalised" \
   src/compiler/native/aarch64/isel.iyi \

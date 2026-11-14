@@ -530,7 +530,7 @@ pub def match_any_type_id(low : Lowerer, type : Type, tid : Value) : Value
 end
 
 private def match_any_type_id_with_function(low : Lowerer, type : Type, tid : Value) : Value
-  if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
+  if type.is_a?(VirtualMetaclassType)
     pending_visit_node("match_type_id against #{type.full_name} (hosted match.cr: VirtualType range)")
     return low.builder.const_int(low.module.types.int1, 0_i64)
   end
@@ -545,12 +545,22 @@ private def match_any_type_id_with_function(low : Lowerer, type : Type, tid : Va
     created.linkage = Linkage::Internal
     param_tid = created.param(0)
     acc : Value? = nil
-    type.as(UnionType).union_types.each do |sub_type|
-      cond = match_any_type_id(low, sub_type, param_tid)
-      if cur = acc
-        acc = low.builder.bitwise_or(cur, cond)
-      else
-        acc = cond
+    if type.is_a?(VirtualType)
+      bounds = low.type_ids.min_max(type.as(VirtualType).base_type)
+      raise "BUG: virtual base has no type-id range" if bounds.nil?
+      min_id = low.builder.const_int(low.module.types.int32, bounds[0].to_i64)
+      max_id = low.builder.const_int(low.module.types.int32, bounds[1].to_i64)
+      lower = low.builder.icmp(IntPredicate::SGE, param_tid, min_id)
+      upper = low.builder.icmp(IntPredicate::SLE, param_tid, max_id)
+      acc = low.builder.bitwise_and(lower, upper)
+    else
+      type.as(UnionType).union_types.each do |sub_type|
+        cond = match_any_type_id(low, sub_type, param_tid)
+        if cur = acc
+          acc = low.builder.bitwise_or(cur, cond)
+        else
+          acc = cond
+        end
       end
     end
     raise "BUG: empty union restriction in match_type_id" if acc.nil?

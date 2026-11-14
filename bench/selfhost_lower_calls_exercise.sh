@@ -53,6 +53,12 @@ if ! "$WORK/port" triple; then
   echo "  FAIL: target triple frame-pointer classification"
   status=1
 fi
+printf '%s\n' 'import no_such_cycle_unit::{Missing}' > "$WORK/missing_import.iyi"
+if "$WORK/port" lower "$WORK/missing_import.iyi" "$WORK/no_oracle.ll" > "$WORK/missing_import.out" 2> "$WORK/missing_import.err" ||
+   ! grep -Fq "can't find module 'no_such_cycle_unit'" "$WORK/missing_import.err"; then
+  echo "  FAIL: missing fixture import was not rejected by name"
+  status=1
+fi
 
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
@@ -348,7 +354,7 @@ if generic_constructor_check && [ ! -e "$WORK/constructor.invalid" ]; then
     '  if recorded = low.analysed.call_receiver?(node)' \
     '  if recorded = (node.obj.nil? ? low.analysed.call_receiver?(node) : nil)' || status=1
   constructor_prove "generic struct allocation leaves an address" "$REPO/src/compiler/lower/call.iyi" \
-    '      if passed_by_value?(allocated_type)' '      if passed_by_value?(inst)' || status=1
+    '      if passed_by_value?(allocated_type)' '      if false' || status=1
 else
   echo "  constructor mutation baseline failed or did not build"
   status=1
@@ -357,7 +363,7 @@ fi
 echo
 echo "== 3b. A recursive call targets the instance still being typed"
 if [ -x "$WORK/compile_native" ]; then
-  for fixture in "$REPO"/bench/fixtures/sem_bodies_recursion_mutual.iyi "$REPO"/bench/fixtures/sem_bodies_recursion_state.iyi; do
+  for fixture in "$REPO"/bench/fixtures/sem_bodies_recursion_mutual.iyi "$REPO"/bench/fixtures/sem_bodies_recursion_state.iyi "$REPO"/bench/fixtures/sem_bodies_recursive_helper.iyi; do
     name="$(basename "$fixture" .iyi)"
     IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.probe.exe" --pipeline typed --probe-phase --keep-going > "$WORK/$name.probe" 2>&1 || true
     if grep -E 'untyped instantiated parameter|no type for the call' "$WORK/$name.probe"; then
@@ -664,7 +670,7 @@ prove_mutation "an inherited dispatch arm loses its defining owner" "$REPO/src/c
 prove_mutation "a nil receiver is not accepted" "$REPO/src/compiler/lower/call.iyi" \
   '  return owner if owner.is_a?(NilType)' '  pending_visit_node("nil receiver") if owner.is_a?(NilType)' -- lower_calls_check || status=1
 prove_mutation "an aggregate dispatch argument remains a pointer" "$REPO/src/compiler/lower/call.iyi" \
-  '    passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?' '    passed = passed' -- lower_calls_check || status=1
+  '      passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?' '      passed = values[i]' -- lower_calls_check || status=1
 prove_mutation "a nil block call collects its body value" "$REPO/src/compiler/lower/phi.iyi" \
   '    if @needs_value && !@node_type.is_a?(NilType) && !@node_type.is_a?(VoidType)' '    if @needs_value' -- lower_calls_check || status=1
 prove_mutation "an aggregate dispatch result uses a value phi" "$REPO/src/compiler/lower/call.iyi" \
@@ -674,6 +680,19 @@ prove_mutation "a typed block declaration is refused" "$REPO/src/compiler/lower/
   if collector.declared
     pending_visit_node("typed block declaration")
   end' -- lower_calls_check || status=1
+prove_mutation "primitive dispatch loses its receiver" "$REPO/src/compiler/lower/call.iyi" \
+  '      prim_values = [self_value] of Value' '      prim_values = [] of Value' -- lower_calls_check || status=1
+prove_mutation "enum dispatch receivers are refused" "$REPO/src/compiler/lower/call.iyi" \
+  '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType) && !owner.is_a?(EnumType))' \
+  '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType))' -- lower_calls_check || status=1
+prove_mutation "virtual dispatch loses subtype-first ordering" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      ut = virtual_receiver.nil? ? arms[i] : arms[arms.size - 1 - i]' '      ut = arms[i]' -- lower_calls_check || status=1
+prove_mutation "virtual dispatch keeps duplicate inherited targets" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        if seen_defs.includes?(identity)' '        if false' -- lower_calls_check || status=1
+prove_mutation "inherited bodies lose virtual self" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        ut = TypeQueries.virtual_type(scope)' '        ut = scope' -- lower_calls_check || status=1
+prove_mutation "virtual type matching loses the lower bound" "$REPO/src/compiler/lower/cast.iyi" \
+  '      lower = low.builder.icmp(IntPredicate::SGE, param_tid, min_id)' '      lower = low.builder.icmp(IntPredicate::SLE, param_tid, min_id)' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
