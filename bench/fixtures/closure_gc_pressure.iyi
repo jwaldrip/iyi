@@ -1,0 +1,22 @@
+class CaptureBox
+  def initialize(@value : Int32)
+  end
+
+  def value : Int32
+    @value
+  end
+end
+
+def make_reader
+  box = CaptureBox.new(41)
+  -> { box = CaptureBox.new(box.value + 1); box.value }
+end
+
+reader = make_reader
+index = 0
+while index < 10000
+  Array(Int32).new(1024, index)
+  index = index + 1
+end
+puts reader.call
+puts reader.call

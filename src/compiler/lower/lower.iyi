@@ -1016,7 +1016,7 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
   end
   var = low.current_context.vars[target.name]?
   v_var = var.as(LowerVar)
-  if v_var.type.full_name != vt.full_name
+  if v_var.closure_slot || v_var.type.full_name != vt.full_name
     # A value of another type than the variable goes through the casts slice (the hosted upcast into a union).
     assign(low, v_var.pointer, v_var.type, vt, v)
   elsif !vt.is_a?(NilType)

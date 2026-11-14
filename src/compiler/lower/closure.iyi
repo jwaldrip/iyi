@@ -1,0 +1,64 @@
+module compiler/lower/closure
+
+import compiler/ir/inst::{CallConv, Op}
+import compiler/ir/types::{IrType}
+import compiler/ir/values::{Value}
+import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
+import compiler/lower/helpers::{abi_name}
+import compiler/lower/layouts::{has_inner_pointers?}
+import compiler/semantic/closures::{ClosureFrame}
+import compiler/semantic/top_level::{Type}
+
+# The hosted malloc_closure: captured variables share an allocated context,
+# rather than independent stack slots that outlive neither the call nor the proc.
+pub def allocate_closure(low : Lowerer, frame : ClosureFrame) : Nil
+  names = [] of String
+  types = [] of Type
+  pointerful = false
+  frame.closured.each do |var|
+    names << var.name
+    types << var.type
+    pointerful = true if has_inner_pointers?(var.type)
+  end
+  return if names.empty?
+  context = low.current_context
+  context.closure_names = names
+  context.closure_types = types
+  layout = low.typer.closure_context_type(types, false, nil)
+  context.closure_type = layout
+  suffix = pointerful ? "malloc64" : "malloc_atomic64"
+  allocator_name = abi_name(low, suffix)
+  allocator = low.module.get_function?(allocator_name)
+  if allocator.nil?
+    low.analysed.program.global_funs.each do |record|
+      raise "lower: premature allocation through #{allocator_name}" if record.real_name == allocator_name
+    end
+    allocator = low.module.get_function?("malloc")
+    if allocator.nil?
+      fn_type = low.module.types.func([low.module.types.int64] of IrType, low.module.types.ptr(0))
+      allocator = low.module.add_function("malloc", fn_type, CallConv::C)
+    end
+  end
+  one = low.builder.const_int(low.module.types.int32, 1_i64)
+  endpoint = low.builder.const_gep(layout, low.builder.const_null_pointer, [one] of Value)
+  size = low.builder.const_cast(Op::PtrToInt, endpoint, low.typer.size_t)
+  ptr = low.builder.call(allocator.fn_type, allocator, [size] of Value, "")
+  context.closure_ptr = ptr
+  setup_closure_vars(low, context, ptr)
+end
+
+pub def setup_closure_vars(low : Lowerer, source : LowerContext, ptr : Value) : Nil
+  layout = source.closure_type
+  raise "BUG: missing closure layout" if layout.nil?
+  zero = low.builder.const_int(low.module.types.int32, 0_i64).as(Value)
+  i = 0
+  while i < source.closure_names.size
+    index = low.builder.const_int(low.module.types.int32, i.to_i64).as(Value)
+    name = source.closure_names[i]
+    slot = low.builder.inbounds_gep(layout.as(IrType), ptr, [zero, index] of Value, name)
+    var = LowerVar.new(slot, source.closure_types[i], false)
+    var.closure_slot = true
+    low.current_context.vars[name] = var
+    i += 1
+  end
+end

@@ -28,6 +28,7 @@ import compiler/lower/typer::{LowerTyper}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/top_level::{Type}
 import compiler/lower/type_id::{LowerTypeIds}
+import compiler/semantic/closures::{ClosureFacts}
 import compiler/lower/globals::{LowerGlobals}
 
 # A phi a branch of a block call adds its value to: the `break`, `next` and `return` of an inlined
@@ -51,6 +52,7 @@ end
 pub class LowerVar
   getter pointer : Value
   getter type : Type
+  property closure_slot : Bool = false
   property already_loaded : Bool
 
   def initialize(@pointer : Value, @type : Type, @already_loaded : Bool = false)
@@ -72,6 +74,12 @@ pub class LowerContext
   property var_unions : Hash(String, Type)?
   # Locals read while possibly unassigned, initialized to nil at allocation.
   property nil_resets : Set(String)?
+  # Heap context shared by the enclosing function and its proc literals.
+  property closure_type : IrType?
+  property closure_ptr : Value?
+  property closure_names : Array(String)
+  property closure_types : Array(Type)
+  property closure_facts : ClosureFacts?
   # The block frame and the phis of the context (hosted Context#return_phi, break_phi, next_phi, block, block_context).
   property return_phi : BranchPhi?
   property break_phi : BranchPhi?
@@ -88,6 +96,11 @@ pub class LowerContext
     @top_level = false
     @var_unions = nil
     @nil_resets = nil
+    @closure_type = nil
+    @closure_ptr = nil
+    @closure_names = [] of String
+    @closure_types = [] of Type
+    @closure_facts = nil
     @return_phi = nil
     @break_phi = nil
     @next_phi = nil
