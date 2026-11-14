@@ -53,6 +53,12 @@ if ! "$WORK/port" triple; then
   echo "  FAIL: target triple frame-pointer classification"
   status=1
 fi
+printf '%s\n' 'import no_such_cycle_unit::{Missing}' > "$WORK/missing_import.iyi"
+if "$WORK/port" lower "$WORK/missing_import.iyi" "$WORK/no_oracle.ll" > "$WORK/missing_import.out" 2> "$WORK/missing_import.err" ||
+   ! grep -Fq "can't find module 'no_such_cycle_unit'" "$WORK/missing_import.err"; then
+  echo "  FAIL: missing fixture import was not rejected by name"
+  status=1
+fi
 
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
