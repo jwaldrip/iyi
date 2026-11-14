@@ -204,10 +204,28 @@ binary_union_check() {
     awk '/lower: visit\(binary <= with operand IR types .* inconsistent with Int64 and Int64 \(hosted codegen_binary_op\)\)/ { found = 1 } END { exit !found }' "$WORK/union.err" || return 1
   done
 }
+convert_refusal_check() {
+  local driver="$1"
+  for spec in "UInt128 Float32 checked checked UInt128 to Float32" \
+              "Float64 Float32 checked checked float narrowing" \
+              "Float64 Int32 checked float to integer" \
+              "Float64 Int32 unchecked float to integer"; do
+    set -- $spec
+    from=$1; to=$2; check=$3; shift 3
+    if "$driver" convert_refusal "$from" "$to" "$check" > "$WORK/refuse.out" 2> "$WORK/refuse.err"; then
+      return 1
+    fi
+    awk -v reason="$*" 'index($0, reason) { found=1 } END { exit !found }' "$WORK/refuse.err" || return 1
+  done
+}
 if binary_union_check "$WORK/port"; then
   echo "  union comparison: both operand positions refused by name"
 else
   echo "  union comparison: missing named refusal"
+  status=1
+fi
+if ! convert_refusal_check "$WORK/port"; then
+  echo "  conversion: missing named refusal"
   status=1
 fi
 
@@ -227,6 +245,7 @@ lower_primitives_check() {
   "$WORK/mut" generic_pointerful > "$WORK/mut.pointerful" 2>"$WORK/mut.pointerful.err" || return 1
   awk '/^generic_pointerful=1$/ { found = 1 } END { exit !found }' "$WORK/mut.pointerful" || return 1
   binary_union_check "$WORK/mut" || return 1
+  convert_refusal_check "$WORK/mut" || return 1
   return 0
 }
 pointer_check() {
@@ -340,6 +359,12 @@ prove_mutation "signed integer to float uses unsigned conversion" "$REPO/src/com
   '      return low.builder.si_to_fp(value, low.typer.llvm_type(to))' '      return low.builder.ui_to_fp(value, low.typer.llvm_type(to))' -- lower_primitives_check || status=1
 prove_mutation "float less-than uses less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   '    return low.builder.fcmp(RealPredicate::OLT, left, right)' '    return low.builder.fcmp(RealPredicate::OLE, left, right)' -- lower_primitives_check || status=1
+prove_mutation "checked UInt128 to Float32 must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      pending_visit_node("checked UInt128 to Float32 (hosted codegen_out_of_range)")' '      return value' -- lower_primitives_check || status=1
+prove_mutation "checked float narrowing must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
+  '        pending_visit_node("checked float narrowing #{from.full_name} to #{to.full_name} (hosted codegen_out_of_range)")' '        return value' -- lower_primitives_check || status=1
+prove_mutation "float to integer must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    pending_visit_node("float to integer #{from.full_name} to #{to.full_name} (hosted codegen_convert)")' '    return value' -- lower_primitives_check || status=1
 
 echo
 echo "== 5. Checked arithmetic in an isolated def from a required runtime"
