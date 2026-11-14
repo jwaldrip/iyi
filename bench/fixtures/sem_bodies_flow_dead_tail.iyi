@@ -23,6 +23,14 @@ end
 class FlowH < FlowNode
 end
 
+def flow_choose(flag : Bool) : FlowNode
+  if flag
+    FlowA.new
+  else
+    FlowC.new
+  end
+end
+
 def flow_render(node : FlowNode) : Int32
   return 1 if node.is_a?(FlowA)
   return 2 if node.is_a?(FlowB)
@@ -96,8 +104,8 @@ flow_render(b)
 flow_concrete(a)
 flow_chain(a)
 flow_and(a, false)
-flow_supertype(b)
+flow_supertype(flow_choose(false))
 flow_nil(a)
 flow_noreturn(a)
 flow_loop(a, false)
-flow_case(b)
+flow_case(FlowC.new)

@@ -8,7 +8,7 @@ import compiler/semantic/main_visitor::{MainVisitor}
 class FlowTailWalk < Visitor
   getter found : Int32
 
-  def initialize(@mv : MainVisitor, @expect_typed : Bool)
+  def initialize(@mv : MainVisitor, @expect_typed : Bool, @name : String)
     @found = 0
   end
 
@@ -16,7 +16,13 @@ class FlowTailWalk < Visitor
     if node.is_a?(Call) && node.as(Call).name == "value"
       @found += 1
       typed = !@mv.type_of?(node).nil?
-      raise "wrong flow tail type" unless typed == @expect_typed
+      if typed != @expect_typed
+        call = node.as(Call)
+        obj = call.obj
+        obj_type = obj.nil? ? nil : @mv.type_of?(obj.as(ASTNode))
+        reason = @mv.untyped_reason?(node)
+        raise "wrong flow tail type in #{@name}: #{reason}, receiver #{obj_type}"
+      end
     end
     true
   end
@@ -41,7 +47,7 @@ mv.typed_instances.each do |inst|
   dead = name == "flow_concrete" || name == "flow_chain"
   live = name == "flow_and" || name == "flow_supertype" || name == "flow_nil" || name == "flow_noreturn" || name == "flow_loop" || name == "flow_case"
   if dead || live
-    walk = FlowTailWalk.new(mv, live)
+    walk = FlowTailWalk.new(mv, live, name)
     inst.definition.body.accept(walk)
     raise "flow tail missing" unless walk.found == 1
     seen.add(name)
