@@ -21,11 +21,19 @@ and its function verifies. This one floor reduction is authorized for the integr
 
 ## Strict bootstrap checks
 
-At `10df29874`, the hosted compiler builds `compile_native.iyi`, and that stage1
-passes parsing, declarations and body typing for hello with the real prelude.
-Lowering stops at `assign Tuple(Int64, UInt64) to Bool`, where generated temporaries
-in the runtime lock collide. No hello executable is produced. Parser compilation,
-self-compilation and a stage2/stage3 fixed point remain unproven.
+At `4df314d06`, the hosted compiler builds `compile_native.iyi`, and that native
+stage1 compiles `samples/iyi/hello.iyi` with `--pipeline typed --prelude` through
+linking. The executable exits 0 and its stdout is byte-identical to the hosted
+build. Stage1 links only `libSystem.B.dylib`.
+
+The hosted compiler remains the bootstrap compiler. Parser compilation has
+reached body typing, but no native-built parser or compiler has been produced.
+Self-compilation and a stage2/stage3 fixed point remain unproven.
+
+The pointer-forwarding and inline-annotation fixtures match hosted IR and return
+42. The external-global access fixture matches hosted IR and returns 7. At
+`1aabe425d`, all eight functions of the loop-carried-narrowing fixture and its
+module-level IR match the hosted output.
 
 The omitted-fun-return, inline-macro-expansion and nested-body-scope regressions
 compile, link and run natively. Their results match hosted execution: status 0,

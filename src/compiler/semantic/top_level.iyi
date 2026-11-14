@@ -201,15 +201,6 @@ pub abstract class Type
     # Hosted types.cr:421-433 unwraps virtual restriction types before checking parents.
     target = other.devirtualize
     return subtype_of?(target) unless target == other
-    if other.is_a?(UnionType)
-      ut = other.as(UnionType)
-      i = 0
-      while i < ut.union_types.size
-        return true if self.subtype_of?(ut.union_types[i])
-        i = i + 1
-      end
-      return false
-    end
     if self.is_a?(UnionType)
       sut = self.as(UnionType)
       i = 0
@@ -218,6 +209,15 @@ pub abstract class Type
         i = i + 1
       end
       return true
+    end
+    if other.is_a?(UnionType)
+      ut = other.as(UnionType)
+      i = 0
+      while i < ut.union_types.size
+        return true if self.subtype_of?(ut.union_types[i])
+        i = i + 1
+      end
+      return false
     end
     if self.is_a?(ModuleType)
       mod = self.as(ModuleType)

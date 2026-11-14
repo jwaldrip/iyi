@@ -18,7 +18,7 @@ module compiler/lower/lower
 
 import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, Cast, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NilableCast, NumberLiteral, Or, Path, PointerOf, Primitive, ProcLiteral, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, UninitializedVar, Var, While, IsA, Yield}
 import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, HashLiteral, RangeLiteral, MultiAssign, Select, StringInterpolation}
-import compiler/syntax/ast::{NamedTupleLiteral}
+import compiler/syntax/ast::{NamedTupleLiteral, EnumDef}
 import compiler/syntax/ast::{ImplDef, TraitDef}
 import compiler/types/types::{NamedTupleInstanceType}
 import compiler/syntax/ast::{TupleLiteral, Splat, Generic}
@@ -640,6 +640,14 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   end
   if node.is_a?(LibDef)
     # The hosted `visit(LibDef)`: a lib declares its funs and emits nothing where it stands.
+    low.last = llvm_nil(low)
+    return
+  end
+  if node.is_a?(EnumDef)
+    # Hosted visits only assignments in an enum body (codegen.cr 1257-1265).
+    node.as(EnumDef).members.each do |member|
+      codegen_node(low, member) if member.is_a?(Assign)
+    end
     low.last = llvm_nil(low)
     return
   end

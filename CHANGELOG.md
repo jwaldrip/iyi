@@ -6,7 +6,8 @@
 
 - The typed pipeline resolves omitted `fun` returns to `Nil`, lowers recorded inline macro expansions, and
   resolves nested class and module declarations in their enclosing body. Native regression executables match
-  hosted results. Real-prelude hello reaches lowering; parser compilation and a self-host fixed point remain
+  hosted results. A hosted-built native compiler compiles real-prelude hello through linking, and the
+  executable matches hosted stdout with status 0. Parser compilation and a self-host fixed point remain
   unproven. `src/compiler/PIPELINE.md` records the strict bootstrap checks separately from the census.
 - Typed declarations request their initializer's value, union consumers convert address-valued joins when
   needed, and normal-path `defer` preserves aggregate results across cleanup. The union-consumer fixture
@@ -16,6 +17,13 @@
   match hosted IR and execution, including a class allocation through the typed pipeline.
 - Empty methods retain their instantiated parameter types. Argument expressions still run when the body is
   empty; class and struct constructors with unused initializer arguments compile through the typed pipeline.
+- Native lowering retains aggregate local addresses, passes scalar receivers by value, and honors
+  `NoInline` and `AlwaysInline`. The pointer-forwarding and inline-annotation fixtures match hosted IR
+  and execution. Declared return types constrain the inferred result, with the hosted Nil, error and
+  compatible-proc exceptions.
+- Definition checks print source-facing type names and construct calls as AST nodes, so nested virtual
+  unions and reserved enum predicate names no longer produce malformed probe source. Enum predicates
+  carry their generated bodies, and union subtyping checks every source member against the target.
 - **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
   [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
   the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,

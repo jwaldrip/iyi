@@ -178,6 +178,9 @@ module BenchSelfhostTypesExercise
     unless ts.render(u2) == "(Float64 | Int32 | String | Nil)"
       raise "union with nil sorting failed: #{ts.render(u2)}"
     end
+    unless u1.subtype_of?(u2) && !u2.subtype_of?(u1)
+      raise "union subtyping must accept every source member and reject an extra one"
+    end
     u_nr = ts.type_merge([prog.int32_type, prog.no_return_type] of Type)
     unless ts.render(u_nr) == "Int32"
       raise "NoReturn elimination failed: #{ts.render(u_nr)}"
