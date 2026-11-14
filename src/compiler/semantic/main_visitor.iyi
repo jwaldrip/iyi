@@ -1558,6 +1558,9 @@ pub class MainVisitor < TypeNodeHost
       if enum_type = c.enum_value_type
         set_type(c.value, enum_type)
         set_type(node, enum_type)
+      elsif predefined_type = predefined_const_type(c)
+        set_type(c.value, predefined_type)
+        set_type(node, predefined_type)
       elsif c_type = type_of?(c.value)
         set_type(node, c_type)
       else
@@ -1573,6 +1576,19 @@ pub class MainVisitor < TypeNodeHost
       set_type(node, t)
     end
     false
+  end
+
+  # The type of ARGC_UNSAFE and ARGV_UNSAFE, the program's own constants (hosted program.cr 1461-1462: a Primitive of
+  # Int32, and one of UInt8**). Their value here is the placeholder the declarations dump prints; the lowering stores
+  # argc and argv into their globals directly, so a read of either is typed from this.
+  def predefined_const_type(c : Const) : Type?
+    predefined = @program.predefined_const(c.name)
+    return nil if predefined.nil? || predefined.as(Const).object_id != c.object_id
+    if c.name == "ARGC_UNSAFE"
+      return @program.int32_type
+    end
+    ts = type_node_system(@program)
+    ts.pointer_of(ts.pointer_of(@program.types["UInt8"]))
   end
 
   # An inline macro site (`{% if %}`, `{% for %}`, `{{ }}`) written in the body of the def being typed

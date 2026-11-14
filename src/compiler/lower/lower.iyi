@@ -141,6 +141,14 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   argv_global = m.add_global("ARGV_UNSAFE", ptr)
   argv_global.linkage = Linkage::Internal
   argv_global.initializer = low.builder.const_null(ptr)
+  # The entry stores argc and argv before the program's own code (hosted initialize_predefined_constants), so a
+  # read of either constant is a load of its global, never an initialiser of its own.
+  argc_state = low.globals.const_state("ARGC_UNSAFE")
+  argc_state.global = argc_global
+  argc_state.no_init_flag = true
+  argv_state = low.globals.const_state("ARGV_UNSAFE")
+  argv_state.global = argv_global
+  argv_state.no_init_flag = true
 
   program_type = analysed.type_of?(root)
   raise "BUG: the analysed program has no type for its root expression (hosted codegen.cr: codegen)" if program_type.nil?
@@ -1133,6 +1141,29 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     end
     return
   end
+  if cond_node.is_a?(IsA)
+    # The hosted cleanup replaces a type test the object's type decides with a literal (cleanup_transformer.cr
+    # transform_is_a_or_responds_to: the test is true when the filtered type is the object's type, false when
+    # nothing is left). The branch the test cannot take is never lowered: it may read a variable the test's own
+    # filtering narrowed away, which has no type.
+    decided = static_is_a(low, cond_node.as(IsA))
+    unless decided.nil?
+      folded_obj = cond_node.as(IsA).obj
+      unless folded_obj.is_a?(Var) || folded_obj.is_a?(InstanceVar) || folded_obj.is_a?(ClassVar)
+        folded_wants = low.needs_value
+        low.needs_value = false
+        codegen_node(low, folded_obj)
+        low.needs_value = folded_wants
+        return if block_ended?(low)
+      end
+      if decided.as(Bool)
+        codegen_node(low, then_node)
+      else
+        codegen_node(low, else_node)
+      end
+      return
+    end
+  end
 
   wants = low.needs_value
   if nil_condition?(low, cond_node)
@@ -1176,6 +1207,24 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
 
   # By-value joins stay address-valued until a consumer needs the aggregate.
   phi.close(low)
+end
+
+# Whether the analysed types decide a type test: true when the object's type is what the test narrows it to,
+# false when nothing of it is, nil when the value decides (a union, or a virtual type with other subclasses). The
+# object and the tested type must both be typed.
+pub def static_is_a(low : Lowerer, node : IsA) : Bool?
+  obj_t = low.analysed.type_of?(node.obj)
+  const_t = low.analysed.type_of?(node.const)
+  return nil if obj_t.nil? || const_t.nil?
+  ot = TypeIndirection.remove_indirection(obj_t.as(Type))
+  ct = TypeIndirection.remove_indirection(const_t.as(Type))
+  if ct.is_a?(MetaclassType)
+    ct = ct.as(MetaclassType).instance_type
+  end
+  filtered = TypeIntersect.common_descendent(low.analysed.program, ot, ct)
+  return false if filtered.nil?
+  return true if filtered.as(Type).full_name == ot.full_name
+  nil
 end
 
 # Whether a value of this type joins by pointer in the `if` phi: the hosted Phi takes a pointer to a
