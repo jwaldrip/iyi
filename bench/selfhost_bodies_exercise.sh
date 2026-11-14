@@ -870,7 +870,7 @@ prove_mutation "a bare splat limits positional arguments" "$MAIN_VISITOR" \
 prove_mutation "a default before a splat lowers the minimum" "$MAIN_VISITOR" \
   "        min_size = default_index" "        min_size = splat_index" -- bare_splat_bounds || status=1
 prove_mutation "a restricted named splat needs an argument" "$MAIN_VISITOR" \
-  "            min_size = min_size + 1" "            min_size = min_size" -- bare_splat_bounds || status=1
+  "            min_size = min_size + 1" "            min_size = splat_index" -- bare_splat_bounds || status=1
 prove_mutation "a named splat has an unbounded maximum" "$MAIN_VISITOR" \
   "        max_size = 2147483647" "        max_size = d.args.size" -- bare_splat_bounds || status=1
 prove_mutation "a tuple restriction permits an empty splat" "$MAIN_VISITOR" \
