@@ -360,9 +360,6 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     t = low.analysed.type_of?(arg)
     raise "BUG: dispatched argument has no type" if t.nil?
     at = t.as(Type)
-    if passed_by_value?(at)
-      pending_visit_node("a dispatched call with by-value argument #{at.full_name}")
-    end
     arg_types << at
   end
   targets.each do |arm|
@@ -413,8 +410,11 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     end
     value = low.last
     raise "BUG: dispatched argument left no value" if value.nil?
-    values << (arg_types[i].is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))
-    arg_tids << type_id_of_value(low, arg, value.as(Value), arg_types[i])
+    raw = value.as(Value)
+    arg_tids << type_id_of_value(low, arg, raw, arg_types[i])
+    passed = arg_types[i].is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : raw
+    passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?
+    values << passed
   end
   phi_wants = wants && !ret.is_a?(NilType) && !ret.is_a?(VoidType) && !ret.is_a?(NoReturnType)
   phi_type : IrType? = nil
