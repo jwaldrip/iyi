@@ -632,6 +632,8 @@ prove_mutation "an inherited dispatch arm loses its defining owner" "$REPO/src/c
   '        return owner if low.analysed.program.def_owner(target)' '        return owner if false' -- lower_calls_check || status=1
 prove_mutation "a nil receiver is not accepted" "$REPO/src/compiler/lower/call.iyi" \
   '  return owner if owner.is_a?(NilType)' '  pending_visit_node("nil receiver") if owner.is_a?(NilType)' -- lower_calls_check || status=1
+prove_mutation "an aggregate dispatch argument remains a pointer" "$REPO/src/compiler/lower/call.iyi" \
+  '    passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?' '    passed = passed' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
