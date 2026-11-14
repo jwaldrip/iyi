@@ -717,6 +717,8 @@ struct_join_check() {
 if struct_join_check; then
   prove_mutation "a struct does not join by pointer" "$REPO/src/compiler/lower/lower.iyi" \
     '  passed_by_value?(t)' '  false' -- struct_join_check || status=1
+  prove_mutation "a tuple literal loses its storage pointer" "$REPO/src/compiler/lower/lower.iyi" \
+    '  low.last = tuple' '  low.last = load_aligned(low, ir_type, tuple)' -- struct_join_check || status=1
 else
   echo "FAIL: struct join does not match the hosted module"
   status=1
