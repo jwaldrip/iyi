@@ -1,7 +1,7 @@
 class BareSplatNew
   def self.new(size : Int32, *, flag : Bool = false) : Int32
     if flag
-      size + 10
+      size &+ 10
     else
       size
     end
@@ -12,4 +12,4 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-LibC.exit(BareSplatNew.new(4) + BareSplatNew.new(4, flag: true))
+LibC.exit(BareSplatNew.new(4) &+ BareSplatNew.new(4, flag: true))
