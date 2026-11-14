@@ -186,6 +186,22 @@ cast_fixture=enum_mixed
 new_cast_check || { echo "  baseline: enum union assignment differs"; status=1; }
 prove_mutation "enum union stores are refused" "$REPO/src/compiler/lower/cast.iyi" \
   '  if kind == "int" || kind == "char" || kind == "symbol" || kind == "float" || value_type.is_a?(EnumType)' '  if kind == "int" || kind == "char" || kind == "symbol" || kind == "float"' -- new_cast_check || status=1
+cast_fixture=union_to_subunion
+new_cast_check || { echo "  baseline: mixed subunion downcast differs"; status=1; }
+prove_mutation "mixed subunion reads its payload as the union" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if from_type.is_a?(MixedUnionType) && to_type.is_a?(MixedUnionType)' '  if false' -- new_cast_check || status=1
+cast_fixture=union_realign
+new_cast_check || { echo "  baseline: mixed subunion realignment differs"; status=1; }
+prove_mutation "mixed subunion realignment loses payload" "$REPO/src/compiler/lower/cast.iyi" \
+  '  count = low.builder.const_int(low.typer.size_t, size)' '  count = low.builder.const_int(low.typer.size_t, 0_i64)' -- new_cast_check || status=1
+prove_mutation "wide boolean union store uses scalar alignment" "$REPO/src/compiler/lower/cast.iyi" \
+  '    stored.alignment = low.typer.pointer_size.to_i32' '    stored.alignment = low.typer.align_of(widened.type)' -- new_cast_check || status=1
+cast_fixture=virtual_range
+new_cast_check || { echo "  baseline: virtual range differs"; status=1; }
+prove_mutation "an IsA restriction loses its virtual range" "$REPO/src/compiler/lower/lower.iyi" \
+  '  ct = TypeQueries.virtual_type(ct)' '  ct = TypeIndirection.remove_indirection(ct)' -- new_cast_check || status=1
+prove_mutation "virtual range excludes its first type id" "$REPO/src/compiler/lower/cast.iyi" \
+  '      lower = low.builder.icmp(IntPredicate::SGE, param_tid, min_id)' '      lower = low.builder.icmp(IntPredicate::SGT, param_tid, min_id)' -- new_cast_check || status=1
 no_return_check() {
   "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
   "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_noreturn_union.iyi" "$WORK/lowcast_noreturn_union.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
