@@ -1,6 +1,6 @@
 module compiler/types/intersect
 
-import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NilType, NonGenericModuleType, SemanticProgram, Type, TypeDefType, UnionType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NilType, NonGenericModuleType, SemanticProgram, TraitType, Type, TypeDefType, UnionType, VoidType}
 import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericInstanceType, NamedTupleInstanceType, ProcInstanceType, TupleInstanceType, TypeQueries, VirtualMetaclassType, VirtualType}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/unification::{TypeUnification}
@@ -329,7 +329,7 @@ pub class TypeIntersect
   end
 
   def self.module_like?(t : Type) : Bool
-    t.is_a?(NonGenericModuleType) || t.is_a?(GenericModuleInstanceType)
+    t.is_a?(NonGenericModuleType) || t.is_a?(GenericModuleInstanceType) || (t.is_a?(TraitType) && !t.is_a?(GenericTraitType))
   end
 
   def self.generic_metaclass?(t : Type) : Bool
