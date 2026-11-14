@@ -1,0 +1,38 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+abstract class FlowNode
+end
+class FlowA < FlowNode
+  def value : Int32
+    11
+  end
+end
+class FlowB < FlowNode
+end
+class FlowC < FlowNode
+end
+class FlowD < FlowNode
+end
+class FlowE < FlowNode
+end
+class FlowF < FlowNode
+end
+class FlowG < FlowNode
+end
+class FlowH < FlowNode
+end
+
+def flow_plain(node : FlowA) : Int32
+  return 7 if node.is_a?(FlowA)
+  node.value
+end
+
+def flow_chain(node : FlowA) : Int32
+  return 9 if node.is_a?(FlowA) || node.is_a?(FlowB) || node.is_a?(FlowC) || node.is_a?(FlowD) || node.is_a?(FlowE) || node.is_a?(FlowF) || node.is_a?(FlowG) || node.is_a?(FlowH)
+  node.value
+end
+
+node = FlowA.new
+LibC.exit(flow_plain(node) &+ flow_chain(node))

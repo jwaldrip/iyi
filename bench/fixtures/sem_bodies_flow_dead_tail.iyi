@@ -1,0 +1,100 @@
+class FlowNode
+end
+class FlowA < FlowNode
+  def value : Int32
+    7
+  end
+end
+class FlowB < FlowNode
+end
+class FlowC < FlowNode
+end
+class FlowD < FlowNode
+end
+class FlowE < FlowNode
+end
+class FlowF < FlowNode
+end
+class FlowG < FlowNode
+end
+class FlowH < FlowNode
+end
+
+def flow_render(node : FlowNode) : Int32
+  return 1 if node.is_a?(FlowA)
+  return 2 if node.is_a?(FlowB)
+  3
+end
+
+def flow_concrete(node : FlowA) : Int32
+  return 7 if node.is_a?(FlowA)
+  node.value
+end
+
+def flow_chain(node : FlowA) : Int32
+  return 7 if node.is_a?(FlowA) || node.is_a?(FlowB) || node.is_a?(FlowC) || node.is_a?(FlowD) || node.is_a?(FlowE) || node.is_a?(FlowF) || node.is_a?(FlowG) || node.is_a?(FlowH)
+  node.value
+end
+
+def flow_and(node : FlowA, flag : Bool) : Int32
+  if node.is_a?(FlowA) && flag
+    return 1
+  end
+  node.value
+end
+
+def flow_supertype(node : FlowNode) : Int32
+  if node.is_a?(FlowA)
+    return 1
+  end
+  2
+end
+
+def flow_nil(node : FlowA | Nil) : Int32
+  return 0 if node.nil?
+  node.value
+end
+
+def flow_fail : NoReturn
+  flow_fail
+end
+
+def flow_noreturn(node : FlowA | Nil) : Int32
+  if node.nil?
+    flow_fail
+  end
+  node.value
+end
+
+def flow_loop(node : FlowA, flag : Bool) : Int32
+  count = 0
+  while count < 3
+    count += 1
+    next if flag && count == 1
+    break if count == 2
+  end
+  node.value + count
+end
+
+def flow_case(node : FlowNode) : Int32
+  case node
+  when FlowA
+    return 1
+  when FlowB
+    return 2
+  end
+  3
+end
+
+a = FlowA.new
+b = FlowB.new
+flow_render(a)
+flow_render(b)
+flow_concrete(a)
+flow_chain(a)
+flow_and(a, false)
+flow_supertype(b)
+flow_nil(a)
+flow_noreturn(a)
+flow_loop(a, false)
+flow_case(b)

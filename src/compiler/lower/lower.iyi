@@ -41,6 +41,7 @@ import compiler/lower/context::{BodyVisit, BranchPhi, Lowerer, LowerVar}
 import compiler/lower/locals::{preallocate_locals}
 import compiler/lower/helpers::{abi_name, int1, llvm_nil, load_aligned, store_aligned, at_terminator?, raise_overflow_name}
 import compiler/lower/cond::{cond_bool, nil_condition?}
+import compiler/lower/cleanup::{cleanup_truthiness}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
 import compiler/lower/call::{codegen_call_node, codegen_responds_to, responds_to_value, declare_lib_var}
@@ -1146,7 +1147,7 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     # transform_is_a_or_responds_to: the test is true when the filtered type is the object's type, false when
     # nothing is left). The branch the test cannot take is never lowered: it may read a variable the test's own
     # filtering narrowed away, which has no type.
-    decided = static_is_a(low, cond_node.as(IsA))
+    decided = cleanup_truthiness(low, cond_node)
     unless decided.nil?
       folded_obj = cond_node.as(IsA).obj
       unless folded_obj.is_a?(Var) || folded_obj.is_a?(InstanceVar) || folded_obj.is_a?(ClassVar)
@@ -1163,6 +1164,22 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
       end
       return
     end
+  end
+  # Cleanup propagates the last truthiness of a short-circuit condition.
+  # Evaluate the condition for side effects before discarding the dead arm.
+  decided = cleanup_truthiness(low, cond_node)
+  unless decided.nil?
+    wants = low.needs_value
+    low.needs_value = false
+    codegen_node(low, cond_node)
+    low.needs_value = wants
+    return if block_ended?(low)
+    if decided.as(Bool)
+      codegen_node(low, then_node)
+    else
+      codegen_node(low, else_node)
+    end
+    return
   end
 
   wants = low.needs_value
@@ -1209,23 +1226,6 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
   phi.close(low)
 end
 
-# Whether the analysed types decide a type test: true when the object's type is what the test narrows it to,
-# false when nothing of it is, nil when the value decides (a union, or a virtual type with other subclasses). The
-# object and the tested type must both be typed.
-pub def static_is_a(low : Lowerer, node : IsA) : Bool?
-  obj_t = low.analysed.type_of?(node.obj)
-  const_t = low.analysed.type_of?(node.const)
-  return nil if obj_t.nil? || const_t.nil?
-  ot = TypeIndirection.remove_indirection(obj_t.as(Type))
-  ct = TypeIndirection.remove_indirection(const_t.as(Type))
-  if ct.is_a?(MetaclassType)
-    ct = ct.as(MetaclassType).instance_type
-  end
-  filtered = TypeIntersect.common_descendent(low.analysed.program, ot, ct)
-  return false if filtered.nil?
-  return true if filtered.as(Type).full_name == ot.full_name
-  nil
-end
 
 # Whether a value of this type joins by pointer in the `if` phi: the hosted Phi takes a pointer to a
 # passed-by-value type (phi.cr `close`). Only the union case is ported here; another by-value type

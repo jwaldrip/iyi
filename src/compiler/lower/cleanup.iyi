@@ -1,0 +1,56 @@
+module compiler/lower/cleanup
+
+import compiler/syntax/ast::{ASTNode, And, Assign, BoolLiteral, If, IsA, NilLiteral, Not, Or}
+import compiler/lower/context::{Lowerer}
+import compiler/semantic/top_level::{MetaclassType, NilType, Type}
+import compiler/types/indirection::{TypeIndirection}
+import compiler/types/intersect::{TypeIntersect}
+
+# Hosted cleanup's last-status propagation. Unknown is nil; never infer from
+# typing's flow-dead flag, which is not a code generation decision.
+pub def cleanup_truthiness(low : Lowerer, node : ASTNode) : Bool?
+  if node.is_a?(BoolLiteral)
+    return node.as(BoolLiteral).value
+  elsif node.is_a?(NilLiteral)
+    return false
+  elsif node.is_a?(Assign)
+    return cleanup_truthiness(low, node.as(Assign).value)
+  elsif node.is_a?(Not)
+    value = cleanup_truthiness(low, node.as(Not).exp)
+    return value.nil? ? nil : !value.as(Bool)
+  elsif node.is_a?(IsA)
+    test = node.as(IsA)
+    obj = low.analysed.type_of?(test.obj)
+    target = low.analysed.type_of?(test.const)
+    return nil if obj.nil? || target.nil?
+    ot = TypeIndirection.remove_indirection(obj.as(Type))
+    ct = TypeIndirection.remove_indirection(target.as(Type))
+    ct = ct.as(MetaclassType).instance_type if ct.is_a?(MetaclassType)
+    filtered = TypeIntersect.common_descendent(low.analysed.program, ot, ct)
+    return false if filtered.nil?
+    return true if filtered.as(Type).full_name == ot.full_name
+    return nil
+  elsif node.is_a?(Or) || node.is_a?(And)
+    if expanded = low.analysed.expansions[node]?
+      return cleanup_truthiness(low, expanded)
+    end
+    return nil
+  elsif node.is_a?(If)
+    branch = node.as(If)
+    cond = cleanup_truthiness(low, branch.cond)
+    if branch.from_or
+      return true if cond == true
+      other = cleanup_truthiness(low, branch.else)
+      return true if other == true
+      return false if cond == false && other == false
+    elsif branch.from_and
+      return false if cond == false
+      other = cleanup_truthiness(low, branch.then)
+      return false if other == false
+      return true if cond == true && other == true
+    end
+  end
+  type = low.analysed.type_of?(node)
+  return false if type.is_a?(NilType)
+  nil
+end

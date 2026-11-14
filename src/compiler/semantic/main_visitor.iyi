@@ -1740,6 +1740,7 @@ pub class MainVisitor < TypeNodeHost
           if i == node.expressions.size - 1
             exp.accept(self)
             last_type = child_type(exp)
+            last_type = @program.no_return_type if dead_here && last_type.nil?
           else
             saved_ntf = @needs_type_filters
             @needs_type_filters = 0
