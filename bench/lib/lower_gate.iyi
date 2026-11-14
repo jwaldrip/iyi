@@ -15,6 +15,7 @@ import compiler/syntax/ast::{ASTNode, Def, Expressions, FunDef, LibDef}
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{LibType, SemanticProgram, TopLevelVisitor}
 import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/definition_typing::{append_definition_probes}
 import compiler/semantic/top_level::{normalize_path}
 import compiler/semantic/normalizer::{NormalizerProgram}
@@ -58,6 +59,9 @@ pub def analyse(source : String, filename : String, stand_in_libs : Bool) : Anal
   root.accept(tl)
   tl.finish
   prog.resolve_declared_types
+  # The explicit and guessed instance and class variables are declared before the body pass, as every
+  # other driver does (typed_dump, the pipeline). The definition probes below type a def ahead of its class body.
+  declare_guessed_instance_vars(prog)
   mv = MainVisitor.new(prog)
   if stand_in_libs
     stand_in_primitive_types(root, prog, mv)

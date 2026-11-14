@@ -306,8 +306,8 @@ prove_mutation "a string constant's assignment initialises it a second time" "$R
   "if string_const?(c)" \
   "if false" -- lowglob_check || status=1
 prove_mutation "a class variable assignment in a method stores the global's address, not the value" "$REPO/src/compiler/lower/class_var.iyi" \
-  "  store_aligned(low, value, ptr)" \
-  "  store_aligned(low, ptr, ptr)" -- lowglob_check || status=1
+  "  assign(low, ptr, cvar.type, value_type, value)" \
+  "  assign(low, ptr, cvar.type, value_type, ptr)" -- lowglob_check || status=1
 prove_mutation "a nilable reference class variable's global has no null initialiser" "$REPO/src/compiler/lower/class_var.iyi" \
   "    g.initializer = low.builder.const_null(ir)" "    g.initializer = nil" -- lowglob_check || status=1
 prove_mutation "a @[ThreadLocal] class variable is lowered as a plain global (its refusal is lifted)" "$REPO/src/compiler/lower/lower.iyi" \
