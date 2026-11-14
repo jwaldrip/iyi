@@ -37,13 +37,10 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy"
+WAITING_FIXTURES="lowglob_cvar_tls"
 # The body pass does not flag an untyped @[ThreadLocal] declaration.
-# The lazy fixture's indirect Proc call waits on body typing's splat binding.
 #
-# The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
-# The hosted module cannot yet be imported: its indirect return ABI is not
-# represented by the port. Keep this fixture outside the lowglob_* glob.
+# The hosted lazy fixture is also run on its own below, and its flag-check mutation is tested.
 echo "  wait_lowglob_const_large_struct: WAITING, a value above 128 bytes travels through memory (hosted fun.cr 635-693): not ported"
 
 
@@ -128,12 +125,6 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
   esac
   if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
     reason="$(awk 'NR==1' "$WORK/$name.port.err")"
-    if [ "$name" = lowglob_cvar_lazy ]; then
-      case "$reason" in
-        *"expected type, got *T"*) ;;
-        *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
-      esac
-    fi
     if [ "$named" = 1 ]; then
       echo "  $name: WAITING, named: $reason"
       waiting=$((waiting + 1))
