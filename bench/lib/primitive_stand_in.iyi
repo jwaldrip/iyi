@@ -30,6 +30,14 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
     owner.add_def(primitive_def("unsafe_chr", [] of Arg, Path.new("Char"), "unchecked_convert"))
     owner.add_def(primitive_def("to_f32", [] of Arg, Path.new("Float32"), "convert"))
     owner.add_def(primitive_def("to_f64", [] of Arg, Path.new("Float64"), "convert"))
+    ["Float32", "Float64"].each do |other|
+      ["+", "-", "*"].each do |op|
+        owner.add_def(binary_def(op, other, other))
+      end
+      ["==", "!=", "<", "<=", ">", ">="].each do |op|
+        owner.add_def(binary_def(op, other, "Bool"))
+      end
+    end
     ["==", "!=", "<", "<=", ">", ">="].each do |op|
       owner.add_def(binary_def(op, tn, "Bool"))
     end
@@ -56,6 +64,15 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
   char.add_def(primitive_def("ord", [] of Arg, Path.new("Int32"), "unchecked_convert"))
   ["Float32", "Float64"].each do |tn|
     owner = prog.lookup_type_node(Path.new(tn), prog).as(NonGenericClassType)
+    owner.add_def(primitive_def("to_f64", [] of Arg, Path.new("Float64"), "convert"))
+    int_names.each do |other|
+      ["+", "-", "*", "/", "fdiv"].each do |op|
+        owner.add_def(binary_def(op, other, tn))
+      end
+      ["==", "!=", "<", "<=", ">", ">="].each do |op|
+        owner.add_def(binary_def(op, other, "Bool"))
+      end
+    end
     ["Float32", "Float64"].each do |other|
       ["+", "-", "*", "/", "fdiv"].each do |op|
         owner.add_def(binary_def(op, other, tn))

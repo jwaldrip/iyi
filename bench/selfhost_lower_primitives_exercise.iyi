@@ -19,7 +19,7 @@ import compiler/ir/parser::{parse, IrParseError}
 import compiler/ir/printer::{print}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program}
-import compiler/lower/primitives::{class_pointerful?, codegen_primitive_binary}
+import compiler/lower/primitives::{class_pointerful?, codegen_primitive_binary, codegen_primitive_convert}
 import compiler/lower/context::{Lowerer}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
@@ -98,6 +98,17 @@ def check_binary_union(fixture : String, side : String) : Nil
   raise "binary union operand was not refused"
 end
 
+def check_refused_convert(from_name : String, to_name : String, checked : Bool) : Nil
+  analysis = analyse("nil\n", "convert_refusal.iyi", true)
+  m = ir_module("arm64-apple-macosx")
+  low = Lowerer.new(m, typer_for(m, analysis.iyi), analysis.visitor)
+  from = analysis.visitor.program.lookup_type(from_name)
+  to = analysis.visitor.program.lookup_type(to_name)
+  raise "conversion types not declared" if from.nil? || to.nil?
+  value = Value.new(low.typer.llvm_type(from.as(Type)))
+  codegen_primitive_convert(low, from.as(Type), to.as(Type), value, checked)
+end
+
 def run : Nil
   args = Program.args
   if args.empty?
@@ -117,6 +128,8 @@ def run : Nil
     check_generic_pointerful
   elsif mode == "binary_union"
     check_binary_union(args[1], args[2])
+  elsif mode == "convert_refusal"
+    check_refused_convert(args[1], args[2], args[3] == "checked")
   else
     raise "unknown mode #{mode}"
   end
