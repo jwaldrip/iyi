@@ -759,6 +759,7 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     if exp.is_a?(Var)
       var = low.current_context.vars[exp.as(Var).name]?
       raise "BUG: variable #{exp.as(Var).name} is read before it is assigned (hosted codegen.cr: visit(PointerOf))" if var.nil?
+      raise "BUG: pointerof argument #{exp.as(Var).name} has no addressable slot" if var.as(LowerVar).already_loaded
       low.last = var.as(LowerVar).pointer
       return
     end

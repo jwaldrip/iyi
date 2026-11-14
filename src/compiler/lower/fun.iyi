@@ -21,7 +21,7 @@ module compiler/lower/fun
 # The body is lowered through the dispatch the lowering installed (`BodyVisit`,
 # context.iyi), because iyi refuses an import cycle and the dispatch imports this file.
 
-import compiler/syntax/ast::{ASTNode, Arg, Assign, ClassDef, Def, ModuleDef, ProcLiteral, Var}
+import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, ClassDef, Def, ModuleDef, PointerOf, ProcLiteral, Var}
 import compiler/syntax/visitor::{Visitor}
 import compiler/ir/function::{Function, Linkage}
 import compiler/ir/inst::{Attribute, Block, CallConv}
@@ -33,6 +33,7 @@ import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedStat
 import compiler/lower/locals::{preallocate_locals}
 import compiler/lower/closure::{allocate_closure, setup_closure_vars}
 import compiler/semantic/closures::{ClosureFacts}
+import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/instance_var::{self_by_pointer?}
 import compiler/lower/typer::{passed_by_value?}
@@ -369,7 +370,7 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
     frame = low.current_context.closure_facts.as(ClosureFacts).analyse_def(target, self_type)
     allocate_closure(low, frame)
   end
-  assigned = collect_assigned_vars(target.body)
+  assigned = collect_assigned_vars(target.body, low.analysed)
   i = 0
   while i < target.args.size
     arg = target.args[i]
@@ -494,29 +495,42 @@ pub def function_attributes(m : Module) : Nil
   end
 end
 
-# Collects variable names assigned anywhere in a def's body (excluding nested defs/types/proc literals).
-# Hosted `target_def_var.assigned_to?` (fun.cr:1000).
+# Arguments assigned or addressed need a local slot: pointerof can mutate the
+# value through the returned pointer, just as the hosted assigned_to? does.
 private class AssignedVarCollector < Visitor
   getter names : Set(String)
 
-  def initialize
+  def initialize(@analysed : MainVisitor)
     @names = Set(String).new
   end
 
   def visit_any(node : ASTNode) : Bool
     return false if node.is_a?(Def) || node.is_a?(ClassDef) || node.is_a?(ModuleDef) || node.is_a?(ProcLiteral)
+    if expanded = @analysed.expansions[node]?
+      expanded.accept(self)
+      return false
+    end
+    if node.is_a?(Call)
+      if expanded = node.as(Call).expanded
+        expanded.accept(self)
+        return false
+      end
+    end
     if node.is_a?(Assign)
       t = node.as(Assign).target
       if t.is_a?(Var)
         @names.add(t.as(Var).name)
       end
+    elsif node.is_a?(PointerOf)
+      t = node.as(PointerOf).exp
+      @names.add(t.as(Var).name) if t.is_a?(Var)
     end
     true
   end
 end
 
-private def collect_assigned_vars(body : ASTNode) : Set(String)
-  collector = AssignedVarCollector.new
+private def collect_assigned_vars(body : ASTNode, analysed : MainVisitor) : Set(String)
+  collector = AssignedVarCollector.new(analysed)
   body.accept(collector)
   collector.names
 end
