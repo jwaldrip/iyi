@@ -1176,7 +1176,7 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     end
     return
   end
-  if cond_node.is_a?(IsA)
+  if cond_node.is_a?(IsA) && low.analysed.expansions[cond_node]?.nil?
     # The hosted cleanup replaces a type test the object's type decides with a literal (cleanup_transformer.cr
     # transform_is_a_or_responds_to: the test is true when the filtered type is the object's type, false when
     # nothing is left). The branch the test cannot take is never lowered: it may read a variable the test's own
@@ -1540,6 +1540,10 @@ end
 # type-id word is read from the union value, which the casts slice builds with `upcast`, S2c3), and a
 # virtual or union restriction (the hosted match_any_type_id range, not ported yet).
 pub def codegen_is_a(low : Lowerer, node : IsA) : Nil
+  if isa_expanded = low.analysed.expansions[node]?
+    codegen_node(low, isa_expanded)
+    return
+  end
   wants = low.needs_value
   obj_t = low.analysed.type_of?(node.obj)
   if obj_t.nil?

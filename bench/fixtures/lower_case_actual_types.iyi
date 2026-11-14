@@ -1,0 +1,18 @@
+class Alpha
+end
+class Beta
+end
+class Gamma
+end
+
+def number(value : Alpha | Beta | Gamma) : Int32
+  case value
+  when Alpha
+    1
+  when Beta
+    2
+  else
+    3
+  end
+end
+number(Alpha.new) + number(Beta.new) + number(Gamma.new)
