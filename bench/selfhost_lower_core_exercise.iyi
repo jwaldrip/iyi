@@ -18,8 +18,9 @@ module bench/selfhost_lower_core_exercise
 
 import compiler/syntax/ast::{ASTNode, Break, Def, Next, Nop, Return}
 import compiler/syntax/parser::{Parser}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, normalize_path}
 import compiler/semantic/main_visitor::{MainVisitor, TypedInstance}
+import compiler/semantic/definition_typing::{append_definition_probes}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/ir/module::{Module}
@@ -62,6 +63,9 @@ def analyse(source : String, filename : String) : Analysis
   tl.finish
   mv = MainVisitor.new(prog)
   stand_in_primitive_types(root, prog, mv)
+  files = Set(String).new
+  files.add(normalize_path(filename))
+  append_definition_probes(prog, root, files)
   root.accept(mv)
   RecursiveStructChecker.new(prog).run
   Analysis.new(root, mv, !prog.types["IyiRuntimeLock"]?.nil?)
