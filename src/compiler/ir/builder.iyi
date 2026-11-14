@@ -317,7 +317,55 @@ pub class Builder
 
   # A binary operation. `flags` is bit 0 nuw, bit 1 nsw, bit 2 exact.
   def binop(op : Op, lhs : Value, rhs : Value, flags : Int64 = 0_i64, name : String = "") : Inst
+    if folded = fold_binop(op, lhs, rhs, flags)
+      return folded
+    end
     emit(op, lhs.type, [lhs, rhs] of Value, flags, nil, [] of Block, [] of Int64, name)
+  end
+
+  # Match the hosted IRBuilder's folding of unflagged integer arithmetic.
+  # Poison-producing and wide operations stay instructions.
+  private def fold_binop(op : Op, lhs : Value, rhs : Value, flags : Int64) : Inst?
+    return nil unless flags == 0_i64 && lhs.type.int? && lhs.type == rhs.type
+    return nil unless lhs.is_a?(Inst) && rhs.is_a?(Inst)
+    left = lhs.as(Inst)
+    right = rhs.as(Inst)
+    return nil unless left.op == Op::ConstInt && right.op == Op::ConstInt
+    bits = lhs.type.bits
+    return nil unless bits >= 1 && bits <= 64
+    a = left.aux_int
+    b = right.aux_int
+    value = case op
+            when Op::Add then a &+ b
+            when Op::Sub then a &- b
+            when Op::Mul then a &* b
+            when Op::And then a & b
+            when Op::Or  then a | b
+            when Op::Xor then a ^ b
+            when Op::Shl
+              return nil unless b >= 0_i64 && b < bits
+              a.unsafe_shl(b.to_i32)
+            when Op::LShr
+              return nil unless b >= 0_i64 && b < bits
+              unsigned = a.unsafe_to_u64
+              unsigned &= 0xFFFFFFFFFFFFFFFF_u64.unsafe_shr(64 - bits) if bits < 64
+              u64_as_i64(unsigned.unsafe_shr(b.to_i32))
+            when Op::AShr
+              return nil unless b >= 0_i64 && b < bits
+              padding = 64 - bits
+              signed = bits == 64 ? a : a.unsafe_shl(padding).unsafe_shr(padding)
+              signed.unsafe_shr(b.to_i32)
+            else
+              return nil
+            end
+    # Canonical signed storage, except i1's established 0/1 representation.
+    if bits == 1
+      value &= 1_i64
+    elsif bits < 64
+      padding = 64 - bits
+      value = value.unsafe_shl(padding).unsafe_shr(padding)
+    end
+    const_int(lhs.type, value)
   end
 
   def add(lhs : Value, rhs : Value, name : String = "") : Inst

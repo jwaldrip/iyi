@@ -216,6 +216,7 @@ pub class GenericClassInstanceType < GenericInstanceType
     return true if self == other
     target = other.devirtualize
     return subtype_of?(target) unless target == other
+    return super if other.is_a?(UnionType)
     if other.is_a?(GenericClassInstanceType)
       other_gi = other.as(GenericClassInstanceType)
       if @generic_type == other_gi.generic_type

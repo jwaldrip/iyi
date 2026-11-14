@@ -28,6 +28,10 @@
   is typed where it is written before the callee's return annotation and body, as the hosted pass types it.
   Its parameters take the restriction's inputs, so `T` is the receiver's, and `U` is the block's type;
   a block whose type does not fit the declared result is refused at the call.
+- Generic instances satisfy unions containing their type, including nullable arrays, tuples, procs,
+  pointers and static arrays. The union check still rejects incompatible generic arguments.
+- The IR builder folds unflagged integer arithmetic up to 64 bits at the operand's width. Division,
+  remainder, flagged operations, wide integers and out-of-range shifts remain instructions.
 - **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
   [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
   the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,
