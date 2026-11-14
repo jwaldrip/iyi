@@ -426,11 +426,14 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
       class_owner = context_type
     end
   end
-  tid : Value? = nil
-  if receiver_dynamic
-    raise "BUG: dispatched self has no value" if receiver.nil?
+  tid : Value
+  if value = receiver
     source_node = obj || node
-    tid = runtime_type.is_a?(MixedUnionType) ? mixed_type_id_of_pointer(low, receiver.as(Value), runtime_type) : type_id_of_value(low, source_node, receiver.as(Value), runtime_type)
+    tid = runtime_type.is_a?(MixedUnionType) ? mixed_type_id_of_pointer(low, value, runtime_type) : type_id_of_value(low, source_node, value, runtime_type)
+  else
+    raise "BUG: dispatched self has no value" if receiver_dynamic
+    type_id_value(low, runtime_type) if obj.nil?
+    tid = type_id_value(low, runtime_type)
   end
   values = [] of Value
   arg_tids = [] of Value
