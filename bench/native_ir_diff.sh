@@ -53,7 +53,7 @@ for ir in "$@"; do
   perl -e 'alarm 30; exec @ARGV or exit 127' -- "$dir/llvm" >"$dir/llvm.out" 2>"$dir/llvm.err" </dev/null; ls=$?
   perl -e 'alarm 30; exec @ARGV or exit 127' -- "$dir/native" >"$dir/native.out" 2>"$dir/native.err" </dev/null; ns=$?
   printf '%s\n' "$ls" >"$dir/llvm.status"; printf '%s\n' "$ns" >"$dir/native.status"
-  if [ "$ls" = "$ns" ] && cmp -s "$dir/llvm.out" "$dir/native.out"; then
+  if [ "$ls" != 142 ] && [ "$ns" != 142 ] && [ "$ls" = "$ns" ] && cmp -s "$dir/llvm.out" "$dir/native.out"; then
     passed=$((passed + 1)); printf 'PASS %s\n' "$ir" >>"$work/report.txt"
   else
     failed=$((failed + 1)); printf 'DIFFER %s llvm=%s native=%s (%s)\n' "$ir" "$ls" "$ns" "$dir" | tee -a "$work/report.txt"

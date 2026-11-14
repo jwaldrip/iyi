@@ -62,7 +62,7 @@ for pair in 'parser:src/compiler/tools/parse.iyi' 'exercise:bench/selfhost_parse
       perl -e 'alarm 30; exec @ARGV or exit 127' -- "$dir/$impl" "${args[@]}" >"$case_dir/$impl.out" 2>"$case_dir/$impl.err" </dev/null
       printf '%s\n' "$?" >"$case_dir/$impl.status"
     done
-    if cmp -s "$case_dir/hosted.status" "$case_dir/bridge.status" && cmp -s "$case_dir/hosted.out" "$case_dir/bridge.out" && cmp -s "$case_dir/hosted.err" "$case_dir/bridge.err"; then
+    if [ "$( <"$case_dir/hosted.status")" != 142 ] && [ "$( <"$case_dir/bridge.status")" != 142 ] && cmp -s "$case_dir/hosted.status" "$case_dir/bridge.status" && cmp -s "$case_dir/hosted.out" "$case_dir/bridge.out" && cmp -s "$case_dir/hosted.err" "$case_dir/bridge.err"; then
       equal=$((equal+1))
     else
       different=$((different+1)); fail=1
@@ -71,7 +71,7 @@ for pair in 'parser:src/compiler/tools/parse.iyi' 'exercise:bench/selfhost_parse
     if [ "$typed" -eq 1 ]; then
       perl -e 'alarm 30; exec @ARGV or exit 127' -- "$dir/typed" "${args[@]}" >"$case_dir/typed.out" 2>"$case_dir/typed.err" </dev/null
       printf '%s\n' "$?" >"$case_dir/typed.status"
-      if ! cmp -s "$case_dir/hosted.status" "$case_dir/typed.status" || ! cmp -s "$case_dir/hosted.out" "$case_dir/typed.out" || ! cmp -s "$case_dir/hosted.err" "$case_dir/typed.err"; then
+      if [ "$( <"$case_dir/typed.status")" = 142 ] || ! cmp -s "$case_dir/hosted.status" "$case_dir/typed.status" || ! cmp -s "$case_dir/hosted.out" "$case_dir/typed.out" || ! cmp -s "$case_dir/hosted.err" "$case_dir/typed.err"; then
         fail=1; printf 'DIFFER typed %s %s (%s)\n' "$name" "${file:-<no-argument>}" "$case_dir" | tee -a "$work/report.txt"
       fi
     fi
