@@ -824,25 +824,29 @@ pub def codegen_uninitialized_var(low : Lowerer, node : UninitializedVar) : Nil
   low.last = to_lhs(low, slot.pointer, nt)
 end
 
-# The hosted `declare_var` and the value of the declaration (codegen.cr:1800, codegen_assign): the variable's alloca is
-# made in the alloca block with the type the declaration gives; a value is then assigned to it, and the declaration's
-# value is the value assigned. Without a value the declaration leaves nil. A variable declared twice is refused by
-# name. A value of another type goes through assign (hosted codegen_assign after declare_var, codegen.cr:1808-1809).
+# The hosted declare_var keeps a slot already allocated for the name (codegen.cr:2152).
+# Def locals can be allocated before their TypeDeclaration is visited. Reuse that storage
+# and its final variable type, then evaluate and assign the initializer as codegen_assign does.
+# Without an initializer the declaration leaves nil.
 pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
   var_node = node.var.as(Var)
   decl = low.analysed.type_of?(var_node)
   raise "BUG: the analysed program has no type for a declared variable (hosted codegen.cr: declare_var)" if decl.nil?
   dt = decl.as(Type)
-  existing = low.current_context.vars[var_node.name]?
-  if !existing.nil?
-    refuse_port("lower: variable #{var_node.name} is declared twice (hosted codegen.cr: declare_var)")
+  slot_entry = low.current_context.vars[var_node.name]?
+  if slot_entry.nil?
+    declare_assign_var(low, var_node.name, dt)
+    slot_entry = low.current_context.vars[var_node.name]?
   end
-  pointer = low.alloca(low.typer.llvm_type(dt), var_node.name)
-  low.current_context.vars[var_node.name] = LowerVar.new(pointer, dt, false)
+  raise "BUG: declared variable #{var_node.name} has no slot (hosted declare_var)" if slot_entry.nil?
+  slot = slot_entry.as(LowerVar)
   value = node.value
   if value.nil?
     low.last = llvm_nil(low)
     return
+  end
+  if slot.already_loaded
+    raise "BUG: Assign to already_loaded parameter #{var_node.name} (hosted fun.cr: create_local_copy_of_arg)"
   end
   wants = low.needs_value
   low.needs_value = true
@@ -852,8 +856,8 @@ pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
   raise "BUG: the declared value left no value (hosted codegen.cr: codegen_assign)" if v.nil?
   vt = low.analysed.type_of?(value.as(ASTNode))
   raise "BUG: the analysed program has no type for the declared value (hosted codegen.cr: codegen_assign)" if vt.nil?
-  unless dt.is_a?(NilType) && vt.as(Type).is_a?(NilType)
-    assign(low, pointer, dt, vt.as(Type), v.as(Value))
+  unless slot.type.is_a?(NilType) && vt.as(Type).is_a?(NilType)
+    assign(low, slot.pointer, slot.type, vt.as(Type), v.as(Value))
   end
   low.last = v
 end
