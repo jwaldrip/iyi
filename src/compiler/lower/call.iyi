@@ -797,6 +797,9 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
   collector.vars.each do |var|
     name = var.name
     t = low.analysed.type_of?(var)
+    if declaration = collector.declarations[name]?
+      t = low.analysed.lookup_declared?(declaration.declared_type, low.current_context.type)
+    end
     raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
     unless vars[name]?
       alloca_local(low, vars, name, t.as(Type))
@@ -822,6 +825,9 @@ pub def allocate_def_vars(low : Lowerer, def_node : Def, arg_types : Array(Type)
   collector.vars.each do |var|
     name = var.name
     t = low.analysed.type_of?(var)
+    if declaration = collector.declarations[name]?
+      t = low.analysed.lookup_declared?(declaration.declared_type, low.current_context.type)
+    end
     raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
     unless vars[name]?
       alloca_local(low, vars, name, t.as(Type))
