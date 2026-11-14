@@ -1,0 +1,17 @@
+trait Echoer
+  type Item
+  abstract def echo(value : Item) : Item
+end
+
+class Echo(T)
+end
+
+impl Echoer for Echo(T) forall T
+  type Item = T
+  def echo(value : Item) : Item
+    value
+  end
+end
+
+puts Echo(Int32).new.echo(42)
+puts Echo(String).new.echo("text")

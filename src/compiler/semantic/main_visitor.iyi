@@ -578,41 +578,8 @@ pub class MainVisitor < TypeNodeHost
         return found.as(Type) unless found.is_a?(LookupError)
       end
     end
-    if owner && (node.is_a?(Path) || node.is_a?(Generic) || node.is_a?(Union))
-      target = owner.as(Type)
-      target = target.as(MetaclassType).instance_type if target.is_a?(MetaclassType)
-      generic = target
-      generic = generic.as(GenericInstanceType).generic_type if generic.is_a?(GenericInstanceType)
-      bindings = Hash(String, Type).new
-      @program.impls.each do |record|
-        if record.target_type == generic
-          if answers = record.assoc_types
-            answers.each do |answer|
-              if value = answer.value
-                old_imports = @program.current_imports
-                if imports = record.imports
-                  @program.current_imports = imports
-                end
-                scope = record.scope || @current_type
-                found = ArgRestriction.lookup_bound(type_node_system(@program), scope, value, target)
-                @program.current_imports = old_imports
-                unless found.is_a?(LookupError)
-                  if previous = bindings[answer.name]?
-                    if previous != found.as(Type)
-                      raise("ambiguous associated type #{answer.name} for #{generic.full_name}")
-                    end
-                  end
-                  bindings[answer.name] = found.as(Type)
-                end
-              end
-            end
-          end
-        end
-      end
-      unless bindings.empty?
-        found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, target, bindings)
-        return found.as(Type) unless found.is_a?(LookupError)
-      end
+    if associated = lookup_associated_type(node, owner)
+      return associated
     end
     if instance = receiver_instance(owner)
       found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)
@@ -627,6 +594,45 @@ pub class MainVisitor < TypeNodeHost
       return TypeQueries.virtual_type(quiet)
     end
     TypeQueries.virtual_type(@program.lookup_type_node(node, @current_type))
+  end
+
+  def lookup_associated_type(node : ASTNode, owner : Type?) : Type?
+    return nil unless owner && (node.is_a?(Path) || node.is_a?(Generic) || node.is_a?(Union))
+    target = owner.as(Type)
+    target = target.as(MetaclassType).instance_type if target.is_a?(MetaclassType)
+    generic = target
+    generic = generic.as(GenericInstanceType).generic_type if generic.is_a?(GenericInstanceType)
+    bindings = Hash(String, Type).new
+    @program.impls.each do |record|
+      if record.target_type == generic
+        if answers = record.assoc_types
+          answers.each do |answer|
+            if value = answer.value
+              old_imports = @program.current_imports
+              if imports = record.imports
+                @program.current_imports = imports
+              end
+              scope = record.scope || @current_type
+              found = ArgRestriction.lookup_bound(type_node_system(@program), scope, value, target)
+              @program.current_imports = old_imports
+              unless found.is_a?(LookupError)
+                if previous = bindings[answer.name]?
+                  if previous != found.as(Type)
+                    raise("ambiguous associated type #{answer.name} for #{generic.full_name}")
+                  end
+                end
+                bindings[answer.name] = found.as(Type)
+              end
+            end
+          end
+        end
+      end
+    end
+    unless bindings.empty?
+      found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, target, bindings)
+      return found.as(Type) unless found.is_a?(LookupError)
+    end
+    nil
   end
 
   # iyi: a class variable that is replaced keeps the @[ThreadLocal] flag of the one it replaces
@@ -2561,6 +2567,9 @@ pub class MainVisitor < TypeNodeHost
   def restriction_type(restriction : ASTNode, rec_type : Type) : Type?
     if restriction.is_a?(Splat)
       return nil
+    end
+    if associated = lookup_associated_type(restriction, rec_type)
+      return associated
     end
     # A union restriction (`String | Path`, `T | Nil`) is each member, bound
     # the way a single name is, then merged. lookup_bound did not instantiate a
