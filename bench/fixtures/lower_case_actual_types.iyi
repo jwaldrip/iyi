@@ -15,4 +15,4 @@ def number(value : Alpha | Beta | Gamma) : Int32
     3
   end
 end
-number(Alpha.new) + number(Beta.new) + number(Gamma.new)
+number(Alpha.new) &+ number(Beta.new) &+ number(Gamma.new)
