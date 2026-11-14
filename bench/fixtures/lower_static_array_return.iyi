@@ -1,31 +1,31 @@
-# Like the prelude's __iyi_kevent_change, return an initialized UInt64[4]
-# by value and read every element from the caller's copy. Exit 42 on success.
+# Return four distinct words by value, as the prelude's __iyi_kevent_change does.
+# C memory calls avoid depending on Pointer methods in a prelude-free program.
+# Compare every byte of the caller's copy; missing or reordered words fail.
 lib LibC
+  fun memset(dest : Void*, c : Int32, n : UInt64) : Void*
+  fun memcmp(left : Void*, right : Void*, n : UInt64) : Int32
   fun exit(status : Int32) : NoReturn
 end
 
-def pack_words(a : UInt64, b : UInt64) : UInt64[4]
+def layered(buffer : Pointer(Void), a : Int32, b : Int32, c : Int32, d : Int32) : Nil
+  LibC.memset(buffer, d, 32_u64)
+  LibC.memset(buffer, c, 24_u64)
+  LibC.memset(buffer, b, 16_u64)
+  LibC.memset(buffer, a, 8_u64)
+  nil
+end
+
+def pack_words(a : Int32, b : Int32, c : Int32, d : Int32) : UInt64[4]
   words = uninitialized UInt64[4]
-  slots = pointerof(words).as(Pointer(UInt64))
-  slots.value = a
-  (slots + 1_i64).value = b
-  (slots + 2_i64).value = 0_u64
-  (slots + 3_i64).value = 0_u64
+  layered(pointerof(words).as(Pointer(Void)), a, b, c, d)
   words
 end
 
-def total : UInt64
-  packed = pack_words(5_u64, 37_u64)
-  read = pointerof(packed).as(Pointer(UInt64))
-  read.value &+ (read + 1_i64).value &+ (read + 2_i64).value &+ (read + 3_i64).value
+def returned_intact : Bool
+  packed = pack_words(0x44, 0x33, 0x22, 0x11)
+  expected = uninitialized UInt64[4]
+  layered(pointerof(expected).as(Pointer(Void)), 0x44, 0x33, 0x22, 0x11)
+  LibC.memcmp(pointerof(packed).as(Pointer(Void)), pointerof(expected).as(Pointer(Void)), 32_u64) == 0
 end
 
-def exit_code(value : UInt64) : Int32
-  if value == 42_u64
-    42
-  else
-    1
-  end
-end
-
-LibC.exit(exit_code(total))
+LibC.exit(returned_intact ? 42 : 1)
