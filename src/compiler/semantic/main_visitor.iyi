@@ -80,6 +80,24 @@ pub class DefInstance
   end
 end
 
+# Instances created while a loop is settling share this ledger across visitors.
+pub class SpeculativeEntry
+  getter key : String
+  getter instance : TypedInstance
+  property window_end : Int32
+  property dirty : Bool
+
+  def initialize(@key : String, @instance : TypedInstance, @window_end : Int32, @dirty : Bool = false)
+  end
+end
+
+pub class SpeculationLedger
+  property depth : Int32 = 0
+  property taint : Int32 = 0
+  getter entries : Array(SpeculativeEntry) = [] of SpeculativeEntry
+  getter dirty_keys : Hash(String, Bool) = Hash(String, Bool).new
+end
+
 # The def a block is written in, and the return values of its body (hosted: a `return` in a
 # block leaves the def the block is written in).
 pub class BlockOwner
@@ -239,6 +257,7 @@ pub class MainVisitor < TypeNodeHost
   property typing_stack : Array(String)
   # Every refusal recorded, in order (see Refusal). Shared with a fun body's visitor.
   property refusals : Array(Refusal)
+  property speculation : SpeculationLedger
   # Every instantiation whose body typing started with all its parameters typed,
   # in order (see TypedInstance). Shared with a fun body's visitor.
   property typed_instances : Array(TypedInstance)
@@ -364,6 +383,7 @@ pub class MainVisitor < TypeNodeHost
     @current_yield_nodes = nil
     @typing_stack = [] of String
     @refusals = [] of Refusal
+    @speculation = SpeculationLedger.new
     @typed_instances = [] of TypedInstance
     @def_instances = Hash(String, DefInstance).new
   end
@@ -396,7 +416,7 @@ pub class MainVisitor < TypeNodeHost
     if t = @node_types[node]?
       return t
     end
-    unless @total
+    unless @total || @speculation.depth > 0
       if reason = @untyped_reasons[node]?
         raise(reason)
       end
@@ -417,7 +437,7 @@ pub class MainVisitor < TypeNodeHost
   # error, as before); total mode records it on the node.
   def refuse(node : ASTNode, message : String) : Bool
     record_refusal(node, message)
-    raise(message) unless @total
+    raise(message) unless @total || @speculation.depth > 0
     @untyped_reasons[node] = message
     false
   end
@@ -444,6 +464,7 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     @refusals << Refusal.new(reason, file, line, column, def_name, node)
+    @speculation.taint = @speculation.taint + 1
     nil
   end
 
@@ -1922,6 +1943,35 @@ pub class MainVisitor < TypeNodeHost
     nil
   end
 
+  # Discard dirty instances and their descendants without replacing the shared array.
+  def discard_loop_pass(entry_mark : Int32, refusal_mark : Int32) : Nil
+    entries = @speculation.entries
+    removed = Hash(UInt64, Bool).new
+    i = entry_mark
+    through = entry_mark
+    while i < entries.size
+      entry = entries[i]
+      if entry.dirty && entry.window_end > through
+        through = entry.window_end
+      end
+      if i < through
+        @def_instances.delete(entry.key)
+        @speculation.dirty_keys.delete(entry.key)
+        removed[entry.instance.object_id] = true
+      end
+      i = i + 1
+    end
+    kept = [] of TypedInstance
+    @typed_instances.each do |instance|
+      kept << instance unless removed[instance.object_id]?
+    end
+    @typed_instances.truncate(0, 0)
+    kept.each { |instance| @typed_instances << instance }
+    entries.truncate(0, entry_mark)
+    @refusals.truncate(0, refusal_mark)
+    nil
+  end
+
   def visit(node : While) : Bool
     before_cond_vars_copy = @vars.dup
     before_cond_untyped = @untyped_locals.dup
@@ -1938,8 +1988,13 @@ pub class MainVisitor < TypeNodeHost
     break_vars_list = [] of Hash(String, Type)
 
     pass = 0
-    while pass < 3
+    settled = false
+    settled_refusal : String? = nil
+    while pass < 32
       pass = pass + 1
+      refusal_mark = @refusals.size
+      entry_mark = @speculation.entries.size
+      @speculation.depth = @speculation.depth + 1
       pass_start_vars = @vars.dup
       @type_filters = nil
       @needs_type_filters = @needs_type_filters + 1
@@ -1960,6 +2015,7 @@ pub class MainVisitor < TypeNodeHost
       @handler_direct_exit = old_handler_direct_exit
       body_vars = @vars
       break_vars_list = @while_break_vars.pop
+      @speculation.depth = @speculation.depth - 1
 
       changed = false
       next_vars = Hash(String, Type).new
@@ -1978,7 +2034,18 @@ pub class MainVisitor < TypeNodeHost
           next_vars[name] = start_t
         end
       end
-      break unless changed
+      unless changed
+        settled = true
+        if @speculation.depth == 0
+          if !@total && @refusals.size > refusal_mark
+            settled_refusal = @refusals[refusal_mark].reason
+          end
+          @speculation.entries.each { |entry| @speculation.dirty_keys.delete(entry.key) }
+          @speculation.entries.truncate(0, 0)
+        end
+        break
+      end
+      discard_loop_pass(entry_mark, refusal_mark)
       @vars = next_vars
       @untyped_locals = before_cond_untyped.dup
     end
@@ -1987,6 +2054,15 @@ pub class MainVisitor < TypeNodeHost
     @next_types = old_next_types
     @type_filters = nil
     @unreachable = old_while_unreachable
+    unless settled
+      @vars = before_cond_vars_copy
+      @untyped_locals = before_cond_untyped
+      return refuse(node, "the types of this loop's variables did not settle after 32 passes")
+    end
+    if reason = settled_refusal
+      raise(reason)
+    end
+
 
     endless_while = endless_while_cond?(node.cond)
     merge_while_vars(endless_while, before_cond_vars_copy, after_cond_vars, body_vars, break_vars_list)
@@ -2789,7 +2865,12 @@ pub class MainVisitor < TypeNodeHost
   # The cached instance for a key, or nil when there is none.
   def cached_instance(key : String?) : DefInstance?
     if k = key
-      return @def_instances[k]?
+      if instance = @def_instances[k]?
+        if @speculation.dirty_keys[k]?
+          @speculation.taint = @speculation.taint + 1
+        end
+        return instance
+      end
     end
     nil
   end
@@ -2828,7 +2909,20 @@ pub class MainVisitor < TypeNodeHost
       body_receiver = owner if owner.iyi_unit
     end
     enter_owner_scope(body_receiver)
+    entry_mark = @speculation.entries.size
+    taint_mark = @speculation.taint
     result = type_method_body_in_file(target_def, body_receiver, args, block, site, cache_key, old_current_type, call_node)
+    if k = cache_key
+      entries = @speculation.entries
+      if entries.size > entry_mark && entries[entry_mark].key == k
+        entry = entries[entry_mark]
+        entry.window_end = entries.size
+        if @speculation.taint > taint_mark
+          entry.dirty = true
+          @speculation.dirty_keys[k] = true
+        end
+      end
+    end
     @current_type = old_current_type
     @program.current_imports = old_imports
     @program.current_import_defs = old_import_defs
@@ -3155,6 +3249,12 @@ pub class MainVisitor < TypeNodeHost
       end
       set_type(target_def, provisional)
       remember_def_instance(cache_key, target_def, provisional)
+      if k = cache_key
+        if @speculation.depth > 0
+          entries = @speculation.entries
+          entries << SpeculativeEntry.new(k, @typed_instances.last, entries.size + 1)
+        end
+      end
     end
     body = splice_def_body(body.as(ASTNode))
     target_def.body = body.as(ASTNode)
@@ -3935,6 +4035,7 @@ pub class MainVisitor < TypeNodeHost
     inner.total = @total
     inner.typing_stack = @typing_stack
     inner.refusals = @refusals
+    inner.speculation = @speculation
     inner.typed_instances = @typed_instances
     inner.def_instances = @def_instances
     inner.def_var_unions = @def_var_unions
