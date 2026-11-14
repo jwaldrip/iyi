@@ -39,6 +39,10 @@ undefined Nil value. At `04f93ac04`, all 14 normal-path defer fixtures match hos
 IR and execution, including a union result preserved across cleanup. The gate
 rejects replacing the union's pointer phi with an aggregate phi.
 
+At `90dc7e8cc`, an empty method evaluates both unused argument expressions in order
+(`AB`, status 3). Class and struct constructors with empty two-argument initializers
+each exit 7. All three results match hosted execution.
+
 The census table below is an earlier diagnostic snapshot, separate from these
 strict whole-program checks.
 
