@@ -5,10 +5,9 @@ module compiler/lower/primitives
 # the primitive names, instead of a function. The hosted `codegen_primitive` is ported
 # here, one name at a time; the names that are not ported are refused by name.
 #
-# How the primitive is found: the port has no Primitive node, so a primitive def's body
-# carries the primitive's name as the hosted dump prints it, `# primitive: <name>`
-# (`primitive_name`). NEEDS.md (S2d rows 19-25) records the form the semantic pass is
-# asked to give it.
+# A primitive def has a Primitive body, set by the declarations pass for annotated
+# library defs and by the prelude-free stand-ins for builtin operators.
+# `primitive_name` reads the body's name.
 #
 # Ported:
 #   - `binary` on two integers: the checked `+`, `-`, `*` (the overflow intrinsic and the
@@ -70,10 +69,9 @@ pub class IntShape
   end
 end
 
-# The name of a primitive from its def's body (`# primitive: binary` gives `binary`), or
-# nil for a def that is not a primitive.
+# The name in a Primitive node or a built-in argument constant, or nil for other nodes.
 pub def primitive_name(body : ASTNode) : String?
-  # The parser's `Primitive` node carries the name itself (ast.iyi); the older form is a MacroLiteral text.
+  # Built-in argument constants still carry their name as MacroLiteral text.
   if body.is_a?(Primitive)
     return body.as(Primitive).name
   end
@@ -87,7 +85,7 @@ end
 # the arguments are lowered in order, then `codegen_primitive` emits the instruction. The
 # value of the call is left in `low.last`.
 pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
-  name = primitive_name_of(target)
+  name = primitive_name(target.body)
   raise "BUG: lower_primitive_call on a def that is not a primitive (hosted call.cr)" if name.nil?
   if name == "load_atomic"
     lower_atomic_load(low, node)
@@ -1297,23 +1295,6 @@ pub def integer_bound(low : Lowerer, shape : IntShape, maximum : Bool) : Value
   int_const(low, maximum ? -1_i64 : 0_i64, shape)
 end
 
-# The primitive name of a def: from its body when the semantic pass gives it a primitive body
-# (`primitive_name`), otherwise from the marker in its free_vars. The marker is the gate-only
-# stand-in's form (bench/lib/primitive_stand_in.iyi, NEEDS.md row 24): the analysis reads a
-# def's free_vars only for a `forall`, and a marker that is not a type name is never looked up.
-# Deleted with the stand-in.
-pub def primitive_name_of(target : Def) : String?
-  name = primitive_name(target.body)
-  return name unless name.nil?
-  marks = target.free_vars
-  return nil if marks.nil?
-  marks.each do |mark|
-    text = primitive_name_text(mark)
-    return text unless text.nil?
-  end
-  nil
-end
-
 # The hosted `codegen_primitive_allocate` for the `allocate` primitive that the generated `new`
 # calls (`_ = allocate`). `t` is the instance type of the metaclass the call is on (the Point in
 # `Point.new`), and the value is a pointer to a fresh instance, zeroed. Ported for a struct: an
@@ -1560,11 +1541,4 @@ pub def sizeof_expr(low : Lowerer, struct_ir : IrType) : Value
   one = low.builder.const_int(low.module.types.int32, 1_i64)
   elem = low.builder.const_gep(struct_ir, null_ptr, [one] of Value)
   low.builder.const_cast(Op::PtrToInt, elem, low.typer.size_t)
-end
-
-# The name in a `# primitive: <name>` text, or nil for any other text.
-pub def primitive_name_text(text : String) : String?
-  parts = text.split(": ")
-  return nil unless parts.size == 2 && parts[0] == "# primitive"
-  parts[1]
 end

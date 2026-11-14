@@ -309,8 +309,8 @@ pipeline_check() {
 
 # The lowering table names and counts no Primitive-annotated def. The hosted compiler lowers a primitive at its call
 # site, so a probe of such a def's body is a refusal row for a def that is never a function of its own. The hello
-# root with its prelude reaches them; the table must name none. Prelude-free fixtures reach no primitive def, so this
-# check runs the root.
+# root with its prelude reaches them; the table must name none. Prelude-free fixtures reach only the stand-in's
+# binary operators (lower/program.iyi), so this check runs the root.
 primitive_table_check() {
   if ! build_tool "$TOOL_SRC" "$WORK/prim_tool"; then return 1; fi
   IYI_PATH="$REPO/src" "$WORK/prim_tool" "$REPO/samples/iyi/hello.iyi" -o "$WORK/prim_hello" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/prim_hello.probe" 2> /dev/null

@@ -57,7 +57,7 @@ import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/helpers::{int1}
 import compiler/semantic/top_level::{ClassType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, TraitType, Type, UnionType, VoidType}
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
-import compiler/lower/primitives::{primitive_name_of, lower_primitive_call, primitive_allocate}
+import compiler/lower/primitives::{primitive_name, lower_primitive_call, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
 import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType, GenericClassInstanceMetaclassType}
 import compiler/semantic/lib_call::{LibCallTarget}
@@ -89,7 +89,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
 
   # Proc#call's splat is the primitive's argument list, validated against the
   # Proc type by codegen_primitive_proc_call. Other unexpanded calls still refuse.
-  primitive = primitive_name_of(def_node)
+  primitive = primitive_name(def_node.body)
   if (node.args.size != def_node.args.size || def_node.splat_index != nil) && primitive != "proc_call"
     pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
   end

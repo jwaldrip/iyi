@@ -17,13 +17,13 @@ module compiler/lower/program
 # where a lowering or a typer raises it (the pipeline catches a raise in a spawned task and names the phase).
 #
 # Stand-ins (used only when no prelude declares the builtins itself, which is the `--prelude` build):
-#   - the builtin primitive operators of Int8..UInt128, Float32, Float64, Bool and Char, declared on their
-#     classes with a primitive marker the lowering reads (primitives.iyi). The hosted library declares them
-#     in src/primitives.cr, which a bare build does not load. Same as bench/lib/primitive_stand_in.iyi.
+#   - the builtin primitive operators of Int8..UInt128, Bool and Char, declared on their
+#     classes with the Primitive body an annotated library def gets. The hosted library
+#     declares them in src/primitives.cr. Same as bench/lib/primitive_stand_in.iyi.
 #   - the funs of each `lib`, registered in the lib as bodiless defs, so a call through a lib types the way
 #     the hosted analysis does (NEEDS.md, lowering calls row 31). Same as bench/lib/lower_gate.iyi.
 
-import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral, InstanceVar, And, Assign, Call, Case, ClassVar, If, Not, Or, Unless, Var, While}
+import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Primitive, Arg, Path, Annotation, StringLiteral, InstanceVar, And, Assign, Call, Case, ClassVar, If, Not, Or, Unless, Var, While}
 import compiler/semantic/top_level::{LibType, MetaclassType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
 import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance, node_class_name}
 import compiler/semantic/match::{YieldFinder}
@@ -182,8 +182,8 @@ pub def link_names(nodes : Array(ASTNode)) : Array(String)
   names
 end
 
-# Stand-in for the builtin primitive operators of the integers, the floats, Bool and Char: each is declared on its
-# class with the operand's type as parameter and the result type as return, and a primitive marker the lowering reads.
+# Stand-in for integer, Bool and Char operators: each is declared on its class with
+# the operand's type, the result type, and a Primitive body the lowering reads.
 pub def program_stand_in_primitives(root : ASTNode, prog : SemanticProgram, mv : MainVisitor) : Nil
   int_names = ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Int128", "UInt128"]
   int_names.each do |tn|
@@ -205,12 +205,9 @@ pub def program_stand_in_primitives(root : ASTNode, prog : SemanticProgram, mv :
   end
 end
 
-# A builtin's binary operator: one argument of the operand's type, the result type, a Nop body, and the
-# primitive marker in free_vars.
+# The same Primitive body the declarations pass gives a @[Primitive(:binary)] def.
 pub def builtin_binary_def(op : String, operand : String, result : String) : Def
-  d = Def.new(op, [Arg.new("other", nil, Path.new(operand))] of Arg, nil, nil, nil, Path.new(result))
-  d.free_vars = ["# primitive: binary"] of String
-  d
+  Def.new(op, [Arg.new("other", nil, Path.new(operand))] of Arg, Primitive.new("binary"), nil, nil, Path.new(result))
 end
 
 # The slice that owns a refusal, from the words it carries: the table's owner column (PIPELINE.md). A reason no
