@@ -20,6 +20,7 @@ pub def cleanup_truthiness(low : Lowerer, node : ASTNode) : Bool?
     return value.nil? ? nil : !value.as(Bool)
   elsif node.is_a?(IsA)
     test = node.as(IsA)
+    return nil unless low.analysed.expansions[test]?.nil?
     obj = low.analysed.type_of?(test.obj)
     target = low.analysed.type_of?(test.const)
     return nil if obj.nil? || target.nil?

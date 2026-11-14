@@ -718,6 +718,25 @@ fi
 prove_mutation "the completed-emission check dropped" "$REPO/src/compiler/lower/fun.iyi" \
   'return existing.as(Function) if fun_emission_done?(low.module, name) || low.emitting[name]?' \
   'return existing.as(Function)' -- probe_reuse_check || status=1
+case_paths_check() {
+  "$IYI" build -o "$WORK/port-case-paths" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/case-paths.build.log" 2>&1 || return 1
+  for name in lower_case_enum_value lower_case_actual_types; do
+    "$WORK/port-case-paths" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/case-paths.out" 2> "$WORK/case-paths.err" || return 1
+    awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/case-paths.out" || return 1
+  done
+}
+if case_paths_check; then
+  prove_mutation "a constant case condition is not rewritten to equality" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '          @expansions[node] = comparison' '          @expansions[node] = node.const' -- case_paths_check || status=1
+  prove_mutation "a rewritten case condition is folded as a type test" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if cond_node.is_a?(IsA) && low.analysed.expansions[cond_node]?.nil?' \
+    '  if cond_node.is_a?(IsA)' -- case_paths_check || status=1
+  prove_mutation "a rewritten case condition is not emitted" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if isa_expanded = low.analysed.expansions[node]?' '  if isa_expanded = (false ? low.analysed.expansions[node]? : nil)' -- case_paths_check || status=1
+else
+  echo "FAIL: constant and type case paths do not match hosted modules"
+  status=1
+fi
 generic_ivar_check() {
   "$IYI" build -o "$WORK/port-g" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/g.build.log" 2>&1 || return 1
   "$WORK/port-g" lower "$REPO/bench/fixtures/lower_generic_ivar.iyi" "$WORK/lower_generic_ivar.oracle.ll" > "$WORK/g.out" 2> "$WORK/g.err" || return 1
