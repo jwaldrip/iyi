@@ -1,3 +1,5 @@
+@[Unsafe("initializes and compares local static array storage through C memory functions")]
+
 # Return four distinct words by value, as the prelude's __iyi_kevent_change does.
 # C memory calls avoid depending on Pointer methods in a prelude-free program.
 # Compare every byte of the caller's copy; missing or reordered words fail.

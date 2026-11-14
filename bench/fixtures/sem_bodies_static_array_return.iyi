@@ -1,3 +1,5 @@
+@[Unsafe("types uninitialized static arrays without executing or dereferencing their contents")]
+
 # Written static arrays retain their element type and size in return annotations.
 # Class elements are virtualized like the body's uninitialized value. Ordinary
 # generics, free type variables and Nil-forced results keep their existing types.
