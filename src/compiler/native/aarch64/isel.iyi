@@ -2301,6 +2301,13 @@ class Isel
       j = 0
       while j < locs.size
         loc = locs[j]
+        if cc_aux && k < cc_aux.param_attrs.size && loc.leaf_type.int?
+          if cc_aux.param_attrs[k].any? { |attr| attr.name == "zeroext" }
+            vals[j] = zext(vals[j], loc.leaf_type)
+          elsif cc_aux.param_attrs[k].any? { |attr| attr.name == "signext" }
+            vals[j] = signed_value(vals[j], loc.leaf_type)
+          end
+        end
         if loc.kind == 0
           m = mop(MOp::Mov)
           m.defs << pop(loc.reg)

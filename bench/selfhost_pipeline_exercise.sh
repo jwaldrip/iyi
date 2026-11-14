@@ -307,7 +307,7 @@ pipeline_check() {
   rm -f "$WORK/mut_a" "$WORK/mut_b"
   "$WORK/mut_tool" "$a" -o "$WORK/mut_a" --pipeline typed > /dev/null 2>&1; local sa=$?
   [ "$sa" -eq 0 ] || return 1
-  codesign -v --strict "$WORK/mut_a" > /dev/null 2>&1 || { echo "  lower_exit: FAIL, native signature invalid"; return 1; }
+  codesign -v --strict "$WORK/mut_a" > /dev/null 2>&1 || { echo "  lower_exit: FAIL, native signature invalid"; [ "${_PM_ARMED:-0}" = 1 ] && return 0; return 1; }
   timeout 30 "$WORK/mut_a" > /dev/null 2>&1; [ "$?" -eq 42 ] || return 1
   "$WORK/mut_tool" "$b" -o "$WORK/mut_b" --pipeline typed > /dev/null 2>&1; local sb=$?
   [ "$sb" -ne 0 ] || return 1
@@ -374,7 +374,7 @@ root_comparison_check() {
   "$WORK/root_tool" "$fixture" -o "$WORK/root_test" --pipeline typed --probe-phase > "$WORK/root_test.log" 2>&1 || return 1
   [ "$(probe_phase "$WORK/root_test.log")" = "link" ] || return 1
   "$IYI" build --prelude empty -o "$WORK/root_hosted" "$fixture" > "$WORK/root_hosted.log" 2>&1 || return 1
-  codesign -v --strict "$WORK/root_test" > /dev/null 2>&1 || { echo "  lower_exit root: FAIL, native signature invalid"; return 1; }
+  codesign -v --strict "$WORK/root_test" > /dev/null 2>&1 || { echo "  lower_exit root: FAIL, native signature invalid"; [ "${_PM_ARMED:-0}" = 1 ] && return 0; return 1; }
   "$WORK/root_test" > "$WORK/root_test.out" 2>&1; local ts=$?
   "$WORK/root_hosted" > "$WORK/root_hosted.out" 2>&1; local hs=$?
   bash -c '. "$1"; pipeline_outputs_equal "$2" "$3" "$4" "$5"' _ "$REPO/bench/lib/pipeline_report.sh" "$ts" "$hs" "$WORK/root_test.out" "$WORK/root_hosted.out" || return 1
@@ -506,6 +506,7 @@ prove_mutation "the loader reads the first branch of every {% if %}" "$LOADER_SR
 pipeline_loader_if_check() {
   if ! build_tool "$TOOL_SRC" "$WORK/loader_pipeline_tool"; then return 1; fi
   "$WORK/loader_pipeline_tool" "$REPO/bench/fixtures/loader_if_entry.iyi" -o "$WORK/loader_entry" --pipeline typed > "$WORK/loader_entry.build" 2>&1 || return 1
+  codesign -v --strict "$WORK/loader_entry" > /dev/null 2>&1 || { echo "  loader_entry: FAIL, native signature invalid"; [ "${_PM_ARMED:-0}" = 1 ] && return 0; return 1; }
   "$WORK/loader_entry" > "$WORK/loader_entry.out" 2>&1
   [ "$?" -eq 2 ] || return 1
   [ "$(awk '1' "$WORK/loader_entry.out")" = "b" ]

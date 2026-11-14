@@ -58,3 +58,5 @@ int64_t __fixture_run_on_thread(int64_t (*fn)(int64_t), int64_t arg) {
 
 int32_t __fixture_negative(void) { return -1; }
 int32_t __fixture_call_byte(int32_t (*fn)(uint8_t)) { return fn(128); }
+uint64_t __fixture_argbits(uint64_t value) { return value; }
+uint64_t __fixture_signbits(uint64_t value) { return (uint32_t)value; }
