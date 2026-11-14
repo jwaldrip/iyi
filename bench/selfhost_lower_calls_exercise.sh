@@ -208,6 +208,11 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
       e2e_fail=$((e2e_fail + 1))
       continue
     fi
+    if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/$name.native"; then
+      echo "  $name: native signature verification failed"
+      e2e_fail=$((e2e_fail + 1))
+      continue
+    fi
     timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
     timeout 30 "$WORK/$name" > "$WORK/$name.hosted.out" 2>&1; hs=$?
     if [ "$name" = lowcall_super ] && [ "$hs" -ne 42 ]; then
@@ -243,6 +248,11 @@ for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
     continue
   fi
   timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/$name.native"; then
+    echo "  $name: native signature verification failed"
+    status=1
+    continue
+  fi
   timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
   if [ "$hs" -ne 7 ] || [ "$ns" -ne "$hs" ] || ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out"; then
     echo "  $name: hosted status $hs, native status $ns, or output differs"
@@ -294,6 +304,10 @@ generic_constructor_check() {
     fixture="$REPO/bench/fixtures/$name.iyi"
     rm -f "$WORK/constructor.check.exe"
     IYI_PATH="$REPO/src" "$WORK/constructor.check.tool" "$fixture" -o "$WORK/constructor.check.exe" --pipeline typed > "$WORK/constructor.check.log" 2>&1 || return 1
+    if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/constructor.check.exe"; then
+      touch "$WORK/constructor.invalid"
+      return 1
+    fi
     timeout 30 "$WORK/constructor.check.exe" > "$WORK/constructor.check.out" 2>&1; result=$?
     [ "$result" -eq 7 ] && cmp -s "$WORK/constructor.check.out" "$WORK/$name.hosted.out" || return 1
   done
@@ -364,7 +378,13 @@ if [ -x "$WORK/compile_native" ] && \
    "$IYI" build --prelude empty --no-debug -o "$WORK/unit_name.hosted" "$unit_fixture" > "$WORK/unit_name.hosted.log" 2>&1 && \
    IYI_PATH="$REPO/src" "$WORK/compile_native" "$unit_fixture" -o "$WORK/unit_name.native" --pipeline typed > "$WORK/unit_name.native.log" 2>&1; then
   timeout 30 "$WORK/unit_name.hosted" > "$WORK/unit_name.hosted.out" 2>&1; hs=$?
-  timeout 30 "$WORK/unit_name.native" > "$WORK/unit_name.native.out" 2>&1; ns=$?
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/unit_name.native"; then
+    echo "  FAIL: inherited unit name native signature verification failed"
+    status=1
+    ns=1
+  else
+    timeout 30 "$WORK/unit_name.native" > "$WORK/unit_name.native.out" 2>&1; ns=$?
+  fi
   if [ "$hs" -eq 7 ] && [ "$ns" -eq "$hs" ] && cmp -s "$WORK/unit_name.hosted.out" "$WORK/unit_name.native.out"; then
     echo "  inherited unit name: native executable runs to the hosted result (status 7, stdout identical)"
   else
