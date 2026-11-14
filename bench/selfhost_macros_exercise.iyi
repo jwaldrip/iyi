@@ -1,4 +1,4 @@
-import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Unless, Until, Var, While, Yield, StringBuilder}
+import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, ExceptionHandler, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Unless, Until, Var, While, Yield, StringBuilder}
 import compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
 import compiler/macros/ast::{MacroId}
 import compiler/macros/methods::{MacroMethods}
@@ -9,6 +9,31 @@ import compiler/macros/engine::{MacroEngine, MacroReport, MacroSite}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/syntax/parser::{Parser}
 import compiler/macros/site_scan::{MacroSiteScan}
+import compiler/semantic/normalizer::{NormalizerProgram}
+
+class MacroNormalizerProbe < Visitor
+  getter temp_assigns : Array(String) = [] of String
+  getter call_names : Array(String) = [] of String
+  property has_handler : Bool = false
+
+  def visit(node : Assign) : Bool
+    t = node.target
+    if t.is_a?(Var) && t.as(Var).name.starts_with?("__temp_")
+      @temp_assigns << t.as(Var).name
+    end
+    true
+  end
+
+  def visit(node : Call) : Bool
+    @call_names << node.name
+    true
+  end
+
+  def visit(node : ExceptionHandler) : Bool
+    @has_handler = true
+    true
+  end
+end
 
 module BenchSelfhostMacrosExercise
   def self.assert(cond : Bool, msg : String) : Nil
@@ -456,13 +481,46 @@ reader table : TypeTable
       end
     end
     assert(!a_macro.nil? && !a_call.nil?, "the fixture parses to a macro and a call of it")
-    expanded = MacroEngine.new.expand(a_macro.as(Macro), a_call.as(Call))
+    expanded = MacroEngine.new.expand(a_macro.as(Macro), a_call.as(Call), NormalizerProgram.new)
     assert(expanded.is_a?(Def), "the expansion is a def")
     file = ""
     if loc = expanded.location
       file = loc.filename
     end
     assert(file == "site.iyi", "the expanded def is in the calling file (it is in '#{file}')")
+    puts "ok"
+  end
+
+  def self.test_shared_normalizer
+    print "testing macro expansion shares normalizer counters and prelude flag... "
+    prog = NormalizerProgram.new(false)
+    unit_ast = prog.normalize(Parser.new("1 < (1 + 1) < 3", "unit.iyi").parse)
+    unit_probe = MacroNormalizerProbe.new
+    unit_ast.accept(unit_probe)
+    assert(unit_probe.temp_assigns.size == 1 && unit_probe.temp_assigns[0] == "__temp_1", "unit normalization allocates __temp_1")
+
+    src = %(
+macro emit_defer_and_chain
+  defer cleanup()
+  2 < (3 + 4) < 8
+end
+emit_defer_and_chain
+)
+    the_macro, the_call = MacroParser.parse_fixture(src)
+    expanded = MacroEngine.new.expand(the_macro, the_call, prog)
+    macro_probe = MacroNormalizerProbe.new
+    expanded.accept(macro_probe)
+    assert(macro_probe.has_handler, "defer in macro lowers to ExceptionHandler")
+    assert(!macro_probe.call_names.includes?("__iyi_defer_push"), "prelude-free macro output does not emit __iyi_defer_push")
+    assert(macro_probe.temp_assigns.size == 1 && macro_probe.temp_assigns[0] == "__temp_2", "macro output continues unit counter at __temp_2")
+
+    prog_prelude = NormalizerProgram.new(true)
+    the_macro_p, the_call_p = MacroParser.parse_fixture(src)
+    expanded_p = MacroEngine.new.expand(the_macro_p, the_call_p, prog_prelude)
+    prelude_probe = MacroNormalizerProbe.new
+    expanded_p.accept(prelude_probe)
+    assert(prelude_probe.call_names.includes?("__iyi_defer_push"), "prelude macro output emits __iyi_defer_push")
+    assert(prelude_probe.temp_assigns.size == 3 && prelude_probe.temp_assigns[0] == "__temp_2" && prelude_probe.temp_assigns[1] == "__temp_1" && prelude_probe.temp_assigns[2] == "__temp_2", "prelude macro chain takes __temp_1 and defer flag takes __temp_2 (got #{prelude_probe.temp_assigns})")
     puts "ok"
   end
 
@@ -479,6 +537,7 @@ reader table : TypeTable
     test_code_generation
     test_type_node
     test_expansion_file
+    test_shared_normalizer
     puts "============================================================="
     puts "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!"
     puts "============================================================="

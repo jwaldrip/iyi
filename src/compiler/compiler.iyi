@@ -408,10 +408,11 @@ pub class Compiler
     resolved.each do |mod_info|
       refuse_exception_handlers(mod_info.ast)
     end
-    normalizer = NormalizerProgram.new(prelude)
+    prog = SemanticProgram.new
+    prog.iyi_prelude = prelude
     links = [] of String
     resolved.each do |mod_info|
-      mod_info.ast = normalizer.normalize(mod_info.ast)
+      mod_info.ast = prog.normalizer.normalize(mod_info.ast)
       tops = [mod_info.ast]
       if mod_info.ast.is_a?(Expressions)
         tops = mod_info.ast.as(Expressions).expressions
@@ -428,8 +429,6 @@ pub class Compiler
     # The program is read the way the declarations gate reads one (bench/selfhost_semantic_declarations_exercise.iyi):
     # the loader's search path, and the entry's project root (its header root, else its directory).
     entry = resolved[resolved.size - 1]
-    prog = SemanticProgram.new
-    prog.iyi_prelude = prelude
     prog.search_path = loader.iyi_path.entries
     prog.project_root = IyiPath.header_root_of(entry.filename, entry.source) || dir_of(entry.filename)
     # The prelude is declared before every other unit, as the declarations driver loads it first: the prelude's names are

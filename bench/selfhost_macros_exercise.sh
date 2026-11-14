@@ -56,6 +56,7 @@ for phrase in \
   "testing macro code and definition generation... ok" \
   "testing @type as the enclosing class's TypeNode... ok" \
   "testing that an expansion's nodes are in the calling file... ok" \
+  "testing macro expansion shares normalizer counters and prelude flag... ok" \
   "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"

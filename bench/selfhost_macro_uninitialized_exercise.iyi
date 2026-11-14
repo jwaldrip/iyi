@@ -2,6 +2,7 @@ import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, PointerOf, Var
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/inline_macros::{splice_inline_sites}
+import compiler/semantic/normalizer::{NormalizerProgram}
 
 class MacroUninitializedPointerProbe < Visitor
   property found : Bool = false
@@ -22,7 +23,7 @@ klass = root.is_a?(Expressions) ? root.as(Expressions).expressions.find { |node|
 body = klass.body
 method = body.is_a?(Expressions) ? body.as(Expressions).expressions.first.as(Def) : body.as(Def)
 statements = method.body.as(Expressions).expressions
-expanded = splice_inline_sites(statements, "Box", "", false)
+expanded = splice_inline_sites(statements, "Box", "", false, NormalizerProgram.new)
 probe = MacroUninitializedPointerProbe.new
 expanded.each { |node| node.accept(probe) }
 if probe.found

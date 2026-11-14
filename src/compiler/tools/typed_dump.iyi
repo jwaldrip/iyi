@@ -31,7 +31,6 @@ import compiler/semantic/top_level::{NamedType, SemanticProgram, TopLevelVisitor
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
-import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
 
 # The type label one typed node is printed with. The gate's mutation proof
 # replaces this body to print a wrong type for one node kind.
@@ -105,9 +104,9 @@ module TypedDump
 
   def self.analyse(source : String, filename : String, roots : Array(String), iyi_defer : Bool = false) : TypedDumpResult
     parser = Parser.new(source, filename)
-    node = Normalizer.new(NormalizerProgram.new(iyi_defer)).normalize(parser.parse)
     prog = SemanticProgram.new
     prog.iyi_prelude = iyi_defer
+    node = prog.normalizer.normalize(parser.parse)
     prog.total_mode = true
     prog.search_path = roots
     prog.entry_dir = TypedDump.directory_of(filename)

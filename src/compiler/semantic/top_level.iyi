@@ -9,6 +9,7 @@ import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/semantic/inline_macros::{expand_inline_macro, splice_body_node, splice_inline_sites}
+import compiler/semantic/normalizer::{NormalizerProgram}
 
 pub class TypeException
   getter message : String
@@ -1184,10 +1185,20 @@ pub class SemanticProgram < NonGenericModuleType
   # iyi: the typed dump's mode. Strict (the default) refuses a name the program
   # cannot resolve, as it always has; total mode records it and goes on.
   property total_mode : Bool = false
-  property iyi_prelude : Bool = false
+  # The program's normalizer holds the counters and prelude flag every generated-name
+  # pass draws on, as hosted Program#new_temp_var_name does.
+  getter normalizer : NormalizerProgram
+
+  def iyi_prelude : Bool
+    @normalizer.iyi_prelude
+  end
+
+  def iyi_prelude=(value : Bool) : Nil
+    @normalizer.iyi_prelude = value
+  end
 
   def iyi_prelude? : Bool
-    @iyi_prelude
+    @normalizer.iyi_prelude
   end
 
   @value_type : ClassType?
@@ -1590,6 +1601,7 @@ pub class SemanticProgram < NonGenericModuleType
     @project_root = nil
     @entry_dir = nil
     @total_mode = false
+    @normalizer = NormalizerProgram.new(false)
     @carried_refusals = [] of String
     @search_path = [] of String
     @loaded_files = Set(String).new
@@ -2193,7 +2205,7 @@ pub class TopLevelVisitor < Visitor
 
   def visit(node : Expressions) : Bool
     @exp_nest = @exp_nest + 1
-    node.expressions = splice_inline_sites(node.expressions, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+    node.expressions = splice_inline_sites(node.expressions, @current_type.full_name, @file || "", @current_type.is_a?(LibType), @program.normalizer)
     i = 0
     while i < node.expressions.size
       exp = node.expressions[i]
@@ -3338,7 +3350,7 @@ pub class TopLevelVisitor < Visitor
     if node.obj.nil?
       if a_macro = @current_type.lookup_macro?(node.name)
         engine = MacroEngine.new
-        expanded_ast = engine.expand(a_macro, node)
+        expanded_ast = engine.expand(a_macro, node, @program.normalizer)
         node.expanded = expanded_ast
         expanded_ast.accept(self)
         return false
@@ -3348,21 +3360,21 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroIf) : Bool
-    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType), @program.normalizer)
       expanded.accept(self)
     end
     false
   end
 
   def visit(node : MacroFor) : Bool
-    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType), @program.normalizer)
       expanded.accept(self)
     end
     false
   end
 
   def visit(node : MacroExpression) : Bool
-    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType), @program.normalizer)
       expanded.accept(self)
     end
     false

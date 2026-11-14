@@ -328,8 +328,10 @@ pub class MainVisitor < TypeNodeHost
   # reason their reads are reported with. Saved and restored per body.
   property untyped_locals : Hash(String, String)
   property fun_inline_file : String?
+  @literal_expander : LiteralExpander
 
   def initialize(@program : SemanticProgram)
+    @literal_expander = LiteralExpander.new(@program.normalizer)
     # The generated `new` methods are completed before any body is typed: the
     # declarations pass has recorded the expansions, and this consumes them (idempotent).
     define_new_methods(@program)
@@ -618,7 +620,7 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : MacroIf) : Bool
     expanded = @expansions[node]?
     if expanded.nil?
-      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
       if expanded.nil?
         return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
         expanded = Nop.new
@@ -635,7 +637,7 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : MacroFor) : Bool
     expanded = @expansions[node]?
     if expanded.nil?
-      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
       if expanded.nil?
         return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
         expanded = Nop.new
@@ -652,7 +654,7 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : MacroExpression) : Bool
     expanded = @expansions[node]?
     if expanded.nil?
-      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
       if expanded.nil?
         return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
         expanded = Nop.new
@@ -669,7 +671,7 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : MacroVerbatim) : Bool
     expanded = @expansions[node]?
     if expanded.nil?
-      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
       if expanded.nil?
         return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
         expanded = Nop.new
@@ -688,11 +690,11 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # iyi: a literal the hosted pass expands before it types it (main_visitor.cr
-  # 3664-3700, expand(node)). The literal expander builds the tree the hosted
-  # pass types; the literal takes that tree's type, and the tree is walked.
+  # 3664-3700, expand(node)). The literal expander draws its names from the
+  # program's normalizer, as hosted `@program.literal_expander` does; the
+  # literal takes the expanded tree's type, and the tree is walked.
   def expand_literal(node : ASTNode) : Bool
-    expander = LiteralExpander.new(NormalizerProgram.new)
-    expanded = node.transform(expander)
+    expanded = node.transform(@literal_expander)
     expanded.accept(self)
     @expansions[node] = expanded
     if et = child_type(expanded)
@@ -998,7 +1000,7 @@ pub class MainVisitor < TypeNodeHost
       lookup_type = @scope || @current_type
       if a_macro = lookup_type.lookup_macro?(node.name)
         engine = MacroEngine.new
-        expanded_ast = engine.expand(a_macro, node)
+        expanded_ast = engine.expand(a_macro, node, @program.normalizer)
         node.expanded = expanded_ast
         expanded_ast.accept(self)
         if et = child_type(expanded_ast)
@@ -1503,14 +1505,14 @@ pub class MainVisitor < TypeNodeHost
   def splice_def_inline_sites(node : Expressions) : Nil
     return nil if @current_def.nil?
     return nil unless node.expressions.any? { |exp| inline_site?(exp) }
-    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true)
+    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, @program.normalizer, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true)
     nil
   end
 
   def splice_def_body(node : ASTNode) : ASTNode
     return node if @current_def.nil?
     return node unless inline_site?(node)
-    splice_body_node(node, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true)
+    splice_body_node(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true)
   end
 
   # An inline macro site that is the whole value of a constant (`CHANNEL_WAIT = {% if ... %}512{% else %}2048{% end %}`)
@@ -1529,7 +1531,7 @@ pub class MainVisitor < TypeNodeHost
         file = first_loc.filename
       end
     end
-    spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType))
+    spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType), @program.normalizer)
     if spliced.is_a?(Expressions)
       only = spliced.as(Expressions).expressions
       spliced = only[0] if only.size == 1
