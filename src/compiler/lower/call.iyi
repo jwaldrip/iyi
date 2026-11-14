@@ -59,7 +59,7 @@ import compiler/lower/phi::{LowerPhi}
 import compiler/lower/proc::{make_fun}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/helpers::{int1}
-import compiler/semantic/top_level::{ClassType, EnumType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, TraitType, Type, UnionType, VoidType}
+import compiler/semantic/top_level::{ClassType, EnumType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TraitType, Type, UnionType, VoidType}
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name, lower_primitive_call, lower_primitive_with_values, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
@@ -460,8 +460,14 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
   phi = LowerPhi.new(phi_wants, phi_type)
   targets.each do |arm|
     matches = int1(low, 1_i64)
-    if receiver_dynamic
-      matches = match_type_id(low, runtime_type, arm.receiver, tid.as(Value))
+    unit_call = false
+    if node.obj.nil?
+      if defining = low.analysed.program.def_owner(arm.definition)
+        unit_call = defining.is_a?(ModuleType) && defining.as(ModuleType).iyi_unit
+      end
+    end
+    unless unit_call || arm.receiver.is_a?(SemanticProgram)
+      matches = match_type_id(low, runtime_type, arm.receiver, tid)
     end
     params = arm.arg_types || arg_types
     i = 0
