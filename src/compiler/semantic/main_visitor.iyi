@@ -1575,6 +1575,22 @@ pub class MainVisitor < TypeNodeHost
       last_type : Type? = nil
       i = 0
       while i < node.expressions.size
+        probe = node.expressions[i]
+        break unless probe.is_a?(If) && probe.as(If).iyi_definition_probe
+        saved_vars = @vars
+        saved_ntf = @needs_type_filters
+        @vars = @vars.dup
+        @needs_type_filters = 0
+        probe.accept(self)
+        @vars = saved_vars
+        @needs_type_filters = saved_ntf
+        i += 1
+      end
+      if i > 0
+        @var_unions.keys.each { |name| @var_unions.delete(name) if name.starts_with?("__iyi_dt_") }
+        @untyped_locals.keys.each { |name| @untyped_locals.delete(name) if name.starts_with?("__iyi_dt_") }
+      end
+      while i < node.expressions.size
         exp = node.expressions[i]
         # iyi: an annotation sits beside the def it annotates and is neither typed
         # nor walked (the hosted pass does not), so it does not end the list's type.
@@ -2507,7 +2523,7 @@ pub class MainVisitor < TypeNodeHost
       block_present = true
     end
     signature = CallSignature.new(name, arg_types, nil, block_present)
-    target = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args)
+    target = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args, call_node.iyi_synthetic)
     return nil if target.error
     target.definition
   end
@@ -2653,7 +2669,7 @@ pub class MainVisitor < TypeNodeHost
     arg_types = [] of Type
     args.each { |arg| arg_types << type_of(arg) }
     signature = CallSignature.new(name, arg_types, nil, call_node.block != nil)
-    widened = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args)
+    widened = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args, call_node.iyi_synthetic)
     if widened.error.nil? && widened.definition
       @matched_call_args[call_node] = widened.arg_types
       return widened.definition

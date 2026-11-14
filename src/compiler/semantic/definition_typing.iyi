@@ -1,0 +1,295 @@
+module compiler/semantic/definition_typing
+
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode, Call, Def, Expressions, If, Nop, Path, Self}
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/visitor::{Visitor}
+import compiler/semantic/top_level::{Type, NamedType, ModuleType, SemanticProgram, NonGenericModuleType, NonGenericClassType, EnumType, MetaclassType, TraitType, GenericTraitType, GenericClassType, GenericModuleType, UnionType, NoReturnType, VoidType, TopLevelVisitor, normalize_path}
+import compiler/semantic/match::{CallMatch}
+import compiler/types/types::{GenericClassInstanceType}
+import compiler/types/lookup::{TypeLookup}
+import compiler/semantic/type_nodes::{type_node_system}
+import std/unicode::{Unicode}
+
+VAR_PREFIX = "__iyi_dt_"
+WITNESS_PREFIX = "IyiDefTypeWitness_"
+
+pub def append_definition_probes(prog : SemanticProgram, root : ASTNode, user_files : Set(String)) : Nil
+  return nil unless root.is_a?(Expressions)
+  return nil if user_files.empty?
+  runner = DefinitionProbeRunner.new(prog, user_files)
+  runner.collect
+  runner.flush(root.as(Expressions))
+  nil
+end
+
+class DefinitionProbeStamper < Visitor
+  def initialize(@location : Location)
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    node.at(@location)
+    if node.is_a?(Call)
+      node.as(Call).iyi_synthetic = true
+      node.as(Call).name_location = @location
+    elsif node.is_a?(Path)
+      node.as(Path).iyi_synthetic = true
+    end
+    true
+  end
+end
+
+class DefinitionProbeRunner
+  def initialize(@program : SemanticProgram, @files : Set(String))
+    @serial = 0
+    @probes = [] of ASTNode
+    @witness_nodes = [] of ASTNode
+    @witnesses = Hash(Type, String?).new
+  end
+
+  def collect : Nil
+    collect_owner(@program)
+    queue = [] of Type
+    @program.types.each_value { |type| queue << type }
+    while !queue.empty?
+      type = queue.pop
+      unless type.is_a?(TraitType)
+        if type.is_a?(NonGenericModuleType) || type.is_a?(EnumType)
+          owner = type.as(ModuleType)
+          collect_owner(owner)
+          collect_owner(owner.metaclass)
+        elsif type.is_a?(NonGenericClassType)
+          owner = type.as(NonGenericClassType)
+          collect_owner(owner) unless owner.abstract? && !storable?(owner)
+          collect_owner(owner.metaclass) unless owner.abstract?
+        end
+      end
+      if type.is_a?(NamedType)
+        type.as(NamedType).types.each_value { |inner| queue << inner }
+      end
+    end
+    nil
+  end
+
+  def collect_owner(owner : ModuleType) : Nil
+    owner.defs.each_value do |overloads|
+      overloads.each do |definition|
+        if location = definition.location
+          filename = location.filename
+          synthesize(owner, definition, location) if filename.ends_with?(".iyi") && @files.includes?(normalize_path(filename))
+        end
+      end
+    end
+    nil
+  end
+
+  def flush(root : Expressions) : Nil
+    unless @witness_nodes.empty?
+      visitor = TopLevelVisitor.new(@program)
+      @witness_nodes.each { |node| node.accept(visitor) }
+      visitor.finish
+    end
+    was_empty = root.expressions.empty?
+    root.expressions = @probes + root.expressions
+    root.expressions << Nop.new if was_empty && !@probes.empty?
+    nil
+  end
+
+  def synthesize(owner : ModuleType, definition : Def, location : Location) : Nil
+    return nil unless probeable?(definition)
+    return nil if owner.is_a?(NonGenericModuleType) && !owner.is_a?(SemanticProgram) && !owner.iyi_unit
+    scope : Type = owner
+    scope = owner.as(MetaclassType).instance_type if owner.is_a?(MetaclassType)
+    return nil unless scope.is_a?(ModuleType)
+    lookup_scope = scope.as(ModuleType)
+    @serial += 1
+    serial = @serial
+    lines = [] of String
+    arguments = [] of String
+    splat = definition.splat_index
+    definition.args.each_with_index do |arg, index|
+      next if splat == index && arg.name.empty?
+      written = arg.restriction
+      return nil unless written
+      resolved = resolve(lookup_scope, written)
+      return nil unless resolved
+      text : String? = nil
+      if resolved.is_a?(TraitType) && !resolved.is_a?(GenericTraitType)
+        text = witness_for(resolved.as(TraitType))
+      else
+        return nil unless instantiable?(resolved) && nameable?(resolved)
+        text = resolved.to_s
+      end
+      return nil unless text
+      name = "#{VAR_PREFIX}#{serial}_#{index}"
+      lines << "#{name} = uninitialized #{text}"
+      if splat && index > splat
+        arguments << "#{arg.external_name}: #{name}"
+      else
+        arguments << name
+      end
+    end
+    call = if owner.is_a?(SemanticProgram)
+             "#{definition.name}(#{arguments.join(", ")})"
+           elsif owner.is_a?(NonGenericModuleType)
+             "#{owner}.#{definition.name}(#{arguments.join(", ")})"
+           elsif owner.is_a?(MetaclassType)
+             "#{scope}.#{definition.name}(#{arguments.join(", ")})"
+           else
+             receiver = "#{VAR_PREFIX}#{serial}_r"
+             lines << "#{receiver} = uninitialized #{owner}"
+             "#{receiver}.#{definition.name}(#{arguments.join(", ")})"
+           end
+    returned : Type? = nil
+    if written = definition.return_type
+      returned = resolve(lookup_scope, written)
+    end
+    if returned && instantiable?(returned) && nameable?(returned) && !returned.nil_type?
+      lines << "#{VAR_PREFIX}#{serial}_v : #{returned} = #{call}"
+    else
+      lines << call
+    end
+    parsed = Parser.new("if false\n#{lines.join("\n")}\nend\n", location.filename).parse
+    parsed.accept(DefinitionProbeStamper.new(location))
+    parsed.as(If).iyi_definition_probe = true if parsed.is_a?(If)
+    @probes << parsed
+    nil
+  end
+
+  def witness_for(trait_type : TraitType) : String?
+    return @witnesses[trait_type]? if @witnesses.has_key?(trait_type)
+    witness = build_witness(trait_type)
+    @witnesses[trait_type] = witness
+    witness
+  end
+
+  def build_witness(trait_type : TraitType) : String?
+    return nil unless trait_type.supertraits.empty?
+    return nil unless nameable?(trait_type)
+    witness = "#{WITNESS_PREFIX}#{trait_type.to_s.split("::").join("_")}"
+    stubs = [] of String
+    trait_type.defs.each_value do |overloads|
+      overloads.each do |requirement|
+        next unless requirement.abstract
+        stub = stub_for(trait_type, requirement, witness)
+        return nil unless stub
+        stubs << stub
+      end
+    end
+    text = "struct #{witness}\nend\nimpl #{trait_type} for #{witness}\n#{stubs.join}end\n"
+    location : Location? = nil
+    if locations = trait_type.locations
+      location = locations.first?
+    end
+    filename = location ? location.filename : "definition-typing-witness"
+    parsed = Parser.new(text, filename).parse
+    parsed.accept(DefinitionProbeStamper.new(location)) if location
+    @witness_nodes << parsed
+    witness
+  end
+
+  def stub_for(trait_type : TraitType, requirement : Def, witness : String) : String?
+    return nil if requirement.macro_yields || CallMatch.yields?(requirement) || requirement.double_splat || requirement.splat_index
+    if free = requirement.free_vars
+      return nil unless free.empty?
+    end
+    params = [] of String
+    requirement.args.each do |arg|
+      restriction = arg.restriction
+      return nil unless restriction
+      text = requirement_type_text(trait_type, restriction, witness)
+      return nil unless text
+      params << "#{arg.name} : #{text}"
+    end
+    written = requirement.return_type
+    return nil unless written
+    result = requirement_type_text(trait_type, written, witness)
+    return nil unless result
+    body = result == "Nil" ? "    nil\n" : "    __iyi_dt_w = uninitialized #{result}\n    __iyi_dt_w\n"
+    "  def #{requirement.name}(#{params.join(", ")}) : #{result}\n#{body}  end\n"
+  end
+
+  def requirement_type_text(trait_type : TraitType, written : ASTNode, witness : String) : String?
+    return witness if written.is_a?(Self)
+    resolved = resolve(trait_type, written)
+    return nil unless resolved && instantiable?(resolved) && nameable?(resolved)
+    resolved.to_s
+  end
+
+  def resolve(scope : ModuleType, written : ASTNode) : Type?
+    saved = @program.current_imports
+    if location = written.location
+      @program.current_imports = @program.file_imports[location.filename]? || Hash(String, Type).new
+    end
+    found = @program.lookup_type_node?(written, scope)
+    @program.current_imports = saved
+    found
+  end
+
+  def storable?(type : Type) : Bool
+    if type.is_a?(NonGenericClassType) && type.namespace.is_a?(SemanticProgram)
+      ["Object", "Reference", "Value", "Number", "Int", "Float", "Struct", "Enum"].each do |name|
+        return false if @program.types[name]? == type
+      end
+    end
+    TypeLookup.new(type_node_system(@program).instances).can_be_stored?(type)
+  end
+
+  def instantiable?(original : Type) : Bool
+    type = original.devirtualize
+    if type.is_a?(UnionType)
+      return type.as(UnionType).union_types.all? { |member| instantiable?(member) }
+    end
+    return false if type.is_a?(GenericClassType) || type.is_a?(GenericModuleType) || type.is_a?(GenericTraitType)
+    return false if type.is_a?(NonGenericModuleType) || type.is_a?(TraitType)
+    return false if type.abstract? && !storable?(type)
+    return false if type.is_a?(NoReturnType) || type.is_a?(VoidType) || type.is_a?(MetaclassType)
+    true
+  end
+
+  def nameable?(original : Type) : Bool
+    type = original.devirtualize
+    if type.is_a?(UnionType)
+      return type.as(UnionType).union_types.all? { |member| nameable?(member) }
+    end
+    if type.is_a?(GenericClassInstanceType)
+      instance = type.as(GenericClassInstanceType)
+      return false unless nameable?(instance.generic_type)
+      return instance.type_vars.values.all? { |var| nameable?(var) }
+    end
+    type.is_a?(NamedType) || type.is_a?(SemanticProgram)
+  end
+
+  def probeable?(definition : Def) : Bool
+    return false if definition.macro_yields || CallMatch.yields?(definition) || definition.double_splat
+    if free = definition.free_vars
+      return false unless free.empty?
+    end
+    return false unless definition.return_type
+    return false if definition.abstract || definition.name == "initialize" || definition.name.empty?
+    valid_name = true
+    definition.name.each_char do |ch|
+      valid_name = false unless Unicode.letter?(ch) || Unicode.number?(ch) || ch == '_' || ch == '?' || ch == '!'
+    end
+    return false unless valid_name
+    first = definition.name[0]
+    return false unless Unicode.lowercase?(first) || first == '_'
+    splat = definition.splat_index
+    definition.args.each_with_index do |arg, index|
+      next if splat == index && arg.name.empty?
+      return false unless arg.restriction
+      if splat && index > splat
+        external = arg.external_name
+        return false if external.empty?
+        first = external[0]
+        return false unless Unicode.lowercase?(first) || first == '_'
+        valid_external = true
+        external.each_char do |ch|
+          valid_external = false unless Unicode.letter?(ch) || Unicode.number?(ch) || ch == '_'
+        end
+        return false unless valid_external
+      end
+    end
+    true
+  end
+end

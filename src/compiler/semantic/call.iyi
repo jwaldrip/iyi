@@ -269,10 +269,10 @@ pub class CallRecalculation
 
   # Convert every match of a dispatch into its own target. The body visitor
   # instantiates each definition and fills return_type with its inferred type.
-  def self.targets_for_matches(matches : Matches, ts : TypeSystem, explicit : Bool) : Array(CallTarget)
+  def self.targets_for_matches(matches : Matches, ts : TypeSystem, explicit : Bool, synthetic : Bool = false) : Array(CallTarget)
     targets = [] of CallTarget
     matches.matches.each do |match|
-      if explicit && match.definition.visibility == Visibility::Private
+      if explicit && !synthetic && match.definition.visibility == Visibility::Private
         targets << CallTarget.failed("private method '#{match.definition.name}' called for #{match.owner.to_s}")
         next
       end
@@ -312,7 +312,7 @@ pub class CallRecalculation
   # arguments and calls this; the bodies slice calls this directly with the
   # argument types its own pass has typed, and passes the argument nodes so a
   # number literal can match a wider integer.
-  def self.recalculate_signature(rec_type : Type, ts : TypeSystem, signature : CallSignature, explicit : Bool, arg_nodes : Array(ASTNode)? = nil) : CallTarget
+  def self.recalculate_signature(rec_type : Type, ts : TypeSystem, signature : CallSignature, explicit : Bool, arg_nodes : Array(ASTNode)? = nil, synthetic : Bool = false) : CallTarget
     name = signature.name
     arg_types = signature.arg_types
     if nodes = arg_nodes
@@ -329,7 +329,7 @@ pub class CallRecalculation
     end
     if matches.matches.size == 1
       single = matches.matches[0]
-      if explicit && single.definition.visibility == Visibility::Private
+      if explicit && !synthetic && single.definition.visibility == Visibility::Private
         return CallTarget.failed("private method '#{name}' called for #{rec_type.to_s}")
       end
       ret = single.definition.return_type
