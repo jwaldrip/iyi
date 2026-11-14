@@ -2,7 +2,7 @@ module compiler/macros/engine
 
 import compiler/syntax/ast::{ASTNode, Call, Expressions, Macro, MacroLiteral}
 import compiler/syntax/parser::{Parser}
-import compiler/semantic/normalizer::{Normalizer}
+import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
 import compiler/macros/ast
 import compiler/macros/methods::{MacroMethods}
 import compiler/macros/target_flags::{MacroTargetFlags}
@@ -125,7 +125,7 @@ pub class MacroEngine
   # are in scope for what the macro writes there (a `getter table : TypeTable` in a file that imports
   # TypeTable). Parsed with no file name, they were in no file, and a def among them was typed with no
   # imports at all.
-  def expand(a_macro : Macro, call : Call) : ASTNode
+  def expand(a_macro : Macro, call : Call, normalizer : NormalizerProgram) : ASTNode
     expanded_source = expand_to_s(a_macro, call)
     file = ""
     if loc = call.location
@@ -133,11 +133,11 @@ pub class MacroEngine
     end
     parser = Parser.new(expanded_source, file)
     node = parser.parse
-    Normalizer.new.normalize(node)
+    Normalizer.new(normalizer).normalize(node)
   end
 
   def expand(source : String) : ASTNode
     the_macro, the_call = MacroParser.parse_fixture(source)
-    expand(the_macro, the_call)
+    expand(the_macro, the_call, NormalizerProgram.new)
   end
 end

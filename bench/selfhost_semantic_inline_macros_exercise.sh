@@ -331,7 +331,7 @@ prove_mutation "the expansion is parsed with no file, so its declarations are no
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation_all "no spliced inline macro expansion is ever declared (top-level and type-body sites)" "$MUT_INL" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts, keep_empty))" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, normalizer, locals, bindings, facts, keep_empty))" \
   "out.concat([] of ASTNode)" \
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -481,6 +481,60 @@ check_body_lowering() {
   [ -x "$output" ] && "$output" > "$WORK/body_lower.out" 2>&1
 }
 
+check_macro_mixed_temps() {
+  local tool="$1" src="$WORK/mixed_macro_temps.iyi" exe="$WORK/mixed_macro_temps" hosted="$WORK/mixed_macro_temps.hosted"
+  cat <<'IYI' > "$src"
+lib LibC
+  fun putchar(value : Int32) : Int32
+  fun exit(status : Int32) : NoReturn
+end
+
+fun __crystal_personality(version : Int32, actions : Int32, exception_class : UInt64, exception_object : Void*, context : Void*) : Int32
+  0
+end
+
+fun __crystal_get_exception(ex : Void*) : UInt64
+  0_u64
+end
+
+fun __crystal_raise(ex : Void*) : NoReturn
+  LibC.exit(1)
+end
+
+macro emit_chain
+  if 1 < (3 &+ 3) < 7
+    LibC.putchar(67)
+  end
+end
+
+macro emit_defer
+  defer LibC.putchar(66)
+  LibC.putchar(68)
+end
+
+def with_macro_defer : Int32
+  emit_defer
+  7
+end
+
+count = 1
+if count == 1 && count < 2
+  {% if true %}
+    if 1 < (2 &+ 2) < 5
+      LibC.putchar(65)
+    end
+  {% end %}
+  emit_chain
+end
+LibC.exit(with_macro_defer)
+IYI
+  "$tool" "$src" -o "$exe" --pipeline typed --probe-phase > "$WORK/mixed_macro_temps.probe" 2>&1 || { cat "$WORK/mixed_macro_temps.probe"; return 1; }
+  "$IYI" build --prelude empty -o "$hosted" "$src" > "$WORK/mixed_macro_temps.hosted.log" 2>&1 || { cat "$WORK/mixed_macro_temps.hosted.log"; return 1; }
+  "$exe" > "$WORK/mixed_macro_temps.typed.out" 2>&1; tstat=$?
+  "$hosted" > "$WORK/mixed_macro_temps.hosted.out" 2>&1; hstat=$?
+  [ "$tstat" = "$hstat" ] && [ "$tstat" = "7" ] && cmp -s "$WORK/mixed_macro_temps.typed.out" "$WORK/mixed_macro_temps.hosted.out" && [ "$(cat "$WORK/mixed_macro_temps.typed.out")" = "ACDB" ]
+}
+
 # The check the single-node mutations must fail: the refusal ceilings through a pipeline tool built from the tree as it is.
 check_body_fixture() {
   local RAISE=0 probe="$WORK/mut_body_tool"
@@ -499,6 +553,7 @@ check_body_fixture() {
 if [ -x "$WORK/reach_tool" ]; then
   check_refusals "$WORK/reach_tool" || status=1
   check_body_lowering "$WORK/reach_tool" || { echo "  FAIL: single macro body did not lower and run"; status=1; }
+  check_macro_mixed_temps "$WORK/reach_tool" || { echo "  FAIL: macro mixed-temp and prelude regression failed"; status=1; }
 else
   status=1
 fi
@@ -511,15 +566,15 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # Not "wrapped but not spliced": visit(Expressions) splices the wrapper again, so that mutant is equivalent.
 prove_mutation "a single macro node body loses its expansion: the wrapper is empty" "$MUT_INL" \
-  "Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals, bindings, facts, keep_empty))" \
+  "Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, normalizer, locals, bindings, facts, keep_empty))" \
   "Expressions.new([] of ASTNode)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 
 # Wrapping the site in Expressions is equivalent: the def that reads the constant splices it again in the same namespace. Pass an empty scope so @type is not the declaring type.
 prove_mutation "a constant macro expands in the reader's scope instead of its declaration namespace" "$MUT_MAIN" \
-  "spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType))" \
-  "spliced = splice_body_node(value, \"\", file, c.namespace.is_a?(LibType))" -- check_body_fixture || status=1
+  "spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType), @program.normalizer)" \
+  "spliced = splice_body_node(value, \"\", file, c.namespace.is_a?(LibType), @program.normalizer)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 
@@ -534,8 +589,8 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # keeps the expansion and drops that write-back, so later_block_local.iyi pointerof
 # refuses the name and root-refusals rise above 5.
 prove_mutation "a recursive splice drops names an earlier expansion declared, so a later block's pointerof refuses them" "$MUT_INL" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts, keep_empty))" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals.dup, bindings, facts, keep_empty))" -- check_body_fixture || status=1
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, normalizer, locals, bindings, facts, keep_empty))" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, normalizer, locals.dup, bindings, facts, keep_empty))" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 fi
 
