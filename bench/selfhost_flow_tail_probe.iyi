@@ -23,6 +23,9 @@ class FlowTailWalk < Visitor
         reason = @mv.untyped_reason?(node)
         raise "wrong flow tail type in #{@name}: #{reason}, receiver #{obj_type}"
       end
+      if !@expect_typed && @mv.refusals.any? { |refusal| refusal.node.object_id == node.object_id }
+        raise "dead flow tail recorded a refusal in #{@name}"
+      end
     end
     true
   end
