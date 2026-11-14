@@ -28,7 +28,9 @@ end
 class Slot
   def initialize(@who : Named)
   end
-  getter who : Named
+  def who : Named
+    @who
+  end
 end
 
 def code_of(who : Named) : Int32

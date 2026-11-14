@@ -30,7 +30,9 @@ end
 class Holder
   def initialize(@item : Greet)
   end
-  getter item : Greet
+  def item : Greet
+    @item
+  end
 end
 
 def describe(item : Greet) : Int32

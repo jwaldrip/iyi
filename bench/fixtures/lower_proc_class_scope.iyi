@@ -5,7 +5,7 @@ end
 
 struct Proc
   @[Primitive(:proc_call)]
-  def call(*args : *T) : R
+  def probe_call(*args : *T) : R
   end
 end
 
@@ -21,4 +21,4 @@ class Counter
   end
 end
 
-LibC.exit(Counter.adder.call(2))
+LibC.exit(Counter.adder.probe_call(2))

@@ -5,7 +5,7 @@ end
 
 struct Proc
   @[Primitive(:proc_call)]
-  def call(*args : *T) : R
+  def probe_call(*args : *T) : R
   end
 end
 
@@ -19,4 +19,4 @@ class Doubler
   end
 end
 
-LibC.exit(Doubler.new.maker.call(3) &+ 1)
+LibC.exit(Doubler.new.maker.probe_call(3) &+ 1)

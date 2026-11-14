@@ -5,7 +5,7 @@ end
 
 struct Proc
   @[Primitive(:proc_call)]
-  def call(*args : *T) : R
+  def probe_call(*args : *T) : R
   end
 end
 
@@ -26,7 +26,7 @@ class Maker
     if maker.is_a?(Nil)
       1
     else
-      maker.call(value)
+      maker.probe_call(value)
     end
   end
 end
