@@ -120,11 +120,6 @@ for ir in "$FIX"/*.ir "$FL"/*.ir; do
     continue
   fi
   problems=""
-  if ! native_signature_ok "$native"; then
-    printf '%-18s FAIL      invalid native signature\n' "$n" >>"$table"
-    failures=$((failures + 1))
-    continue
-  fi
   nlibs=$(otool -L "$native" | awk 'NR > 1 { print $1 }')
   if [ "$nlibs" != "/usr/lib/libSystem.B.dylib" ]; then problems="$problems libs=$nlibs;"; fi
   ntools=$(otool -l "$native" | awk '/cmd LC_BUILD_VERSION/ { f = 1 } f && /ntools/ { print $2; exit }')
@@ -134,6 +129,11 @@ for ir in "$FIX"/*.ir "$FL"/*.ir; do
   mkdir -p "$work/again"
   PATH="$TRIPWIRE_PATH:$PATH" "$tool" "$ir" -o "$work/again/$n" >/dev/null 2>&1 || problems="$problems relink;"
   if ! cmp -s "$native" "$work/again/$n"; then problems="$problems relink-bytes-differ;"; fi
+  if ! native_signature_ok "$native"; then
+    printf '%-18s FAIL      invalid native signature\n' "$n" >>"$table"
+    failures=$((failures + 1))
+    continue
+  fi
   ns=$(run_bounded "$native" "$work/$n.n.out" "$work/$n.n.err")
   if [ -n "$problems" ]; then
     printf '%-18s FAIL      %s\n' "$n" "$problems" >>"$table"

@@ -73,9 +73,9 @@ fi
 # executable a valid signature and libSystem alone. Prints one line naming what was compared. Returns 0 only on a match.
 compare_run() {
   local ref="$1" exe="$2" label="$3" name="$4" ref_out exe_out ref_rc exe_rc problems libs
-  native_signature_ok "${5:-$exe}" || return 1
   ref_out=$(timeout 30 "$ref" </dev/null 2>/dev/null)
   ref_rc=$?
+  native_signature_ok "${5:-$exe}" || return 1
   exe_out=$(timeout 30 "$exe" </dev/null 2>/dev/null)
   exe_rc=$?
   if [ "$ref_out" != "$exe_out" ] || [ "$ref_rc" != "$exe_rc" ]; then
