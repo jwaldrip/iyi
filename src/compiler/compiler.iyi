@@ -316,6 +316,7 @@ pub class Compiler
       task.value
     end
     if bodies.is_a?(Panicked)
+      typed_refusal_site(typed, bodies.message)
       return typed_refuse("bodies", reached, bodies.message)
     end
     reached = typed_pass("bodies")
@@ -401,6 +402,26 @@ pub class Compiler
       STDOUT.flush
     end
     CompileResult.new(@config.output_filename, "", [] of ModuleInfo)
+  end
+
+  # When probing, names the source site of the refusal the bodies phase stopped at: the last refusal recorded with
+  # the message the phase raised. A loop re-raises the first refusal of its settled pass, so the site is not the stack's.
+  def typed_refusal_site(typed : TypedProgram, message : String) : Nil
+    return unless @config.probe_phase
+    refusals = typed.visitor.refusals
+    i = refusals.size - 1
+    while i >= 0
+      refusal = refusals[i]
+      if refusal.reason == message
+        file = refusal.file
+        where = file ? "#{file}:#{refusal.line}:#{refusal.column}" : "no location"
+        def_name = refusal.def_name
+        puts "bodies: refused at #{where}" + (def_name ? " in #{def_name}" : "")
+        STDOUT.flush
+        return
+      end
+      i = i - 1
+    end
   end
 
   # The declarations phase of the typed pipeline: each unit is normalised, its declarations are collected as the hosted
