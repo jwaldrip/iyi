@@ -360,7 +360,7 @@ pub class MainVisitor < TypeNodeHost
   property fun_inline_file : String?
   @literal_expander : LiteralExpander
 
-  def initialize(@program : SemanticProgram)
+  def initialize(@program : SemanticProgram, @speculation : SpeculationLedger = SpeculationLedger.new)
     @literal_expander = LiteralExpander.new(@program.normalizer)
     # The generated `new` methods are completed before any body is typed: the
     # declarations pass has recorded the expansions, and this consumes them (idempotent).
@@ -383,7 +383,6 @@ pub class MainVisitor < TypeNodeHost
     @current_yield_nodes = nil
     @typing_stack = [] of String
     @refusals = [] of Refusal
-    @speculation = SpeculationLedger.new
     @typed_instances = [] of TypedInstance
     @def_instances = Hash(String, DefInstance).new
   end
@@ -1946,6 +1945,10 @@ pub class MainVisitor < TypeNodeHost
   # Discard dirty instances and their descendants without replacing the shared array.
   def discard_loop_pass(entry_mark : Int32, refusal_mark : Int32) : Nil
     entries = @speculation.entries
+    if entries.size == entry_mark
+      @refusals.truncate(0, refusal_mark)
+      return nil
+    end
     removed = Hash(UInt64, Bool).new
     i = entry_mark
     through = entry_mark
@@ -1961,12 +1964,19 @@ pub class MainVisitor < TypeNodeHost
       end
       i = i + 1
     end
-    kept = [] of TypedInstance
-    @typed_instances.each do |instance|
-      kept << instance unless removed[instance.object_id]?
+    unless removed.empty?
+      read_index = 0
+      kept = 0
+      while read_index < @typed_instances.size
+        instance = @typed_instances[read_index]
+        unless removed[instance.object_id]?
+          @typed_instances[kept] = instance if kept != read_index
+          kept = kept + 1
+        end
+        read_index = read_index + 1
+      end
+      @typed_instances.truncate(0, kept)
     end
-    @typed_instances.truncate(0, 0)
-    kept.each { |instance| @typed_instances << instance }
     entries.truncate(0, entry_mark)
     @refusals.truncate(0, refusal_mark)
     nil
@@ -4022,7 +4032,7 @@ pub class MainVisitor < TypeNodeHost
 
   # The visitor of a fun body: the same node types and errors, its own locals.
   def sub_visitor(vars : Hash(String, Type)) : TypeNodeHost
-    inner = MainVisitor.new(@program)
+    inner = MainVisitor.new(@program, @speculation)
     inner.vars = vars
     inner.scope = @program
     inner.current_type = @current_type
@@ -4035,7 +4045,6 @@ pub class MainVisitor < TypeNodeHost
     inner.total = @total
     inner.typing_stack = @typing_stack
     inner.refusals = @refusals
-    inner.speculation = @speculation
     inner.typed_instances = @typed_instances
     inner.def_instances = @def_instances
     inner.def_var_unions = @def_var_unions

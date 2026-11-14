@@ -1,3 +1,4 @@
+@[Unsafe("calls C exit to report the loop-carried result")]
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
