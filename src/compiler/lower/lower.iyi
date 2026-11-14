@@ -933,17 +933,7 @@ pub def codegen_var(low : Lowerer, node : Var) : Nil
     low.last = nil
     return
   end
-  if read_type && v.type.is_a?(MixedUnionType) && read_type.as(Type).full_name != v.type.full_name
-    low.last = downcast(low, v.pointer, read_type.as(Type), v.type, v.already_loaded)
-    return
-  end
-  if v.already_loaded
-    # A parameter is read where it arrives: its value is the parameter itself (hosted visit(Var)).
-    low.last = v.pointer
-    return
-  end
-  ir = low.typer.llvm_type(v.type)
-  low.last = load_aligned(low, ir, v.pointer, "")
+  low.last = downcast(low, v.pointer, read_type.as(Type), v.type, v.already_loaded)
 end
 
 # The hosted `codegen_assign` for a class variable target with a type (codegen.cr:1543-1556): the value is evaluated

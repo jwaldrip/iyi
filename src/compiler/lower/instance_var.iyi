@@ -28,20 +28,20 @@ import compiler/semantic/top_level::{ClassType, NilType, Type, MetaTypeVar}
 import compiler/types/types::{GenericClassInstanceType}
 import compiler/syntax/ast::{ASTNode, Var}
 import compiler/lower/context::{Lowerer, LowerVar}
-import compiler/lower/typer::{passed_by_value?, primitive_kind}
+import compiler/lower/typer::{passed_by_value?}
 import compiler/lower/cast::{assign, downcast, to_rhs}
 import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node, refuse_port}
 
-# Whether a value of this self type is passed as a pointer to its storage (see the header). A struct
-# that is not a builtin primitive. Nil for a top-level def (no self).
+# Aggregate struct receivers use their storage address. Scalar structs, including
+# Pointer and Proc, keep their value (hosted fun.cr 659). Nil means no self.
 pub def self_by_pointer?(t : Type?) : Bool
   st = t
   return false if st.nil?
   s = st.as(Type)
   return false unless s.is_a?(ClassType) || s.is_a?(GenericClassInstanceType)
   return false unless owner_struct?(s)
-  primitive_kind(s) == ""
+  passed_by_value?(s)
 end
 
 # The instance variables of a class or a generic class instance (hosted all_instance_vars), or nil for any other owner.

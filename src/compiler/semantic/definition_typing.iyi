@@ -1,7 +1,7 @@
 module compiler/semantic/definition_typing
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Call, Def, Expressions, If, Nop, Path, Self}
+import compiler/syntax/ast::{ASTNode, Call, Def, Expressions, If, NamedArgument, Nop, Path, Self, TypeDeclaration, Var}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{Type, NamedType, ModuleType, SemanticProgram, NonGenericModuleType, NonGenericClassType, EnumType, MetaclassType, TraitType, GenericTraitType, GenericClassType, GenericModuleType, UnionType, NoReturnType, VoidType, TopLevelVisitor, normalize_path}
@@ -106,7 +106,8 @@ class DefinitionProbeRunner
     @serial += 1
     serial = @serial
     lines = [] of String
-    arguments = [] of String
+    arguments = [] of ASTNode
+    named_arguments = [] of NamedArgument
     splat = definition.splat_index
     definition.args.each_with_index do |arg, index|
       next if splat == index && arg.name.empty?
@@ -125,34 +126,50 @@ class DefinitionProbeRunner
       name = "#{VAR_PREFIX}#{serial}_#{index}"
       lines << "#{name} = uninitialized #{text}"
       if splat && index > splat
-        arguments << "#{arg.external_name}: #{name}"
+        named_arguments << NamedArgument.new(arg.external_name, Var.new(name))
       else
-        arguments << name
+        arguments << Var.new(name)
       end
     end
-    call = if owner.is_a?(SemanticProgram)
-             "#{definition.name}(#{arguments.join(", ")})"
-           elsif owner.is_a?(NonGenericModuleType)
-             "#{owner}.#{definition.name}(#{arguments.join(", ")})"
-           elsif owner.is_a?(MetaclassType)
-             "#{scope}.#{definition.name}(#{arguments.join(", ")})"
-           else
-             receiver = "#{VAR_PREFIX}#{serial}_r"
-             lines << "#{receiver} = uninitialized #{owner}"
-             "#{receiver}.#{definition.name}(#{arguments.join(", ")})"
-           end
+    receiver_node : ASTNode? = nil
+    unless owner.is_a?(SemanticProgram)
+      if owner.is_a?(NonGenericModuleType)
+        receiver_node = Path.new(owner.to_s.split("::"))
+      elsif owner.is_a?(MetaclassType)
+        receiver_node = Path.new(scope.to_s.split("::"))
+      else
+        receiver = "#{VAR_PREFIX}#{serial}_r"
+        lines << "#{receiver} = uninitialized #{owner}"
+        receiver_node = Var.new(receiver)
+      end
+    end
+    # Construct the call directly: an enum predicate named `as?` would otherwise
+    # be parsed as a cast. The definition still gets its ordinary call check.
+    call = Call.new(receiver_node, definition.name, arguments, has_parentheses: true)
+    call.named_args = named_arguments unless named_arguments.empty?
     returned : Type? = nil
     if written = definition.return_type
       returned = resolve(lookup_scope, written)
     end
+    checks_return = false
     if returned && instantiable?(returned) && nameable?(returned) && !returned.nil_type?
-      lines << "#{VAR_PREFIX}#{serial}_v : #{TypeRenderer.render(returned.devirtualize)} = #{call}"
-    else
-      lines << call
+      checks_return = true
+      lines << "#{VAR_PREFIX}#{serial}_v : #{TypeRenderer.render(returned.devirtualize)}"
     end
-    parsed = Parser.new("if false\n#{lines.join("\n")}\nend\n", location.filename).parse
+    parsed = Parser.new("if false\n#{lines.join("\n")}\nend\n", location.filename).parse.as(If)
+    body = parsed.then
+    if checks_return
+      declaration = body.is_a?(Expressions) ? body.expressions.last : body
+      declaration.as(TypeDeclaration).value = call
+    elsif body.is_a?(Nop)
+      parsed.then = call
+    elsif body.is_a?(Expressions)
+      body.expressions << call
+    else
+      parsed.then = Expressions.new([body, call] of ASTNode)
+    end
     parsed.accept(DefinitionProbeStamper.new(location))
-    parsed.as(If).iyi_definition_probe = true if parsed.is_a?(If)
+    parsed.iyi_definition_probe = true
     @probes << parsed
     nil
   end
@@ -224,7 +241,7 @@ class DefinitionProbeRunner
     end
     found = @program.lookup_type_node?(written, scope)
     @program.current_imports = saved
-    found
+    found ? @program.remove_alias(found) : nil
   end
 
   def storable?(type : Type) : Bool

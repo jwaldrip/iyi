@@ -336,6 +336,9 @@ pub def downcast_distinct(low : Lowerer, value : Value, to_type : Type, from_typ
   if to_type.is_a?(NilType)
     return llvm_nil(low)
   end
+  if from_type.is_a?(NilableProcType) && to_type.is_a?(ProcInstanceType)
+    return value
+  end
   if from_type.is_a?(NilableType) || from_type.is_a?(NilableReferenceUnionType) || from_type.is_a?(ReferenceUnionType) || from_type.is_a?(VirtualType)
     if to_type.is_a?(VirtualType) || to_type.is_a?(ReferenceUnionType) || to_type.is_a?(NilableType) || TypeQueries.reference_like?(to_type)
       return value

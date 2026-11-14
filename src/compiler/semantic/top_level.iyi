@@ -2773,14 +2773,16 @@ pub class TopLevelVisitor < Visitor
     if @enum_flags
       if enum_type.members["None"]?.nil?
         enum_type.add_member("None", NumberLiteral.new("0"))
-        none_def = Def.new("none?", return_type: Path.new("Bool"))
+        body = Call.new(Call.new(nil, "value"), "==", NumberLiteral.new("0")).at(node)
+        none_def = Def.new("none?", body: body, return_type: Path.new("Bool"))
         none_def.location = node.location
         enum_type.add_def(none_def)
       elsif user_none = enum_type.defs["none?"]?
         # Hosted generates none? first. The user's def then replaces it and
         # add_def keeps the generated def as previous. The body was visited
         # first here, so link that generated def onto the one already recorded.
-        generated_none = Def.new("none?", return_type: Path.new("Bool"))
+        body = Call.new(Call.new(nil, "value"), "==", NumberLiteral.new("0")).at(node)
+        generated_none = Def.new("none?", body: body, return_type: Path.new("Bool"))
         generated_none.location = node.location
         i = 0
         while i < user_none.size
@@ -2800,13 +2802,15 @@ pub class TopLevelVisitor < Visitor
     end
     direct_names.each do |mname|
       pname = "#{underscore(mname)}?"
+      method_name = @enum_flags ? "includes?" : "=="
+      body = Call.new(Var.new("self"), method_name, Path.new(mname)).at(node)
       if enum_type.defs[pname]?.nil?
-        predicate = Def.new(pname, return_type: Path.new("Bool"))
+        predicate = Def.new(pname, body: body, return_type: Path.new("Bool"))
         predicate.location = node.location
         enum_type.add_def(predicate)
       else
         if user_preds = enum_type.defs[pname]?
-          generated = Def.new(pname, return_type: Path.new("Bool"))
+          generated = Def.new(pname, body: body, return_type: Path.new("Bool"))
           generated.location = node.location
           i = 0
           while i < user_preds.size
