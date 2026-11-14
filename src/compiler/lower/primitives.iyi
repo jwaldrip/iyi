@@ -474,9 +474,10 @@ end
 # prepare_call_args does. `pointer_new` is a class method: its call's receiver (the metaclass) is not
 # lowered, and its argument is the address. `pointer_malloc` is a class method too: its argument is the count. Ported: `pointer_address` (ptr2int to Int64), `pointer_add` (a
 # gep of the element type, `pointer_new`, `pointer_get`, and `pointer_set`.
-# `pointer_realloc` and `pointer_diff` remain refused.
+# `pointer_realloc` is the program's `realloc64` or C `realloc` over the count times the element's size. `pointer_diff` remains
+# refused.
 pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
-  if name == "pointer_realloc" || name == "pointer_diff"
+  if name == "pointer_diff"
     pending_visit_node("primitive #{name} (hosted codegen_primitive_#{name}, primitives.cr 905-965: its helper is not ported)")
     return
   end
@@ -520,6 +521,10 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
     return
   end
   elem = pointer_element_of(ptr_type)
+  if name == "pointer_realloc"
+    low.last = pointer_realloc_value(low, elem, values[0], values[1])
+    return
+  end
   if name == "pointer_address"
     low.last = low.builder.ptr_to_int(values[0], low.module.types.int64)
     return
@@ -637,6 +642,22 @@ pub def pointer_malloc_value(low : Lowerer, elem : Type, count : Value) : Value
     memset_size(low, ptr, size)
   end
   ptr
+end
+
+# The hosted `codegen_primitive_pointer_realloc` (primitives.cr 951-958) and `realloc` (codegen.cr 3352): the count times
+# the size of the element's type (`llvm_size`, the sizeof constant of `llvm_type`, which is not the embedded type), passed
+# to the program's `realloc64` when it has one, and to C `realloc` when it does not. The pointer casts of the hosted code
+# are no instructions between opaque pointers. The count is the UInt64 argument, which is the size type; any other width
+# is refused.
+pub def pointer_realloc_value(low : Lowerer, elem : Type, ptr : Value, count : Value) : Value
+  if count.type != low.typer.size_t
+    pending_visit_node("Pointer#realloc with a count that is not the size type (hosted codegen_primitive_pointer_realloc: builder.mul of the count and the size)")
+    return ptr
+  end
+  size = low.builder.mul(count, sizeof_expr(low, low.typer.llvm_type(elem)))
+  prog_alloc = program_allocator(low, "realloc64")
+  callee = prog_alloc.nil? ? c_realloc_function(low) : prog_alloc.as(Function)
+  low.builder.call(callee.fn_type, callee, [ptr, size] of Value, "")
 end
 
 # The analysed type of a receiver. A primitive's owner is the type its receiver has (the
@@ -1446,6 +1467,15 @@ pub def c_malloc_function(low : Lowerer) : Function
   return existing.as(Function) unless existing.nil?
   fn_type = low.module.types.func([low.module.types.int(64)] of IrType, low.module.types.ptr(0))
   low.module.add_function("malloc", fn_type, CallConv::C)
+end
+
+# The C `realloc` the hosted `c_realloc_fun` declares (`declare ptr @realloc(ptr, i64)`), added to the module when the
+# program does not have it yet.
+pub def c_realloc_function(low : Lowerer) : Function
+  existing = low.module.get_function?("realloc")
+  return existing.as(Function) unless existing.nil?
+  fn_type = low.module.types.func([low.module.types.ptr(0), low.module.types.int(64)] of IrType, low.module.types.ptr(0))
+  low.module.add_function("realloc", fn_type, CallConv::C)
 end
 
 # The hosted `iyi_headed_flag` (type_id.cr 153-165): the class's `:headed` byte, loaded from the

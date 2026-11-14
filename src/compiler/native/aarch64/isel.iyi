@@ -206,6 +206,14 @@ class Isel
     if c.op == Op::ConstInt
       v = c.aux_int
       v = v & 1_i64 if t.int? && t.bits == 1
+      # A register holds an integer narrower than 64 bits sign-extended from its width (`canon`, and what a load of the
+      # type produces), so a constant is wrapped to that form. `i8 128` is -128: left as 128 it compared unequal to a
+      # loaded byte of 0x80, and any unsigned value of a width's top half compared wrong, signed or not.
+      if t.int? && t.bits > 1 && t.bits < 64
+        span = 1_i64 << t.bits
+        v = v & (span - 1_i64)
+        v = v - span if v >= span // 2_i64
+      end
       return [const_gpr(v)]
     end
     if c.op == Op::ConstFloat
