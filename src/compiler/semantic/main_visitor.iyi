@@ -266,6 +266,9 @@ pub class MainVisitor < TypeNodeHost
   # variable to nothing). The hosted pass types them too, with what depends on the narrowed variable left without a
   # type, and never reports that: an untyped node there is no error. So nothing in them raises or is recorded.
   property dead_depth : Int32 = 0
+  # Raised by visit(If) when nothing after it can run: the typing narrowed the variable of one branch away, and the
+  # other ends the flow. The list the `if` stands in types the rest of its statements as an unreachable branch.
+  property flow_dead : Bool = false
   # The instantiations whose body typing is in progress, by key (receiver, def
   # name, argument types). A key typed again is a recursive call: it takes the
   # declared return type, or is refused. Shared with a fun body's visitor.
@@ -1713,7 +1716,18 @@ pub class MainVisitor < TypeNodeHost
         @nil_candidates.to_a.each { |name| @nil_candidates.delete(name) if name.starts_with?("__iyi_dt_") }
         @nil_resets.to_a.each { |name| @nil_resets.delete(name) if name.starts_with?("__iyi_dt_") }
       end
+      # What follows an `if` whose one branch ends the flow and whose other the filters left unreachable is dead
+      # (`if type.is_a?(A); return; end` with `type` already an A): the hosted pass types it, with the variable the
+      # filter narrowed away left without a type, and reports nothing. visit(If) raises `flow_dead`; the rest of
+      # this list is typed as an unreachable branch is.
+      @flow_dead = false
+      dead_here = false
       while i < node.expressions.size
+        if @flow_dead && !dead_here
+          @dead_depth = @dead_depth + 1
+          dead_here = true
+        end
+        @flow_dead = false
         exp = node.expressions[i]
         # iyi: an annotation sits beside the def it annotates and is neither typed
         # nor walked (the hosted pass does not), so it does not end the list's type.
@@ -1737,6 +1751,8 @@ pub class MainVisitor < TypeNodeHost
         end
         i = i + 1
       end
+      @dead_depth = @dead_depth - 1 if dead_here
+      @flow_dead = false
       if lt = last_type
         set_type(node, lt)
       end
@@ -1972,6 +1988,7 @@ pub class MainVisitor < TypeNodeHost
     end
 
     @unreachable = then_unreachable && else_unreachable
+    @flow_dead = (then_unreachable && else_dead) || (else_unreachable && then_dead) || (then_dead && else_dead)
 
     then_type = then_dead ? type_of?(node.then) : child_type(node.then)
     else_type = else_dead ? type_of?(node.else) : child_type(node.else)
