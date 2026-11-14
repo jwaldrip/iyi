@@ -130,6 +130,11 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
       e2e_fail=$((e2e_fail + 1))
       continue
     fi
+    if ! codesign -v --strict "$WORK/$name.native"; then
+      echo "  $name: native executable failed signature validation"
+      e2e_fail=$((e2e_fail + 1))
+      continue
+    fi
     "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1
     ns=$?
     if [ "$ns" -eq "$hs" ] && cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out"; then
@@ -159,6 +164,26 @@ cast_check() {
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out" && return 0
   return 1
 }
+
+new_cast_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_$cast_fixture.iyi" "$WORK/lowcast_$cast_fixture.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
+}
+cast_fixture=virtual_store
+new_cast_check || { echo "  baseline: virtual assignment differs"; status=1; }
+prove_mutation "virtual target assignment is refused" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if target.is_a?(VirtualType) || target.is_a?(VirtualMetaclassType)' '  if false' -- new_cast_check || status=1
+cast_fixture=nilable_mixed
+new_cast_check || { echo "  baseline: nilable union assignment differs"; status=1; }
+prove_mutation "nullable union stores a constant type id" "$REPO/src/compiler/lower/cast.iyi" \
+  '    return low.builder.select(is_null, nil_id, other_id)' '    return other_id' -- new_cast_check || status=1
+prove_mutation "nullable union assignment is refused" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if target.is_a?(MixedUnionType) && (value_type.is_a?(NilableType) || value_type.is_a?(ReferenceUnionType) || value_type.is_a?(NilableReferenceUnionType))' '  if false' -- new_cast_check || status=1
+cast_fixture=enum_mixed
+new_cast_check || { echo "  baseline: enum union assignment differs"; status=1; }
+prove_mutation "enum union stores are refused" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if kind == "int" || kind == "char" || kind == "symbol" || kind == "float" || value_type.is_a?(EnumType)' '  if kind == "int" || kind == "char" || kind == "symbol" || kind == "float"' -- new_cast_check || status=1
 no_return_check() {
   "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
   "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_noreturn_union.iyi" "$WORK/lowcast_noreturn_union.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
@@ -191,6 +216,7 @@ aggregate_behavior_check() {
   "$IYI" build -o "$WORK/aggregate_mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/aggregate_mut.build.log" 2>&1 || return 1
   "$WORK/aggregate_mut" emit "$REPO/bench/fixtures/lowcast_struct_union.iyi" "$WORK/lowcast_struct_union.oracle.ll" > "$WORK/aggregate_mut.ll" 2> "$WORK/aggregate_mut.emit.log" || return 1
   "$WORK/compile_native" "$WORK/aggregate_mut.ll" -o "$WORK/aggregate_mut.native" > "$WORK/aggregate_mut.native.log" 2>&1 || return 1
+  codesign -v --strict "$WORK/aggregate_mut.native" || return 1
   "$WORK/aggregate_mut.native" > "$WORK/aggregate_mut.out" 2>&1
   local result=$?
   echo "$result" > "$WORK/aggregate_mut.exit"
