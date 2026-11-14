@@ -794,9 +794,6 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
   end
   collector = LocalOrder.new(low.analysed)
   block.body.accept(collector)
-  if collector.declared
-    pending_visit_node("a typed declaration in a block (hosted alloca_non_closured_vars, TypeDeclaration), not ported yet")
-  end
   collector.vars.each do |var|
     name = var.name
     t = low.analysed.type_of?(var)
@@ -822,9 +819,6 @@ pub def allocate_def_vars(low : Lowerer, def_node : Def, arg_types : Array(Type)
   end
   collector = LocalOrder.new(low.analysed)
   def_node.body.accept(collector)
-  if collector.declared
-    pending_visit_node("a typed declaration in an inlined def (hosted alloca_vars, TypeDeclaration), not ported yet")
-  end
   collector.vars.each do |var|
     name = var.name
     t = low.analysed.type_of?(var)
