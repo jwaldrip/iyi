@@ -49,6 +49,10 @@ if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_calls_exercise.iyi
   exit 1
 fi
 echo "  driver built"
+if ! "$WORK/port" triple; then
+  echo "  FAIL: target triple frame-pointer classification"
+  status=1
+fi
 
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
@@ -208,6 +212,11 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
       e2e_fail=$((e2e_fail + 1))
       continue
     fi
+    if ! codesign -v --strict "$WORK/$name.native" > /dev/null 2>&1; then
+      echo "  $name: FAIL, native signature invalid"
+      e2e_fail=$((e2e_fail + 1))
+      continue
+    fi
     timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
     timeout 30 "$WORK/$name" > "$WORK/$name.hosted.out" 2>&1; hs=$?
     if [ "$name" = lowcall_super ] && [ "$hs" -ne 42 ]; then
@@ -243,6 +252,11 @@ for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
     continue
   fi
   timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
+  if ! codesign -v --strict "$WORK/$name.native" > /dev/null 2>&1; then
+    echo "  $name: FAIL, native signature invalid"
+    status=1
+    continue
+  fi
   timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
   if [ "$hs" -ne 7 ] || [ "$ns" -ne "$hs" ] || ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out"; then
     echo "  $name: hosted status $hs, native status $ns, or output differs"
@@ -294,6 +308,7 @@ generic_constructor_check() {
     fixture="$REPO/bench/fixtures/$name.iyi"
     rm -f "$WORK/constructor.check.exe"
     IYI_PATH="$REPO/src" "$WORK/constructor.check.tool" "$fixture" -o "$WORK/constructor.check.exe" --pipeline typed > "$WORK/constructor.check.log" 2>&1 || return 1
+    codesign -v --strict "$WORK/constructor.check.exe" > /dev/null 2>&1 || { echo "  $name: FAIL, native signature invalid"; return 1; }
     timeout 30 "$WORK/constructor.check.exe" > "$WORK/constructor.check.out" 2>&1; result=$?
     [ "$result" -eq 7 ] && cmp -s "$WORK/constructor.check.out" "$WORK/$name.hosted.out" || return 1
   done
@@ -362,8 +377,9 @@ echo "== 3c. Top-level imports and inherited names across units"
 unit_fixture="$REPO/bench/fixtures/inherited_unit_name/main.iyi"
 if [ -x "$WORK/compile_native" ] && \
    "$IYI" build --prelude empty --no-debug -o "$WORK/unit_name.hosted" "$unit_fixture" > "$WORK/unit_name.hosted.log" 2>&1 && \
-   IYI_PATH="$REPO/src" "$WORK/compile_native" "$unit_fixture" -o "$WORK/unit_name.native" --pipeline typed > "$WORK/unit_name.native.log" 2>&1; then
-  timeout 30 "$WORK/unit_name.hosted" > "$WORK/unit_name.hosted.out" 2>&1; hs=$?
+   IYI_PATH="$REPO/src" "$WORK/compile_native" "$unit_fixture" -o "$WORK/unit_name.native" --pipeline typed > "$WORK/unit_name.native.log" 2>&1 && \
+   { timeout 30 "$WORK/unit_name.hosted" > "$WORK/unit_name.hosted.out" 2>&1; hs=$?; true; } && \
+   codesign -v --strict "$WORK/unit_name.native" > /dev/null 2>&1; then
   timeout 30 "$WORK/unit_name.native" > "$WORK/unit_name.native.out" 2>&1; ns=$?
   if [ "$hs" -eq 7 ] && [ "$ns" -eq "$hs" ] && cmp -s "$WORK/unit_name.hosted.out" "$WORK/unit_name.native.out"; then
     echo "  inherited unit name: native executable runs to the hosted result (status 7, stdout identical)"
@@ -397,6 +413,11 @@ lower_calls_check() {
     awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
   done
   return 0
+}
+
+triple_check() {
+  "$IYI" build -o "$WORK/triple-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/triple-mut.build.log" 2>&1 || return 1
+  "$WORK/triple-mut" triple > "$WORK/triple-mut.out" 2>&1
 }
 
 super_check() {
@@ -560,6 +581,8 @@ prove_mutation "a def's unwind table is async on aarch64" "$REPO/src/compiler/lo
   'return "sync"' 'return "async"' -- lower_calls_check || status=1
 prove_mutation "a def loses its darwin frame pointers" "$REPO/src/compiler/lower/fun.iyi" \
   "  if darwin_triple?(triple)" "  if false" -- lower_calls_check || status=1
+prove_mutation "a macOS triple loses its frame pointers" "$REPO/src/compiler/lower/fun.iyi" \
+  '  triple.includes?("darwin") || triple.includes?("macosx")' '  triple.includes?("darwin")' -- triple_check || status=1
 prove_mutation "the printer writes uwtable as an attribute, not uwtable(sync)" "$REPO/src/compiler/ir/printer.iyi" \
   'return "uwtable(" + s + ")" if a.name == "uwtable"' 'return "uwtable=" + ir_quote(s) if a.name == "uwtable"' -- lower_calls_check || status=1
 prove_mutation "a NoReturn def carries no noreturn attribute" "$REPO/src/compiler/lower/fun.iyi" \

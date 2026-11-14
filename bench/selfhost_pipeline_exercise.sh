@@ -95,6 +95,10 @@ for fixture in $fixtures; do
       echo "  $name: FAILED, the hosted compiler does not build the fixture"
       failed=$((failed + 1)); measured[$rel]="link"; continue
     fi
+    if ! codesign -v --strict "$out" > /dev/null 2>&1; then
+      echo "  $name: FAILED, native signature invalid"
+      failed=$((failed + 1)); measured[$rel]="link"; continue
+    fi
     timeout 30 "$out" > "$WORK/$name.typed.out" 2>&1; tstat=$?
     timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hstat=$?
     if [ "$tstat" = "$hstat" ] && cmp -s "$WORK/$name.typed.out" "$WORK/$name.hosted.out"; then
@@ -130,6 +134,9 @@ for root in $ROOTS; do
   if [ "$root_status" -eq 0 ] && [ "$rphase" = "link" ] && [ -e "$WORK/$name.root" ]; then
     if ! IYI_PATH="$REPO/src" "$IYI" build -o "$WORK/$name.root.hosted" "$REPO/$root" > "$WORK/$name.root.hosted.log" 2>&1; then
       echo "  $root: FAILED, the hosted compiler does not build the root"
+      failed=$((failed + 1))
+    elif ! codesign -v --strict "$WORK/$name.root" > /dev/null 2>&1; then
+      echo "  $root: FAILED, native signature invalid"
       failed=$((failed + 1))
     else
       timeout 30 "$WORK/$name.root" > "$WORK/$name.root.typed.out" 2>&1; tstat=$?
@@ -300,6 +307,7 @@ pipeline_check() {
   rm -f "$WORK/mut_a" "$WORK/mut_b"
   "$WORK/mut_tool" "$a" -o "$WORK/mut_a" --pipeline typed > /dev/null 2>&1; local sa=$?
   [ "$sa" -eq 0 ] || return 1
+  codesign -v --strict "$WORK/mut_a" > /dev/null 2>&1 || { echo "  lower_exit: FAIL, native signature invalid"; return 1; }
   timeout 30 "$WORK/mut_a" > /dev/null 2>&1; [ "$?" -eq 42 ] || return 1
   "$WORK/mut_tool" "$b" -o "$WORK/mut_b" --pipeline typed > /dev/null 2>&1; local sb=$?
   [ "$sb" -ne 0 ] || return 1
@@ -366,6 +374,7 @@ root_comparison_check() {
   "$WORK/root_tool" "$fixture" -o "$WORK/root_test" --pipeline typed --probe-phase > "$WORK/root_test.log" 2>&1 || return 1
   [ "$(probe_phase "$WORK/root_test.log")" = "link" ] || return 1
   "$IYI" build --prelude empty -o "$WORK/root_hosted" "$fixture" > "$WORK/root_hosted.log" 2>&1 || return 1
+  codesign -v --strict "$WORK/root_test" > /dev/null 2>&1 || { echo "  lower_exit root: FAIL, native signature invalid"; return 1; }
   "$WORK/root_test" > "$WORK/root_test.out" 2>&1; local ts=$?
   "$WORK/root_hosted" > "$WORK/root_hosted.out" 2>&1; local hs=$?
   bash -c '. "$1"; pipeline_outputs_equal "$2" "$3" "$4" "$5"' _ "$REPO/bench/lib/pipeline_report.sh" "$ts" "$hs" "$WORK/root_test.out" "$WORK/root_hosted.out" || return 1
