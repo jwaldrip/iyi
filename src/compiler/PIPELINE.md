@@ -21,15 +21,24 @@ and its function verifies. This one floor reduction is authorized for the integr
 
 ## Strict bootstrap checks
 
-At `c9c585223`, the hosted compiler builds `compile_native.iyi`, and that stage1
+At `10df29874`, the hosted compiler builds `compile_native.iyi`, and that stage1
 passes parsing, declarations and body typing for hello with the real prelude.
-Lowering stops at `Extend`; no hello executable is produced. Parser compilation,
+Lowering stops at `assign Tuple(Int64, UInt64) to Bool`, where generated temporaries
+in the runtime lock collide. No hello executable is produced. Parser compilation,
 self-compilation and a stage2/stage3 fixed point remain unproven.
 
 The omitted-fun-return, inline-macro-expansion and nested-body-scope regressions
 compile, link and run natively. Their results match hosted execution: status 0,
 `ABCDE\n` with status 0, and status 7 respectively. Each failed in the preceding
 stage1. At `0e2157406`, stage1's only linked dylib is `libSystem.B.dylib`.
+
+At `10df29874`, the union-consumer regression prints `ABCDEFG` with status 0,
+and the program-allocator selection regression exits 3; both match hosted execution.
+The declaration initializer is evaluated in value mode rather than storing an
+undefined Nil value. At `04f93ac04`, all 14 normal-path defer fixtures match hosted
+IR and execution, including a union result preserved across cleanup. The gate
+rejects replacing the union's pointer phi with an aggregate phi.
+
 The census table below is an earlier diagnostic snapshot, separate from these
 strict whole-program checks.
 

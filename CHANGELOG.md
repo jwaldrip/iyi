@@ -8,6 +8,12 @@
   resolves nested class and module declarations in their enclosing body. Native regression executables match
   hosted results. Real-prelude hello reaches lowering; parser compilation and a self-host fixed point remain
   unproven. `src/compiler/PIPELINE.md` records the strict bootstrap checks separately from the census.
+- Typed declarations request their initializer's value, union consumers convert address-valued joins when
+  needed, and normal-path `defer` preserves aggregate results across cleanup. The union-consumer fixture
+  matches hosted output and status; all 14 defer fixtures match hosted IR and execution.
+- Native lowering selects a program's `malloc64` or `malloc_atomic64` by the allocated type's pointer content,
+  falling back to C `malloc` only when the required allocator kind is absent. Allocator-selection fixtures
+  match hosted IR and execution, including a class allocation through the typed pipeline.
 - **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
   [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
   the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,
