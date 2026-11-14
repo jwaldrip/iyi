@@ -28,7 +28,7 @@ if [ -z "${NATIVE_DIFF_CG:-}" ]; then
 fi
 python3 bench/gen_narrow_ir.py "$work/generated" 200 || exit 1
 if [ "$#" -eq 0 ]; then
-  set -- bench/fixtures/native_cg/rmw.ir bench/fixtures/native_cg/narrow_cmpxchg.ir bench/fixtures/native_cg/narrow_switch.ir bench/fixtures/native_cg/narrow_call.ir bench/fixtures/native_cg/narrow_i1.ir bench/fixtures/native_cg/narrow_param.ir "$work"/generated/seed_*.ir
+  set -- bench/fixtures/native_cg/rmw.ir bench/fixtures/native_cg/narrow_cmpxchg.ir bench/fixtures/native_cg/narrow_switch.ir bench/fixtures/native_cg/narrow_call.ir bench/fixtures/native_cg/narrow_i1.ir bench/fixtures/native_cg/narrow_param.ir bench/fixtures/native_cg/narrow_asm.ir "$work"/generated/seed_*.ir
 fi
 : >"$work/report.txt"
 index=0; passed=0; failed=0
