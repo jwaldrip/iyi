@@ -65,7 +65,7 @@ def restore(flag : Bool, other : Bool) : Int32
   result
 end
 
-def finish(status : Int32) : NoReturn
+def finish(status : Int32)
   LibC.exit(status)
   status &+ 100
 end
