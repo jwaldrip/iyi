@@ -107,7 +107,8 @@ def normalised_lines(text : String, builds : Array(String)) : Array(String)
     if idx = line.index(" #")
       out << line[0, idx] + " {"
     elsif line.starts_with?("define ") && (bracket = line.index(") ["))
-      out << line[0, bracket.as(Int32) + 1] + " {"
+      close = line.index("]", bracket.as(Int32) + 3)
+      out << (close.nil? ? line : line[0, bracket.as(Int32) + 1] + line[close.as(Int32) + 1..-1])
     else
       out << line
     end

@@ -58,6 +58,7 @@ pub def allocate_closure(low : Lowerer, frame : ClosureFrame, parent : LowerCont
   size = low.builder.const_cast(Op::PtrToInt, endpoint, low.typer.size_t)
   ptr = low.builder.call(allocator.fn_type, allocator, [size] of Value, "")
   context.closure_ptr = ptr
+  setup_closure_vars(low, context, ptr, true, false)
   if outer = context.closure_parent
     zero = low.builder.const_int(low.module.types.int32, 0_i64).as(Value)
     index = low.builder.const_int(low.module.types.int32, names.size.to_i64).as(Value)
@@ -65,7 +66,6 @@ pub def allocate_closure(low : Lowerer, frame : ClosureFrame, parent : LowerCont
     ptr_type = PointerInstanceType.new(low.analysed.program, low.analysed.program.nil_type)
     assign(low, parent_slot, ptr_type, ptr_type, outer.closure_ptr.as(Value))
   end
-  setup_closure_vars(low, context, ptr, true, false)
 end
 
 pub def setup_closure_vars(low : Lowerer, source : LowerContext, ptr : Value, overwrite : Bool = true, include_parent : Bool = true) : Nil
@@ -87,7 +87,7 @@ pub def setup_closure_vars(low : Lowerer, source : LowerContext, ptr : Value, ov
   if parent = include_parent ? source.closure_parent : nil
     index = low.builder.const_int(low.module.types.int32, source.closure_names.size.to_i64).as(Value)
     slot = low.builder.inbounds_gep(layout.as(IrType), ptr, [zero, index] of Value, "parent_ptr")
-    outer_ptr = load_aligned(low, low.module.types.ptr(0), slot)
+    outer_ptr = load_aligned(low, low.module.types.ptr(0), slot, "parent")
     setup_closure_vars(low, parent, outer_ptr, false)
   end
 end

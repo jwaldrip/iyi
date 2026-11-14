@@ -764,11 +764,6 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
     end
   end
   allocate_block_vars(low, block, block_ctx.vars, captured)
-  if bf = block_frame
-    low.context = block_ctx
-    allocate_closure(low, bf, caller)
-    low.context = caller
-  end
 
   # The inlined def's frame (hosted `with_cloned_context`): the block it yields to, the block's
   # context, and the phi the value and the `break`s of the call go to. Passed-by-value results merge
@@ -804,6 +799,11 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   allocate_def_vars(low, def_node, arg_types, frame.vars, def_captured)
   allocate_closure(low, def_closure)
   copy_args(low, def_node, arg_types, values, frame.vars)
+  if bf = block_frame
+    low.context = block_ctx
+    allocate_closure(low, bf, caller)
+    low.context = frame
+  end
 
   low.needs_value = true
   visit_node(low, def_node.body)

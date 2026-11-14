@@ -762,6 +762,11 @@ class IrParser
     while !c.at_end? && !c.punct?("{")
       if c.ident?("personality")
         c.take
+        # LLVM spells the function personality as `ptr @name`; our IR
+        # printer also accepts the original untyped `@name` spelling.
+        if c.ident?("ptr")
+          parse_type(c, mod.types)
+        end
         fn.personality = parse_value(c, mod.types.ptr(0), mod)
       elsif c.ident?("section")
         c.take

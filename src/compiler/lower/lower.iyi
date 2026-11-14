@@ -266,7 +266,7 @@ pub def emit_fun_def(low : Lowerer, node : FunDef, rec : LibFun, ret : Type) : N
   # the names asm refers to (`asm_referenced_fun?`), the personality on darwin (fun.cr:781), and `__iyi_new`, which the
   # allocation declares and which stays external in the hosted module. Any other fun is external.
   if name.starts_with?("__crystal_") || name.starts_with?("__iyi_")
-    if asm_referenced_fun?(name) || name == "__iyi_new" || (low.module.target.darwin? && name.starts_with?("__iyi_personality"))
+    if asm_referenced_fun?(name) || name == "__iyi_new" || (low.module.target.darwin? && name == abi_name(low, "personality"))
       fn.linkage = Linkage::External
     else
       fn.linkage = Linkage::Internal
