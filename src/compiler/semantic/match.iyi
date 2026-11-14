@@ -160,9 +160,14 @@ pub class CallMatch
         class_vars = generic.type_vars
       end
     end
-    match_free = free_names.dup
+    match_free = free_names
     if vars = class_vars
-      vars.each { |name| match_free << name unless match_free.includes?(name) }
+      vars.each do |name|
+        unless match_free.includes?(name)
+          match_free = match_free.dup if match_free.same?(free_names)
+          match_free << name
+        end
+      end
     end
     if match_free.size > 0
       maybe_bound = FreeBindings.of_def(definition, signature.arg_types, ts, class_vars)

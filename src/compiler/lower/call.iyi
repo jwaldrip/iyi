@@ -169,13 +169,11 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     recv_type = single_dispatch ? checked_dispatch_receiver(low, node, single_dispatch.as(DispatchTarget).receiver) : receiver_owner(low, node)
     if recv_type.is_a?(GenericClassInstanceMetaclassType)
       self_type = recv_type
-      if low.analysed.call_receiver?(node)
-        unless node.obj.as(ASTNode).is_a?(Path)
+      if low.analysed.call_receiver?(node) || node.obj.as(ASTNode).is_a?(Generic)
+        if low.analysed.call_receiver?(node) && !node.obj.as(ASTNode).is_a?(Path)
           lower_receiver(low, node)
           return if block_ended?(low)
         end
-        self_value = type_id_value(low, recv_type)
-      elsif node.obj.as(ASTNode).is_a?(Generic)
         self_value = type_id_value(low, recv_type)
       else
         self_value = lower_receiver(low, node)

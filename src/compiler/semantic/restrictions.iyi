@@ -358,12 +358,18 @@ pub class FreeBindings
   # (`*values : *T`), the splat elements are packed as a tuple and bound too.
   def self.of_def(definition : Def, arg_types : Array(Type), ts : TypeSystem? = nil, class_vars : Array(String)? = nil) : Hash(String, Type)?
     bound = Hash(String, Type).new
-    free = [] of String
-    if names = definition.free_vars
-      names.each { |name| free << name unless free.includes?(name) }
-    end
-    if names = class_vars
-      names.each { |name| free << name unless free.includes?(name) }
+    free_names = definition.free_vars
+    return bound if free_names.nil? && class_vars.nil?
+    free : Array(String)
+    if free_names.nil?
+      free = class_vars.as(Array(String))
+    elsif class_vars.nil? || class_vars.as(Array(String)).empty?
+      free = free_names.as(Array(String))
+    elsif free_names.as(Array(String)).empty?
+      free = class_vars.as(Array(String))
+    else
+      free = free_names.as(Array(String)).dup
+      class_vars.as(Array(String)).each { |name| free << name unless free.includes?(name) }
     end
     return bound if free.empty?
     splat = definition.splat_index

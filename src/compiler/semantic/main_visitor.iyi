@@ -3945,6 +3945,27 @@ pub class MainVisitor < TypeNodeHost
     end
   end
 
+  def infer_constructor_receiver(node : Call, owner : Type, definition : Def) : Type?
+    generic = CallMatch.inferable_generic(@program, owner, @program.def_owner(definition), definition, node.args.size)
+    return nil if generic.nil?
+    arg_types = [] of Type
+    node.args.each do |arg|
+      arg_type = child_type(arg)
+      return nil if arg_type.nil?
+      arg_types << arg_type.as(Type)
+    end
+    ts = type_node_system(@program)
+    bound = FreeBindings.of_def(definition, arg_types, ts, generic.as(GenericClassType).type_vars)
+    return nil if bound.nil?
+    ordered = [] of Type
+    generic.as(GenericClassType).type_vars.each do |name|
+      arg_type = bound.as(Hash(String, Type))[name]?
+      return nil if arg_type.nil?
+      ordered << arg_type.as(Type)
+    end
+    type_node_metaclass(ts.instantiate_type(generic.as(GenericClassType), ordered))
+  end
+
   def visit(node : Call) : Bool
     if block = node.block
       @jump_block_calls[block] = node
@@ -4032,30 +4053,9 @@ pub class MainVisitor < TypeNodeHost
     return false if target_def.nil?
     original_def = target_def
     if infer_class_vars
-      if generic = CallMatch.inferable_generic(@program, rec_type, @program.def_owner(original_def), original_def, node.args.size)
-        arg_types = [] of Type
-        node.args.each do |arg|
-          if arg_type = child_type(arg)
-            arg_types << arg_type
-          end
-        end
-        if arg_types.size == node.args.size
-          if bound = FreeBindings.of_def(original_def, arg_types, type_node_system(@program), generic.type_vars)
-            ordered = [] of Type
-            generic.type_vars.each do |name|
-              if arg_type = bound[name]?
-                ordered << arg_type
-              end
-            end
-            if ordered.size == generic.type_vars.size
-              instantiated = type_node_system(@program).instantiate_type(generic, ordered)
-              if receiver = type_node_metaclass(instantiated)
-                rec_type = receiver
-                @call_receivers[node] = receiver
-              end
-            end
-          end
-        end
+      if receiver = infer_constructor_receiver(node, rec_type, original_def)
+        rec_type = receiver
+        @call_receivers[node] = receiver
       end
     end
     # A receiverless fallback to a program def is instantiated by the program,
