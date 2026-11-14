@@ -674,6 +674,8 @@ prove_mutation "a typed block declaration is refused" "$REPO/src/compiler/lower/
   if collector.declared
     pending_visit_node("typed block declaration")
   end' -- lower_calls_check || status=1
+prove_mutation "primitive dispatch loses its receiver" "$REPO/src/compiler/lower/call.iyi" \
+  '      prim_values = [self_value] of Value' '      prim_values = [] of Value' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \

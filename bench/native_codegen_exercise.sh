@@ -431,8 +431,14 @@ check_narrow_i1() { check_fixture "$1" narrow_i1; }
 check_narrow_param() { check_fixture "$1" narrow_param; }
 check_narrow_asm() { check_fixture "$1" narrow_asm; }
 check_narrow_argext() { check_fixture "$1" narrow_argext; }
+check_narrow_signext() { check_fixture "$1" narrow_signext; }
 
 echo "== 6. mutations are each caught"
+prove_mutation "call: do not sign-extend an attributed i1 argument" \
+  src/compiler/native/aarch64/isel.iyi \
+  '            vals[j] = signed_value(vals[j], loc.leaf_type)' \
+  '            vals[j] = signed_value(vals[j], loc.leaf_type) if false' \
+  check_narrow_signext
 prove_mutation "call: do not zero-extend an attributed narrow argument" \
   src/compiler/native/aarch64/isel.iyi \
   '            vals[j] = zext(vals[j], loc.leaf_type)' \
