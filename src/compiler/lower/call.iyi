@@ -40,7 +40,7 @@ module compiler/lower/call
 # The AST node is named `Compiler::Syntax::Ast::Call` because this module is itself
 # `compiler/lower/call`, and inside it the name `Call` means this module.
 
-import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, Generic, InstanceVar, Nop, NilLiteral, NumberLiteral, Out, Path, RespondsTo, Var}
+import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, Generic, InstanceVar, Nop, NilLiteral, NumberLiteral, Out, Path, RespondsTo, SymbolLiteral, Var}
 import compiler/ir/function::{Function}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
@@ -59,7 +59,7 @@ import compiler/semantic/top_level::{ClassType, GenericClassType, LibType, LibFu
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name, lower_primitive_call, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
-import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType, GenericClassInstanceMetaclassType}
+import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType, GenericClassInstanceMetaclassType, IntegerType, FloatType}
 import compiler/semantic/lib_call::{LibCallTarget}
 import compiler/semantic/main_visitor::{DispatchTarget}
 import compiler/types/indirection::{TypeIndirection}
@@ -366,16 +366,23 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     end
   end
   wants = low.needs_value
-  receiver = lower_receiver(low, node)
-  if block_ended?(low)
-    low.last = llvm_nil(low)
-    return
-  end
-  if passed_by_value?(runtime_type)
-    receiver = pointer_of_value(low, obj, receiver, runtime_type)
+  slot = dispatch_receiver_storage(low, obj, runtime_type)
+  receiver : Value
+  if storage = slot
+    receiver = storage
+  else
+    receiver = lower_receiver(low, node)
+    if block_ended?(low)
+      low.last = llvm_nil(low)
+      return
+    end
+    if passed_by_value?(runtime_type)
+      receiver = pointer_of_value(low, obj, receiver, runtime_type)
+    end
   end
   tid = runtime_type.is_a?(MixedUnionType) ? mixed_type_id_of_pointer(low, receiver, runtime_type) : type_id_of_value(low, obj, receiver, runtime_type)
   values = [] of Value
+  arg_tids = [] of Value
   node.args.each_with_index do |arg, i|
     low.needs_value = true
     visit_node(low, arg)
@@ -387,6 +394,7 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     value = low.last
     raise "BUG: dispatched argument left no value" if value.nil?
     values << (arg_types[i].is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))
+    arg_tids << type_id_of_value(low, arg, value.as(Value), arg_types[i])
   end
   phi_wants = wants && !ret.is_a?(NilType) && !ret.is_a?(VoidType) && !ret.is_a?(NoReturnType)
   phi_type : IrType? = nil
@@ -394,6 +402,15 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
   phi = LowerPhi.new(phi_wants, phi_type)
   targets.each do |arm|
     matches = match_type_id(low, runtime_type, arm.receiver, tid)
+    i = 0
+    while i < arg_types.size
+      unless dispatch_autocast?(node.args[i], arg_types[i])
+        param = low.analysed.type_of?(arm.definition.args[i])
+        raise "BUG: dispatched parameter has no type" if param.nil?
+        matches = low.builder.bitwise_and(matches, match_type_id(low, arg_types[i], param.as(Type), arg_tids[i]))
+      end
+      i += 1
+    end
     blocks = low.new_blocks(["current_def", "next_def"])
     low.builder.cond_br(matches, blocks[0], blocks[1])
     low.builder.position_at_end(blocks[0])
@@ -414,6 +431,27 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
   low.builder.unreachable
   phi.close(low)
   low.needs_value = wants
+end
+
+# Hosted supports_autocast? with number autocasting enabled. The hosted
+# IntegerType test compares bytesize to 64, so its 128-bit integers qualify too.
+def dispatch_autocast?(node : ASTNode, type : Type) : Bool
+  return true if node.is_a?(NumberLiteral) || node.is_a?(SymbolLiteral)
+  return type.as(IntegerType).bytes <= 64 if type.is_a?(IntegerType)
+  return type.as(FloatType).bytes == 4 if type.is_a?(FloatType)
+  kind = primitive_kind(type)
+  kind == "int" || (kind == "float" && type.full_name == "Float32")
+end
+
+# Hosted reads an aggregate local as its storage, rather than loading it.
+def dispatch_receiver_storage(low : Lowerer, obj : ASTNode, runtime_type : Type) : Value?
+  return nil unless passed_by_value?(runtime_type) && obj.is_a?(Var)
+  slot = low.current_context.vars[obj.as(Var).name]?
+  return nil if slot.nil?
+  lv = slot.as(LowerVar)
+  return nil if lv.already_loaded
+  return nil if TypeIndirection.trait_value_type(lv.type).full_name != runtime_type.full_name
+  lv.pointer
 end
 
 # Emit the call after its receiver, arguments and optional captured block are evaluated.
