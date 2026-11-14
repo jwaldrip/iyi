@@ -115,7 +115,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   if node.obj.nil? && node.super? && !primitive.nil?
     pending_visit_node("super to the primitive #{primitive} (hosted call.cr: codegen_primitive with the scope as owner)")
   end
-  if single_dispatch && !primitive.nil? && !single_dispatch.as(DispatchTarget).receiver.is_a?(VirtualType)
+  if single_dispatch && !primitive.nil?
     pending_visit_node("a primitive dispatched on trait receiver #{single_dispatch.as(DispatchTarget).receiver.full_name} (hosted call.cr: trait dispatch)")
   end
   if (node.args.size != def_node.args.size || def_node.splat_index != nil) && primitive != "proc_call"
@@ -166,10 +166,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   self_value : Value? = nil
   class_owner : Type? = nil
   unless node.obj.nil?
-    recv_type = single_dispatch ? single_dispatch.as(DispatchTarget).receiver : receiver_owner(low, node)
-    if single_dispatch && !recv_type.is_a?(VirtualType)
-      recv_type = checked_dispatch_receiver(low, node, recv_type, single_dispatch.as(DispatchTarget).definition)
-    end
+    recv_type = single_dispatch ? checked_dispatch_receiver(low, node, single_dispatch.as(DispatchTarget).receiver, single_dispatch.as(DispatchTarget).definition) : receiver_owner(low, node)
     if recv_type.is_a?(GenericClassInstanceMetaclassType)
       self_type = recv_type
       inferred_receiver = low.analysed.call_receiver?(node)
@@ -361,6 +358,16 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
   end
   if node.super? || node.previous_def?
     pending_visit_node("super or previous_def dispatched over #{runtime_type.full_name}")
+  end
+  if runtime_type.is_a?(VirtualType) && node.args.empty?
+    all_class = true
+    targets.each do |arm|
+      all_class = false unless primitive_name(arm.definition.body) == "class"
+    end
+    if all_class
+      lower_primitive_call(low, node, targets[0].definition)
+      return
+    end
   end
   arg_types = [] of Type
   node.args.each do |arg|
@@ -630,7 +637,6 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
 end
 
 def checked_dispatch_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : Type, target : Def?) : Type
-  return owner if owner.is_a?(VirtualType)
   if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType) && !owner.is_a?(EnumType))
     pending_visit_node("a dispatched call on unsupported receiver #{owner.full_name}")
   end
