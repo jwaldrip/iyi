@@ -45,6 +45,8 @@ trap cleanup EXIT INT TERM
 
 # shellcheck source=bench/lib/tripwire.sh
 . bench/lib/tripwire.sh
+. bench/lib/native_signature.sh
+export NATIVE_SIGNATURE_FAILURE_FILE="$work/signature-failure"
 
 failures=0
 fail() {
@@ -118,7 +120,6 @@ for ir in "$FIX"/*.ir "$FL"/*.ir; do
     continue
   fi
   problems=""
-  if ! codesign -v --strict "$native" >/dev/null 2>&1; then problems="$problems codesign;"; fi
   nlibs=$(otool -L "$native" | awk 'NR > 1 { print $1 }')
   if [ "$nlibs" != "/usr/lib/libSystem.B.dylib" ]; then problems="$problems libs=$nlibs;"; fi
   ntools=$(otool -l "$native" | awk '/cmd LC_BUILD_VERSION/ { f = 1 } f && /ntools/ { print $2; exit }')
@@ -128,6 +129,11 @@ for ir in "$FIX"/*.ir "$FL"/*.ir; do
   mkdir -p "$work/again"
   PATH="$TRIPWIRE_PATH:$PATH" "$tool" "$ir" -o "$work/again/$n" >/dev/null 2>&1 || problems="$problems relink;"
   if ! cmp -s "$native" "$work/again/$n"; then problems="$problems relink-bytes-differ;"; fi
+  if ! native_signature_ok "$native"; then
+    printf '%-18s FAIL      invalid native signature\n' "$n" >>"$table"
+    failures=$((failures + 1))
+    continue
+  fi
   ns=$(run_bounded "$native" "$work/$n.n.out" "$work/$n.n.err")
   if [ -n "$problems" ]; then
     printf '%-18s FAIL      %s\n' "$n" "$problems" >>"$table"
@@ -255,6 +261,7 @@ check_no_library() {
   if ! "$b" "$FIX/arith.ir" -o "$work/mut-arith" >"$work/mut-link.log" 2>&1; then
     return 1
   fi
+  native_signature_ok "$work/mut-arith" || return 3
   ms=$(run_bounded "$work/mut-arith" "$work/mut-arith.out" "$work/mut-arith.err")
   if [ "$ms" != "0" ] || ! cmp -s "$work/arith.h.out" "$work/mut-arith.out"; then return 1; fi
   return 0
@@ -277,6 +284,7 @@ check_helper_parity() {
   "$drv" obj "$FL/rt_helpers.ir" "$work/mut-rth.o" >/dev/null 2>&1 || return 3
   "$drv" obj "$RT_SRC" "$work/mut-rt.o" >/dev/null 2>&1 || return 1
   cc "$work/mut-rth.o" "$work/mut-rt.o" -o "$work/mut-rth" >/dev/null 2>&1 || return 3
+  native_signature_ok "$work/mut-rth" || return 3
   ms=$(run_bounded "$work/mut-rth" "$work/mut-rth.out" "$work/mut-rth.err")
   if [ "$ms" = "0" ] && cmp -s "$work/rt_helpers.h.out" "$work/mut-rth.out"; then return 0; fi
   return 1

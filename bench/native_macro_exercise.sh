@@ -19,6 +19,7 @@ SITE="$REPO/bench/fixtures/cg_macro_site.iyi"
 TARGET_FIX="$REPO/bench/fixtures/cg_macro_target.iyi"
 CODEGEN_SRC="$REPO/src/compiler/codegen/codegen.iyi"
 . "$REPO/bench/lib/mutation.sh"
+. "$REPO/bench/lib/native_signature.sh"
 
 WORK="$(mktemp -d /tmp/iyi-macro-exercise.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
@@ -66,7 +67,11 @@ if "$WORK/bin/port" "$SITE" -o "$WORK/site_port" >"$WORK/site_port.log" 2>&1; th
 fi
 native_rc="missing"
 if (cd "$WORK" && "$WORK/bin/native" "$SITE" -o "$WORK/site_native" >"$WORK/site_native.log" 2>&1); then
-  native_rc=$(site_exit "$WORK/site_native")
+  if native_signature_ok "$WORK/site_native"; then
+    native_rc=$(site_exit "$WORK/site_native")
+  else
+    status=1
+  fi
 fi
 echo "   hosted exit $hosted_rc, port with LLVM exit $port_rc, native exit $native_rc"
 if [ "$hosted_rc" != "missing" ] && [ "$port_rc" = "$hosted_rc" ]; then
