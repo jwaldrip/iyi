@@ -2,7 +2,7 @@ module compiler/semantic/macro_bindings
 
 import compiler/macros/interpreter::{MacroFreeBinding}
 import compiler/macros/type_facts::{MacroAncestorFact, MacroInstanceVarFact, MacroTypeFacts}
-import compiler/semantic/top_level::{AnnotationType, ClassType, EnumType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, Type, UnionType}
+import compiler/semantic/top_level::{AnnotationType, EnumType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, Type, UnionType}
 import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, TupleInstanceType, TypeQueries}
 import compiler/syntax/ast::{Def}
 

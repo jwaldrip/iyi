@@ -830,8 +830,8 @@ check_plain_exercise_passes() {
 }
 
 prove_mutation "a macro call's expansion is parsed with no file name" "$ENGINE" \
-  "parser = Parser.new(expanded_source, file)" \
-  "parser = Parser.new(expanded_source)" \
+  "parser = Parser.new(rep.output, file)" \
+  "parser = Parser.new(rep.output)" \
   -- check_plain_exercise_passes || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

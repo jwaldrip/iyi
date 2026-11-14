@@ -33,7 +33,6 @@ build_port() {
 
 # site_exit EXE: runs a program and prints its exit status.
 site_exit() {
-  codesign -v --strict "$1" || return 1
   "$1" >/dev/null 2>&1 </dev/null
   echo $?
 }
@@ -123,7 +122,7 @@ for name in macro_def_shadows_macro macro_typenode_ancestors macro_array_any mac
     status=1
     continue
   fi
-  if ! codesign -v --strict "$WORK/$name.native" || ! "$WORK/$name.native" >"$WORK/$name.out" 2>"$WORK/$name.err"; then
+  if ! native_signature_ok "$WORK/$name.native" || ! "$WORK/$name.native" >"$WORK/$name.out" 2>"$WORK/$name.err"; then
     echo "FAIL: native run $name"
     status=1
     continue
@@ -143,9 +142,9 @@ mut_caught=0
 check_typed_macro_fixture() {
   local name="$1"
   "$IYI" build -o "$WORK/bin/native_mut" "$NATIVE_SRC" >/dev/null 2>&1 || return 1
-  codesign -v --strict "$WORK/bin/native_mut" || return 1
+  native_signature_ok "$WORK/bin/native_mut" || return 1
   "$WORK/bin/native_mut" "$REPO/bench/fixtures/$name.iyi" -o "$WORK/native_mut_result" --pipeline typed --prelude --probe-phase >/dev/null 2>&1 || return 1
-  codesign -v --strict "$WORK/native_mut_result" || return 1
+  native_signature_ok "$WORK/native_mut_result" || return 1
   "$WORK/native_mut_result" >"$WORK/native_mut.out" || return 1
   cmp -s "$WORK/$name.hosted" "$WORK/native_mut.out"
 }
@@ -163,6 +162,11 @@ prove_mutation "macro overload ignores required argument count" "$REPO/src/compi
 mut_run=$((mut_run + 1))
 prove_mutation "ancestor list loses its parents" "$REPO/src/compiler/semantic/macro_bindings.iyi" \
   '      add_ancestor(parent, facts)' '      nil' \
+  -- check_typed_macro_fixture macro_typenode_ancestors && mut_caught=$((mut_caught + 1)) || status=1
+
+mut_run=$((mut_run + 1))
+prove_mutation "the enclosing type loses its methods" "$REPO/src/compiler/semantic/macro_bindings.iyi" \
+  '      collect_methods(owner.as(ModuleType), facts.methods)' '      nil' \
   -- check_typed_macro_fixture macro_typenode_ancestors && mut_caught=$((mut_caught + 1)) || status=1
 
 mut_run=$((mut_run + 1))
