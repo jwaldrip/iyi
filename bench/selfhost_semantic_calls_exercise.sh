@@ -306,8 +306,10 @@ prove_mutation "a wrapper for a magic-constant default is built anyway" "$DEFAUL
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a wrapper for a named argument drops the argument's name" "$DEFAULT_FILE" \
-  '        new_name = "#{new_name}:#{named.name}"' \
-  '        new_name = "#{new_name}"' \
+  '        new_name = "#{new_name}:#{named.name}"
+        matching = rec_def.args[DefaultArguments.param_index(rec_def, named.name)]' \
+  '        new_name = "#{new_name}"
+        matching = rec_def.args[DefaultArguments.param_index(rec_def, named.name)]' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
