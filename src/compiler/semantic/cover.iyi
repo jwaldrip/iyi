@@ -52,6 +52,7 @@ pub class CallCover
   def self.all?(signature : CallSignature, matches : Array(Match)) : Bool
     return false if matches.empty?
     choices = [] of Array(Type)
+    indices = [] of Bool
     i = 0
     while i < signature.arg_types.size
       restricted = false
@@ -66,25 +67,61 @@ pub class CallCover
       else
         types << signature.arg_types[i]
       end
+      indices << restricted
       choices << types
       i += 1
     end
-    covered?(choices, matches, [] of Type, 0)
+    if named = signature.named_args
+      named.each do |arg|
+        restricted = false
+        matches.each do |match|
+          match.definition.args.each do |param|
+            if param.external_name == arg.name && param.restriction
+              restricted = true
+            end
+          end
+        end
+        types = [] of Type
+        if restricted
+          append(arg.type, types)
+        else
+          types << arg.type
+        end
+        indices << restricted
+        choices << types
+      end
+    end
+    arms = [] of Array(Array(Type))
+    matches.each do |match|
+      covers = [] of Array(Type)
+      i = 0
+      while i < choices.size
+        covered = [] of Type
+        if indices[i]
+          if i < signature.arg_types.size
+            append_match(match.arg_types[i], covered) if i < match.arg_types.size
+          else
+            named_index = i - signature.arg_types.size
+            if named_index < match.named_arg_types.size
+              append_match(match.named_arg_types[named_index].type, covered)
+            end
+          end
+        end
+        covers << covered
+        i += 1
+      end
+      arms << covers
+    end
+    covered?(choices, indices, arms, [] of Type, 0)
   end
 
-  def self.covered?(choices : Array(Array(Type)), matches : Array(Match), combination : Array(Type), index : Int32) : Bool
+  def self.covered?(choices : Array(Array(Type)), indices : Array(Bool), arms : Array(Array(Array(Type))), combination : Array(Type), index : Int32) : Bool
     if index == choices.size
-      matches.each do |match|
+      arms.each do |covers|
         accepted = true
         i = 0
         while i < combination.size
-          if i >= match.arg_types.size
-            accepted = false
-            break
-          end
-          covered = [] of Type
-          append_match(match.arg_types[i], covered)
-          unless covered.includes?(combination[i])
+          if indices[i] && !covers[i].includes?(combination[i])
             accepted = false
             break
           end
@@ -96,7 +133,7 @@ pub class CallCover
     end
     choices[index].each do |choice|
       combination << choice
-      covered = covered?(choices, matches, combination, index + 1)
+      covered = covered?(choices, indices, arms, combination, index + 1)
       combination.pop
       return false unless covered
     end

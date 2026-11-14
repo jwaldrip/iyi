@@ -2803,7 +2803,11 @@ pub class MainVisitor < TypeNodeHost
       first_diff = shortcut.as(Def).object_id != found.matches[0].definition.object_id
     end
     shortcut_name = shortcut.nil? ? "<none>" : format_overload_signature(rec_type, shortcut.as(Def))
-    STDERR.puts "argdispatch #{site} #{name} arms=#{found.matches.size} first-diff=#{first_diff} shortcut=#{shortcut_name}"
+    arm_names = [] of String
+    found.matches.each do |match|
+      arm_names << "#{match.defining.full_name}##{match.definition.name}(#{match.arg_types.map(&.full_name).join(",")})"
+    end
+    STDERR.puts "argdispatch #{site} #{name} arms=#{found.matches.size} first-diff=#{first_diff} shortcut=#{shortcut_name} targets=#{arm_names.join(";")}"
     nil
   end
 
@@ -2845,7 +2849,17 @@ pub class MainVisitor < TypeNodeHost
       defining = @program.def_owner(definition) || @current_type
       return Matches.new([Match.new(definition, arg_types, owner, defining, true)], true)
     end
-    signature = CallSignature.new(name, arg_types, nil, !call_node.block.nil?)
+    named_types : Array(NamedArgumentType)? = nil
+    if named = call_node.named_args
+      collected = [] of NamedArgumentType
+      named.each do |arg|
+        found = child_type(arg.value)
+        return Matches.new([] of Match, false, "named argument has no analysed type") if found.nil?
+        collected << NamedArgumentType.new(arg.name, found.as(Type))
+      end
+      named_types = collected
+    end
+    signature = CallSignature.new(name, arg_types, named_types, !call_node.block.nil?)
     signature.infer_class_vars = infer_class_vars
     levels = [] of Type
     collect_arm_levels(lookup_in, name, walk, levels, Set(String).new)
@@ -2892,6 +2906,52 @@ pub class MainVisitor < TypeNodeHost
     widened
   end
 
+  def arm_comparison_type(definition : Def, restriction : ASTNode, owner : Type, bound : Hash(String, Type)?) : Type
+    old_imports = @program.current_imports
+    old_defs = @program.current_import_defs
+    old_type = @current_type
+    if defining = @program.def_owner(definition)
+      @current_type = defining
+    end
+    enter_file_scope(definition)
+    result = comparison_restriction(restriction, owner, bound)
+    @current_type = old_type
+    @program.current_imports = old_imports
+    @program.current_import_defs = old_defs
+    result
+  end
+
+  def arm_more_specific?(first : Def, second : Def, args : Array(ASTNode), owner : Type) : Bool
+    return false if first.splat_index && !second.splat_index
+    return true if second.splat_index && !first.splat_index
+    if a = first.splat_index
+      if b = second.splat_index
+        return a.as(Int32) > b.as(Int32) if a != b
+      end
+    end
+    types = [] of Type
+    args.each { |arg| types << type_of(arg) }
+    bound1 = FreeBindings.of_def(first, types, type_node_system(@program))
+    bound2 = FreeBindings.of_def(second, types, type_node_system(@program))
+    strict = false
+    i = 0
+    while i < args.size && i < first.args.size && i < second.args.size
+      break if first.splat_index == i || second.splat_index == i
+      t1 : Type = @program.object_type
+      t2 : Type = @program.object_type
+      if r1 = first.args[i].restriction
+        t1 = arm_comparison_type(first, r1, owner, bound1)
+      end
+      if r2 = second.args[i].restriction
+        t2 = arm_comparison_type(second, r2, owner, bound2)
+      end
+      return false unless t1.subtype_of?(t2)
+      strict = true if t1 != t2
+      i += 1
+    end
+    strict
+  end
+
   def lookup_arm_levels(levels : Array(Type), owner : Type, name : String, args : Array(ASTNode), call_node : Call, walk : ArmWalk, signature : CallSignature) : Matches
     matches = [] of Match
     first_error : String? = nil
@@ -2904,9 +2964,11 @@ pub class MainVisitor < TypeNodeHost
       defs.as(Array(Def)).each do |definition|
         next if definition.abstract
         next unless CallMatch.yields?(definition) == !call_node.block.nil?
-        next if definition.splat_index.nil? && (args.size < min_args_count(definition) || args.size > definition.args.size)
+        if call_node.named_args.nil? && definition.splat_index.nil?
+          next if args.size < min_args_count(definition) || args.size > definition.args.size
+        end
         at = 0
-        while at < ordered.size && !def_more_specific?(definition, ordered[at], args, owner)
+        while at < ordered.size && !arm_more_specific?(definition, ordered[at], args, owner)
           at += 1
         end
         ordered.insert(at, definition)
