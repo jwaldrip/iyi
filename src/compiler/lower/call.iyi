@@ -46,7 +46,8 @@ import compiler/ir/function::{Function, Global, TlsModel}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
-import compiler/lower/block::{LocalCollector, NoReturnPhi, alloca_local, copy_vars}
+import compiler/lower/block::{NoReturnPhi, alloca_local, copy_vars}
+import compiler/lower/locals::{LocalOrder}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
 import compiler/lower/cast::{to_rhs, type_id_value, upcast, downcast, pointer_of_value, type_id_of_value, mixed_type_id_of_pointer, match_type_id}
 import compiler/lower/ensure::{set_ensure_exception_handler}
@@ -771,18 +772,18 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
     end
     i += 1
   end
-  collector = LocalCollector.new(low.analysed)
+  collector = LocalOrder.new(low.analysed)
   block.body.accept(collector)
   if collector.declared
     pending_visit_node("a typed declaration in a block (hosted alloca_non_closured_vars, TypeDeclaration), not ported yet")
   end
-  j = 0
-  while j < collector.names.size
-    name = collector.names[j]
+  collector.vars.each do |var|
+    name = var.name
+    t = low.analysed.type_of?(var)
+    raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
     unless vars[name]?
-      alloca_local(low, vars, name, collector.types[j])
+      alloca_local(low, vars, name, t.as(Type))
     end
-    j += 1
   end
 end
 
@@ -799,18 +800,18 @@ pub def allocate_def_vars(low : Lowerer, def_node : Def, arg_types : Array(Type)
     alloca_local(low, vars, arg.name, arg_types[i])
     i += 1
   end
-  collector = LocalCollector.new(low.analysed)
+  collector = LocalOrder.new(low.analysed)
   def_node.body.accept(collector)
   if collector.declared
     pending_visit_node("a typed declaration in an inlined def (hosted alloca_vars, TypeDeclaration), not ported yet")
   end
-  j = 0
-  while j < collector.names.size
-    name = collector.names[j]
+  collector.vars.each do |var|
+    name = var.name
+    t = low.analysed.type_of?(var)
+    raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
     unless vars[name]?
-      alloca_local(low, vars, name, collector.types[j])
+      alloca_local(low, vars, name, t.as(Type))
     end
-    j += 1
   end
 end
 

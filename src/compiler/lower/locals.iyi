@@ -1,0 +1,84 @@
+module compiler/lower/locals
+
+import compiler/syntax/ast::{ASTNode, Assign, Block, Call, ClassDef, Def, FunDef, If, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroVerbatim, ModuleDef, Out, Path, ProcLiteral, TypeDeclaration, UninitializedVar, Var}
+import compiler/syntax/visitor::{Visitor}
+import compiler/lower/context::{Lowerer, LowerVar}
+import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/top_level::{NoReturnType, Type, VoidType}
+
+# Collect locals in the order analysis first creates them, following the same
+# expansions that lowering uses while keeping nested scopes separate.
+pub class LocalOrder < Visitor
+  getter vars : Array(Var)
+  getter declared : Bool
+
+  def initialize(@analysed : MainVisitor)
+    @vars = [] of Var
+    @names = Set(String).new
+    @declared = false
+    @macro_depth = 0
+  end
+
+  def record(node : ASTNode) : Nil
+    if node.is_a?(Var)
+      var = node.as(Var)
+      unless var.name == "self" || @names.includes?(var.name)
+        @names.add(var.name)
+        @vars << var
+      end
+    end
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    return false if node.is_a?(Block) || node.is_a?(Def) || node.is_a?(FunDef) || node.is_a?(ProcLiteral) || node.is_a?(ClassDef) || node.is_a?(ModuleDef) || node.is_a?(LibDef) || node.is_a?(Macro)
+    return false if node.is_a?(If) && node.as(If).iyi_definition_probe
+    return false if node.is_a?(Assign) && node.as(Assign).target.is_a?(Path)
+
+    macro_node = node.is_a?(MacroIf) || node.is_a?(MacroFor) || node.is_a?(MacroExpression) || node.is_a?(MacroVerbatim)
+    if expanded = @analysed.expansions[node]?
+      @macro_depth += 1 if macro_node
+      expanded.accept(self)
+      @macro_depth -= 1 if macro_node
+      return false
+    end
+    if node.is_a?(Call)
+      if expanded = node.as(Call).expanded
+        @macro_depth += 1
+        expanded.accept(self)
+        @macro_depth -= 1
+        return false
+      end
+    end
+
+    if node.is_a?(TypeDeclaration)
+      @declared = true if @macro_depth == 0
+      record(node.as(TypeDeclaration).var)
+    elsif node.is_a?(UninitializedVar)
+      record(node.as(UninitializedVar).var)
+    elsif node.is_a?(Out)
+      record(node.as(Out).exp)
+    end
+    true
+  end
+
+  def end_visit(node : Assign) : Nil
+    record(node.target)
+  end
+end
+
+pub def preallocate_locals(low : Lowerer, body : ASTNode, skip : Array(String)) : Nil
+  collector = LocalOrder.new(low.analysed)
+  body.accept(collector)
+  collector.vars.each do |var|
+    name = var.name
+    next if skip.includes?(name) || low.current_context.vars[name]?
+    t = low.analysed.type_of?(var)
+    if unions = low.current_context.var_unions
+      t = unions[name]? || t
+    end
+    next if t.nil? || t.is_a?(VoidType) || t.is_a?(NoReturnType)
+    type = t.as(Type)
+    pointer = low.alloca(low.typer.llvm_type(type), name)
+    low.current_context.vars[name] = LowerVar.new(pointer, type, false)
+  end
+end

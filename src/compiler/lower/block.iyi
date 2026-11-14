@@ -22,8 +22,7 @@ module compiler/lower/block
 #
 # The AST `Block` is written in full: inside this module the name `Block` means the module.
 
-import compiler/syntax/ast::{ASTNode, Assign, ClassDef, Def, ModuleDef, Splat, TypeDeclaration, Var, Yield}
-import compiler/syntax/visitor::{Visitor}
+import compiler/syntax/ast::{ASTNode, Splat, Yield}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
 import compiler/lower/cast::{assign, to_rhs}
@@ -33,43 +32,9 @@ import compiler/lower/helpers::{llvm_nil}
 import compiler/lower/pending::{pending_visit_node, refuse_port}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/ensure::{execute_ensures_until, set_ensure_exception_handler}
-import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/top_level::{NilType, NoReturnType, Type, VoidType}
 import compiler/types/types::{TupleInstanceType}
 
-# The names a body assigns, each once, in the order its first assignments are met, with the analysed
-# type of the first target. A nested block or def is another scope and is not walked: the hosted
-# `block.vars` and `def.vars` hold the variables of their own scope only. `declared` is set when the
-# body declares a variable with a type (`x : Int32`), which the inlined code does not allocate yet.
-pub class LocalCollector < Visitor
-  getter names : Array(String)
-  getter types : Array(Type)
-  getter declared : Bool
-
-  def initialize(@analysed : MainVisitor)
-    @names = [] of String
-    @types = [] of Type
-    @declared = false
-  end
-
-  def visit_any(node : ASTNode) : Bool
-    return false if node.is_a?(Compiler::Syntax::Ast::Block) || node.is_a?(Def) || node.is_a?(ClassDef) || node.is_a?(ModuleDef)
-    @declared = true if node.is_a?(TypeDeclaration)
-    if node.is_a?(Assign)
-      target = node.as(Assign).target
-      if target.is_a?(Var)
-        name = target.as(Var).name
-        unless @names.includes?(name)
-          t = @analysed.type_of?(target.as(ASTNode))
-          raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
-          @names << name
-          @types << t.as(Type)
-        end
-      end
-    end
-    true
-  end
-end
 
 # The phi of a branch whose value never arrives: a block call or a yield whose type is NoReturn. The
 # hosted `Phi#add` with a NoReturn node type (phi.cr:40-55) emits `unreachable` for every value added, and

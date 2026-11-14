@@ -37,6 +37,7 @@ import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper, passed_by_value?}
 import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, NilableReferenceUnionType, NilableProcType, PointerInstanceType, ProcInstanceType, TypeQueries, VirtualType}
 import compiler/lower/context::{BodyVisit, BranchPhi, Lowerer, LowerVar}
+import compiler/lower/locals::{preallocate_locals}
 import compiler/lower/helpers::{abi_name, int1, llvm_nil, load_aligned, store_aligned, at_terminator?, raise_overflow_name}
 import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
@@ -157,6 +158,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   store_aligned(low, fn.param(1), argv_global)
   initialize_program_constants(low)
   emit_well_known_funs(low)
+  preallocate_locals(low, root, [] of String)
   low.needs_value = true
   codegen_node(low, root)
   codegen_return(low, ret_ir)
