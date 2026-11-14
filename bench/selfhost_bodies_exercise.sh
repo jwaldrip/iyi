@@ -850,6 +850,18 @@ prove_mutation "a static array return annotation is typed as the bare StaticArra
 prove_mutation "a static array prints its element's virtual type" "$REPO/src/compiler/types/types.iyi" \
   '"StaticArray(#{@element_type.devirtualize.arg_full_name}, #{@size_int})"' \
   '"StaticArray(#{@element_type.full_name}, #{@size_int})"' -- static_array_return_at_floor || status=1
+self_return_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
+  fixture="$REPO/bench/fixtures/sem_bodies_class_self_return.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+  matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_class_self_return.iyi" { print $2 }' "$FLOOR_FILE")
+  [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
+}
+prove_mutation "class method self return denotes the instance type" "$MAIN_VISITOR" \
+  "    if node.is_a?(Self) && return_owner.is_a?(MetaclassType)" \
+  "    if false && node.is_a?(Self) && return_owner.is_a?(MetaclassType)" -- self_return_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"

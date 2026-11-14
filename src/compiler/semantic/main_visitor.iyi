@@ -3192,7 +3192,11 @@ pub class MainVisitor < TypeNodeHost
   def lookup_def_return(node : ASTNode, owner : Type?, definition : Def) : Type
     saved_def = @current_def
     @current_def = definition
-    result = lookup_under(node, owner)
+    return_owner = owner
+    if node.is_a?(Self) && return_owner.is_a?(MetaclassType)
+      return_owner = return_owner.as(MetaclassType).instance_type
+    end
+    result = lookup_under(node, return_owner)
     @current_def = saved_def
     result
   end

@@ -1,0 +1,16 @@
+class NumberBox
+  @value : Int32
+
+  def initialize(@value : Int32)
+  end
+
+  def self.make : self
+    NumberBox.new(42)
+  end
+
+  def value : Int32
+    @value
+  end
+end
+
+puts NumberBox.make.value
