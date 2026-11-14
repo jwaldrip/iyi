@@ -352,6 +352,16 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
   if node.super? || node.previous_def?
     pending_visit_node("super or previous_def dispatched over #{runtime_type.full_name}")
   end
+  if runtime_type.is_a?(VirtualType) && node.args.empty?
+    all_class = true
+    targets.each do |arm|
+      all_class = false unless primitive_name(arm.definition.body) == "class"
+    end
+    if all_class
+      lower_primitive_call(low, node, targets[0].definition)
+      return
+    end
+  end
   arg_types = [] of Type
   node.args.each do |arg|
     t = low.analysed.type_of?(arg)
