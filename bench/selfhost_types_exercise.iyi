@@ -241,6 +241,19 @@ module BenchSelfhostTypesExercise
     unless ts.render(sa) == "StaticArray(UInt8, 16)"
       raise "static array render failed"
     end
+    [ary_inst, tup, nt, pr, ptr, sa].each do |instance|
+      nullable = ts.type_merge([instance, prog.nil_type] of Type)
+      unless instance.subtype_of?(nullable) && !nullable.subtype_of?(instance)
+        raise "generic instance must fit its nullable union, but not the reverse: #{instance.full_name}"
+      end
+      if instance.subtype_of?(u1)
+        raise "generic instance must not fit an unrelated union: #{instance.full_name}"
+      end
+    end
+    other_array = ts.instantiate_generic(ary_t, [prog.string_type] of Type)
+    if other_array.subtype_of?(ts.type_merge([ary_inst, prog.nil_type] of Type))
+      raise "a nullable generic must still restrict its type arguments"
+    end
     puts "ok (generics, tuples, procs, pointers, static arrays verified)"
 
     print "testing type filtering and narrowing... "

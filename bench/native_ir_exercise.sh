@@ -307,6 +307,14 @@ for name in arith memory control calls runtime intrinsics; do
   "$DRV" verify "$WORK/$name.ir" >"$WORK/verify.out" 2>&1 || fail "built module $name does not verify: $(cat "$WORK/verify.out")"
 done
 
+echo "== 4b. integer arithmetic folds at its IR width and retains poison-sensitive operations"
+if ./bin/iyi run bench/selfhost_ir_fold_exercise.iyi >"$WORK/folds.out" 2>&1; then
+  cat "$WORK/folds.out"
+else
+  cat "$WORK/folds.out"
+  fail "integer constant folding"
+fi
+
 # ---- 5. malformed fixtures ---------------------------------------------------------------------
 echo "== 5. each malformed fixture is refused under its named rule"
 count=0
