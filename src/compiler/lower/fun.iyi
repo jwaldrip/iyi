@@ -12,9 +12,9 @@ module compiler/lower/fun
 # they arrive, the body, the return), and the lowering state the caller keeps (saved and put
 # back around the body).
 #
-# Not ported, and refused by name at the call that reaches them (lower/call.iyi): by-value and
-# indirect arguments and results, the closure, block and proc parameters, the `@[NoInline]`,
-# `@[AlwaysInline]`, `@[Naked]` and `@[Raises]` annotations, the debug metadata, and every
+# Not ported, and refused by name at the call that reaches them (lower/call.iyi): indirect
+# arguments and results above 128 bytes, the closure, the `@[Naked]` and `@[Raises]`
+# annotations, the debug metadata, and every
 # `in artifact`, runtime copy, preemption and closure-host branch of the hosted code: the iyi
 # artifact, runtime and preemption machinery does not apply to a single-module unit.
 #
@@ -304,6 +304,8 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   fn.call_convention = def_convention(name)
   fn.linkage = Linkage::Internal
   add_body_attributes(fn, low.module.triple)
+  fn.attrs << Attribute.new("noinline", 0_u64, nil, nil) if target.no_inline
+  fn.attrs << Attribute.new("alwaysinline", 0_u64, nil, nil) if target.always_inline
 
   saved = low.save_function_state
   ctx_type = def_context_type(self_type, class_owner)

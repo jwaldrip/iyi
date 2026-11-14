@@ -2123,8 +2123,8 @@ pub class MainVisitor < TypeNodeHost
       end
       if cd = @current_def
         if rt = cd.return_type
-          expected_ret = lookup_under(rt, @scope)
-          unless value_t.as(Type).subtype_of?(expected_ret)
+          expected_ret = return_contract(rt, @scope, cd)
+          unless return_fits?(value_t.as(Type), expected_ret)
             @unreachable = true
             return refuse(node, "type mismatch for return type: expected #{expected_ret.full_name}, got #{value_t.as(Type).full_name}")
           end
@@ -2969,12 +2969,21 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # Return annotations belong to the callee's match context, not the caller's.
-  def lookup_def_return(node : ASTNode, owner : Type, definition : Def) : Type
+  def lookup_def_return(node : ASTNode, owner : Type?, definition : Def) : Type
     saved_def = @current_def
     @current_def = definition
     result = lookup_under(node, owner)
     @current_def = saved_def
     result
+  end
+
+  # Hosted return annotations remove aliases and read Void as Nil (call.cr 840-843).
+  # Install the type system before resolving an alias of a generic.
+  def return_contract(node : ASTNode, owner : Type?, definition : Def) : Type
+    type_node_system(@program)
+    declared = @program.remove_alias(lookup_def_return(node, owner, definition))
+    return @program.nil_type if declared.is_a?(VoidType)
+    declared
   end
 
   def type_method_body_in_file(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode?, cache_key : String?, writer_type : ModuleType, call_node : Call?) : Type?
@@ -3081,7 +3090,7 @@ pub class MainVisitor < TypeNodeHost
     body = target_def.body
     if body.nil? || body.is_a?(MacroLiteral)
       if rt = target_def.return_type
-        return lookup_def_return(rt, rec_type, target_def)
+        return return_contract(rt, rec_type, target_def)
       else
         return @program.nil_type
       end
@@ -3091,7 +3100,7 @@ pub class MainVisitor < TypeNodeHost
     # of the typed-instance cache and the lowering probes.
     if target_def.abstract
       if rt = target_def.return_type
-        return lookup_def_return(rt, rec_type, target_def)
+        return return_contract(rt, rec_type, target_def)
       end
       anchor : ASTNode = target_def.body.as(ASTNode)
       if s = site
@@ -3109,7 +3118,7 @@ pub class MainVisitor < TypeNodeHost
     key = instance_key(rec_type, target_def, args, block)
     if @typing_stack.includes?(key)
       if rt = target_def.return_type
-        return lookup_def_return(rt, rec_type, target_def)
+        return return_contract(rt, rec_type, target_def)
       end
       # No declared return type: until the body's own type is known the recursive
       # call contributes nothing to a merge, so it is NoReturn (the bottom of the
@@ -3256,7 +3265,7 @@ pub class MainVisitor < TypeNodeHost
       # object, whose parameters already carry their instantiated types, not a fresh clone.
       provisional : Type = @program.no_return_type
       if declared = target_def.return_type
-        provisional = lookup_def_return(declared, rec_type, target_def)
+        provisional = return_contract(declared, rec_type, target_def)
       end
       set_type(target_def, provisional)
       remember_def_instance(cache_key, target_def, provisional)
@@ -3324,7 +3333,7 @@ pub class MainVisitor < TypeNodeHost
     # (bench/fixtures/sem_bodies_primitive_add.iyi).
     if bt.nil?
       if rt = target_def.return_type
-        declared_ret = lookup_def_return(rt, rec_type, target_def)
+        declared_ret = return_contract(rt, rec_type, target_def)
         set_type(target_def, declared_ret)
         remember_def_instance(cache_key, target_def, declared_ret)
         return declared_ret
@@ -3333,7 +3342,7 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if rt = target_def.return_type
-      declared_ret = lookup_def_return(rt, rec_type, target_def)
+      declared_ret = return_contract(rt, rec_type, target_def)
       # A non-returning body retains an error contract, but otherwise gives the
       # def NoReturn (hosted bindings.cr Def#map_type).
       if bt.is_a?(NoReturnType) && !error_contract?(declared_ret)
@@ -3341,7 +3350,7 @@ pub class MainVisitor < TypeNodeHost
         remember_def_instance(cache_key, target_def, bt)
         return bt
       end
-      unless declared_ret.nil_type? || bt.subtype_of?(declared_ret)
+      unless return_fits?(bt, declared_ret)
         mismatch = "type mismatch for return type: expected #{declared_ret.full_name}, got #{bt.full_name}"
         if s = site
           refuse(s, mismatch)
@@ -3350,9 +3359,10 @@ pub class MainVisitor < TypeNodeHost
         end
         return nil
       end
-      set_type(target_def, declared_ret)
-      remember_def_instance(cache_key, target_def, declared_ret)
-      declared_ret
+      answered = retained_return(bt, declared_ret)
+      set_type(target_def, answered)
+      remember_def_instance(cache_key, target_def, answered)
+      answered
     else
       set_type(target_def, bt)
       remember_def_instance(cache_key, target_def, bt)
@@ -3466,6 +3476,29 @@ pub class MainVisitor < TypeNodeHost
     return false if error.nil?
     members = declared.is_a?(UnionType) ? declared.as(UnionType).union_types : [declared]
     members.any? { |m| m.implements?(error.as(Type)) }
+  end
+
+  # Hosted checks the body and explicit return values against the annotation.
+  # A Nil contract discards any value; compatible procs restrict to the contract.
+  def return_fits?(value : Type, contract : Type) : Bool
+    resolved = @program.remove_alias(value)
+    contract.nil_type? || resolved.subtype_of?(contract) || proc_contract?(resolved, contract)
+  end
+
+  # Hosted restrict_type_to_freeze_type (bindings.cr 323-344).
+  def proc_contract?(value : Type, contract : Type) : Bool
+    return false unless contract.is_a?(ProcInstanceType)
+    members = value.is_a?(UnionType) ? value.as(UnionType).union_types : [value]
+    members.all? { |m| m.is_a?(ProcInstanceType) && TypeIntersect.compatible_proc?(m.as(ProcInstanceType), contract.as(ProcInstanceType)) }
+  end
+
+  # Keep the body's own type except where hosted Def#map_type selects the contract.
+  # An alias-valued body keeps its name, matching its nodes and inline getter.
+  def retained_return(body : Type, contract : Type) : Type
+    resolved = @program.remove_alias(body)
+    return body if resolved == contract
+    return contract if contract.nil_type? || error_contract?(contract) || proc_contract?(resolved, contract)
+    body
   end
 
   # The type of a body, block or call with the values its jumps carry merged in (hosted: `return`

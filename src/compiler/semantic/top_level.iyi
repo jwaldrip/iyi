@@ -3157,6 +3157,11 @@ pub class TopLevelVisitor < Visitor
     # iyi: an annotation before a def belongs to the def, not to a later class variable.
     @pending_annotations.each do |ann|
       primitive_body(node, ann) if ann.path.names.last == "Primitive"
+      if ann.path.names.last == "NoInline" || ann.path.names.last == "AlwaysInline"
+        annotation_type = @program.lookup_type_path(ann.path, @current_type)
+        node.no_inline = true if annotation_type == @program.types["NoInline"]
+        node.always_inline = true if annotation_type == @program.types["AlwaysInline"]
+      end
     end
     @pending_annotations = [] of Annotation
     target_type : ModuleType

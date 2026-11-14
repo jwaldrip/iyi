@@ -7,6 +7,7 @@ import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{Type, NamedType, ModuleType, SemanticProgram, NonGenericModuleType, NonGenericClassType, EnumType, MetaclassType, TraitType, GenericTraitType, GenericClassType, GenericModuleType, UnionType, NoReturnType, VoidType, TopLevelVisitor, normalize_path}
 import compiler/semantic/match::{CallMatch}
 import compiler/types/types::{GenericClassInstanceType}
+import compiler/types/rendering::{TypeRenderer}
 import compiler/types/lookup::{TypeLookup}
 import compiler/semantic/type_nodes::{type_node_system}
 import std/unicode::{Unicode}
@@ -118,7 +119,7 @@ class DefinitionProbeRunner
         text = witness_for(resolved.as(TraitType))
       else
         return nil unless instantiable?(resolved) && nameable?(resolved)
-        text = resolved.to_s
+        text = TypeRenderer.render(resolved.devirtualize)
       end
       return nil unless text
       name = "#{VAR_PREFIX}#{serial}_#{index}"
@@ -145,7 +146,7 @@ class DefinitionProbeRunner
       returned = resolve(lookup_scope, written)
     end
     if returned && instantiable?(returned) && nameable?(returned) && !returned.nil_type?
-      lines << "#{VAR_PREFIX}#{serial}_v : #{returned} = #{call}"
+      lines << "#{VAR_PREFIX}#{serial}_v : #{TypeRenderer.render(returned.devirtualize)} = #{call}"
     else
       lines << call
     end
@@ -213,7 +214,7 @@ class DefinitionProbeRunner
     return witness if written.is_a?(Self)
     resolved = resolve(trait_type, written)
     return nil unless resolved && instantiable?(resolved) && nameable?(resolved)
-    resolved.to_s
+    TypeRenderer.render(resolved.devirtualize)
   end
 
   def resolve(scope : ModuleType, written : ASTNode) : Type?

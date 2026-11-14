@@ -3473,6 +3473,8 @@ pub class Def < ASTNode
   property calls_previous_def : Bool = false
   property uses_block_arg : Bool = false
   property macro_yields : Bool = false
+  property no_inline : Bool = false
+  property always_inline : Bool = false
   # The def this one replaced, and the def that replaced this one.
   # Hosted `Def#previous` is a DefWithMetadata; the port keeps the def itself.
   property previous : Def? = nil
@@ -3553,6 +3555,8 @@ pub class Def < ASTNode
     d.calls_previous_def = @calls_previous_def
     d.uses_block_arg = @uses_block_arg
     d.macro_yields = @macro_yields
+    d.no_inline = @no_inline
+    d.always_inline = @always_inline
     # Hosted syntax Def#clone_without_location does not copy previous or next.
     # The semantic reopening copies previous only; iyi cannot reopen that class.
     d.iyi_defer = @iyi_defer

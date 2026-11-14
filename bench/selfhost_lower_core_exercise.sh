@@ -1040,10 +1040,11 @@ prove_mutation "a pointer union value stores into a nilable reference union" "$R
 # A trait argument is checked against exactly its requirements, via the witness.
 definition_probe_refusals() {
   local tool="$1" kind expected result refused=0
-  for kind in return trait; do
+  for kind in return trait virtual_union; do
     case "$kind" in
       return) expected="type mismatch for return type: expected String, got Int32" ;;
       trait) expected="undefined method 'length' for IyiDefTypeWitness_Sized" ;;
+      virtual_union) expected="type mismatch for return type: expected Int32, got String" ;;
     esac
     rm -f "$WORK/definition-$kind.native"
     timeout 120 "$tool" "$REPO/bench/fixtures/refuse_definition_$kind.iyi" \
@@ -1063,7 +1064,7 @@ definition_probe_refusals() {
       return 1
     fi
   done
-  [ "$refused" -eq 2 ]
+  [ "$refused" -eq 3 ]
 }
 definition_probe_check() {
   if ! "$IYI" build -o "$WORK/definition-probes" "$REPO/src/compiler/tools/compile_native.iyi" \
