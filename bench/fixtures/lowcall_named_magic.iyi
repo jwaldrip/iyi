@@ -1,0 +1,16 @@
+lib LibC
+  fun putchar(value : Int32) : Int32
+  fun exit(status : Int32) : NoReturn
+end
+
+def mark(value : Int32) : Int32
+  LibC.putchar(value)
+  value
+end
+
+def combine(a : Int32, b : Int32 = mark(100), line : Int32 = __LINE__) : Int32
+  line
+end
+
+result = combine(a: mark(97))
+LibC.exit(result)
