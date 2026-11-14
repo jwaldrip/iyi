@@ -20,6 +20,7 @@ import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system, type_node_metaclass}
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries, NamedTupleInstanceType, TupleInstanceType, VirtualType}
+import compiler/types/types::{GenericModuleInstanceType}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/intersect::{TypeIntersect}
 import compiler/types/indirection::{TypeIndirection}
@@ -2824,7 +2825,7 @@ pub class MainVisitor < TypeNodeHost
     levels << mod
     if walk == ArmWalk::Modules
       mod.parents.each do |parent|
-        break unless parent.is_a?(NonGenericModuleType) || parent.is_a?(GenericModuleType)
+        break unless parent.is_a?(NonGenericModuleType) || parent.is_a?(GenericModuleType) || parent.is_a?(GenericModuleInstanceType) || parent.is_a?(TraitType)
         collect_arm_levels(parent, name, walk, levels, visited)
       end
     else
