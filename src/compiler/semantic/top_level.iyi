@@ -1445,7 +1445,7 @@ pub class SemanticProgram < NonGenericModuleType
   end
 
   def record_generated_new(definition : Def) : Nil
-    @generated_news << definition.node_id
+    @generated_news.add(definition.node_id)
     nil
   end
 

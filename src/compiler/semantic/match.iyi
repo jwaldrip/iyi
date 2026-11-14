@@ -104,7 +104,7 @@ end
 pub class CallMatch
   def self.inferable_generic(program : SemanticProgram, owner : Type, defining : ModuleType?, definition : Def, given : Int32) : GenericClassType?
     return nil unless program.generated_new?(definition)
-    return nil if defining.nil? || !defining.as(ModuleType).same?(owner)
+    return nil if defining.nil? || defining.as(ModuleType).object_id != owner.object_id
     return nil unless owner.is_a?(MetaclassType)
     instance = owner.as(MetaclassType).instance_type
     return nil unless instance.is_a?(GenericClassType)
@@ -162,9 +162,13 @@ pub class CallMatch
     end
     match_free = free_names
     if vars = class_vars
+      copied = false
       vars.each do |name|
         unless match_free.includes?(name)
-          match_free = match_free.dup if match_free.same?(free_names)
+          unless copied
+            match_free = match_free.dup
+            copied = true
+          end
           match_free << name
         end
       end
