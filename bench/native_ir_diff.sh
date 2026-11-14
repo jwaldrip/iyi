@@ -28,7 +28,7 @@ if [ -z "${NATIVE_DIFF_CG:-}" ]; then
 fi
 python3 bench/gen_narrow_ir.py "$work/generated" 200 || exit 1
 if [ "$#" -eq 0 ]; then
-  set -- bench/fixtures/native_cg/rmw.ir bench/fixtures/native_cg/narrow_cmpxchg.ir bench/fixtures/native_cg/narrow_switch.ir bench/fixtures/native_cg/narrow_call.ir bench/fixtures/native_cg/narrow_i1.ir bench/fixtures/native_cg/narrow_param.ir bench/fixtures/native_cg/narrow_asm.ir "$work"/generated/seed_*.ir
+  set -- bench/fixtures/native_cg/rmw.ir bench/fixtures/native_cg/narrow_cmpxchg.ir bench/fixtures/native_cg/narrow_switch.ir bench/fixtures/native_cg/narrow_call.ir bench/fixtures/native_cg/narrow_i1.ir bench/fixtures/native_cg/narrow_param.ir bench/fixtures/native_cg/narrow_asm.ir bench/fixtures/native_cg/narrow_argext.ir bench/fixtures/native_cg/narrow_signext.ir "$work"/generated/seed_*.ir
 fi
 : >"$work/report.txt"
 index=0; passed=0; failed=0
@@ -47,10 +47,13 @@ for ir in "$@"; do
   if ! cc "$dir/llvm.o" bench/fixtures/native_cg/rt_stub.c "$work/generated/identity.c" -o "$dir/llvm" >"$dir/llvm-link.log" 2>&1 || ! cc "$dir/native.o" bench/fixtures/native_cg/rt_stub.c "$work/generated/identity.c" -o "$dir/native" >"$dir/native-link.log" 2>&1; then
     printf 'FAIL link %s (%s)\n' "$ir" "$dir" | tee -a "$work/report.txt"; failed=$((failed + 1)); continue
   fi
-  if ! codesign -v --strict "$dir/llvm" >"$dir/llvm-sign.log" 2>&1 || ! codesign -v --strict "$dir/native" >"$dir/native-sign.log" 2>&1; then
-    printf 'FAIL signature %s (%s)\n' "$ir" "$dir" | tee -a "$work/report.txt"; failed=$((failed + 1)); continue
+  if ! codesign -v --strict "$dir/llvm" >"$dir/llvm-sign.log" 2>&1; then
+    printf 'FAIL LLVM signature %s (%s)\n' "$ir" "$dir" | tee -a "$work/report.txt"; failed=$((failed + 1)); continue
   fi
   perl -e 'alarm 30; exec @ARGV or exit 127' -- "$dir/llvm" >"$dir/llvm.out" 2>"$dir/llvm.err" </dev/null; ls=$?
+  if ! codesign -v --strict "$dir/native" >"$dir/native-sign.log" 2>&1; then
+    printf 'FAIL native signature %s (%s)\n' "$ir" "$dir" | tee -a "$work/report.txt"; failed=$((failed + 1)); continue
+  fi
   perl -e 'alarm 30; exec @ARGV or exit 127' -- "$dir/native" >"$dir/native.out" 2>"$dir/native.err" </dev/null; ns=$?
   printf '%s\n' "$ls" >"$dir/llvm.status"; printf '%s\n' "$ns" >"$dir/native.status"
   if [ "$ls" != 142 ] && [ "$ns" != 142 ] && [ "$ls" = "$ns" ] && cmp -s "$dir/llvm.out" "$dir/native.out"; then
