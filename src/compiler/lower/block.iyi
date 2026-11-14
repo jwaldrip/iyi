@@ -179,6 +179,7 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
   end
   body.block_node = caller.block_node
   body.block_context = caller.block_context
+  body.copy_closure_from(caller)
 
   # A `while` around the call is not the target of a `break` or `next` written in the block.
   saved_next = low.loop_next

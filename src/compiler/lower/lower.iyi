@@ -51,6 +51,8 @@ import compiler/ir/verifier::{verify_function}
 import compiler/lower/primitives::{iyi_gc_arena?}
 import compiler/lower/gc_table::{define_gc_layouts}
 import compiler/lower/proc::{lower_proc_literal}
+import compiler/lower/closure::{allocate_closure}
+import compiler/semantic/closures::{ClosureFacts}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, to_rhs, type_id_of_value, type_id_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
@@ -168,7 +170,13 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   store_aligned(low, fn.param(1), argv_global)
   initialize_program_constants(low)
   emit_well_known_funs(low)
-  preallocate_locals(low, root, [] of String)
+  facts = ClosureFacts.new(analysed)
+  program_frame = facts.analyse_program(root)
+  low.current_context.closure_facts = facts
+  captured = [] of String
+  program_frame.closured.each { |var| captured << var.name }
+  preallocate_locals(low, root, captured)
+  allocate_closure(low, program_frame)
   low.needs_value = true
   codegen_node(low, root)
   codegen_return(low, ret_ir)
