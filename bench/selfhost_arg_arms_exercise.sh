@@ -27,7 +27,12 @@ check_arms() {
   cmp -s "$WORK/named" "$WORK/expected" || return 1
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_new_mismatch.iyi" "$REPO/src" new > "$WORK/named-mismatch" || return 1
   printf '%s\n' 'arms=0 cover=false' > "$WORK/expected"
-  cmp -s "$WORK/named-mismatch" "$WORK/expected"
+  cmp -s "$WORK/named-mismatch" "$WORK/expected" || return 1
+  for kind in module trait; do
+    "$WORK/probe" "$REPO/bench/fixtures/sem_arms_${kind}_arg.iyi" "$REPO/src" show > "$WORK/$kind" || return 1
+    printf '%s\n' 'arms=2 cover=true' 'main#show:A' 'main#show:(A | B)' > "$WORK/expected"
+    cmp -s "$WORK/$kind" "$WORK/expected" || return 1
+  done
 }
 
 check_arms || exit 1
