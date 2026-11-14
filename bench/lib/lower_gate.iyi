@@ -11,13 +11,13 @@ module bench/lib/lower_gate
 # `stand_in_libs` is the one place a gate reads the primitive declarations the bare analysis does not
 # declare (bench/lib/primitive_stand_in.iyi). The semantic pass types the libs; no gate stands them in.
 
-import compiler/syntax/ast::{ASTNode, Def, Expressions, FunDef, LibDef}
+import compiler/syntax/ast::{ASTNode, Def, Expressions, FunDef, LibDef, ImportDecl}
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{LibType, SemanticProgram, TopLevelVisitor}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/definition_typing::{append_definition_probes}
-import compiler/semantic/top_level::{normalize_path}
+import compiler/semantic/top_level::{normalize_path, dir_of}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 import compiler/ir/module::{Module}
@@ -52,6 +52,8 @@ pub def analyse(source : String, filename : String, stand_in_libs : Bool) : Anal
   normalizer.iyi_prelude = false
   root = normalizer.normalize(root)
   prog = SemanticProgram.new
+  # Resolve each fixture's imports beside the fixture, not from the gate's cwd.
+  prog.search_path = [dir_of(filename)]
   # The type system is installed before the top-level pass, as the semantic driver does: it makes the merged
   # unions (a variable's union, a type_merge) the hosted MixedUnionType and ReferenceUnionType, not a plain UnionType.
   ts = TypeSystem.new(prog)
@@ -71,6 +73,11 @@ pub def analyse(source : String, filename : String, stand_in_libs : Bool) : Anal
   append_definition_probes(prog, root, files)
   root.accept(mv)
   RecursiveStructChecker.new(prog).run
+  # The full compiler consumes imports while assembling units. This bare gate
+  # has already resolved them during declarations, so they are not runtime nodes.
+  if root.is_a?(Expressions)
+    root.as(Expressions).expressions = root.as(Expressions).expressions.reject { |node| node.is_a?(ImportDecl) }
+  end
   Analysis.new(root, mv, !prog.types["IyiRuntimeLock"]?.nil?)
 end
 
