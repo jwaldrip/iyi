@@ -26,6 +26,7 @@ MACRO_BLOCK = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.S)
 CLASS_LINE = re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)")
 WHEN_LINE = re.compile(r"^\s*when\s+(.*)$")
 QUOTED = re.compile(r'"([^"\n]+)"')
+PORT_COMPARE = re.compile(r'\b(?:method|cl\.name)\s*==\s*"([^"\n]+)"')
 # Hosted plumbing that dispatches but is not a macro method a template can call.
 PLUMBING = {"interpret", "interpret_compare", "to_macro_id", "truthy?", "to_string", "interpret_check_args"}
 # Words that are macro-language keywords or hosted helpers, never macro methods.
@@ -61,6 +62,25 @@ def hosted_methods():
                 if name in PLUMBING or name in table[current]:
                     continue
                 table[current].append(name)
+    # The hosted ArrayLiteral and TupleLiteral delegates share this dispatcher.
+    # Its top-level definition is outside the class blocks scanned above.
+    in_shared = False
+    with open(HOSTED, encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("private def interpret_array_or_tuple_method("):
+                in_shared = True
+                continue
+            if in_shared and line.startswith("end"):
+                break
+            if in_shared:
+                w = WHEN_LINE.match(line)
+                if w:
+                    for name in QUOTED.findall(w.group(1)):
+                        if name not in PLUMBING:
+                            for typ in ("ArrayLiteral", "TupleLiteral"):
+                                methods = table.setdefault(typ, [])
+                                if name not in methods:
+                                    methods.append(name)
     return table
 
 
@@ -78,7 +98,7 @@ def macro_sources():
 
 
 def port_names():
-    """Names the port's macro dispatch answers, from its `when "name"` lines."""
+    """Names the port's macro dispatch answers, from case and equality branches."""
     names = set()
     port_dir = os.path.join(REPO, "src/compiler/macros")
     for name in os.listdir(port_dir):
@@ -89,6 +109,7 @@ def port_names():
                 w = WHEN_LINE.match(line)
                 if w:
                     names.update(QUOTED.findall(w.group(1)))
+                names.update(PORT_COMPARE.findall(line))
     return names
 
 

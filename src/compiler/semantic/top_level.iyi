@@ -501,30 +501,101 @@ pub abstract class ModuleType < NamedType
     end
   end
 
-  def lookup_macro?(name : String) : Macro?
-    if list = @macros[name]?
-      if m = list.last?
-        return m
-      end
-    end
-    if self.is_a?(ClassType)
-      if sc = self.as(ClassType).superclass
-        if sc.is_a?(ModuleType)
-          if m = sc.as(ModuleType).lookup_macro?(name)
-            return m
-          end
-        end
-      end
-    end
-    @parents.each do |p|
-      if p.is_a?(ModuleType)
-        if m = p.as(ModuleType).lookup_macro?(name)
-          return m
-        end
-      end
-    end
+  # A local def stops implicit enclosing macro lookup, including at a parent.
+  def lookup_call_macro?(call : Call) : Macro?
+    found = lookup_call_macro_in_scope?(call)
+    return found.as(Macro) if found.is_a?(Macro)
+    return nil if found == true
     if self != @program
-      return @program.lookup_macro?(name)
+      found = @program.lookup_call_macro_in_scope?(call)
+      return found.as(Macro) if found.is_a?(Macro)
+    end
+    nil
+  end
+
+  def macro_matches_call?(a_macro : Macro, call : Call) : Bool
+    count = a_macro.args.size
+    splat = a_macro.splat_index
+    min = count
+    i = 0
+    while i < count
+      if a_macro.args[i].default_value
+        min = i
+        break
+      end
+      i = i + 1
+    end
+    max = count
+    if index = splat
+      if a_macro.args[index].external_name.empty?
+        min = index
+        max = index
+      else
+        min = min - 1
+        max = 2147483647
+      end
+      if count > index + 1 && call.named_args.nil?
+        j = index + 1
+        while j < count
+          return false if a_macro.args[j].default_value.nil?
+          j = j + 1
+        end
+      end
+    end
+    return false if call.args.size > max
+    named = call.named_args
+    return false if named.nil? && call.args.size < min
+    if names = named
+      matched = [] of Bool
+      i = 0
+      while i < count
+        matched << false
+        i = i + 1
+      end
+      i = 0
+      while i < call.args.size && i < count
+        if splat.nil? || i < splat.as(Int32)
+          matched[i] = true
+        end
+        i = i + 1
+      end
+      names.each do |arg|
+        index = 0
+        while index < count && a_macro.args[index].external_name != arg.name
+          index = index + 1
+        end
+        if index == count
+          return false if a_macro.double_splat.nil?
+        else
+          return false if splat == index || matched[index]
+          matched[index] = true
+        end
+      end
+      i = 0
+      while i < count
+        if splat != i && a_macro.args[i].default_value.nil? && !matched[i]
+          return false
+        end
+        i = i + 1
+      end
+    end
+    true
+  end
+
+  def lookup_call_macro_in_scope?(call : Call) : Macro | Bool | Nil
+    if list = @macros[call.name]?
+      i = 0
+      while i < list.size
+        return list[i] if macro_matches_call?(list[i], call)
+        i = i + 1
+      end
+    end
+    return true if @defs.has_key?(call.name)
+    @parents.each do |parent|
+      if parent.is_a?(ModuleType)
+        found = parent.as(ModuleType).lookup_call_macro_in_scope?(call)
+        return found unless found.nil?
+      end
     end
     nil
   end
@@ -3397,7 +3468,7 @@ pub class TopLevelVisitor < Visitor
 
   def visit(node : Call) : Bool
     if node.obj.nil?
-      if a_macro = @current_type.lookup_macro?(node.name)
+      if a_macro = @current_type.lookup_call_macro?(node)
         engine = MacroEngine.new
         expanded_ast = engine.expand(a_macro, node, @program.normalizer)
         node.expanded = expanded_ast

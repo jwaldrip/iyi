@@ -142,6 +142,74 @@ pub class MacroInterpreter
     NilLiteral.new
   end
 
+  # Higher-order methods must evaluate the block in this interpreter's scope.
+  def collection_block(elements : Array(ASTNode), block : Block, method : String, tuple : Bool) : ASTNode
+    name = block.args.empty? ? "" : block.args[0].name
+    previous = name == "" ? nil : @vars[name]?
+    results = [] of ASTNode
+    any = false
+    i = 0
+    while i < elements.size && !halted?
+      @vars[name] = elements[i] unless name == ""
+      value = eval_block_body(block.body)
+      if method == "any?"
+        if MacroMethods.truthy?(value)
+          any = true
+          break
+        end
+      else
+        results << value
+      end
+      i = i + 1
+    end
+    unless name == ""
+      if old = previous
+        @vars[name] = old
+      else
+        @vars.delete(name)
+      end
+    end
+    return BoolLiteral.new(any) if method == "any?"
+    return TupleLiteral.new(results) if tuple
+    ArrayLiteral.new(results)
+  end
+
+  def collection_call(receiver : ASTNode, call : Call, block : Block) : ASTNode
+    elements = [] of ASTNode
+    tuple = false
+    if receiver.is_a?(ArrayLiteral)
+      elements = receiver.as(ArrayLiteral).elements
+    elsif receiver.is_a?(TupleLiteral)
+      elements = receiver.as(TupleLiteral).elements
+      tuple = true
+    elsif receiver.is_a?(RangeLiteral)
+      range = receiver.as(RangeLiteral)
+      first = range.from
+      last = range.to
+      if first.is_a?(NumberLiteral) && last.is_a?(NumberLiteral)
+        current = MacroMethods.eval_int(first)
+        finish = MacroMethods.eval_int(last)
+        kind = first.as(NumberLiteral).kind
+        while current < finish || (current == finish && !range.exclusive)
+          elements << NumberLiteral.new(current.to_s, kind)
+          break if current == finish
+          current = current + 1
+        end
+      elsif first.is_a?(CharLiteral) && last.is_a?(CharLiteral)
+        current = first.as(CharLiteral).value.ord
+        finish = last.as(CharLiteral).value.ord
+        while current < finish || (current == finish && !range.exclusive)
+          elements << CharLiteral.new(current.chr)
+          break if current == finish
+          current = current + 1
+        end
+      else
+        fail_at(call, "range begin and end must be both NumberLiteral or both CharLiteral")
+      end
+    end
+    collection_block(elements, block, call.name, tuple)
+  end
+
   def eval_block_body(body : ASTNode) : ASTNode
     if body.is_a?(Expressions)
       exps = body.as(Expressions).expressions
@@ -579,6 +647,13 @@ pub class MacroInterpreter
       end
       if cl.name == "find" && receiver.is_a?(ArrayLiteral) && cl.block
         return find_in_array(receiver.as(ArrayLiteral), cl.block.as(Block))
+      end
+      if (cl.name == "map" || cl.name == "any?") && cl.args.empty? && cl.named_args.nil?
+        if block = cl.block
+          if receiver.is_a?(ArrayLiteral) || receiver.is_a?(TupleLiteral) || (cl.name == "map" && receiver.is_a?(RangeLiteral))
+            return collection_call(receiver, cl, block)
+          end
+        end
       end
       eval_args = cl.args.map { |a| evaluate(a) }
       if value = MacroMethods.interpret_method(@flags, receiver, cl.name, eval_args, nil, cl.block)

@@ -707,7 +707,9 @@ pub class MainVisitor < TypeNodeHost
     if expanded.nil?
       expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
       if expanded.nil?
-        return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
+        if reason = InlineMacroLedger.sites.last.reason
+          return untyped(node, "macro control expansion: #{reason}")
+        end
         expanded = Nop.new
       end
       @expansions[node] = expanded
@@ -724,7 +726,9 @@ pub class MainVisitor < TypeNodeHost
     if expanded.nil?
       expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
       if expanded.nil?
-        return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
+        if reason = InlineMacroLedger.sites.last.reason
+          return untyped(node, "macro control expansion: #{reason}")
+        end
         expanded = Nop.new
       end
       @expansions[node] = expanded
@@ -741,7 +745,9 @@ pub class MainVisitor < TypeNodeHost
     if expanded.nil?
       expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
       if expanded.nil?
-        return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
+        if reason = InlineMacroLedger.sites.last.reason
+          return untyped(node, "macro control expansion: #{reason}")
+        end
         expanded = Nop.new
       end
       @expansions[node] = expanded
@@ -758,7 +764,9 @@ pub class MainVisitor < TypeNodeHost
     if expanded.nil?
       expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
       if expanded.nil?
-        return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
+        if reason = InlineMacroLedger.sites.last.reason
+          return untyped(node, "macro control expansion: #{reason}")
+        end
         expanded = Nop.new
       end
       @expansions[node] = expanded
@@ -1083,7 +1091,7 @@ pub class MainVisitor < TypeNodeHost
 
     if node.obj.nil?
       lookup_type = @scope || @current_type
-      if a_macro = lookup_type.lookup_macro?(node.name)
+      if a_macro = lookup_type.is_a?(ModuleType) ? lookup_type.as(ModuleType).lookup_call_macro?(node) : nil
         engine = MacroEngine.new
         expanded_ast = engine.expand_or_failure(a_macro, node, @program.normalizer)
         if expanded_ast.is_a?(MacroFailure)

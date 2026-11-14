@@ -492,10 +492,19 @@ is_refusal() {
   awk '/^# refuse: / { found = 1 } END { exit !found }' "$1"
 }
 
+# These are full semantic programs, not a macro definition followed by a call.
+is_semantic_fixture() {
+  case "$(basename "$1")" in
+    macro_def_shadows_macro.iyi|macro_typenode_ancestors.iyi|macro_lookup_arity.iyi) return 0 ;;
+  esac
+  return 1
+}
+
 compare_all() {
   runner="$1"
   out_status=0
   for fixture in "$REPO"/bench/fixtures/macro_*.iyi; do
+    is_semantic_fixture "$fixture" && continue
     if is_refusal "$fixture"; then
       "$runner" $(fixture_args "$fixture") "$fixture" > "$WORK/a.dump" 2>/dev/null || { out_status=1; continue; }
       grep -q "^error .* message=.*is refused" "$WORK/a.dump" || out_status=1
@@ -512,6 +521,7 @@ fixture_count=0
 refusal_count=0
 total_sites=0
 for fixture in "$REPO"/bench/fixtures/macro_*.iyi; do
+  is_semantic_fixture "$fixture" && continue
   fixture_name="bench/fixtures/$(basename "$fixture")"
   fixture_count=$((fixture_count + 1))
   if is_refusal "$fixture"; then
@@ -610,6 +620,36 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 METHODS="$REPO/src/compiler/macros/methods.iyi"
 TARGET_FLAGS="$REPO/src/compiler/macros/target_flags.iyi"
+prove_mutation "collection any ignores truthy results" "$INTERP" \
+  "return BoolLiteral.new(any) if method == \"any?\"" \
+  "return BoolLiteral.new(false) if method == \"any?\"" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "tuple map drops its elements" "$INTERP" \
+  "return TupleLiteral.new(results) if tuple" \
+  "return TupleLiteral.new([] of ASTNode) if tuple" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "array map drops its elements" "$INTERP" \
+  "    ArrayLiteral.new(results)" \
+  "    ArrayLiteral.new([] of ASTNode)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "range map drops its elements" "$INTERP" \
+  "elements << NumberLiteral.new(current.to_s, kind)" \
+  "elements << NumberLiteral.new(\"0\", kind)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "collection splat loses its suffix" "$METHODS" \
+  "text << args[0].as(StringLiteral).value" \
+  "text << \"\"" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "flag? answers from a fixed set, not the target's" "$METHODS" \
   "PlatformFlags.has_flag?(flags, name)" \
   "PlatformFlags.has_flag?([\"darwin\", \"aarch64\"], name)" \
