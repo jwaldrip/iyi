@@ -410,7 +410,6 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     raw = value.as(Value)
     arg_tids << type_id_of_value(low, arg, raw, arg_types[i])
     passed = arg_types[i].is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : raw
-    passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?
     values << passed
   end
   phi_wants = wants && !ret.is_a?(NilType) && !ret.is_a?(VoidType) && !ret.is_a?(NoReturnType)
@@ -433,8 +432,16 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     low.builder.position_at_end(blocks[0])
     concrete = downcast(low, receiver, arm.receiver, runtime_type, true)
     self_value = arm.receiver.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : self_argument(low, obj, concrete, arm.receiver)
+    arm_values = [] of Value
+    i = 0
+    while i < values.size
+      passed = values[i]
+      passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?
+      arm_values << passed
+      i += 1
+    end
     low.needs_value = phi_wants
-    emit_single_call(low, node, arm.definition, arm.return_type, arm.receiver, self_value, nil, arg_types, values)
+    emit_single_call(low, node, arm.definition, arm.return_type, arm.receiver, self_value, nil, arg_types, arm_values)
     unless block_ended?(low)
       if phi_wants
         value = low.last
@@ -797,9 +804,6 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
   collector.vars.each do |var|
     name = var.name
     t = low.analysed.type_of?(var)
-    if declaration = collector.declarations[name]?
-      t = low.analysed.lookup_declared?(declaration.declared_type, low.current_context.type)
-    end
     raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
     unless vars[name]?
       alloca_local(low, vars, name, t.as(Type))
@@ -825,9 +829,6 @@ pub def allocate_def_vars(low : Lowerer, def_node : Def, arg_types : Array(Type)
   collector.vars.each do |var|
     name = var.name
     t = low.analysed.type_of?(var)
-    if declaration = collector.declarations[name]?
-      t = low.analysed.lookup_declared?(declaration.declared_type, low.current_context.type)
-    end
     raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
     unless vars[name]?
       alloca_local(low, vars, name, t.as(Type))

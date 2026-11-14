@@ -14,12 +14,10 @@ import compiler/semantic/top_level::{NoReturnType, Type, VoidType}
 pub class LocalOrder < Visitor
   getter vars : Array(Var)
   getter declared : Bool
-  getter declarations : Hash(String, TypeDeclaration)
 
   def initialize(@analysed : MainVisitor)
     @vars = [] of Var
     @names = Set(String).new
-    @declarations = Hash(String, TypeDeclaration).new
     @declared = false
     @macro_depth = 0
   end
@@ -57,10 +55,6 @@ pub class LocalOrder < Visitor
 
     if node.is_a?(TypeDeclaration)
       @declared = true if @macro_depth == 0
-      if node.as(TypeDeclaration).var.is_a?(Var)
-        var = node.as(TypeDeclaration).var.as(Var)
-        @declarations[var.name] = node.as(TypeDeclaration)
-      end
       record(node.as(TypeDeclaration).var)
     elsif node.is_a?(UninitializedVar)
       record(node.as(UninitializedVar).var)
