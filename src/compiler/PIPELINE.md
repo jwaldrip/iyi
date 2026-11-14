@@ -35,6 +35,14 @@ The pointer-forwarding and inline-annotation fixtures match hosted IR and return
 `1aabe425d`, all eight functions of the loop-carried-narrowing fixture and its
 module-level IR match the hosted output.
 
+At `7eb3c7c30`, both yielded-block generic fixtures compile with the real prelude
+through linking and exit 0. Both failed on an unbound `U` in the preceding stage1.
+At `d08d64739`, the generic-instance checks accept nullable unions and reject
+incompatible members, and the IR builder passes 16 exact constant-fold checks
+and 20 retained-instruction checks. The keyword-predicate fixture matches all
+three hosted functions and its module-level IR. Parser compilation next stops
+at the unimplemented `super` call in `Parser#initialize`.
+
 The omitted-fun-return, inline-macro-expansion and nested-body-scope regressions
 compile, link and run natively. Their results match hosted execution: status 0,
 `ABCDE\n` with status 0, and status 7 respectively. Each failed in the preceding

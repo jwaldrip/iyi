@@ -287,9 +287,8 @@ pub def union_temp(low : Lowerer, union_type : Type, value_type : Type, value : 
   temp
 end
 
-# The hosted `upcast`: the union value of `value` of `value_type` in `to`, loaded from a
-# temporary. Structurally this is not the hosted `if` join (which keeps the temporary's
-# pointer); the core's join uses `union_temp` for identity with the hosted module.
+# The hosted `upcast`, with a changed mixed union loaded from a temporary.
+# An if join keeps that temporary's pointer; an unchanged pointer needs no copy.
 pub def upcast(low : Lowerer, value : Value, from : Type, to : Type) : Value
   # Hosted upcast (cast.cr:540): an ended block has no value to convert.
   return llvm_nil(low) if at_terminator?(low)

@@ -1185,8 +1185,8 @@ pub def joins_by_pointer?(t : Type) : Bool
   false
 end
 
-# One branch's value into the join. In a union join the branch's value is stored in a fresh alloca of the union
-# (union_temp, hosted upcast in the branch) and the pointer joins; otherwise the value joins as it is.
+# One branch's value into the join. A union value already held by pointer passes through when
+# its type matches; a real upcast or an SSA aggregate needs a temporary before the pointer phi.
 pub def branch_value(low : Lowerer, phi : LowerPhi, branch : ASTNode, merged : Type?, union_join : Bool, last : Bool) : Nil
   if union_join && !at_terminator?(low) && !low.last.nil?
     bt = low.analysed.type_of?(branch)
@@ -1194,7 +1194,12 @@ pub def branch_value(low : Lowerer, phi : LowerPhi, branch : ASTNode, merged : T
       pending_visit_node("a union join of a branch with no analysed type (hosted codegen.cr: visit(If))")
     end
     m = merged.as(Type)
-    ptr = union_temp(low, m, bt.as(Type), low.last.as(Value))
+    value = low.last.as(Value)
+    if value.type.pointer? && TypeIndirection.remove_indirection(bt.as(Type)) == TypeIndirection.remove_indirection(m)
+      phi.add(low, value, last)
+      return
+    end
+    ptr = union_temp(low, m, bt.as(Type), value)
     phi.add(low, ptr, last)
     return
   end
