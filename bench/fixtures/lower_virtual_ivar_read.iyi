@@ -12,4 +12,12 @@ end
 class Child < Holder
 end
 
-Holder.new(4).read(Child.new(42))
+def choose(flag : Bool) : Int32
+  other = if flag
+    Holder.new(7)
+  else
+    Child.new(42)
+  end
+  Holder.new(4).read(other)
+end
+choose(false)

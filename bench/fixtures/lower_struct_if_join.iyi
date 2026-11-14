@@ -3,7 +3,7 @@ struct Point
   end
 
   def sum : Int32
-    @x + @y
+    @x &+ @y
   end
 end
 
@@ -18,6 +18,6 @@ def join_values(flag : Bool) : Int32
   else
     {1, 2}
   end
-  point.sum + pair[0] + pair[1]
+  point.sum &+ pair[0] &+ pair[1]
 end
 join_values(true)
