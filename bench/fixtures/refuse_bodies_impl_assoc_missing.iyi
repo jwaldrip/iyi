@@ -1,0 +1,13 @@
+trait Producer
+  type Item
+  abstract def value : Item
+end
+
+class Source
+end
+
+impl Producer for Source
+  def value : Int32
+    42
+  end
+end

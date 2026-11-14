@@ -1,0 +1,19 @@
+trait Producer
+  type Item
+  abstract def values : Array(Item)
+end
+
+class Source(T)
+  def initialize(@value : T)
+  end
+end
+
+impl Producer for Source(T) forall T
+  type Item = T
+  def values : Array(Item)
+    [@value]
+  end
+end
+
+puts Source(Int32).new(42).values[0]
+puts Source(String).new("text").values[0]
