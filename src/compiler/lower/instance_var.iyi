@@ -77,7 +77,7 @@ pub def self_argument(low : Lowerer, obj : ASTNode, value : Value, st : Type) : 
   return value unless self_by_pointer?(st)
   # By-value aggregate expressions may already be represented by their address,
   # as a class-variable read is after the hosted to_lhs conversion.
-  return value if value.type.pointer?
+  return value if passed_by_value?(st) && value.type.pointer?
   if obj.is_a?(Var)
     var = low.current_context.vars[obj.as(Var).name]?
     if !var.nil?
