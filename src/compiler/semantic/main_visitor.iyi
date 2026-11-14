@@ -3011,15 +3011,24 @@ pub class MainVisitor < TypeNodeHost
         defining = @program.def_owner(definition) || mod
         @current_type = defining
         enter_file_scope(definition)
-        attempt = CallMatch.attempt(type_node_system(@program), signature, definition, owner, defining)
+        match_owner = owner
+        if owner.is_a?(MetaclassType)
+          instance = owner.as(MetaclassType).instance_type
+          match_owner = instance if instance.is_a?(GenericInstanceType)
+        end
+        attempt = CallMatch.attempt(type_node_system(@program), signature, definition, match_owner, defining)
         @current_type = old_type
         @program.current_imports = old_imports
         @program.current_import_defs = old_defs
         if error = attempt.error
           first_error = error if first_error.nil?
         elsif match = attempt.match
-          matches << match
-          return Matches.new(matches, true) if match.exact
+          arm = match
+          if match_owner != owner
+            arm = Match.new(match.definition, match.arg_types, owner, match.defining, match.exact, match.named_arg_types, match.declared, match.bound)
+          end
+          matches << arm
+          return Matches.new(matches, true) if arm.exact
         end
       end
       return Matches.new(matches, CallCover.all?(signature, matches)) if walk == ArmWalk::Modules && matches.size > level_start

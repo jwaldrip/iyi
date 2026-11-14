@@ -24,6 +24,9 @@ class ArmProbe < Visitor
       puts "arms=#{found.matches.size} cover=#{found.cover_all?}"
       found.matches.each do |match|
         puts "#{match.defining.full_name}##{match.definition.name}:#{match.arg_types.map(&.full_name).join(",")}"
+        if node.name == "new"
+          puts "owner=#{match.owner.full_name}"
+        end
       end
     end
     true
