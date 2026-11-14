@@ -1288,7 +1288,7 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
-  # A local's storage includes its declared type and every subsequent write.
+  # A local's storage includes the types written to it.
   def merge_var_union(name : String, type : Type) : Nil
     if previous = @var_unions[name]?
       @var_unions[name] = @program.type_merge(previous, type)
@@ -1334,9 +1334,10 @@ pub class MainVisitor < TypeNodeHost
       end
       if node.var.is_a?(Var)
         v = node.var.as(Var)
-        @vars[v.name] = decl_type
-        set_type(v, decl_type)
-        merge_var_union(v.name, decl_type)
+        stored = proc_compatible ? decl_type : val_type
+        @vars[v.name] = stored
+        set_type(v, stored)
+        merge_var_union(v.name, stored) unless stored.is_a?(NoReturnType)
       elsif node.var.is_a?(InstanceVar)
         ivar_node = node.var.as(InstanceVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
