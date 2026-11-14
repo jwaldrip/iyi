@@ -1,7 +1,7 @@
 module compiler/types/lookup
 
 import compiler/syntax/ast::{ASTNode, Generic, Metaclass, NumberLiteral, Path, ProcNotation, Self, Splat, TypeOf, Underscore, Union}
-import compiler/semantic/top_level::{AliasType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, SemanticProgram, Type, TypeParameterType}
+import compiler/semantic/top_level::{AliasType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, SemanticProgram, Type, TypeParameterType}
 import compiler/types/types::{NamedArgumentType, TupleInstanceType, TypeQueries, TypeSplat}
 import compiler/types/instances::{TypeInstances}
 import compiler/types/merge::{TypeMerge}
@@ -329,7 +329,7 @@ pub class TypeLookup
       return lookup_named_tuple(scope, node)
     end
 
-    unless base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType)
+    unless base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType) || base_type.is_a?(GenericTraitType)
       return LookupError.new("#{base_type.full_name} is not a generic type, it's a #{base_type.type_desc}")
     end
 
@@ -364,6 +364,9 @@ pub class TypeLookup
   # The instance of *base_type* with its type arguments resolved: the tail of lookup_generic. The type
   # system calls it for the type nodes the declaration pass resolves.
   def instantiate(base_type : Type, type_args : Array(Type)) : Type
+    if base_type.is_a?(GenericTraitType)
+      return @instances.instantiate_generic_trait(base_type.as(GenericTraitType), type_args)
+    end
     if base_type.is_a?(GenericModuleType)
       return @instances.instantiate_generic_module(base_type.as(GenericModuleType), type_args)
     end
@@ -478,10 +481,15 @@ pub class TypeLookup
     if base.is_a?(GenericClassType)
       return base.as(GenericClassType).type_vars
     end
+    if base.is_a?(GenericTraitType)
+      trait = base.as(GenericTraitType)
+      return trait.type_vars + trait.assoc_types
+    end
     base.as(GenericModuleType).type_vars
   end
 
   def splat_index?(base : Type) : Bool
+    return false if base.is_a?(GenericTraitType)
     if base.is_a?(GenericClassType)
       return !base.as(GenericClassType).splat_index.nil?
     end
