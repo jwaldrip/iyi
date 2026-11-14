@@ -1,6 +1,6 @@
 # Later assignments preallocate each local before its declaration is lowered.
 # Keep that slot: scalar, nilable-reference and initially uninitialized locals
-# must preserve their initial value and subsequent writes. Both branches total 30.
+# must preserve their initial value and subsequent writes. Both branches total 40.
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
@@ -44,4 +44,12 @@ def deferred_local(replace : Bool) : Int32
   value
 end
 
-LibC.exit(scalar_local(true) &+ scalar_local(false) &+ reference_local(true) &+ reference_local(false) &+ deferred_local(true) &+ deferred_local(false))
+def union_local(flip : Bool) : Int32
+  value : (Int32 | Bool) = 4
+  if flip
+    value = true
+  end
+  value.is_a?(Bool) ? 6 : 4
+end
+
+LibC.exit(scalar_local(true) &+ scalar_local(false) &+ reference_local(true) &+ reference_local(false) &+ deferred_local(true) &+ deferred_local(false) &+ union_local(true) &+ union_local(false))

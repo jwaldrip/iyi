@@ -1195,11 +1195,7 @@ pub class MainVisitor < TypeNodeHost
       if needs_type_filters?
         @type_filters = TypeFilters.assign_var(value_type_filters, v.name)
       end
-      if old_u = @var_unions[v.name]?
-        @var_unions[v.name] = @program.type_merge(old_u, val_type)
-      else
-        @var_unions[v.name] = val_type
-      end
+      merge_var_union(v.name, val_type)
     elsif node.target.is_a?(InstanceVar)
       ivar_node = node.target.as(InstanceVar)
       if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
@@ -1276,6 +1272,16 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # A local's storage includes its declared type and every subsequent write.
+  def merge_var_union(name : String, type : Type) : Nil
+    if previous = @var_unions[name]?
+      @var_unions[name] = @program.type_merge(previous, type)
+    else
+      @var_unions[name] = type
+    end
+    nil
+  end
+
   def visit(node : TypeDeclaration) : Bool
     # Declarations must resolve generic arguments even before any expression
     # has caused the lazy type system to be installed.
@@ -1314,6 +1320,7 @@ pub class MainVisitor < TypeNodeHost
         v = node.var.as(Var)
         @vars[v.name] = decl_type
         set_type(v, decl_type)
+        merge_var_union(v.name, decl_type)
       elsif node.var.is_a?(InstanceVar)
         ivar_node = node.var.as(InstanceVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
@@ -1353,6 +1360,7 @@ pub class MainVisitor < TypeNodeHost
         v = node.var.as(Var)
         @vars[v.name] = decl_type
         set_type(v, decl_type)
+        merge_var_union(v.name, decl_type)
       elsif node.var.is_a?(InstanceVar)
         ivar_node = node.var.as(InstanceVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
@@ -3296,11 +3304,7 @@ pub class MainVisitor < TypeNodeHost
       return nil
     end
     @vars[name] = pointee
-    if old_u = @var_unions[name]?
-      @var_unions[name] = @program.type_merge(old_u, pointee)
-    else
-      @var_unions[name] = pointee
-    end
+    merge_var_union(name, pointee)
     set_type(exp, pointee)
     set_type(out_node, pointee)
     nil
