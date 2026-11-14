@@ -15,7 +15,13 @@ check_arms() {
   cmp -s "$WORK/union" "$WORK/expected" || return 1
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_order.iyi" "$REPO/src" show > "$WORK/order" || return 1
   printf '%s\n' 'arms=2 cover=true' 'main#show:A' 'main#show:Node+' > "$WORK/expected"
-  cmp -s "$WORK/order" "$WORK/expected"
+  cmp -s "$WORK/order" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_generic_new.iyi" "$REPO/src" new > "$WORK/generic" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'Box(T).class#new:UInt64' 'owner=Box(UInt64).class' > "$WORK/expected"
+  cmp -s "$WORK/generic" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_generic_new_mismatch.iyi" "$REPO/src" new > "$WORK/mismatch" || return 1
+  printf '%s\n' 'arms=0 cover=false' > "$WORK/expected"
+  cmp -s "$WORK/mismatch" "$WORK/expected"
 }
 
 check_arms || exit 1
@@ -35,4 +41,10 @@ prove_mutation 'cover requires a matching arm for each combination' "$REPO/src/c
 prove_mutation 'stricter overload is inserted before broader overload' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   'while at < ordered.size && !arm_more_specific?(definition, ordered[at], args, owner)' \
   'while at < ordered.size' -- check_arms || status=1
+prove_mutation 'generic metaclass restrictions use the bound instance' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '          match_owner = instance if instance.is_a?(GenericInstanceType)' \
+  '          match_owner = owner if instance.is_a?(GenericInstanceType)' -- check_arms || status=1
+prove_mutation 'generic match retains its metaclass owner' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '            arm = Match.new(match.definition, match.arg_types, owner, match.defining, match.exact, match.named_arg_types, match.declared, match.bound)' \
+  '            arm = match' -- check_arms || status=1
 exit "$status"
