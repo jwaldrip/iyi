@@ -295,6 +295,9 @@ pub class MainVisitor < TypeNodeHost
   # Lowering reads this map the same way it reads lib_call_targets. The typed
   # dump prints nothing from it.
   property expansions : NodeMap(ASTNode) = NodeMap(ASTNode).new
+  # The constant each path names in its lexical scope (hosted Path#target_const,
+  # main_visitor.cr:235). Lowering reads this binding instead of resolving it again.
+  property target_consts : NodeMap(Const) = NodeMap(Const).new
   property type_filters : TypeFilters? = nil
   property needs_type_filters : Int32 = 0
   property unreachable : Bool = false
@@ -514,6 +517,11 @@ pub class MainVisitor < TypeNodeHost
 
   def target_def?(call : Call) : Def?
     @call_target_defs[call]?
+  end
+
+  # Nil when the path names a type rather than a constant.
+  def target_const?(path : Path) : Const?
+    @target_consts[path]?
   end
 
   def dispatch_targets?(call : Call) : Array(DispatchTarget)?
@@ -1525,6 +1533,7 @@ pub class MainVisitor < TypeNodeHost
     if t.const?
       c = t.as(Const)
       c.used = true
+      @target_consts[node] = c
       if enum_type = c.enum_value_type
         set_type(c.value, enum_type)
         set_type(node, enum_type)
@@ -1672,6 +1681,11 @@ pub class MainVisitor < TypeNodeHost
         # iyi: an annotation sits beside the def it annotates and is neither typed
         # nor walked (the hosted pass does not), so it does not end the list's type.
         unless exp.is_a?(Annotation)
+          # Code outside a def reads its own file's imports (SPEC.md R-2b).
+          # declare_unit restores the prior table, so none is in force at the root.
+          outer_imports = @program.current_imports
+          outer_import_defs = @program.current_import_defs
+          enter_file_scope(exp) if @current_def.nil?
           if i == node.expressions.size - 1
             exp.accept(self)
             last_type = child_type(exp)
@@ -1681,6 +1695,8 @@ pub class MainVisitor < TypeNodeHost
             exp.accept(self)
             @needs_type_filters = saved_ntf
           end
+          @program.current_imports = outer_imports
+          @program.current_import_defs = outer_import_defs
         end
         i = i + 1
       end
@@ -2133,7 +2149,6 @@ pub class MainVisitor < TypeNodeHost
     if reason = settled_refusal
       raise(reason)
     end
-
 
     endless_while = endless_while_cond?(node.cond)
     merge_while_vars(endless_while, before_cond_vars_copy, after_cond_vars, body_vars, break_vars_list)
@@ -4464,6 +4479,7 @@ pub class MainVisitor < TypeNodeHost
     inner.call_dispatch_targets = @call_dispatch_targets
     inner.lib_call_targets = @lib_call_targets
     inner.expansions = @expansions
+    inner.target_consts = @target_consts
     inner.total = @total
     inner.typing_stack = @typing_stack
     inner.refusals = @refusals

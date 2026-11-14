@@ -20,7 +20,7 @@ Matching is by name, not by receiver type. Each row therefore needs one look at 
 ## Counts
 
 - Members: **193**
-- Provided by the port today (regenerated in increment 9 from the gates): **yes 52**, **partly 34**, **no 107**
+- Provided by the port today: **yes 53**, **partly 34**, **no 106**
 
 ## Members
 
@@ -134,7 +134,7 @@ Matching is by name, not by receiver type. Each row therefore needs one look at 
 | 106 | `special_vars` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:186` | 2 | `src/compiler/iyi/semantic/ast.cr:145` | no |
 | 107 | `splat_index` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/codegen.cr:2233` | 1 | `src/compiler/iyi/types.cr:854` | yes (`src/compiler/types/types.iyi`) |
 | 108 | `supports_autocast?` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:490` | 1 | `src/compiler/iyi/semantic/ast.cr:20` | no |
-| 109 | `target_const` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:75` | 5 | `src/compiler/iyi/semantic/ast.cr:650` | no |
+| 109 | `target_const` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:75` | 5 | `src/compiler/iyi/semantic/ast.cr:650` | yes (`src/compiler/semantic/main_visitor.iyi`) |
 | 110 | `target_def` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:25` | 7 | `src/compiler/iyi/semantic/call.cr:24` | yes (`src/compiler/semantic/main_visitor.iyi`) |
 | 111 | `target_defs` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:9` | 2 | `src/compiler/iyi/semantic/call.cr:9` | no |
 | 112 | `then` | Def, ASTNode and Call | `then_member` | `src/compiler/iyi/codegen/codegen.cr:1332` | 3 | `src/compiler/iyi/macros.cr:1355` | yes (`src/compiler/syntax/ast.iyi`) |

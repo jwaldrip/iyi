@@ -480,7 +480,7 @@ prove_mutation "a declared variable's value is not stored" "$REPO/src/compiler/l
 prove_mutation "a return of a constant zero" "$REPO/src/compiler/lower/lower.iyi" \
   "low.builder.ret(returned)" "low.builder.ret(low.builder.const_int(ret_ir, 0_i64))" -- lower_core_check || status=1
 prove_mutation "a declared variable is read without a load" "$REPO/src/compiler/lower/lower.iyi" \
-  "low.current_context.vars[name] = LowerVar.new(pointer, t, false)" "low.current_context.vars[name] = LowerVar.new(pointer, t, true)" -- lower_core_check || status=1
+  "low.last = downcast(low, v.pointer, read_type.as(Type), v.type, v.already_loaded)" "low.last = downcast(low, v.pointer, read_type.as(Type), v.type, true)" -- lower_core_check || status=1
 prove_mutation "the alloca block is named after the entry block" "$REPO/src/compiler/lower/context.iyi" \
   'new_blocks(["alloca", "entry"])' 'new_blocks(["entry", "alloca"])' -- lower_core_check || status=1
 prove_mutation "a bool literal is false" "$REPO/src/compiler/lower/lower.iyi" \
@@ -874,14 +874,17 @@ else
   status=1
 fi
 union_read_check() {
-  "$IYI" build -o "$WORK/port-union-read" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/union-read.build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$WORK/port-union-read" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/union-read.build.log" 2>&1; then
+    cat "$WORK/union-read.build.log" > "$WORK/union-read.invalid"
+    return 1
+  fi
   "$WORK/port-union-read" lower "$REPO/bench/fixtures/lower_union_read.iyi" "$WORK/lower_union_read.oracle.ll" > "$WORK/union-read.out" 2> "$WORK/union-read.err" || return 1
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/union-read.out"
 }
 if union_read_check; then
-  prove_mutation "narrowed union read is not downcast" "$REPO/src/compiler/lower/lower.iyi" \
-    '  if read_type && v.type.is_a?(MixedUnionType)' \
-    '  if false && read_type && v.type.is_a?(MixedUnionType)' -- union_read_check || status=1
+  prove_mutation "a narrowed union read keeps its storage type" "$REPO/src/compiler/lower/lower.iyi" \
+    '  low.last = downcast(low, v.pointer, read_type.as(Type), v.type, v.already_loaded)' \
+    '  low.last = downcast(low, v.pointer, v.type, v.type, v.already_loaded)' -- union_read_check || status=1
 else
   echo "FAIL: union read fixture does not match the hosted module"
   awk 'NR<=8' "$WORK/union-read.err" "$WORK/union-read.out" "$WORK/union-read.build.log"
@@ -1135,7 +1138,7 @@ else
   status=1
 fi
 
-for invalid in "$WORK/m.invalid" "$WORK/nil-flow.invalid"; do
+for invalid in "$WORK/m.invalid" "$WORK/nil-flow.invalid" "$WORK/union-read.invalid"; do
   if [ -e "$invalid" ]; then
     echo "FAIL: a core mutation did not compile; no behavioral detection was proved"
     cat "$invalid"

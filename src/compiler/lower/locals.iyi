@@ -69,7 +69,6 @@ pub class LocalOrder < Visitor
   end
 end
 
-
 pub def reset_nil_slot(low : Lowerer, pointer : Value, type : Type) : Nil
   old = low.builder.insert_block
   low.builder.position_at_end(low.current_alloca_block)
@@ -79,6 +78,7 @@ pub def reset_nil_slot(low : Lowerer, pointer : Value, type : Type) : Nil
   end
   nil
 end
+
 pub def preallocate_locals(low : Lowerer, body : ASTNode, skip : Array(String)) : Nil
   collector = LocalOrder.new(low.analysed)
   body.accept(collector)

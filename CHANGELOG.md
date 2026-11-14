@@ -46,6 +46,8 @@
   and block-read regressions match hosted IR and exit 25 and 6.
 - A conditional can take its live branch's type when a filter makes the other branch's bare read
   impossible. Nil-left alternatives also work inside settled loops without recording a refusal.
+- Inherited bodies keep their lexical constant bindings through lowering. Top-level expressions
+  use their own file's imports in the typed pipeline.
 - **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
   [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
   the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,

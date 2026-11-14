@@ -254,6 +254,28 @@ else
 fi
 
 echo
+echo "== 3c. Top-level imports and inherited names across units"
+unit_fixture="$REPO/bench/fixtures/inherited_unit_name/main.iyi"
+if [ -x "$WORK/compile_native" ] && \
+   "$IYI" build --prelude empty --no-debug -o "$WORK/unit_name.hosted" "$unit_fixture" > "$WORK/unit_name.hosted.log" 2>&1 && \
+   IYI_PATH="$REPO/src" "$WORK/compile_native" "$unit_fixture" -o "$WORK/unit_name.native" --pipeline typed > "$WORK/unit_name.native.log" 2>&1; then
+  timeout 30 "$WORK/unit_name.hosted" > "$WORK/unit_name.hosted.out" 2>&1; hs=$?
+  timeout 30 "$WORK/unit_name.native" > "$WORK/unit_name.native.out" 2>&1; ns=$?
+  if [ "$hs" -eq 7 ] && [ "$ns" -eq "$hs" ] && cmp -s "$WORK/unit_name.hosted.out" "$WORK/unit_name.native.out"; then
+    echo "  inherited unit name: native executable runs to the hosted result (status 7, stdout identical)"
+  else
+    echo "  FAIL: inherited unit name: native status $ns, hosted $hs; expected 7 with identical stdout"
+    status=1
+  fi
+else
+  echo "  FAIL: inherited unit name: hosted or native source build failed"
+  for log in "$WORK/unit_name.hosted.log" "$WORK/unit_name.native.log"; do
+    if [ -f "$log" ]; then cat "$log"; fi
+  done
+  status=1
+fi
+
+echo
 echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires every call fixture
 # to match the hosted module exactly. It returns 0 only on the unmutated behaviour.
@@ -361,9 +383,25 @@ else
   echo "  FAIL: inherited lexical lookup differs from the hosted module"
   status=1
 fi
-for invalid in "$WORK/break-upcast.invalid" "$WORK/lexical.invalid"; do
+
+shadowed_const_check() {
+  if ! "$IYI" build -o "$WORK/shadow-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/shadow-mut.build.log" 2>&1; then
+    cat "$WORK/shadow-mut.build.log" > "$WORK/shadow.invalid"
+    return 1
+  fi
+  "$WORK/shadow-mut" lower "$REPO/bench/fixtures/lowcall_inherited_shadowed_const.iyi" "$WORK/lowcall_inherited_shadowed_const.oracle.ll" > "$WORK/shadow-mut.out" 2> "$WORK/shadow-mut.err" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/shadow-mut.out"
+}
+if shadowed_const_check; then
+  prove_mutation "a constant read ignores the constant the analysis resolved" "$REPO/src/compiler/lower/const.iyi" \
+    '  low.analysed.target_const?(node)' '  nil' -- shadowed_const_check || status=1
+else
+  echo "  FAIL: inherited constant binding differs from the hosted module"
+  status=1
+fi
+for invalid in "$WORK/break-upcast.invalid" "$WORK/lexical.invalid" "$WORK/shadow.invalid"; do
   if [ -e "$invalid" ]; then
-    echo "  FAIL: a block-jump or lexical-lookup mutation did not compile"
+    echo "  FAIL: a block-jump or lexical-binding mutation did not compile"
     cat "$invalid"
     status=1
   fi

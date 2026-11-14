@@ -34,8 +34,8 @@ import compiler/lower/typer::{passed_by_value?}
 import compiler/types/types::{TupleInstanceType}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
 
-# The module a path is resolved in: the type of `self` in the function being lowered, or the program at
-# the top level. The analysis resolves a path in the same scope.
+# The type of self in the function being lowered, or the program at the top level:
+# class_var_scope uses this when no class body is open. Constants use path_const.
 pub def const_scope(low : Lowerer) : ModuleType
   ct = low.current_context.type
   if ct.is_a?(ModuleType)
@@ -44,15 +44,11 @@ pub def const_scope(low : Lowerer) : ModuleType
   low.analysed.program
 end
 
-# The constant a path names, or nil when the path names a type, a module or a method. The analysis resolves
-# the path in the same scope (`visit(Path)` in main_visitor.iyi calls `lookup_type_path` with the current
-# type), so this finds the same constant it typed.
+# The constant recorded by the analysis (hosted codegen.cr:2200-2202 reads Path#target_const);
+# nil when the path names a type, module or method. An inherited body keeps its declaring
+# scope's constant, and lowering needs no file imports.
 pub def path_const(low : Lowerer, node : Path) : Compiler::Semantic::TopLevel::Const?
-  t = low.analysed.program.lookup_type_path(node, const_scope(low))
-  if t.const?
-    return t.as(Compiler::Semantic::TopLevel::Const)
-  end
-  nil
+  low.analysed.target_const?(node)
 end
 
 # The constant an assignment declares: the analysis made its Const from this initialiser (top_level.iyi visit(Assign),
