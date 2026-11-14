@@ -64,8 +64,9 @@ pub class DispatchTarget
   getter receiver : Type
   getter definition : Def
   getter return_type : Type
+  getter arg_types : Array(Type)?
 
-  def initialize(@receiver : Type, @definition : Def, @return_type : Type)
+  def initialize(@receiver : Type, @definition : Def, @return_type : Type, @arg_types : Array(Type)? = nil)
   end
 end
 
@@ -3055,6 +3056,21 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     key = "#{rec_type.full_name}##{target_def.name}(#{parts.join(",")})"
+    restrictions = [] of String
+    target_def.args.each do |param|
+      if restriction = param.restriction
+        text = restriction.as(ASTNode).to_s
+        restrictions << "#{text.bytesize}:#{text}"
+      else
+        restrictions << "0:"
+      end
+    end
+    key = key + "|signature(" + restrictions.join(",") + ")"
+    if index = target_def.splat_index
+      key = key + "|splat=#{index}"
+    end
+    key = key + "|double-splat" unless target_def.double_splat.nil?
+    key = key + "|block-arg" unless target_def.block_arg.nil?
     if owner = @program.def_owner(target_def)
       key = key + "^#{owner.full_name}"
     end
