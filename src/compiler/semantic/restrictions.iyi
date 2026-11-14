@@ -1,7 +1,7 @@
 module compiler/semantic/restrictions
 
 import compiler/syntax/ast::{ASTNode, Arg, Def, Generic, Path, Self, Splat, Union}
-import compiler/semantic/top_level::{AliasType, GenericClassType, ModuleType, Type, TypeParameterType}
+import compiler/semantic/top_level::{AliasType, GenericClassType, ModuleType, Type, TypeParameterType, UnionType}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/type_system::{TypeSystem}
@@ -202,6 +202,9 @@ pub class ArgRestriction
         return ArgRestriction.bind_free_name(names[0], arg_type, bound)
       end
     end
+    if node.is_a?(Union) && FreeBindings.mentions?(node, free)
+      return ArgRestriction.restrict_union(ts, scope, node.as(Union), arg_type, owner, free, bound)
+    end
     if node.is_a?(Generic) && arg_type.is_a?(GenericInstanceType)
       return ArgRestriction.restrict_generic(ts, scope, node.as(Generic), arg_type.as(GenericInstanceType), owner, free, bound)
     end
@@ -219,6 +222,30 @@ pub class ArgRestriction
     restricted = ts.restrict(concrete_arg.as(Type), allowed.as(Type))
     return RestrictResult.no_match if restricted.nil?
     RestrictResult.matched(restricted.as(Type))
+  end
+
+  # A union restriction (`Array(T)?`, `T | Nil`) takes an argument when each member of the argument is taken by some
+  # alternative, which binds the free names it writes. What matched is those members, merged (hosted
+  # Union#restrict: the argument's types each restricted by the union's).
+  def self.restrict_union(ts : TypeSystem, scope : ModuleType, node : Union, arg_type : Type, owner : Type?, free : Array(String), bound : Hash(String, Type)) : RestrictResult
+    members = arg_type.is_a?(UnionType) ? arg_type.as(UnionType).union_types : [arg_type]
+    matched = [] of Type
+    members.each do |member|
+      found : Type? = nil
+      node.types.each do |alternative|
+        next unless found.nil?
+        trial = bound.dup
+        attempt = ArgRestriction.restrict_argument(ts, scope, alternative, member, owner, free, trial)
+        return attempt if attempt.error
+        if taken = attempt.type
+          trial.each { |name, bound_type| bound[name] = bound_type }
+          found = taken
+        end
+      end
+      return RestrictResult.no_match if found.nil?
+      matched << found.as(Type)
+    end
+    RestrictResult.matched(TypeMerge.merge_all(ts.program, matched))
   end
 
   # Binds *name* to *arg_type*, or refuses a second binding to a different type.
@@ -339,6 +366,9 @@ pub class FreeBindings
       end
       return true
     end
+    if node.is_a?(Union)
+      return FreeBindings.bind_union(node.as(Union), arg_type, free, bound)
+    end
     if node.is_a?(Generic) && arg_type.is_a?(GenericInstanceType)
       generic_node = node.as(Generic)
       inst = arg_type.as(GenericInstanceType)
@@ -350,6 +380,54 @@ pub class FreeBindings
       end
     end
     true
+  end
+
+  # Binds the free names a union restriction writes (`Array(T)?`, `T | Nil`). A member of the argument that an
+  # alternative without free names writes out (`Nil`) is set aside. A generic alternative then binds from the
+  # member that is an instance of it, and a bare free name from the one member that is left.
+  def self.bind_union(node : Union, arg_type : Type, free : Array(String), bound : Hash(String, Type)) : Bool
+    members = arg_type.is_a?(UnionType) ? arg_type.as(UnionType).union_types : [arg_type]
+    left = [] of Type
+    m = 0
+    while m < members.size
+      written = false
+      a = 0
+      while a < node.types.size
+        alternative = node.types[a]
+        written = true if !FreeBindings.mentions?(alternative, free) && FreeBindings.writes?(alternative, members[m])
+        a += 1
+      end
+      left << members[m] unless written
+      m += 1
+    end
+    a = 0
+    while a < node.types.size
+      alternative = node.types[a]
+      if FreeBindings.mentions?(alternative, free)
+        if alternative.is_a?(Generic)
+          generic_node = alternative.as(Generic)
+          l = 0
+          while l < left.size
+            member = left[l]
+            if member.is_a?(GenericInstanceType) && member.as(GenericInstanceType).type_args.size == generic_node.type_vars.size
+              return false if !FreeBindings.bind(alternative, member, free, bound)
+              l = left.size
+            end
+            l += 1
+          end
+        elsif left.size == 1
+          return false if !FreeBindings.bind(alternative, left[0], free, bound)
+        end
+      end
+      a += 1
+    end
+    true
+  end
+
+  # True when *alternative* is the path that names *member*'s type (`Nil` writes Nil).
+  def self.writes?(alternative : ASTNode, member : Type) : Bool
+    return false unless alternative.is_a?(Path)
+    alternative.as(Path).names.join("::") == member.full_name
   end
 
   # The free variables bound by *definition*'s parameter restrictions against

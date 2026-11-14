@@ -6,7 +6,7 @@ import compiler/syntax/token::{NumberKind, TokenKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
-import compiler/macros/interpreter::{MacroFreeBinding}
+import compiler/macros/interpreter::{MacroFailure, MacroFreeBinding}
 import compiler/semantic/inline_macros::{InlineMacroLedger, expand_inline_macro, splice_body_node, splice_inline_sites}
 import compiler/semantic/macro_bindings::{MacroBindings}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
@@ -262,6 +262,10 @@ pub class MainVisitor < TypeNodeHost
   property current_yield_nodes : Array(Yield)?
   property total : Bool = false
   property in_type_args : Int32 = 0
+  # The depth of branches being typed that the type filters left unreachable (a branch whose condition narrowed a
+  # variable to nothing). The hosted pass types them too, with what depends on the narrowed variable left without a
+  # type, and never reports that: an untyped node there is no error. So nothing in them raises or is recorded.
+  property dead_depth : Int32 = 0
   # The instantiations whose body typing is in progress, by key (receiver, def
   # name, argument types). A key typed again is a recursive call: it takes the
   # declared return type, or is refused. Shared with a fun body's visitor.
@@ -435,12 +439,14 @@ pub class MainVisitor < TypeNodeHost
 
   # The type of a node a visit has already visited. Strict mode raises when it
   # has none: the reason the node was refused when there is one, else a BUG. Total
-  # mode returns nil and the caller leaves its own node untyped.
+  # mode returns nil and the caller leaves its own node untyped. So does a branch the
+  # type filters made unreachable: what depends on the variable they narrowed away has
+  # no type, and the branch is never run.
   def child_type(node : ASTNode) : Type?
     if t = @node_types[node]?
       return t
     end
-    unless @total || @speculation.depth > 0
+    unless @total || @speculation.depth > 0 || @dead_depth > 0
       if reason = @untyped_reasons[node]?
         raise(reason)
       end
@@ -450,16 +456,22 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # The reason a node could not be typed. Total mode records it and returns
-  # false, so a visit can end with `return untyped(node, "...")`.
+  # false, so a visit can end with `return untyped(node, "...")`. An unreachable
+  # branch records nothing: what it cannot type is not a refusal.
   def untyped(node : ASTNode, reason : String) : Bool
     @untyped_reasons[node] = reason
-    record_refusal(node, reason)
+    record_refusal(node, reason) if @dead_depth == 0
     false
   end
 
   # A construct the port refuses. Strict mode raises the message (the program's
-  # error, as before); total mode records it on the node.
+  # error, as before); total mode records it on the node. An unreachable branch
+  # answers false and records nothing.
   def refuse(node : ASTNode, message : String) : Bool
+    if @dead_depth > 0
+      @untyped_reasons[node] = message
+      return false
+    end
     record_refusal(node, message)
     raise(message) unless @total || @speculation.depth > 0
     @untyped_reasons[node] = message
@@ -1070,7 +1082,11 @@ pub class MainVisitor < TypeNodeHost
       lookup_type = @scope || @current_type
       if a_macro = lookup_type.lookup_macro?(node.name)
         engine = MacroEngine.new
-        expanded_ast = engine.expand(a_macro, node, @program.normalizer)
+        expanded_ast = engine.expand_or_failure(a_macro, node, @program.normalizer)
+        if expanded_ast.is_a?(MacroFailure)
+          refuse(node, expanded_ast.message)
+          return true
+        end
         node.expanded = expanded_ast
         expanded_ast.accept(self)
         if et = child_type(expanded_ast)
@@ -1899,7 +1915,9 @@ pub class MainVisitor < TypeNodeHost
     filter_vars(cond_type_filters)
     then_dead = @narrowed_out
     node.then = splice_def_body(node.then)
+    @dead_depth = @dead_depth + 1 if then_dead
     node.then.accept(self)
+    @dead_depth = @dead_depth - 1 if then_dead
     then_vars = @vars
     then_untyped = @untyped_locals
     then_type_filters = @type_filters
@@ -1913,7 +1931,9 @@ pub class MainVisitor < TypeNodeHost
     filter_vars(TypeFilters.invert(cond_type_filters))
     else_dead = @narrowed_out
     node.else = splice_def_body(node.else)
+    @dead_depth = @dead_depth + 1 if else_dead
     node.else.accept(self)
+    @dead_depth = @dead_depth - 1 if else_dead
     else_vars = @vars
     else_untyped = @untyped_locals
     else_type_filters = @type_filters
@@ -2738,6 +2758,10 @@ pub class MainVisitor < TypeNodeHost
     end
 
     candidates = [] of Def
+    # What the shared matcher looks the call up in: the receiver, or for a call with no receiver that found its defs
+    # in the scope (a top-level generic helper called from a method), the owner of those defs. The matcher finds
+    # defs through the type it is given, so it never saw the scope's.
+    match_receiver = rec_type
     if pinned
       candidates = pinned.dup
     else
@@ -2746,7 +2770,12 @@ pub class MainVisitor < TypeNodeHost
       return refuse_call(call_node, indexer) if indexer.is_a?(String)
       visited = Set(String).new
       collect_candidate_defs(rec_type, name, candidates, visited)
-      collect_scope_defs(rec_type, name, candidates, visited) if candidates.empty? && call_node.obj.nil?
+      if candidates.empty? && call_node.obj.nil?
+        collect_scope_defs(rec_type, name, candidates, visited)
+        if scope_owner = (candidates.empty? ? nil : @program.def_owner(candidates.first))
+          match_receiver = scope_owner
+        end
+      end
     end
     # Hosted method_lookup.cr:253-256: a call with a block matches only a def
     # that yields, and a call without one matches only a def that does not.
@@ -2790,7 +2819,7 @@ pub class MainVisitor < TypeNodeHost
     # The calls matcher binds splat restrictions as tuples, including an empty
     # argument list; the ordinary positional overload loop cannot resolve *T.
     if candidates.any? { |d| !d.splat_index.nil? }
-      if splat_match = match_splat_with_calls(rec_type, name, args, call_node)
+      if splat_match = match_splat_with_calls(match_receiver, name, args, call_node)
         return splat_match if pinned_allows?(pinned, splat_match)
       end
     end
@@ -2806,7 +2835,7 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if count_matches.empty?
-      if rescued = match_splat_with_calls(rec_type, name, args, call_node)
+      if rescued = match_splat_with_calls(match_receiver, name, args, call_node)
         return rescued if pinned_allows?(pinned, rescued)
       end
       overload_lines = candidates.map { |d| " - #{format_overload_signature(rec_type, d)}" }
@@ -2877,7 +2906,7 @@ pub class MainVisitor < TypeNodeHost
     args.each { |arg| arg_types << type_of(arg) }
     signature = CallSignature.new(name, arg_types, nil, call_node.block != nil)
     signature.infer_class_vars = infer_class_vars
-    widened = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args, call_node.iyi_synthetic)
+    widened = CallRecalculation.recalculate_signature(match_receiver, type_node_system(@program), signature, false, args, call_node.iyi_synthetic)
     if widened.error.nil? && widened.definition && pinned_allows?(pinned, widened.definition.as(Def))
       @matched_call_args[call_node] = widened.arg_types
       return widened.definition

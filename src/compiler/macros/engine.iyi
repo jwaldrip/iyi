@@ -126,12 +126,25 @@ pub class MacroEngine
   # TypeTable). Parsed with no file name, they were in no file, and a def among them was typed with no
   # imports at all.
   def expand(a_macro : Macro, call : Call, normalizer : NormalizerProgram) : ASTNode
-    expanded_source = expand_to_s(a_macro, call)
+    expanded = expand_or_failure(a_macro, call, normalizer)
+    if expanded.is_a?(MacroFailure)
+      raise expanded.message
+    end
+    expanded
+  end
+
+  # The expansion, or the failure that stopped it: a macro that raises, or one that calls a macro method this
+  # engine does not port. A caller that can refuse the call where it is written answers with this.
+  def expand_or_failure(a_macro : Macro, call : Call, normalizer : NormalizerProgram) : ASTNode | MacroFailure
+    rep = report(a_macro, call)
+    if f = rep.failure
+      return f
+    end
     file = ""
     if loc = call.location
       file = loc.filename
     end
-    parser = Parser.new(expanded_source, file)
+    parser = Parser.new(rep.output, file)
     node = parser.parse
     Normalizer.new(normalizer).normalize(node)
   end
