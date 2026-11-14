@@ -2941,6 +2941,22 @@ pub class MainVisitor < TypeNodeHost
       end
     end
 
+    # A requirement supplies a return contract. Keep its absent implementation out
+    # of the typed-instance cache and the lowering probes.
+    if target_def.abstract
+      if rt = target_def.return_type
+        return lookup_def_return(rt, rec_type, target_def)
+      end
+      anchor : ASTNode = target_def.body.as(ASTNode)
+      if s = site
+        anchor = s
+      elsif c = call_node
+        anchor = c
+      end
+      refuse(anchor, "cannot resolve the call to abstract def '#{target_def.name}': it declares no return type, and dispatch to its implementers is not ported")
+      return nil
+    end
+
     # A def typed again while its body is being typed is a recursive call: it takes
     # the declared return type, or the call is refused. The depth bounds a chain of
     # instantiations whose argument types keep growing.

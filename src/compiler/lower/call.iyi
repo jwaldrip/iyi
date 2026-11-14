@@ -87,6 +87,11 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   raise "BUG: the call to #{node.name} has no target def (hosted call.cr: visit(Call))" if target.nil?
   def_node = target.as(Def)
 
+  # Only an implementer answers an abstract call; its Nop body must never inline nil.
+  if def_node.abstract
+    pending_visit_node("a call to the abstract def #{def_node.name}, which only an implementer answers (hosted call.cr: trait dispatch)")
+  end
+
   # Proc#call's splat is the primitive's argument list, validated against the
   # Proc type by codegen_primitive_proc_call. Other unexpanded calls still refuse.
   primitive = primitive_name(def_node.body)
