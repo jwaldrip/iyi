@@ -161,7 +161,9 @@ prove_mutation "macro overload ignores required argument count" "$REPO/src/compi
 
 mut_run=$((mut_run + 1))
 prove_mutation "ancestor list loses its parents" "$REPO/src/compiler/semantic/macro_bindings.iyi" \
-  '      add_ancestor(parent, facts)' '      nil' \
+  '    owner.parents.each do |parent|
+      add_ancestor(parent, facts)' '    owner.parents.each do |parent|
+      nil' \
   -- check_typed_macro_fixture macro_typenode_ancestors && mut_caught=$((mut_caught + 1)) || status=1
 
 mut_run=$((mut_run + 1))
