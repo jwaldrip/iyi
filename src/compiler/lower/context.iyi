@@ -17,6 +17,7 @@ module compiler/lower/context
 # alloca block with allocas branches to the entry block.
 
 import compiler/ir/module::{Module}
+import compiler/foundation/location::{Location}
 import compiler/ir/function::{Function}
 import compiler/syntax/ast::{ASTNode, ExceptionHandler, FunDef}
 import compiler/ir/inst::{Block, Inst}
@@ -81,6 +82,8 @@ pub class LowerContext
   property closure_types : Array(Type)
   property closure_facts : ClosureFacts?
   property closure_parent : LowerContext?
+  # Original source location while lowering a macro expansion.
+  property macro_origin : Location?
   # The block frame and the phis of the context (hosted Context#return_phi, break_phi, next_phi, block, block_context).
   property return_phi : BranchPhi?
   property break_phi : BranchPhi?
@@ -103,6 +106,7 @@ pub class LowerContext
     @closure_types = [] of Type
     @closure_facts = nil
     @closure_parent = nil
+    @macro_origin = nil
     @return_phi = nil
     @break_phi = nil
     @next_phi = nil

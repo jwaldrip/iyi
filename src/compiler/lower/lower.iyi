@@ -639,10 +639,13 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
       refuse_reached_pool(low)
       return
     end
-    if expanded = low.analysed.expansions[call]?
+    expanded = low.analysed.expansions[call]? || call.expanded
+    if expanded
+      context = low.current_context
+      previous = context.macro_origin
+      context.macro_origin = previous || call.location
       codegen_node(low, expanded)
-    elsif expanded = call.expanded
-      codegen_node(low, expanded)
+      context.macro_origin = previous
     else
       codegen_call_node(low, call)
     end

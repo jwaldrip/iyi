@@ -754,6 +754,7 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   block_ctx.block_node = caller.block_node
   block_ctx.block_context = caller.block_context
   block_ctx.copy_closure_from(caller)
+  block_ctx.macro_origin = caller.macro_origin
   captured = [] of String
   facts = caller.closure_facts
   block_frame = facts.nil? ? nil : facts.frame?(block.as(ASTNode))

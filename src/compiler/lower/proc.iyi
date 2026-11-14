@@ -53,7 +53,7 @@ end
 # is `~proc` and the type's text, `^`, the place's file and `:` and its line. The second literal of one name in
 # the module is `~proc2...`, the third `~proc3...`, as the hosted proc counts give them.
 pub def proc_literal_name(low : Lowerer, node : ProcLiteral, proc_type : Type) : String
-  place = node.location
+  place = low.current_context.macro_origin || node.location
   if place.nil?
     refuse_port("a proc literal with no location (hosted fun_literal_name, the name ~fun_literal)")
   end
