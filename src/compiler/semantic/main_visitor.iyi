@@ -3024,10 +3024,16 @@ pub class MainVisitor < TypeNodeHost
     enter_file_scope(target_def)
     old_current_type = @current_type
     body_receiver = rec_type
+    lookup_owner : Type = rec_type
     if owner = @program.def_owner(target_def)
-      body_receiver = owner if owner.iyi_unit
+      if owner.iyi_unit
+        body_receiver = owner
+        lookup_owner = owner
+      else
+        lookup_owner = body_lookup_owner(owner, rec_type)
+      end
     end
-    enter_owner_scope(body_receiver)
+    enter_owner_scope(lookup_owner)
     entry_mark = @speculation.entries.size
     taint_mark = @speculation.taint
     result = type_method_body_in_file(target_def, body_receiver, args, block, site, cache_key, old_current_type, call_node)
@@ -3048,10 +3054,21 @@ pub class MainVisitor < TypeNodeHost
     result
   end
 
-  # iyi: a body's constants are looked up from the type the def is called on, not from the type the
-  # call is written in (hosted: the def's self type). A generic instance's constants are its generic
-  # type's, and a metaclass names its instance type: `SIZE` in a class method of Hdr is Hdr's whatever
-  # class calls it.
+  # Non-generic bodies resolve names from their defining type, separately from dynamic self
+  # (hosted call.cr: path_lookup). Parameterized owners still need the receiver's bindings;
+  # resolving their instantiated ancestor or trait scope is not implemented here.
+  def body_lookup_owner(owner : ModuleType, rec_type : Type) : Type
+    declared : Type = owner
+    if declared.is_a?(MetaclassType)
+      declared = declared.as(MetaclassType).instance_type
+    end
+    return rec_type if declared.is_a?(SemanticProgram) || declared.is_a?(LibType)
+    return owner if declared.is_a?(NonGenericClassType) || declared.is_a?(NonGenericModuleType)
+    rec_type
+  end
+
+  # Enter the chosen lexical scope. Dynamic self remains the receiver in @scope.
+  # A generic instance contributes its generic type; a metaclass names its instance type.
   def enter_owner_scope(rec_type : Type) : Nil
     owner : Type = rec_type
     if owner.is_a?(MetaclassType)

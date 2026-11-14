@@ -39,6 +39,13 @@
   across their concrete types. The superclass fixture matches all 11 hosted functions and exits 42.
 - Receiverless free-function calls leave their bodies deferred until the program body is lowered,
   matching the hosted declaration order. Qualified library calls still mark their bindings used.
+- Block calls and yields keep passed-by-value results as addresses until a consumer needs the
+  aggregate. The union jump regressions match hosted IR and print `ABCDEFG` and `HI`, both with status 0.
+- A local gains Nil storage when a read observes its possibly unassigned flow. Such slots are
+  initialized at entry, including a writer's slot read from a yielded block. The branch/loop/root
+  and block-read regressions match hosted IR and exit 25 and 6.
+- A conditional can take its live branch's type when a filter makes the other branch's bare read
+  impossible. Nil-left alternatives also work inside settled loops without recording a refusal.
 - **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
   [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
   the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,

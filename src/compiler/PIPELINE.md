@@ -46,9 +46,19 @@ At `c0f74685f`, the superclass fixture matches all 11 hosted functions and its
 module-level IR, and its native executable exits 42 like hosted. Missing parent
 methods and unsupported default forwarding remain named refusals. The exported
 fun-definition fixture also matches all five functions and its module-level IR.
-Parser compilation now passes the `super` call in `Parser#initialize` and stops
-in the nil-parameter fallback `string_pool || StringPool.new` in `Lexer#initialize`:
-`variable 'string_pool' cannot be typed`.
+At `4e5e4b20a`, nil-left alternatives pass strict typing, match all five hosted
+functions and exit 15. Parser compilation passes both the `super` call and
+`string_pool || StringPool.new`, then stops with
+`undefined method 'ident_start?' for Compiler::Syntax::Lexer.class`.
+
+At the same revision, read-observed Nil storage fixes the three IR differences in
+`lower_expansion_temps`, `lower_named_tuple` and `lower_tuple_literal`. The new
+branch/loop/root and writer-block-read fixtures match hosted IR and exit 25 and 6.
+Block-family pointer joins match all seven functions of `lower_union_consumers`
+and all four of `lower_union_block_jumps`, including module-level IR. Their native
+outputs are `ABCDEFG` and `HI`, both with status 0. All eight fixtures compile
+through the source pipeline; real-prelude hello still runs equal to hosted and
+the hosted-built stage1 links only libSystem.
 
 The omitted-fun-return, inline-macro-expansion and nested-body-scope regressions
 compile, link and run natively. Their results match hosted execution: status 0,

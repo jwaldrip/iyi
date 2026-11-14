@@ -150,6 +150,28 @@ if ! super_refusal_checks "$WORK/port"; then
   status=1
 fi
 
+break_upcast_reason="a break, next or return of a block call with a value of another type than the call (hosted upcast, not ported)"
+break_upcast_refusal() {
+  if "$1" emit "$REPO/bench/fixtures/lowcallwait_break_upcast.iyi" "$WORK/lowcall_super.oracle.ll" > "$WORK/break_upcast.out" 2> "$WORK/break_upcast.err"; then
+    return 1
+  fi
+  [ ! -s "$WORK/break_upcast.out" ] &&
+    [ "$(awk 'NR==1' "$WORK/break_upcast.err")" = "iyi: panic: $break_upcast_reason" ]
+}
+break_upcast_ready=0
+if "$IYI" build --prelude empty -o "$WORK/break_upcast" "$REPO/bench/fixtures/lowcallwait_break_upcast.iyi" > "$WORK/break_upcast.build.log" 2>&1; then
+  "$WORK/break_upcast" > "$WORK/break_upcast.hosted.out" 2>&1
+  break_upcast_status=$?
+  if [ "$break_upcast_status" -eq 1 ] && break_upcast_refusal "$WORK/port"; then
+    break_upcast_ready=1
+    echo "  block jump upcast: hosted exits 1, port retains its named refusal"
+  fi
+fi
+if [ "$break_upcast_ready" -ne 1 ]; then
+  echo "  FAIL: block jump upcast did not reach its expected refusal"
+  status=1
+fi
+
 # An uninstantiated generic receiver is a typing gap, not an owner that lowering
 # may guess. The hosted compiler still accepts the source and emits its module.
 generic_fixture="$REPO/bench/fixtures/lowcallwait_uninstantiated_generic.iyi"
@@ -309,6 +331,43 @@ if [ -e "$WORK/block-nil.invalid" ]; then
   cat "$WORK/block-nil.invalid"
   status=1
 fi
+
+break_upcast_check() {
+  if ! "$IYI" build -o "$WORK/break-upcast-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/break-upcast-mut.build.log" 2>&1; then
+    cat "$WORK/break-upcast-mut.build.log" > "$WORK/break-upcast.invalid"
+    return 1
+  fi
+  break_upcast_refusal "$WORK/break-upcast-mut"
+}
+if [ "$break_upcast_ready" -eq 1 ]; then
+  prove_mutation "a break of another type joins a block call" "$REPO/src/compiler/lower/block.iyi" \
+    '  if !join.nil? && low.typer.llvm_type(join.as(Type)).to_s != low.typer.llvm_type(got).to_s' \
+    '  if false' -- break_upcast_check || status=1
+fi
+
+lexical_owner_check() {
+  if ! "$IYI" build -o "$WORK/lexical-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/lexical-mut.build.log" 2>&1; then
+    cat "$WORK/lexical-mut.build.log" > "$WORK/lexical.invalid"
+    return 1
+  fi
+  "$WORK/lexical-mut" lower "$REPO/bench/fixtures/lowcall_inherited_lexical_owner.iyi" "$WORK/lowcall_inherited_lexical_owner.oracle.ll" > "$WORK/lexical-mut.out" 2> "$WORK/lexical-mut.err" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/lexical-mut.out"
+}
+if lexical_owner_check; then
+  prove_mutation "an inherited body resolves names from its receiver instead of its owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '        lookup_owner = body_lookup_owner(owner, rec_type)' \
+    '        lookup_owner = rec_type' -- lexical_owner_check || status=1
+else
+  echo "  FAIL: inherited lexical lookup differs from the hosted module"
+  status=1
+fi
+for invalid in "$WORK/break-upcast.invalid" "$WORK/lexical.invalid"; do
+  if [ -e "$invalid" ]; then
+    echo "  FAIL: a block-jump or lexical-lookup mutation did not compile"
+    cat "$invalid"
+    status=1
+  fi
+done
 # A mutation is caught only when the unmutated port matches the hosted module: a check that fails on the
 # unmutated tree would "catch" every patch, so the baseline must pass first.
 if ! lower_calls_check; then
