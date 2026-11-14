@@ -4273,7 +4273,7 @@ pub class MainVisitor < TypeNodeHost
           if arg.is_a?(MagicConstant)
             arg = materialized_magic(node, arg.as(MagicConstant))
             node.args[i] = arg
-          else
+          elsif child_type(arg).nil?
             arg.accept(self)
           end
           i += 1
@@ -4401,6 +4401,11 @@ pub class MainVisitor < TypeNodeHost
     end
     if rec_type.is_a?(LibType)
       return visit_lib_call(node, rec_type.as(LibType))
+    end
+    if named = node.named_args
+      named.each do |arg|
+        arg.value.accept(self)
+      end
     end
 
     trait_receiver = false
@@ -4717,6 +4722,19 @@ pub class MainVisitor < TypeNodeHost
       end
     else
       collect_candidate_defs(lookup_in, current.name, candidates, Set(String).new)
+    end
+    dispatch_arg = false
+    node.args.each do |arg|
+      if arg_type = child_type(arg)
+        expanded = TypeIndirection.remove_indirection(arg_type)
+        dispatch_arg = true if expanded.is_a?(UnionType) || expanded.is_a?(VirtualType)
+      end
+    end
+    if dispatch_arg
+      arms = lookup_call_arms(lookup_in, scope.as(Type), current.name, node.args, node, ArmWalk::Parents)
+      if arms.matches.size > 1
+        return refuse_call(node, "not ported: super with an argument dispatch (hosted codegen/call.cr:473-475)")
+      end
     end
     lookup_method_matching(lookup_in, current.name, node.args, node, candidates)
   end
