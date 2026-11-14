@@ -61,6 +61,7 @@ def analyse(source : String, filename : String) : Analysis
   tl = TopLevelVisitor.new(prog)
   root.accept(tl)
   tl.finish
+  prog.resolve_declared_types
   mv = MainVisitor.new(prog)
   stand_in_primitive_types(root, prog, mv)
   files = Set(String).new
@@ -367,6 +368,7 @@ def run_probe_required(runtime : String, entry : String, oracle : String) : Nil
   required_root.accept(tl)
   entry_root.accept(tl)
   tl.finish
+  prog.resolve_declared_types
   mv = MainVisitor.new(prog)
   stand_in_primitive_types(entry_root, prog, mv)
   required_root.accept(mv)
