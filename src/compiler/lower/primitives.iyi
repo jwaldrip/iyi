@@ -49,7 +49,7 @@ import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
 import compiler/types/indirection::{TypeIndirection}
-import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, TupleInstanceType, TypeQueries, VirtualType}
+import compiler/types/types::{GenericClassInstanceType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, TupleInstanceType, TypeQueries, VirtualType}
 import compiler/lower/helpers::{store_aligned, load_aligned}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/lower/headed::{headed?, headed_candidate?}
@@ -1474,31 +1474,8 @@ end
 # so a virtual type made after the first `new` is the byte the load reads.
 pub def define_headed_bytes(low : Lowerer) : Nil
   return unless iyi_gc_arena?(low)
-  root = low.analysed.program.object_type
-  return if root.nil?
-  types = [] of Type
-  collect_headed_types(root.as(Type), types)
-  i = 0
-  while i < types.size
-    set_headed_initializer(low, types[i])
-    i += 1
-  end
-end
-
-# Numbering order: a generic class's instances, then subclasses, then the class, as `assign_id`
-# inserts them. The end walk adds a global only when the allocation did not.
-def collect_headed_types(type : Type, found : Array(Type)) : Nil
-  if type.is_a?(GenericClassType)
-    type.as(GenericClassType).instantiated_types.each do |inst|
-      collect_headed_types(inst, found)
-    end
-  end
-  TypeQueries.subclasses(type).each do |sub|
-    next if sub.is_a?(GenericInstanceType)
-    collect_headed_types(sub, found)
-  end
-  if headed_candidate?(type)
-    found << type
+  low.type_ids.numbered_types.each do |type|
+    set_headed_initializer(low, type) if headed_candidate?(type)
   end
 end
 
