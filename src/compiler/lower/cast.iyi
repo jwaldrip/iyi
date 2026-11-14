@@ -127,6 +127,10 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
       return
     end
   end
+  if target.is_a?(ReferenceUnionType) && TypeQueries.reference_like?(value_type)
+    store_aligned(low, value, pointer)
+    return
+  end
   if target.is_a?(MixedUnionType) && value_type.is_a?(MixedUnionType)
     assign_union_in_union(low, pointer, target, value_type, value)
     return
@@ -422,9 +426,13 @@ pub def type_id_of_value(low : Lowerer, node : ASTNode, value : Value, t : Type)
   end
   if rt.is_a?(MixedUnionType)
     uptr = pointer_of_value(low, node, value, rt)
-    return load_aligned(low, low.module.types.int32, union_type_id_ptr(low, low.typer.llvm_type(rt), uptr))
+    return mixed_type_id_of_pointer(low, uptr, rt)
   end
   type_id_value(low, rt)
+end
+
+pub def mixed_type_id_of_pointer(low : Lowerer, pointer : Value, type : Type) : Value
+  load_aligned(low, low.module.types.int32, union_type_id_ptr(low, low.typer.llvm_type(type), pointer))
 end
 
 # The hosted `match_type_id` / `match_any_type_id` (match.cr:4-53) for a concrete or union restriction.

@@ -22,6 +22,7 @@ import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_n
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries, NamedTupleInstanceType, TupleInstanceType}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/intersect::{TypeIntersect}
+import compiler/types/indirection::{TypeIndirection}
 import compiler/types/restrictions::{TypeRestrictions}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
@@ -56,6 +57,15 @@ pub class TypedInstance
   getter arg_types : Array(Type)
 
   def initialize(@definition : Def, @self_type : Type?, @arg_types : Array(Type))
+  end
+end
+
+pub class DispatchTarget
+  getter receiver : Type
+  getter definition : Def
+  getter return_type : Type
+
+  def initialize(@receiver : Type, @definition : Def, @return_type : Type)
   end
 end
 
@@ -216,6 +226,7 @@ pub class MainVisitor < TypeNodeHost
   property node_types : NodeMap(Type)
   property untyped_reasons : NodeMap(String)
   property call_target_defs : NodeMap(Def)
+  property call_dispatch_targets : NodeMap(Array(DispatchTarget))
   property current_def : Def?
   property current_call_block : Block?
   property current_block_context_vars : Hash(String, Type)?
@@ -341,6 +352,7 @@ pub class MainVisitor < TypeNodeHost
     @node_types = NodeMap(Type).new
     @untyped_reasons = NodeMap(String).new
     @call_target_defs = NodeMap(Def).new
+    @call_dispatch_targets = NodeMap(Array(DispatchTarget)).new
     @var_unions = Hash(String, Type).new
     @def_var_unions = NodeMap(Hash(String, Type)).new
     @def_free_types = NodeMap(Hash(String, Type)).new
@@ -461,6 +473,10 @@ pub class MainVisitor < TypeNodeHost
 
   def target_def?(call : Call) : Def?
     @call_target_defs[call]?
+  end
+
+  def dispatch_targets?(call : Call) : Array(DispatchTarget)?
+    @call_dispatch_targets[call]?
   end
 
   # The lib call record of a call on a lib (see visit_lib_call), keyed by the call node: the fun,
@@ -3488,11 +3504,21 @@ pub class MainVisitor < TypeNodeHost
       return visit_lib_call(node, rec_type.as(LibType))
     end
 
+    trait_receiver = false
+    unless node.obj.nil?
+      concrete = TypeIndirection.trait_value_type(rec_type)
+      unless concrete.object_id == rec_type.object_id
+        rec_type = concrete
+        trait_receiver = true
+      end
+    end
+
     # Multiple dispatch over a union receiver
     if rec_type.is_a?(UnionType)
       union_t = rec_type.as(UnionType)
       ret_types = [] of Type
       first_target_def : Def? = nil
+      dispatch_targets = [] of DispatchTarget
       supplied_args = node.args.dup
       expanded_args : Array(ASTNode)? = nil
 
@@ -3538,6 +3564,7 @@ pub class MainVisitor < TypeNodeHost
         if first_target_def.nil?
           first_target_def = instantiated_def
         end
+        dispatch_targets << DispatchTarget.new(ut, instantiated_def, ret_t)
         ret_types << ret_t
         i = i + 1
       end
@@ -3546,6 +3573,7 @@ pub class MainVisitor < TypeNodeHost
       if td = first_target_def
         @call_target_defs[node] = td
       end
+      @call_dispatch_targets[node] = dispatch_targets
 
       merged_ret = @program.type_merge(ret_types)
       if merged_call_t = call_result(node, merged_ret)
@@ -3598,6 +3626,9 @@ pub class MainVisitor < TypeNodeHost
         @block_breaks[blk] = [] of Type?
       end
       body_ret = type_method_body(instantiated_def, instance_owner, node.args, node.block, nil, dkey, node)
+    end
+    if trait_receiver && body_ret
+      @call_dispatch_targets[node] = [DispatchTarget.new(rec_type, instantiated_def, body_ret)] of DispatchTarget
     end
     ret_type = call_result(node, body_ret)
     if ret_type
@@ -3872,6 +3903,7 @@ pub class MainVisitor < TypeNodeHost
     inner.node_types = @node_types
     inner.untyped_reasons = @untyped_reasons
     inner.call_target_defs = @call_target_defs
+    inner.call_dispatch_targets = @call_dispatch_targets
     inner.lib_call_targets = @lib_call_targets
     inner.expansions = @expansions
     inner.total = @total
