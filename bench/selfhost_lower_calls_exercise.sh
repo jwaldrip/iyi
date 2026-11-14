@@ -251,12 +251,12 @@ for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
     status=1
     continue
   fi
+  timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
   if ! codesign -v --strict "$WORK/$name.native" > /dev/null 2>&1; then
     echo "  $name: FAIL, native signature invalid"
     status=1
     continue
   fi
-  timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
   timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
   if [ "$hs" -ne 7 ] || [ "$ns" -ne "$hs" ] || ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out"; then
     echo "  $name: hosted status $hs, native status $ns, or output differs"
@@ -378,8 +378,8 @@ unit_fixture="$REPO/bench/fixtures/inherited_unit_name/main.iyi"
 if [ -x "$WORK/compile_native" ] && \
    "$IYI" build --prelude empty --no-debug -o "$WORK/unit_name.hosted" "$unit_fixture" > "$WORK/unit_name.hosted.log" 2>&1 && \
    IYI_PATH="$REPO/src" "$WORK/compile_native" "$unit_fixture" -o "$WORK/unit_name.native" --pipeline typed > "$WORK/unit_name.native.log" 2>&1 && \
+   { timeout 30 "$WORK/unit_name.hosted" > "$WORK/unit_name.hosted.out" 2>&1; hs=$?; true; } && \
    codesign -v --strict "$WORK/unit_name.native" > /dev/null 2>&1; then
-  timeout 30 "$WORK/unit_name.hosted" > "$WORK/unit_name.hosted.out" 2>&1; hs=$?
   timeout 30 "$WORK/unit_name.native" > "$WORK/unit_name.native.out" 2>&1; ns=$?
   if [ "$hs" -eq 7 ] && [ "$ns" -eq "$hs" ] && cmp -s "$WORK/unit_name.hosted.out" "$WORK/unit_name.native.out"; then
     echo "  inherited unit name: native executable runs to the hosted result (status 7, stdout identical)"
