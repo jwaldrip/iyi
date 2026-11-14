@@ -1532,6 +1532,7 @@ pub def codegen_is_a(low : Lowerer, node : IsA) : Nil
   if ct.is_a?(MetaclassType)
     ct = ct.as(MetaclassType).instance_type
   end
+  ct = TypeQueries.virtual_type(ct)
   is_union_or_virtual = ot.is_a?(MixedUnionType) || ot.is_a?(ReferenceUnionType) || ot.is_a?(NilableType) || ot.is_a?(NilableReferenceUnionType) || ot.is_a?(NilableProcType) || ot.is_a?(VirtualType)
   if !is_union_or_virtual && !ct.is_a?(VirtualType) && !ct.is_a?(UnionType)
     if low.type_ids.type_id(ct) == low.type_ids.type_id(ot)
