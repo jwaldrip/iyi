@@ -1,3 +1,4 @@
+@[Unsafe("calls C exit to report the dispatch result")]
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
