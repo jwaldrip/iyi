@@ -60,6 +60,20 @@ outputs are `ABCDEFG` and `HI`, both with status 0. All eight fixtures compile
 through the source pipeline; real-prelude hello still runs equal to hosted and
 the hosted-built stage1 links only libSystem.
 
+At `de1d9ab55`, inherited methods resolve names in their defining scope, and
+lowering reads each constant binding recorded by the analysis. The lexical-name
+and shadowed-constant fixtures match all seven and nine hosted functions,
+respectively, and both exit 7. The module-order fixture matches all five functions
+and exits 6. All three also match module-level IR.
+
+Top-level statements use their file's imports, and import-scope metadata emits
+no instructions. The two-unit inherited-name program compiles through linking
+and exits 7, equal to hosted. All 11 single-file regressions run equal to hosted;
+real-prelude hello still exits 0 with identical output, and stage1 links only
+libSystem. The strict parser now stops in bodies at `expected type, got B`.
+A real-prelude character-range probe reproduces that refusal at `72d1eac67`,
+while the hosted build exits 7.
+
 The omitted-fun-return, inline-macro-expansion and nested-body-scope regressions
 compile, link and run natively. Their results match hosted execution: status 0,
 `ABCDE\n` with status 0, and status 7 respectively. Each failed in the preceding

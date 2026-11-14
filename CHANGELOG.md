@@ -47,7 +47,8 @@
 - A conditional can take its live branch's type when a filter makes the other branch's bare read
   impossible. Nil-left alternatives also work inside settled loops without recording a refusal.
 - Inherited bodies keep their lexical constant bindings through lowering. Top-level expressions
-  use their own file's imports in the typed pipeline.
+  use their own file's imports, and import-scope metadata emits no instructions. The shadowed-constant
+  regression matches all nine hosted functions and exits 7; the two-unit program runs natively to 7.
 - **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
   [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
   the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,
