@@ -53,6 +53,12 @@ if ! "$WORK/port" triple; then
   echo "  FAIL: target triple frame-pointer classification"
   status=1
 fi
+printf '%s\n' 'import no_such_cycle_unit::{Missing}' > "$WORK/missing_import.iyi"
+if "$WORK/port" lower "$WORK/missing_import.iyi" "$WORK/no_oracle.ll" > "$WORK/missing_import.out" 2> "$WORK/missing_import.err" ||
+   ! grep -Fq "can't find module 'no_such_cycle_unit'" "$WORK/missing_import.err"; then
+  echo "  FAIL: missing fixture import was not rejected by name"
+  status=1
+fi
 
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
@@ -348,7 +354,7 @@ if generic_constructor_check && [ ! -e "$WORK/constructor.invalid" ]; then
     '  if recorded = low.analysed.call_receiver?(node)' \
     '  if recorded = (node.obj.nil? ? low.analysed.call_receiver?(node) : nil)' || status=1
   constructor_prove "generic struct allocation leaves an address" "$REPO/src/compiler/lower/call.iyi" \
-    '      if passed_by_value?(allocated_type)' '      if passed_by_value?(inst)' || status=1
+    '      if passed_by_value?(allocated_type)' '      if false' || status=1
 else
   echo "  constructor mutation baseline failed or did not build"
   status=1
@@ -357,7 +363,7 @@ fi
 echo
 echo "== 3b. A recursive call targets the instance still being typed"
 if [ -x "$WORK/compile_native" ]; then
-  for fixture in "$REPO"/bench/fixtures/sem_bodies_recursion_mutual.iyi "$REPO"/bench/fixtures/sem_bodies_recursion_state.iyi; do
+  for fixture in "$REPO"/bench/fixtures/sem_bodies_recursion_mutual.iyi "$REPO"/bench/fixtures/sem_bodies_recursion_state.iyi "$REPO"/bench/fixtures/sem_bodies_recursive_helper.iyi; do
     name="$(basename "$fixture" .iyi)"
     IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.probe.exe" --pipeline typed --probe-phase --keep-going > "$WORK/$name.probe" 2>&1 || true
     if grep -E 'untyped instantiated parameter|no type for the call' "$WORK/$name.probe"; then
@@ -676,6 +682,8 @@ prove_mutation "a typed block declaration is refused" "$REPO/src/compiler/lower/
   end' -- lower_calls_check || status=1
 prove_mutation "primitive dispatch loses its receiver" "$REPO/src/compiler/lower/call.iyi" \
   '      prim_values = [self_value] of Value' '      prim_values = [] of Value' -- lower_calls_check || status=1
+prove_mutation "virtual class dispatch is expanded into concrete primitives" "$REPO/src/compiler/lower/call.iyi" \
+  '    if all_class' '    if false' -- lower_calls_check || status=1
 prove_mutation "enum dispatch receivers are refused" "$REPO/src/compiler/lower/call.iyi" \
   '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType) && !owner.is_a?(EnumType))' \
   '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType))' -- lower_calls_check || status=1

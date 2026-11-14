@@ -23,7 +23,8 @@ module compiler/lower/cast
 # nil into a virtual slot, indirectly passed values, and conversions not covered below.
 
 import compiler/ir/function::{Function, Global, Linkage}
-import compiler/ir/inst::{CallConv, Inst, IntPredicate, Op}
+import compiler/ir/inst::{Attribute, CallConv, Inst, IntPredicate, Op}
+import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerVar}
@@ -36,7 +37,7 @@ import compiler/semantic/top_level::{EnumType, MetaclassType, NilType, Type, Uni
 import compiler/syntax/ast::{ASTNode, Var}
 import compiler/types/indirection::{TypeIndirection}
 import compiler/types/rendering::{TypeRenderer}
-import compiler/types/types::{MixedUnionType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, TypeQueries, VirtualMetaclassType, VirtualType}
+import compiler/types/types::{MixedUnionType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, TupleInstanceType, TypeQueries, VirtualMetaclassType, VirtualType}
 
 # Hosted type_id.cr 168-169 names the global using the codegen spelling of
 # the type, including virtual and generic arguments.
@@ -274,7 +275,8 @@ pub def store_in_union(low : Lowerer, union_type : Type, union_pointer : Value, 
   if kind == "bool"
     bits = low.typer.size_of(area) * 8
     widened = bool_widened(low, value, low.module.types.int(bits.to_i32))
-    store_aligned(low, widened, field)
+    stored = store_aligned(low, widened, field)
+    stored.alignment = low.typer.pointer_size.to_i32
     return
   end
   if kind == "int" || kind == "char" || kind == "symbol" || kind == "float" || value_type.is_a?(EnumType)
@@ -364,11 +366,56 @@ pub def downcast_distinct(low : Lowerer, value : Value, to_type : Type, from_typ
       return value
     end
   end
+  if from_type.is_a?(MixedUnionType) && to_type.is_a?(MixedUnionType)
+    return downcast_mixed_union(low, value, to_type.as(MixedUnionType), from_type.as(MixedUnionType))
+  end
   if from_type.is_a?(MixedUnionType)
     return downcast_from_mixed(low, value, to_type, from_type)
   end
   pending_visit_node("downcast #{from_type.full_name} to #{to_type.full_name} (hosted cast.cr downcast_distinct, not ported)")
   value
+end
+
+# Hosted downcast_distinct_union_types: equal alignment permits reusing the
+# source address; otherwise copy the tag and the shared bytes into a new slot.
+def downcast_mixed_union(low : Lowerer, value : Value, target : MixedUnionType, source : MixedUnionType) : Value
+  source.union_types.each do |from_member|
+    if from_member.is_a?(TupleInstanceType) || from_member.is_a?(NamedTupleInstanceType)
+      exact = false
+      compatible = false
+      target.union_types.each do |to_member|
+        exact = true if from_member.full_name == to_member.full_name
+        compatible = true if from_member.implements?(to_member) || to_member.implements?(from_member)
+      end
+      if !exact && compatible
+        pending_visit_node("downcast #{source.full_name} to #{target.full_name} (hosted compatible tuple union member)")
+        return value
+      end
+    end
+  end
+  from_ir = low.typer.llvm_type(source)
+  to_ir = low.typer.llvm_type(target)
+  if low.typer.align_of(from_ir) == low.typer.align_of(to_ir)
+    return value
+  end
+  result = low.alloca(to_ir, "")
+  tag = load_aligned(low, low.module.types.int32, union_type_id_ptr(low, from_ir, value))
+  store_aligned(low, tag, union_type_id_ptr(low, to_ir, result))
+  from_area = mixed_union_value_area(from_ir)
+  to_area = mixed_union_value_area(to_ir)
+  size = low.typer.size_of(from_area)
+  to_size = low.typer.size_of(to_area)
+  size = to_size if to_size < size
+  dest = union_value_ptr(low, to_ir, result)
+  src = union_value_ptr(low, from_ir, value)
+  dest_align = Attribute.new("align", low.typer.align_of(to_area).to_u64, nil, nil)
+  src_align = Attribute.new("align", low.typer.align_of(from_area).to_u64, nil, nil)
+  attrs = [[dest_align] of Attribute, [src_align] of Attribute, [] of Attribute, [] of Attribute] of Array(Attribute)
+  ptr = low.module.types.ptr(0)
+  count = low.builder.const_int(low.typer.size_t, size)
+  volatile = low.builder.const_int(low.module.types.int1, 0_i64)
+  low.builder.intrinsic_with(IntrinsicId::Memcpy, [ptr, ptr, low.typer.size_t] of IrType, [dest, src, count, volatile] of Value, attrs)
+  result
 end
 
 # The hosted `downcast_distinct(to, MixedUnionType)`: the value area read at the target's type.
@@ -477,10 +524,6 @@ pub def match_any_type_id(low : Lowerer, type : Type, tid : Value) : Value
 end
 
 private def match_any_type_id_with_function(low : Lowerer, type : Type, tid : Value) : Value
-  if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
-    pending_visit_node("match_type_id against #{type.full_name} (hosted match.cr: VirtualType range)")
-    return low.builder.const_int(low.module.types.int1, 0_i64)
-  end
   name = "~match<#{type.full_name}>"
   existing = low.module.get_function?(name)
   fn : Function? = existing
@@ -492,12 +535,25 @@ private def match_any_type_id_with_function(low : Lowerer, type : Type, tid : Va
     created.linkage = Linkage::Internal
     param_tid = created.param(0)
     acc : Value? = nil
-    type.as(UnionType).union_types.each do |sub_type|
-      cond = match_any_type_id(low, sub_type, param_tid)
-      if cur = acc
-        acc = low.builder.bitwise_or(cur, cond)
-      else
-        acc = cond
+    if type.is_a?(VirtualType)
+      bounds = low.type_ids.min_max(type.as(VirtualType).base_type)
+      raise "BUG: virtual base has no type-id range" if bounds.nil?
+      min_id = low.builder.const_int(low.module.types.int32, bounds[0].to_i64)
+      max_id = low.builder.const_int(low.module.types.int32, bounds[1].to_i64)
+      lower = low.builder.icmp(IntPredicate::SGE, param_tid, min_id)
+      upper = low.builder.icmp(IntPredicate::SLE, param_tid, max_id)
+      acc = low.builder.bitwise_and(lower, upper)
+    elsif type.is_a?(VirtualMetaclassType)
+      pending_visit_node("match_type_id against #{type.full_name} (hosted match.cr: virtual metaclass concrete types)")
+      return low.builder.const_int(low.module.types.int1, 0_i64)
+    else
+      type.as(UnionType).union_types.each do |sub_type|
+        cond = match_any_type_id(low, sub_type, param_tid)
+        if cur = acc
+          acc = low.builder.bitwise_or(cur, cond)
+        else
+          acc = cond
+        end
       end
     end
     raise "BUG: empty union restriction in match_type_id" if acc.nil?
