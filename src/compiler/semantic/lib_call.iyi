@@ -78,7 +78,10 @@ pub class LibCall
       return LibCallTarget.failed("undefined fun '#{name}' for #{target_lib.to_s}")
     end
     target = LibCall.recalculate_fun(found.as(LibFun), "#{target_lib.full_name}##{name}", prog, ts, args)
-    target_lib.used = true if target.error.nil?
+    if target.error.nil?
+      target_lib.used = true
+      found.as(LibFun).used = true
+    end
     target
   end
 
@@ -210,8 +213,6 @@ pub class LibCall
       end
       i += 1
     end
-
-    lib_fun.used = true
 
     declared = lib_fun.resolved_return
     result_type = prog.types["Nil"].as(Type)

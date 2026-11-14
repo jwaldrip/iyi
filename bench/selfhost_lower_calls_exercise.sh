@@ -264,6 +264,8 @@ if ! super_check; then
   echo "  super baseline failed; mutations cannot prove coverage"
   status=1
 else
+  prove_mutation "virtual definition probes lose concrete receiver lookup" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    if !node.obj.nil? && rec_type.is_a?(VirtualType)' '    if false && !node.obj.nil? && rec_type.is_a?(VirtualType)' -- super_check || status=1
   prove_mutation "super uses dynamic scope instead of lexical owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '    super_ancestors(owner_module, parents)' '    super_ancestors(scope.as(ModuleType), parents)' -- super_check || status=1
   prove_mutation "super recursion key loses defining owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \

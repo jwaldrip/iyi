@@ -19,7 +19,7 @@ import compiler/semantic/default_arguments::{DefaultArguments}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system, type_node_metaclass}
-import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries, NamedTupleInstanceType, TupleInstanceType}
+import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries, NamedTupleInstanceType, TupleInstanceType, VirtualType}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/intersect::{TypeIntersect}
 import compiler/types/indirection::{TypeIndirection}
@@ -3879,75 +3879,16 @@ pub class MainVisitor < TypeNodeHost
       end
     end
 
-    # Multiple dispatch over a union receiver
+    # An uninitialized class receiver is virtual in both native and hosted definition probes.
+    # Resolve each concrete type's override, retaining that concrete self in its body.
+    if !node.obj.nil? && rec_type.is_a?(VirtualType)
+      virtual_t = rec_type.as(VirtualType)
+      arms = virtual_t.subtypes
+      arms << virtual_t.base_type if arms.empty?
+      return dispatch_call(node, arms)
+    end
     if rec_type.is_a?(UnionType)
-      union_t = rec_type.as(UnionType)
-      ret_types = [] of Type
-      first_target_def : Def? = nil
-      dispatch_targets = [] of DispatchTarget
-      supplied_args = node.args.dup
-      expanded_args : Array(ASTNode)? = nil
-
-      if blk = node.block
-        @block_breaks[blk] = [] of Type?
-      end
-      i = 0
-      while i < union_t.union_types.size
-        node.args = supplied_args.dup
-        ut = union_t.union_types[i]
-        target_def = lookup_method_matching(ut, node.name, node.args, node)
-        return false if target_def.nil?
-        original_def = target_def
-        union_instance_owner : Type = ut
-        if node.obj.nil?
-          if declared_owner = @program.def_owner(target_def)
-            union_instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)
-          end
-        end
-        dkey = def_instance_key(target_def, union_instance_owner, node)
-        expanded = defaults_expand_call(node, target_def)
-        return false if expanded.nil?
-        target_def = expanded
-        if previous_args = expanded_args
-          if previous_args.map(&.to_s) != node.args.map(&.to_s)
-            refuse_call(node, "not ported: differing union call-site defaults")
-            return false
-          end
-        else
-          expanded_args = node.args
-        end
-        instantiated_def = target_def.clone
-        defaults_bind_splat(original_def, instantiated_def, supplied_args)
-        @program.copy_def_owner(target_def, instantiated_def)
-        ret_t : Type? = nil
-        if hit = cached_instance(dkey)
-          instantiated_def = hit.definition
-          ret_t = hit.return_type
-        else
-          ret_t = type_method_body(instantiated_def, union_instance_owner, node.args, node.block, node, dkey, node)
-        end
-        return false if ret_t.nil?
-        if first_target_def.nil?
-          first_target_def = instantiated_def
-        end
-        dispatch_targets << DispatchTarget.new(ut, instantiated_def, ret_t)
-        ret_types << ret_t
-        i = i + 1
-      end
-      node.args = expanded_args || supplied_args
-
-      if td = first_target_def
-        @call_target_defs[node] = td
-      end
-      @call_dispatch_targets[node] = dispatch_targets
-
-      merged_ret = @program.type_merge(ret_types)
-      if merged_call_t = call_result(node, merged_ret)
-        set_type(node, merged_call_t)
-        @unreachable = true if merged_call_t.is_a?(NoReturnType)
-      end
-      @type_filters = nil
-      return false
+      return dispatch_call(node, rec_type.as(UnionType).union_types)
     end
 
     if node.obj.nil?
@@ -3973,6 +3914,75 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     instantiate_call_target(node, rec_type, instance_owner, original_def, trait_receiver)
+  end
+
+  def dispatch_call(node : Call, arms : Array(Type)) : Bool
+    ret_types = [] of Type
+    first_target_def : Def? = nil
+    dispatch_targets = [] of DispatchTarget
+    supplied_args = node.args.dup
+    expanded_args : Array(ASTNode)? = nil
+
+    if blk = node.block
+      @block_breaks[blk] = [] of Type?
+    end
+    i = 0
+    while i < arms.size
+      node.args = supplied_args.dup
+      ut = arms[i]
+      target_def = lookup_method_matching(ut, node.name, node.args, node)
+      return false if target_def.nil?
+      original_def = target_def
+      union_instance_owner : Type = ut
+      if node.obj.nil?
+        if declared_owner = @program.def_owner(target_def)
+          union_instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)
+        end
+      end
+      dkey = def_instance_key(target_def, union_instance_owner, node)
+      expanded = defaults_expand_call(node, target_def)
+      return false if expanded.nil?
+      target_def = expanded
+      if previous_args = expanded_args
+        if previous_args.map(&.to_s) != node.args.map(&.to_s)
+          refuse_call(node, "not ported: differing union call-site defaults")
+          return false
+        end
+      else
+        expanded_args = node.args
+      end
+      instantiated_def = target_def.clone
+      defaults_bind_splat(original_def, instantiated_def, supplied_args)
+      @program.copy_def_owner(target_def, instantiated_def)
+      ret_t : Type? = nil
+      if hit = cached_instance(dkey)
+        instantiated_def = hit.definition
+        ret_t = hit.return_type
+      else
+        ret_t = type_method_body(instantiated_def, union_instance_owner, node.args, node.block, node, dkey, node)
+      end
+      return false if ret_t.nil?
+      if first_target_def.nil?
+        first_target_def = instantiated_def
+      end
+      dispatch_targets << DispatchTarget.new(ut, instantiated_def, ret_t)
+      ret_types << ret_t
+      i = i + 1
+    end
+    node.args = expanded_args || supplied_args
+
+    if td = first_target_def
+      @call_target_defs[node] = td
+    end
+    @call_dispatch_targets[node] = dispatch_targets
+
+    merged_ret = @program.type_merge(ret_types)
+    if merged_call_t = call_result(node, merged_ret)
+      set_type(node, merged_call_t)
+      @unreachable = true if merged_call_t.is_a?(NoReturnType)
+    end
+    @type_filters = nil
+    false
   end
 
   # Hosted super starts at the lexical def owner, but retains the call's dynamic self.

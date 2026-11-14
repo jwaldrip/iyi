@@ -766,7 +766,7 @@ pub class LibFun
   property node : FunDef? = nil
   getter arg_types : Array(Type)
   property resolved_return : Type? = nil
-  # iyi: a call to this fun was typed (hosted External#used). False when the pass creates it.
+  # A qualified lib call used this binding (hosted External#used); a receiverless fun stays deferred.
   property used : Bool = false
   # iyi: the scope and the file's imports the pass declared the fun in, so a re-resolution finds the
   # same names (`resolve_declared_types`).
