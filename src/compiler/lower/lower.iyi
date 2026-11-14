@@ -1142,7 +1142,7 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     end
     return
   end
-  if cond_node.is_a?(IsA) && low.analysed.expansions[cond_node]?.nil?
+  if cond_node.is_a?(IsA)
     # The hosted cleanup replaces a type test the object's type decides with a literal (cleanup_transformer.cr
     # transform_is_a_or_responds_to: the test is true when the filtered type is the object's type, false when
     # nothing is left). The branch the test cannot take is never lowered: it may read a variable the test's own
