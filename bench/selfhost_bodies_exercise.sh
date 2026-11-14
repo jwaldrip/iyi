@@ -850,6 +850,15 @@ prove_mutation "a static array return annotation is typed as the bare StaticArra
 prove_mutation "a static array prints its element's virtual type" "$REPO/src/compiler/types/types.iyi" \
   '"StaticArray(#{@element_type.devirtualize.arg_full_name}, #{@size_int})"' \
   '"StaticArray(#{@element_type.full_name}, #{@size_int})"' -- static_array_return_at_floor || status=1
+alias_diagnostic_ok() {
+  "$IYI" build -o "$WORK/alias_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/alias_build.log" 2>&1 || { body_build_failed "$WORK/alias_build.log"; return $?; }
+  "$WORK/alias_tool" "$REPO/bench/fixtures/refuse_bodies_alias_restriction.iyi" -o "$WORK/alias_output" --pipeline typed --prelude --probe-phase > "$WORK/alias.log" 2>&1
+  grep -Fq "expected argument #1 to 'Counter#value' to be Array(UInt8), not String" "$WORK/alias.log"
+}
+alias_diagnostic_ok || status=1
+prove_mutation "alias restrictions resolve to their underlying type in diagnostics" "$REPO/src/compiler/semantic/top_level.iyi" \
+  "      remove_alias(t)" \
+  "      t" -- alias_diagnostic_ok || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"

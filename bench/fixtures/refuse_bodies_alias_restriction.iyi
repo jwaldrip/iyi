@@ -1,0 +1,9 @@
+alias Bytes = Array(UInt8)
+
+class Counter
+  def value(item : Bytes) : Int32
+    42
+  end
+end
+
+puts Counter.new.value("wrong")

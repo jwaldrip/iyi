@@ -1,0 +1,9 @@
+alias Count = Int32
+
+class Counter
+  def value(item : Count) : Int32
+    item
+  end
+end
+
+puts Counter.new.value(42)

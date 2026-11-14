@@ -1999,7 +1999,8 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
     if path.global
-      return lookup_path_names(path.names, self)
+      found = lookup_path_names(path.names, self)
+      return found.nil? ? nil : remove_alias(found)
     end
 
     first_name = path.names.first
@@ -2059,9 +2060,10 @@ pub class SemanticProgram < NonGenericModuleType
         sub_names << path.names[sn_i]
         sn_i = sn_i + 1
       end
-      lookup_path_names(sub_names, t)
+      found = lookup_path_names(sub_names, remove_alias(t))
+      found.nil? ? nil : remove_alias(found)
     else
-      t
+      remove_alias(t)
     end
   end
 
