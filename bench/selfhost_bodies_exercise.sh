@@ -526,9 +526,6 @@ prove_mutation "unit definitions resolve in their lexical scope" "$MAIN_VISITOR"
 prove_mutation "splat arguments bind a tuple" "$REPO/src/compiler/semantic/default_arguments.iyi" \
   "body << Assign.new(Var.new(splat.name), TupleLiteral.new(elements))" \
   "body << Assign.new(Var.new(splat.name), TupleLiteral.new([] of ASTNode))" -- bodies_at_floor || status=1
-prove_mutation "imported restrictions use the defining unit" "$MAIN_VISITOR" \
-  "        @current_type = owner if owner.iyi_unit" \
-  "        nil" -- bodies_at_floor || status=1
 prove_mutation "Assign typed as its target" "$MAIN_VISITOR" \
   "        set_type(node, val_type)
       elsif target_type.is_a?(GenericClassInstanceType)" \
@@ -899,6 +896,20 @@ prove_mutation "invalid or duplicate names are rejected" "$REPO/src/compiler/sem
 prove_mutation "a supplied named parameter is not defaulted" "$REPO/src/compiler/semantic/default_arguments.iyi" \
   "      if k != index && !named_given?(named_args, rec_def.args[k].external_name)" \
   "      if k != index" -- bare_splat_bounds || status=1
+restriction_scope_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
+  fixture="$REPO/bench/fixtures/sem_bodies_restriction_scope.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+  matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_restriction_scope.iyi" { print $2 }' "$FLOOR_FILE")
+  [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
+}
+prove_mutation "a restriction resolves in its definition owner scope" "$MAIN_VISITOR" \
+  "      if owner = @program.def_owner(d)
+        @current_type = owner" \
+  "      if owner = @program.def_owner(d)
+        @current_type = owner if owner.iyi_unit" -- restriction_scope_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"

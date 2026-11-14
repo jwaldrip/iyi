@@ -13,6 +13,7 @@ import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, Gene
 import compiler/semantic/top_level::{NoReturnType}
 import compiler/semantic/top_level::{LibFun, LibType}
 import compiler/semantic/top_level::{VoidType}
+import compiler/semantic/top_level::{normalize_path}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
@@ -2926,9 +2927,9 @@ pub class MainVisitor < TypeNodeHost
       old_import_defs = @program.current_import_defs
       old_candidate_type = @current_type
       if owner = @program.def_owner(d)
-        @current_type = owner if owner.iyi_unit
+        @current_type = owner
       end
-      enter_file_scope(d)
+      enter_file_scope(d, true)
       all_args_match = true
       i = 0
       while i < args.size
@@ -3040,9 +3041,9 @@ pub class MainVisitor < TypeNodeHost
     old_import_defs = @program.current_import_defs
     old_type = @current_type
     if owner = @program.def_owner(definition)
-      @current_type = owner if owner.iyi_unit
+      @current_type = owner
     end
-    enter_file_scope(definition)
+    enter_file_scope(definition, true)
     result = lookup_under(node, receiver)
     @current_type = old_type
     @program.current_imports = old_imports
@@ -3208,10 +3209,16 @@ pub class MainVisitor < TypeNodeHost
 
   # iyi: the names a node's file imported become the names in scope (SPEC.md R-2b). A node with
   # no location (a generated def) keeps the scope it is typed from.
-  def enter_file_scope(node : ASTNode) : Nil
+  def enter_file_scope(node : ASTNode, required : Bool = false) : Nil
     if loc = node.location
-      @program.current_imports = @program.file_imports[loc.filename]? || Hash(String, Type).new
-      @program.current_import_defs = @program.file_import_defs[loc.filename]? || Hash(String, Array(Def)).new
+      filename = normalize_path(loc.filename)
+      imports = @program.file_imports[loc.filename]? || @program.file_imports[filename]?
+      defs = @program.file_import_defs[loc.filename]? || @program.file_import_defs[filename]?
+      if required && (imports.nil? || defs.nil?)
+        raise("missing import table for #{loc.filename}")
+      end
+      @program.current_imports = imports || Hash(String, Type).new
+      @program.current_import_defs = defs || Hash(String, Array(Def)).new
     end
     nil
   end
