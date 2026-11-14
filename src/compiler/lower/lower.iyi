@@ -537,9 +537,6 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     raise "BUG: an instance variable receiver has no analysed type" if owner_opt.nil?
     raise "BUG: an instance variable read has no analysed type" if node_type.nil?
     owner = TypeIndirection.remove_indirection(owner_opt.as(Type))
-    if owner.is_a?(VirtualType)
-      owner = owner.as(VirtualType).base_type
-    end
     if owner.is_a?(UnionType)
       pending_visit_node("reading an instance variable of a union (hosted visit(ReadInstanceVar))")
     end

@@ -744,8 +744,10 @@ virtual_ivar_check() {
   awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/virtual-ivar.out"
 }
 if virtual_ivar_check; then
-  prove_mutation "virtual receiver fields have no base type" "$REPO/src/compiler/lower/lower.iyi" \
-    '    if owner.is_a?(VirtualType)' '    if false' -- virtual_ivar_check || status=1
+  prove_mutation "virtual receiver fields have no base variables" "$REPO/src/compiler/lower/instance_var.iyi" \
+    '    return owner_instance_vars(owner.as(VirtualType).base_type)' '    return nil' -- virtual_ivar_check || status=1
+  prove_mutation "virtual receiver field pointers use no base" "$REPO/src/compiler/lower/instance_var.iyi" \
+    '    owner = owner.as(VirtualType).base_type' '    owner = owner.as(VirtualType)' -- virtual_ivar_check || status=1
   prove_mutation "explicit instance-variable reads are not lowered" "$REPO/src/compiler/lower/lower.iyi" \
     '  if node.is_a?(ReadInstanceVar)' '  if false' -- virtual_ivar_check || status=1
   prove_mutation "virtual receiver fields cannot be typed" "$REPO/src/compiler/semantic/main_visitor.iyi" \
