@@ -29,7 +29,7 @@ import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature, CallMatch}
 import compiler/semantic/match::{Match, NumericAutocast}
-import compiler/semantic/method_lookup::{ArmWalk, Matches}
+import compiler/semantic/method_lookup::{ArmWalk, Matches, MethodLookup}
 import compiler/semantic/cover::{CallCover}
 import compiler/semantic/call::{CallRecalculation}
 import compiler/semantic/new::{define_new_methods}
@@ -2800,8 +2800,8 @@ pub class MainVisitor < TypeNodeHost
     location = call_node.location
     site = location.nil? ? "<generated>:0" : "#{location.as(Location).filename}:#{location.as(Location).line_number}"
     first_diff = false
-    if shortcut && !found.matches.empty?
-      first_diff = shortcut.as(Def).object_id != found.matches[0].definition.object_id
+    unless found.matches.empty?
+      first_diff = shortcut.nil? || shortcut.as(Def).object_id != found.matches[0].definition.object_id
     end
     shortcut_name = shortcut.nil? ? "<none>" : format_overload_signature(rec_type, shortcut.as(Def))
     arm_names = [] of String
@@ -2823,6 +2823,7 @@ pub class MainVisitor < TypeNodeHost
     return nil if visited.includes?(mod.full_name)
     visited.add(mod.full_name)
     levels << mod
+    return nil unless MethodLookup.walks_parents?(mod, name)
     if walk == ArmWalk::Modules
       mod.parents.each do |parent|
         break unless parent.is_a?(NonGenericModuleType) || parent.is_a?(GenericModuleType) || parent.is_a?(GenericModuleInstanceType) || parent.is_a?(TraitType)
@@ -2867,7 +2868,7 @@ pub class MainVisitor < TypeNodeHost
     if call_node.obj.nil?
       has_candidates = false
       levels.each do |level|
-        if level.is_a?(ModuleType) && level.as(ModuleType).defs[name]?
+        if level.is_a?(ModuleType) && MethodLookup.own_defs(level.as(ModuleType), name)
           has_candidates = true
         end
       end
@@ -2959,7 +2960,7 @@ pub class MainVisitor < TypeNodeHost
     levels.each do |level|
       next unless level.is_a?(ModuleType)
       mod = level.as(ModuleType)
-      defs = mod.defs[name]?
+      defs = MethodLookup.own_defs(mod, name)
       next if defs.nil?
       ordered = [] of Def
       defs.as(Array(Def)).each do |definition|

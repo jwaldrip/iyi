@@ -15,7 +15,15 @@ check_arms() {
   cmp -s "$WORK/union" "$WORK/expected" || return 1
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_order.iyi" "$REPO/src" show > "$WORK/order" || return 1
   printf '%s\n' 'arms=2 cover=true' 'main#show:A' 'main#show:Node+' > "$WORK/expected"
-  cmp -s "$WORK/order" "$WORK/expected"
+  cmp -s "$WORK/order" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_partial.iyi" "$REPO/src" consume > "$WORK/partial" || return 1
+  printf '%s\n' 'arms=1 cover=false' 'main#consume:Int32' > "$WORK/expected"
+  cmp -s "$WORK/partial" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_uncovered.iyi" "$REPO/src" consume > "$WORK/uncovered" || return 1
+  printf '%s\n' 'arms=2 cover=false' 'main#consume:Int32,Bool' 'main#consume:String,String' > "$WORK/expected"
+  cmp -s "$WORK/uncovered" "$WORK/expected" || return 1
+  "$IYI" run "$REPO/bench/fixtures/sem_arms_uncovered.iyi" > "$WORK/oracle" 2>&1 && return 1
+  grep -Fq "expected argument #1 to 'consume'" "$WORK/oracle"
 }
 
 check_arms || exit 1
