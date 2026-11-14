@@ -309,7 +309,10 @@ CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
-  "$IYI" build -o "$WORK/port-m" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/m.build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$WORK/port-m" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/m.build.log" 2>&1; then
+    cat "$WORK/m.build.log" > "$WORK/m.invalid"
+    return 1
+  fi
   "$WORK/port-m" context > "$WORK/m.ctx" 2>&1 || return 1
   awk '/^CONTEXT OK$/ { ok = 1 } END { exit !ok }' "$WORK/m.ctx" || return 1
   if "$WORK/port-m" jump-mismatch > "$WORK/m.jump" 2>&1; then return 1; fi
@@ -320,6 +323,44 @@ lower_core_check() {
   done
   return 0
 }
+
+# These fixtures must lower, rather than entering the general loop's named waiting set.
+nil_flow_check() {
+  if ! "$IYI" build -o "$WORK/nil-flow" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/nil-flow.build.log" 2>&1; then
+    cat "$WORK/nil-flow.build.log" > "$WORK/nil-flow.invalid"
+    return 1
+  fi
+  local name
+  for name in "$@"; do
+    "$WORK/nil-flow" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/nil-flow.out" 2> "$WORK/nil-flow.err" || return 1
+    awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/nil-flow.out" || return 1
+  done
+}
+if nil_flow_check lower_or_nil_left; then
+  prove_mutation "a nil-left alternative loses its live branch type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    elsif else_type && (then_unreachable || then_dead || speculative)' \
+    '    elsif else_type && (then_unreachable || speculative)' -- nil_flow_check lower_or_nil_left || status=1
+  prove_mutation "a narrowed-out read records a loop refusal" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '      if reason == narrowed_out_reason(node.name)' '      if false' -- nil_flow_check lower_or_nil_left || status=1
+else
+  echo "FAIL: nil-left alternatives do not match the hosted module"
+  status=1
+fi
+nil_storage_fixtures="lower_expansion_temps lower_named_tuple lower_tuple_literal lower_nil_if_read"
+if nil_flow_check $nil_storage_fixtures; then
+  prove_mutation "an unread local gains nil storage at a merge" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    @nil_candidates.add(name)' \
+    '    merge_var_union(name, @program.nil_type) if @var_unions.has_key?(name)' -- nil_flow_check $nil_storage_fixtures || status=1
+  prove_mutation "a nilable read leaves its slot nonnilable" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '        unions[name] = @program.type_merge(stored, @program.nil_type)' \
+    '        nil' -- nil_flow_check $nil_storage_fixtures || status=1
+  prove_mutation "an unassigned local has no entry nil value" "$REPO/src/compiler/lower/locals.iyi" \
+    '      reset_nil_slot(low, pointer, type) if r.includes?(name) && type.nilable?' \
+    '      nil' -- nil_flow_check $nil_storage_fixtures || status=1
+else
+  echo "FAIL: read-observed nil storage does not match the hosted modules"
+  status=1
+fi
 if "$WORK/port" lower "$REPO/bench/fixtures/lower_trait.iyi" "$WORK/lower_trait.oracle.ll" > "$WORK/trait.out" 2>&1 &&
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/trait.out"; then
   prove_mutation "trait declaration is not visited" "$REPO/src/compiler/lower/lower.iyi" \
@@ -1093,6 +1134,14 @@ else
   echo "FAIL: uncalled invalid definitions did not reach their named refusals"
   status=1
 fi
+
+for invalid in "$WORK/m.invalid" "$WORK/nil-flow.invalid"; do
+  if [ -e "$invalid" ]; then
+    echo "FAIL: a core mutation did not compile; no behavioral detection was proved"
+    cat "$invalid"
+    status=1
+  fi
+done
 
 echo
 echo

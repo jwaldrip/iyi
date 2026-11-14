@@ -288,6 +288,27 @@ if [ -e "$WORK/super.invalid" ]; then
   cat "$WORK/super.invalid"
   status=1
 fi
+
+block_nil_if_read_check() {
+  if ! "$IYI" build -o "$WORK/block-nil" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-nil.build.log" 2>&1; then
+    cat "$WORK/block-nil.build.log" > "$WORK/block-nil.invalid"
+    return 1
+  fi
+  "$WORK/block-nil" lower "$REPO/bench/fixtures/lowcall_block_nil_if_read.iyi" "$WORK/lowcall_block_nil_if_read.oracle.ll" > "$WORK/block-nil.out" 2> "$WORK/block-nil.err" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-nil.out"
+}
+if block_nil_if_read_check; then
+  prove_mutation "a block read loses its writer's nil storage" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    @var_owners[name]?' '    nil' -- block_nil_if_read_check || status=1
+else
+  echo "  FAIL: a block's read-observed nil storage differs from the hosted module"
+  status=1
+fi
+if [ -e "$WORK/block-nil.invalid" ]; then
+  echo "  FAIL: the block nil-storage mutation did not compile"
+  cat "$WORK/block-nil.invalid"
+  status=1
+fi
 # A mutation is caught only when the unmutated port matches the hosted module: a check that fails on the
 # unmutated tree would "catch" every patch, so the baseline must pass first.
 if ! lower_calls_check; then
