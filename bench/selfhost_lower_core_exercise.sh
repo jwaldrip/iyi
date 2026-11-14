@@ -1036,6 +1036,57 @@ prove_mutation "a pointer union value stores into a nilable reference union" "$R
   '    if TypeQueries.reference_like?(value_type)' \
   '    if !value_type.is_a?(UnionType) && TypeQueries.reference_like?(value_type)' -- lower_core_check || status=1
 
+# A fully annotated definition is checked even when user code never calls it.
+# A trait argument is checked against exactly its requirements, via the witness.
+definition_probe_refusals() {
+  local tool="$1" kind expected result refused=0
+  for kind in return trait; do
+    case "$kind" in
+      return) expected="type mismatch for return type: expected String, got Int32" ;;
+      trait) expected="undefined method 'length' for IyiDefTypeWitness_Sized" ;;
+    esac
+    rm -f "$WORK/definition-$kind.native"
+    timeout 120 "$tool" "$REPO/bench/fixtures/refuse_definition_$kind.iyi" \
+      -o "$WORK/definition-$kind.native" --pipeline typed --probe-phase \
+      > "$WORK/definition-$kind.log" 2>&1
+    result=$?
+    if [ "$result" -eq 0 ]; then
+      echo "  uncalled $kind definition was accepted"
+    elif [ "$result" -eq 1 ] &&
+         grep -Fxq "bodies: fail: $expected" "$WORK/definition-$kind.log" &&
+         [ ! -e "$WORK/definition-$kind.native" ]; then
+      echo "  uncalled $kind definition refused: $expected"
+      refused=$((refused + 1))
+    else
+      echo "  invalid definition-probe result ($kind, exit $result)"
+      touch "$WORK/definition-probes.invalid"
+      return 1
+    fi
+  done
+  [ "$refused" -eq 2 ]
+}
+definition_probe_check() {
+  if ! "$IYI" build -o "$WORK/definition-probes" "$REPO/src/compiler/tools/compile_native.iyi" \
+    > "$WORK/definition-probes.build.log" 2>&1; then
+    touch "$WORK/definition-probes.invalid"
+    return 1
+  fi
+  definition_probe_refusals "$WORK/definition-probes"
+}
+echo "== Definition-site typing rejects uncalled invalid definitions"
+if definition_probe_refusals "$WORK/compile_native"; then
+  prove_mutation "definition-site probes are not prepended" "$REPO/src/compiler/semantic/definition_typing.iyi" \
+    '    root.expressions = @probes + root.expressions' \
+    '    root.expressions = root.expressions' -- definition_probe_check || status=1
+  if [ -e "$WORK/definition-probes.invalid" ]; then
+    echo "FAIL: definition-site typing mutation did not produce a valid compiler result"
+    status=1
+  fi
+else
+  echo "FAIL: uncalled invalid definitions did not reach their named refusals"
+  status=1
+fi
+
 echo
 echo
 if [ "$status" -eq 0 ]; then
