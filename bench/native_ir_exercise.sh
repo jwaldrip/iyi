@@ -226,7 +226,7 @@ unwind_check() {
 # Rebuilds the driver from a mutated source and runs one check on it.
 mutant_check() {
   local check="$1"
-  build_driver "$WORK/mutant" || return 1
+  build_driver "$WORK/mutant" || return 3
   "$check" "$WORK/mutant"
 }
 
@@ -259,6 +259,9 @@ open(path, "w").write(open(path).read().replace(old, new))' "$file" "$old" "$new
   RESTORE=()
   if [ "$caught" -eq 0 ]; then
     fail "NOT CAUGHT: $label: the check still passes"
+  elif [ "$caught" -eq 3 ]; then
+    fail "BUILD FAILED: $label: no behavioral detection was proved"
+    cat "$WORK/build.log"
   else
     echo "caught: $label"
   fi

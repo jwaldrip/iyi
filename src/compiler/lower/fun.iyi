@@ -85,10 +85,11 @@ def owner_segment(receiver : Type, name : String, class_method : Bool, defining 
   shown = owner_spell(receiver)
   start = defining_walk_start(receiver, class_method)
   return shown if start.nil?
-  found = defining_type(start.as(Type), name, [] of UInt64)
+  found : Type? = nil
   if recorded = defining
-    found = recorded if walk_reaches?(start.as(Type), recorded, [] of UInt64)
+    found = recorded if start.as(Type).object_id == recorded.object_id || walk_reaches?(start.as(Type), recorded, [] of UInt64)
   end
+  found = defining_type(start.as(Type), name, [] of UInt64) if found.nil?
   return shown if found.nil?
   defined = found.as(Type)
   if class_method && defined.is_a?(MetaclassType)

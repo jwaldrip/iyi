@@ -252,7 +252,10 @@ lower_calls_check() {
 }
 
 super_check() {
-  "$IYI" build -o "$WORK/super_mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/super_mut.build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$WORK/super_mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/super_mut.build.log" 2>&1; then
+    touch "$WORK/super.invalid"
+    return 1
+  fi
   "$WORK/super_mut" lower "$REPO/bench/fixtures/lowcall_super.iyi" "$WORK/lowcall_super.oracle.ll" > "$WORK/super_mut.out" 2> "$WORK/super_mut.err" || return 1
   awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/super_mut.out" || return 1
   super_refusal_checks "$WORK/super_mut"
@@ -266,7 +269,7 @@ else
   prove_mutation "super recursion key loses defining owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '      key = key + "^#{owner.full_name}"' '      key = key' -- super_check || status=1
   prove_mutation "super symbol loses recorded owner" "$REPO/src/compiler/lower/fun.iyi" \
-    '    found = recorded if walk_reaches?(start.as(Type), recorded, [] of UInt64)' '    found = found if walk_reaches?(start.as(Type), recorded, [] of UInt64)' -- super_check || status=1
+    '    found = recorded if start.as(Type).object_id == recorded.object_id || walk_reaches?(start.as(Type), recorded, [] of UInt64)' '    found = found if start.as(Type).object_id == recorded.object_id || walk_reaches?(start.as(Type), recorded, [] of UInt64)' -- super_check || status=1
   prove_mutation "bare super stops forwarding arguments" "$REPO/src/compiler/semantic/normalizer.iyi" \
     '                node.args << Var.new(arg.name)' '                node.args.size' -- super_check || status=1
   prove_mutation "missing super loses its method diagnostic" "$REPO/src/compiler/semantic/main_visitor.iyi" \
@@ -277,6 +280,11 @@ else
     'DefaultArguments.forwards?(target_def, node.args.size)' 'false && DefaultArguments.forwards?(target_def, node.args.size)' -- super_check || status=1
   prove_mutation "lowering refuses super as previous_def" "$REPO/src/compiler/lower/call.iyi" \
     '  if node.previous_def?' '  if node.previous_def? || node.super?' -- super_check || status=1
+fi
+if [ -e "$WORK/super.invalid" ]; then
+  echo "  FAIL: a super mutation did not compile; no behavioral detection was proved"
+  cat "$WORK/super_mut.build.log"
+  status=1
 fi
 # A mutation is caught only when the unmutated port matches the hosted module: a check that fails on the
 # unmutated tree would "catch" every patch, so the baseline must pass first.

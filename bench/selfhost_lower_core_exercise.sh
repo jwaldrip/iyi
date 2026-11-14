@@ -429,11 +429,11 @@ prove_mutation "argv is stored from the argc parameter" "$REPO/src/compiler/lowe
 prove_mutation "main returns 1" "$REPO/src/compiler/lower/lower.iyi" \
   "low.builder.ret(low.builder.const_int(i32, 0))" "low.builder.ret(low.builder.const_int(i32, 1))" -- lower_core_check || status=1
 prove_mutation "a declared variable's value is not stored" "$REPO/src/compiler/lower/lower.iyi" \
-  "store_aligned(low, v.as(Value), pointer)" "low.last = v" -- lower_core_check || status=1
+  "assign(low, slot.pointer, slot.type, vt.as(Type), v.as(Value))" "low.last = v" -- lower_core_check || status=1
 prove_mutation "a return of a constant zero" "$REPO/src/compiler/lower/lower.iyi" \
   "low.builder.ret(returned)" "low.builder.ret(low.builder.const_int(ret_ir, 0_i64))" -- lower_core_check || status=1
 prove_mutation "a declared variable is read without a load" "$REPO/src/compiler/lower/lower.iyi" \
-  "LowerVar.new(pointer, dt, false)" "LowerVar.new(pointer, dt, true)" -- lower_core_check || status=1
+  "low.current_context.vars[name] = LowerVar.new(pointer, t, false)" "low.current_context.vars[name] = LowerVar.new(pointer, t, true)" -- lower_core_check || status=1
 prove_mutation "the alloca block is named after the entry block" "$REPO/src/compiler/lower/context.iyi" \
   'new_blocks(["alloca", "entry"])' 'new_blocks(["entry", "alloca"])' -- lower_core_check || status=1
 prove_mutation "a bool literal is false" "$REPO/src/compiler/lower/lower.iyi" \
