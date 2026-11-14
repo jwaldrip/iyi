@@ -1987,6 +1987,18 @@ pub class MainVisitor < TypeNodeHost
             after_while[name] = mt
           end
         end
+      else
+        # No `break` leaves the loop. The hosted pass still types what follows it, with each variable as the
+        # loop's body leaves it (`merge_while_vars` binds the variable after the loop to its type at the end of the
+        # body); a variable first written inside the loop can be read before it was, so it is nilable.
+        body_vars.each do |name, body_type|
+          if before_cond_vars.has_key?(name)
+            after_while[name] = body_type
+          else
+            after_while[name] = @program.type_merge(body_type, @program.nil_type)
+            merge_nil_if_read(name)
+          end
+        end
       end
     else
       keys = [] of String
@@ -3187,7 +3199,7 @@ pub class MainVisitor < TypeNodeHost
                 @program.current_import_defs = saved_import_defs
                 if bt = block_type
                   resolved_output : Type? = nil
-                  if output = notation.output
+                  if (output = notation.output) && !output.is_a?(Underscore)
                     free_output = false
                     if output.is_a?(Path)
                       if free_names = target_def.free_vars

@@ -641,7 +641,7 @@ prove_mutation "an implicit builtin class call is refused" "$REPO/src/compiler/l
 prove_mutation "a computed metaclass receiver is not evaluated" "$REPO/src/compiler/lower/call.iyi" \
   '      unless node.obj.as(ASTNode).is_a?(Path)' '      if false' -- lower_calls_check || status=1
 prove_mutation "a captured block precedes self in the call" "$REPO/src/compiler/lower/call.iyi" \
-  '      emit_def_call(low, node, func, self_value, values, ret)' '      emit_def_call(low, node, func, nil, call_arguments(self_value, values).reverse, ret)' -- lower_calls_check || status=1
+  '      emit_def_call(low, node, func, self_value, values, ret)' '      emit_def_call(low, node, func, nil, call_arguments(self_value, values).reversed, ret)' -- lower_calls_check || status=1
 recursion_owner_check() {
   if ! "$IYI" build -o "$WORK/recursion_mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/recursion_mut.build.log" 2>&1; then
     echo "INVALID MUTANT: recursion driver failed to build" >&2
