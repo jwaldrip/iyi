@@ -3875,6 +3875,8 @@ pub class MainVisitor < TypeNodeHost
     inner.refusals = @refusals
     inner.typed_instances = @typed_instances
     inner.def_instances = @def_instances
+    inner.def_var_unions = @def_var_unions
+    inner.def_free_types = @def_free_types
     inner.untyped_locals = Hash(String, String).new
     inner.fun_inline_file = @fun_inline_file
     inner
