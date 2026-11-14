@@ -375,10 +375,6 @@ end
 # A Bool is a byte truncated to one bit; any other type is read as its embedded type (hosted
 # `to_lhs` of the area pointer, with the same passed-by-value rule).
 pub def downcast_from_mixed(low : Lowerer, value : Value, to_type : Type, from_type : MixedUnionType) : Value
-  if to_type.is_a?(NilableType)
-    pending_visit_node("downcast #{from_type.full_name} to #{to_type.full_name} (nilable target, hosted downcast_distinct NilableType)")
-    return value
-  end
   struct_ir = low.typer.llvm_type(from_type)
   value_ptr = union_value_ptr(low, struct_ir, value)
   if primitive_kind(to_type) == "bool"

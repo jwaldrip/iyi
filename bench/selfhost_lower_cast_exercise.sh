@@ -18,7 +18,7 @@
 #   bash bench/selfhost_lower_cast_exercise.sh
 set -u
 status=0
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+readonly REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 . "$REPO/bench/lib/mutation.sh"
 . "$REPO/bench/lib/lower_oracle.sh"
@@ -180,6 +180,8 @@ prove_mutation "nullable union stores a constant type id" "$REPO/src/compiler/lo
   '    return low.builder.select(is_null, nil_id, other_id)' '    return other_id' -- new_cast_check || status=1
 prove_mutation "nullable union assignment is refused" "$REPO/src/compiler/lower/cast.iyi" \
   '  if target.is_a?(MixedUnionType) && (value_type.is_a?(NilableType) || value_type.is_a?(ReferenceUnionType) || value_type.is_a?(NilableReferenceUnionType))' '  if false' -- new_cast_check || status=1
+prove_mutation "nullable mixed read drops the stored pointer" "$REPO/src/compiler/lower/cast.iyi" \
+  '  to_lhs(low, value_ptr, to_type)' '  low.builder.const_null(low.module.types.ptr)' -- new_cast_check || status=1
 cast_fixture=enum_mixed
 new_cast_check || { echo "  baseline: enum union assignment differs"; status=1; }
 prove_mutation "enum union stores are refused" "$REPO/src/compiler/lower/cast.iyi" \
