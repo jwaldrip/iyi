@@ -475,11 +475,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     while i < exprs.size
       low.needs_value = wants && i == exprs.size - 1
       codegen_node(low, exprs[i])
-      if i < exprs.size - 1 && at_terminator?(low)
-        pending_visit_node("code after a break or next in the same sequence (dead code, hosted codegen.cr)")
-      end
+      break if at_terminator?(low)
       i += 1
     end
+    low.needs_value = wants
     return
   end
   if node.is_a?(NilLiteral)
