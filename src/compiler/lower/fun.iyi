@@ -83,6 +83,11 @@ end
 # that segment (codegen/ast.cr: original_owner != self_type). A class method compares instance types.
 def owner_segment(receiver : Type, name : String, class_method : Bool, defining : Type? = nil) : String
   shown = owner_spell(receiver)
+  if class_method && receiver.is_a?(ModuleType) && receiver.as(ModuleType).iyi_unit
+    if recorded = defining
+      return shown + "^" + owner_spell(recorded) if recorded.object_id == receiver.object_id
+    end
+  end
   start = defining_walk_start(receiver, class_method)
   return shown if start.nil?
   found : Type? = nil
