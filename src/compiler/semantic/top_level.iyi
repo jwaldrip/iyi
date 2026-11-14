@@ -1219,9 +1219,13 @@ pub class SemanticProgram < NonGenericModuleType
   # resolution after the type system is installed.
   getter external_var_funs : Array(LibFun) = [] of LibFun
   # Defining scope, kept outside syntax nodes to avoid a semantic dependency in the AST.
+  # These are keyed by the def's object id, which is its address: a def that was collected would hand its id to a
+  # later def, and the later def would read the earlier one's owner, `new` flag or primitive result type. So every
+  # def a table records is kept in `@recorded_defs`, and no recorded id can name another object.
   @def_owners : Hash(UInt64, ModuleType)
   @generated_news : Set(UInt64)
   @primitive_return_types : Hash(UInt64, Type)
+  @recorded_defs : Array(Def)
   # All unions the program made, keyed by the sorted object ids of their members (hosted program.unions).
   getter unions : Hash(Array(UInt64), Type)
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
@@ -1440,11 +1444,13 @@ pub class SemanticProgram < NonGenericModuleType
   end
 
   def record_def_owner(definition : Def, owner : ModuleType) : Nil
+    keep_recorded(definition)
     @def_owners[definition.node_id] = owner
     nil
   end
 
   def record_generated_new(definition : Def) : Nil
+    keep_recorded(definition)
     @generated_news.add(definition.node_id)
     nil
   end
@@ -1459,7 +1465,14 @@ pub class SemanticProgram < NonGenericModuleType
   end
 
   def record_primitive_return_type(definition : Def, result : Type) : Nil
+    keep_recorded(definition)
     @primitive_return_types[definition.node_id] = result
+    nil
+  end
+
+  # Keeps *definition* reachable for as long as a table holds its id.
+  private def keep_recorded(definition : Def) : Nil
+    @recorded_defs << definition
     nil
   end
 
@@ -1606,6 +1619,7 @@ pub class SemanticProgram < NonGenericModuleType
     @def_owners = Hash(UInt64, ModuleType).new
     @generated_news = Set(UInt64).new
     @primitive_return_types = Hash(UInt64, Type).new
+    @recorded_defs = [] of Def
     @unions = Hash(Array(UInt64), Type).new
     @declared_ivars = [] of DeclaredIvar
     @declared_cvars = [] of DeclaredIvar
