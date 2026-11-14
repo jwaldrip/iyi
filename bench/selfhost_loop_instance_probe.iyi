@@ -1,30 +1,15 @@
-import compiler/syntax/parser::{Parser}
-import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
-import compiler/semantic/main_visitor::{MainVisitor}
-import compiler/types/type_system::{TypeSystem}
-import bench/lib/primitive_stand_in::{stand_in_primitive_types}
+module bench/selfhost_loop_instance_probe
+
+import bench/lib/lower_gate::{analyse}
 
 path = Program.args[0]
-parser = Parser.new(File.read(path), path)
-node = Normalizer.new(NormalizerProgram.new(false)).normalize(parser.parse)
-program = SemanticProgram.new
-program.total_mode = true
-program.search_path = [Program.args[1]]
-TypeSystem.new(program)
-top = TopLevelVisitor.new(program, path)
-node.accept(top)
-top.finish
-visitor = MainVisitor.new(program)
-visitor.total = true
-stand_in_primitive_types(node, program, visitor)
-node.accept(visitor)
+visitor = analyse(File.read(path), path, true).visitor
 puts "refusals: #{visitor.refusals.size}"
 visitor.refusals.each { |refusal| puts refusal.reason }
 visitor.typed_instances.each do |instance|
-  if instance.definition.name == "link"
+  if instance.definition.name == "link" || instance.definition.name == "bump"
     names = [] of String
     instance.arg_types.each { |arg| names << arg.full_name }
-    puts "link(#{names.join(",")})"
+    puts "#{instance.definition.name}(#{names.join(",")})"
   end
 end

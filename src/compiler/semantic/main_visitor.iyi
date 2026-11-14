@@ -1855,12 +1855,13 @@ pub class MainVisitor < TypeNodeHost
 
     then_type = child_type(node.then)
     else_type = child_type(node.else)
+    speculative = @speculation.depth > 0
     if then_type && else_type
       merged = merge_flow(then_type, else_type)
       set_type(node, merged)
-    elsif then_type && else_unreachable
+    elsif then_type && (else_unreachable || speculative)
       set_type(node, then_type)
-    elsif else_type && then_unreachable
+    elsif else_type && (then_unreachable || speculative)
       set_type(node, else_type)
     end
     false
@@ -3468,19 +3469,21 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # The type of a body, block or call with the values its jumps carry merged in (hosted: `return`
-  # binds to the def, `next` to the block). An untyped value makes the whole untyped.
+  # binds to the def, `next` to the block). A speculative pass merges only its typed inputs.
   def merge_jump_values(base : Type?, values : Array(Type?)?) : Type?
     vs = values
     return base if vs.nil?
     return base if vs.empty?
-    b = base
-    return nil if b.nil?
-    result : Type = b.as(Type)
+    speculative = @speculation.depth > 0
+    return nil if base.nil? && !speculative
+    result = base
     i = 0
     while i < vs.size
-      v = vs[i]
-      return nil if v.nil?
-      result = merge_flow(result, v.as(Type))
+      if v = vs[i]
+        result = (r = result) ? merge_flow(r, v) : v
+      elsif !speculative
+        return nil
+      end
       i += 1
     end
     result

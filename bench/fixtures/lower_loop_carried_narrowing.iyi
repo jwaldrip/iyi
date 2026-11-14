@@ -32,8 +32,14 @@ def link(prev : Node?, n : Node) : Int32
   end
 end
 
+def bump(x, v)
+  return x &+ v if x
+  v
+end
+
 last : Node? = nil
 t : Int32? = nil
+u : Int32? = nil
 links = 0
 seen = 0
 i = 0
@@ -46,6 +52,7 @@ while i < 3
   links = links &+ link(last, n)
   last = n
   t = t ? t &+ n.value : n.value
+  u = bump(u, n.value)
   i = i &+ 1
 end
 
@@ -71,4 +78,8 @@ shifted = 0
 if cc = c
   shifted = cc
 end
-LibC.exit(links &+ seen &+ sum &+ shifted)
+bumped = 0
+if value = u
+  bumped = value
+end
+LibC.exit(links &+ seen &+ sum &+ shifted &+ (bumped &- sum))
