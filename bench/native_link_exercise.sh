@@ -39,6 +39,8 @@ darwin=0
 if [ "$(uname -s)" = Darwin ]; then darwin=1; fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/native_link.XXXXXX")" || exit 1
+. bench/lib/native_signature.sh
+export NATIVE_SIGNATURE_FAILURE_FILE="$work/signature-failure"
 restore=""
 backup=""
 cleanup() {
@@ -85,6 +87,7 @@ check_hello() {
   build_tool || return 1
   "$work/bin/link_macho" hello "$work/hello" >"$work/hello.link.log" 2>&1 || return 1
   chmod +x "$work/hello"
+  native_signature_ok "$work/hello" || return 1
   status="$(run_program "$work/hello" "$work/hello.out" "$work/hello.err")"
   want_msg="$(head -n 1 "$fixture")"
   want_exit="$(tail -n 1 "$fixture" | awk '{print $2}')"
@@ -105,6 +108,7 @@ check_corpus() {
       return 1
     fi
     chmod +x "$work/corpus/$name.mut"
+    native_signature_ok "$work/corpus/$name.mut" || return 1
     status="$(run_program "$work/corpus/$name.mut" "$work/corpus/$name.mut.out" "$work/corpus/$name.mut.err")"
     if [ "$status" != "$(cat "$work/corpus/$name.status")" ] ||
       ! cmp -s "$work/corpus/$name.out" "$work/corpus/$name.mut.out" ||
@@ -230,6 +234,10 @@ if [ "$darwin" -eq 1 ]; then
     again="$(run_program "$orig" "$work/corpus/$name.again" "$work/corpus/$name.again.err")"
     if [ "$again" != "$status" ] || ! cmp -s "$work/corpus/$name.out" "$work/corpus/$name.again"; then
       echo "   $name: excluded, the original gives different output on two runs"
+      continue
+    fi
+    if ! native_signature_ok "$work/corpus/$name.nat"; then
+      fail "$name: invalid native signature"
       continue
     fi
     nat_status="$(run_program "$work/corpus/$name.nat" "$work/corpus/$name.nat.out" "$work/corpus/$name.nat.err")"
@@ -360,6 +368,7 @@ else
   echo "== 8. mutation proofs: not run on $(uname -s): the native-darwin job runs them"
 fi
 
+[ ! -e "$NATIVE_SIGNATURE_FAILURE_FILE" ] || fail "a native executable failed signature verification"
 if [ "$failures" -eq 0 ]; then
   echo "== ALL NATIVE_LINK CHECKS PASSED"
   exit 0
