@@ -12,7 +12,7 @@ module compiler/lower/symbols
 # before the module's own globals, as the hosted constructor does. It is absent when there are no
 # symbols.
 
-import compiler/syntax/ast::{ASTNode, SymbolLiteral}
+import compiler/syntax/ast::{ASTNode, Annotation, SymbolLiteral}
 import compiler/syntax/visitor::{Visitor}
 import compiler/ir/function::{Linkage}
 import compiler/ir/values::{Value}
@@ -29,6 +29,9 @@ pub class SymbolCollector < Visitor
   end
 
   def visit_any(node : ASTNode) : Bool
+    # Annotation arguments are compile-time values, not symbols typed by the
+    # hosted MainVisitor#visit(SymbolLiteral).
+    return false if node.is_a?(Annotation)
     if node.is_a?(SymbolLiteral)
       name = node.as(SymbolLiteral).value
       @names << name unless @names.includes?(name)
