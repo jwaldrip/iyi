@@ -53,6 +53,9 @@ mv.typed_instances.each do |inst|
     walk = FlowTailWalk.new(mv, live, name)
     inst.definition.body.accept(walk)
     raise "flow tail missing" unless walk.found == 1
+    if dead && mv.type_of?(inst.definition.body) != program.no_return_type
+      raise "dead flow body lost NoReturn in #{name}"
+    end
     seen.add(name)
   end
 end

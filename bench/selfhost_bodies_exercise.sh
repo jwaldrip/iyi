@@ -321,6 +321,9 @@ if flow_tail_check; then
   prove_mutation "narrowed terminating branches do not mark the tail dead" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '    @flow_dead = (then_unreachable && else_dead) || (else_unreachable && then_dead) || (then_dead && else_dead)' \
     '    @flow_dead = false' -- flow_tail_check || status=1
+  prove_mutation "dead flow tails lose their terminating body type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '            last_type = @program.no_return_type if dead_here && last_type.nil?' \
+    '            last_type = last_type' -- flow_tail_check || status=1
 else
   echo "  FAIL: instantiated flow tails were typed incorrectly"
   cat "$WORK/flow-tail.out"
