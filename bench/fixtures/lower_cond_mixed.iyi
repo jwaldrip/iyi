@@ -1,0 +1,19 @@
+@[Unsafe("calls C exit to report mixed-union truthiness")]
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+alias Choice = Int32 | Bool | Nil | Pointer(Int32)
+
+def truth(value : Choice) : Int32
+  value ? 1 : 0
+end
+
+slot = 42
+result = truth(nil.as(Choice))
+result = result &+ truth(false.as(Choice))
+result = result &+ truth(nil.as(Pointer(Int32)).as(Choice))
+result = result &+ truth(0.as(Choice))
+result = result &+ truth(true.as(Choice))
+result = result &+ truth(pointerof(slot).as(Choice))
+LibC.exit(result &* 14)
