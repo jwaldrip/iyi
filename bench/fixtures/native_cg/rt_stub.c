@@ -55,3 +55,6 @@ int64_t __fixture_run_on_thread(int64_t (*fn)(int64_t), int64_t arg) {
   pthread_join(th, NULL);
   return t.result;
 }
+
+int32_t __fixture_negative(void) { return -1; }
+int32_t __fixture_call_byte(int32_t (*fn)(uint8_t)) { return fn(128); }

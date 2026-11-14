@@ -459,6 +459,18 @@ class Isel
     d
   end
 
+  # Signed uses of i1 interpret the canonical value 1 as -1.
+  def signed_value(v : Int32, t : IrType) : Int32
+    return v unless t.int? && t.bits == 1
+    d = gpr
+    m = mop(MOp::Sbfm)
+    m.imm = 1_i64
+    m.defs << vop(d)
+    m.uses << vop(v)
+    emit(m)
+    d
+  end
+
   # The zero-extended form of `v` at type `t`.
   def zext(v : Int32, t : IrType) : Int32
     w = width_of(t)
@@ -783,6 +795,9 @@ class Isel
           m.uses << pop(@desc.frame_pointer)
           emit(m)
         end
+        if loc.leaf_type.int? && loc.leaf_type.bits < 64
+          regs[k] = canon(dst, loc.leaf_type)
+        end
         k = k + 1
       end
       i = i + 1
@@ -870,6 +885,8 @@ class Isel
       src = first_leaf(i.args[0])
       if op == Op::UIToFP
         src = zext(src, i.args[0].type)
+      else
+        src = signed_value(src, i.args[0].type)
       end
       d = @mf.new_vreg(RegClass::Fpr)
       m = mop(op == Op::SIToFP ? MOp::Scvtf : MOp::Ucvtf)
@@ -1353,6 +1370,9 @@ class Isel
     if icmp_unsigned?(ordinal)
       a = zext(a, t)
       b = zext(b, t)
+    elsif ordinal >= 6_i64
+      a = signed_value(a, t)
+      b = signed_value(b, t)
     end
     compare(a, b)
     bind_result(i, [set_flag(int_cond(ordinal))])
@@ -1553,7 +1573,7 @@ class Isel
     load.defs << vop(old)
     load.uses << vop(ptr)
     emit(load)
-    compare(old, expected)
+    compare(canon(old, value_type), expected)
     miss = mop(MOp::Bcond)
     miss.cond = cond_ne
     miss.target = fail_block.index
@@ -1761,15 +1781,28 @@ class Isel
   # A switch is a jump table when switch_table_plan takes it (lower_jump_table). Otherwise it is a compare chain:
   # each case compares the value and branches, and the default follows.
   def lower_switch(i : Inst) : Nil
-    plan = switch_table_plan(i.cases)
+    keys = [] of Int64
+    bits = i.args[0].type.bits
+    k = 0
+    while k < i.cases.size
+      key = i.cases[k]
+      if bits > 1 && bits < 64
+        span = 1_i64 << bits
+        key = key & (span - 1_i64)
+        key = key - span if key >= span // 2_i64
+      end
+      keys << key
+      k = k + 1
+    end
+    plan = switch_table_plan(keys)
     unless plan.nil?
-      lower_jump_table(i, plan.as(SwitchTable))
+      lower_jump_table(i, plan.as(SwitchTable), keys)
       return
     end
     v = first_leaf(i.args[0])
     k = 0
     while k < i.cases.size
-      key = const_gpr(i.cases[k])
+      key = const_gpr(keys[k])
       compare(v, key)
       dest = edge_block(@cur_ir_name, i.targets[k + 1].name, true)
       bc = mop(MOp::Bcond)
@@ -1784,7 +1817,7 @@ class Isel
   # A switch as a jump table (slice C3e, jump_table.iyi): the value less the lowest case indexes a table of block
   # addresses. The unsigned compare sends a value outside the table to the default, and a hole in the range is an
   # entry for the default. Each entry is an edge of the switch, so phi copies land on the path that takes it.
-  def lower_jump_table(i : Inst, plan : SwitchTable) : Nil
+  def lower_jump_table(i : Inst, plan : SwitchTable, keys : Array(Int64)) : Nil
     v = first_leaf(i.args[0])
     default_dest = edge_block(@cur_ir_name, i.targets[0].name, true)
     entries = [] of Int32
@@ -1797,7 +1830,7 @@ class Isel
     end
     k = 0
     while k < i.cases.size
-      slot = (i.cases[k] - plan.low).to_i32
+      slot = (keys[k] - plan.low).to_i32
       unless filled[slot]
         filled[slot] = true
         entries[slot] = edge_block(@cur_ir_name, i.targets[k + 1].name, true)
@@ -2221,6 +2254,11 @@ class Isel
     post.each do |m|
       emit(m)
     end
+    k = 0
+    while k < out_regs.size
+      out_regs[k] = canon(out_regs[k], out_types[k])
+      k = k + 1
+    end
     bind_result(i, out_regs) unless i.type.void?
   end
 
@@ -2355,7 +2393,7 @@ class Isel
       m.defs << vop(d)
       m.uses << pop(loc.reg)
       emit(m)
-      regs << d
+      regs << canon(d, loc.leaf_type)
     end
     bind_result(i, regs)
   end
