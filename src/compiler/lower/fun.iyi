@@ -329,6 +329,7 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   low.context = LowerContext.new(fn, fn_type, ctx_type, Hash(String, LowerVar).new)
   low.current_context.return_type = ret
   low.current_context.var_unions = low.analysed.def_var_unions[target]?
+  low.current_context.nil_resets = low.analysed.def_nil_resets[target]?
   low.alloca_block = nil
   low.entry_block = nil
   low.new_entry_block

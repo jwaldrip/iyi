@@ -111,8 +111,18 @@ pub class BlockOwner
   getter yield_nodes : Array(Yield)?
   getter scope : Type?
   getter writer_type : ModuleType?
+  getter var_owners : Hash(String, LocalStorage)?
 
-  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil, @writer_type : ModuleType? = nil)
+  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil, @writer_type : ModuleType? = nil, @var_owners : Hash(String, LocalStorage)? = nil)
+  end
+end
+
+pub class LocalStorage
+  getter unions : Hash(String, Type)
+  getter nil_candidates : Set(String)
+  getter nil_resets : Set(String)
+
+  def initialize(@unions : Hash(String, Type), @nil_candidates : Set(String), @nil_resets : Set(String))
   end
 end
 
@@ -354,6 +364,10 @@ pub class MainVisitor < TypeNodeHost
   # by name; `def_var_unions` keeps it per instantiated def (the lowering's storage type).
   property var_unions : Hash(String, Type)
   property def_var_unions : NodeMap(Hash(String, Type))
+  property nil_candidates : Set(String)
+  property nil_resets : Set(String)
+  property def_nil_resets : NodeMap(Set(String))
+  property var_owners : Hash(String, LocalStorage)
   # The free variables of each instantiated def as its call's arguments bound them (hosted
   # MatchContext free_vars), kept per def: a macro site in the body names them (def_inline_bindings).
   property def_free_types : NodeMap(Hash(String, Type))
@@ -377,6 +391,10 @@ pub class MainVisitor < TypeNodeHost
     @call_dispatch_targets = NodeMap(Array(DispatchTarget)).new
     @var_unions = Hash(String, Type).new
     @def_var_unions = NodeMap(Hash(String, Type)).new
+    @nil_candidates = Set(String).new
+    @nil_resets = Set(String).new
+    @def_nil_resets = NodeMap(Set(String)).new
+    @var_owners = Hash(String, LocalStorage).new
     @def_free_types = NodeMap(Hash(String, Type)).new
     @untyped_locals = Hash(String, String).new
     @current_def = nil
@@ -1096,6 +1114,7 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : Var) : Bool
     if t = @vars[node.name]?
       set_type(node, t)
+      observe_nil_if_read(node.name, t)
       if needs_type_filters?
         @type_filters = TypeFilters.truthy(node.name)
       end
@@ -1322,6 +1341,35 @@ pub class MainVisitor < TypeNodeHost
     else
       @var_unions[name] = type
     end
+    nil
+  end
+
+  def merge_nil_if_read(name : String) : Nil
+    @nil_candidates.add(name)
+    nil
+  end
+
+  def storage_owner(name : String) : LocalStorage?
+    @var_owners[name]?
+  end
+
+  def observe_nil_if_read(name : String, flow : Type) : Nil
+    return unless flow.nilable?
+    if owner = storage_owner(name)
+      unions = owner.unions
+      candidates = owner.nil_candidates
+      resets = owner.nil_resets
+    else
+      unions = @var_unions
+      candidates = @nil_candidates
+      resets = @nil_resets
+    end
+    if stored = unions[name]?
+      unless stored.nilable?
+        unions[name] = @program.type_merge(stored, @program.nil_type)
+      end
+    end
+    resets.add(name) if candidates.includes?(name)
     nil
   end
 
@@ -1616,6 +1664,8 @@ pub class MainVisitor < TypeNodeHost
       if i > 0
         @var_unions.keys.each { |name| @var_unions.delete(name) if name.starts_with?("__iyi_dt_") }
         @untyped_locals.keys.each { |name| @untyped_locals.delete(name) if name.starts_with?("__iyi_dt_") }
+        @nil_candidates.to_a.each { |name| @nil_candidates.delete(name) if name.starts_with?("__iyi_dt_") }
+        @nil_resets.to_a.each { |name| @nil_resets.delete(name) if name.starts_with?("__iyi_dt_") }
       end
       while i < node.expressions.size
         exp = node.expressions[i]
@@ -1706,6 +1756,7 @@ pub class MainVisitor < TypeNodeHost
       handler_vars.each do |name, type|
         unless before_body.has_key?(name)
           handler_vars[name] = @program.type_merge(type, @program.nil_type)
+          merge_nil_if_read(name)
         end
       end
       @vars = handler_vars
@@ -1777,9 +1828,7 @@ pub class MainVisitor < TypeNodeHost
             merged_vars[name] = then_var
           else
             merged_vars[name] = @program.type_merge(then_var, @program.nil_type)
-            if old_u = @var_unions[name]?
-              @var_unions[name] = @program.type_merge(old_u, @program.nil_type)
-            end
+            merge_nil_if_read(name)
           end
         end
       elsif else_var
@@ -1796,9 +1845,7 @@ pub class MainVisitor < TypeNodeHost
             merged_vars[name] = else_var
           else
             merged_vars[name] = @program.type_merge(else_var, @program.nil_type)
-            if old_u = @var_unions[name]?
-              @var_unions[name] = @program.type_merge(old_u, @program.nil_type)
-            end
+            merge_nil_if_read(name)
           end
         end
       end
@@ -1914,9 +1961,7 @@ pub class MainVisitor < TypeNodeHost
           if mt = merged
             unless all_have || before_cond_vars.has_key?(name)
               mt = @program.type_merge(mt, @program.nil_type)
-              if old_u = @var_unions[name]?
-                @var_unions[name] = @program.type_merge(old_u, @program.nil_type)
-              end
+              merge_nil_if_read(name)
             end
             after_while[name] = mt
           end
@@ -1940,9 +1985,7 @@ pub class MainVisitor < TypeNodeHost
         elsif wv
           merged_new = @program.type_merge(wv, @program.nil_type)
           after_while[name] = merged_new
-          if old_u = @var_unions[name]?
-            @var_unions[name] = @program.type_merge(old_u, @program.nil_type)
-          end
+          merge_nil_if_read(name)
         end
       end
       break_vars_list.each do |bv|
@@ -1951,6 +1994,7 @@ pub class MainVisitor < TypeNodeHost
             after_while[name] = @program.type_merge(existing, bt) unless existing == bt
           else
             after_while[name] = @program.type_merge(bt, @program.nil_type)
+            merge_nil_if_read(name)
           end
         end
       end
@@ -2260,7 +2304,11 @@ pub class MainVisitor < TypeNodeHost
       callee_context_vars = @current_block_context_vars
       callee_yield_nodes = @current_yield_nodes
       callee_type = @current_type
+      callee_var_owners = @var_owners
       if owner = @block_owners[blk]?
+        if routed = owner.var_owners
+          @var_owners = routed
+        end
         @current_def = owner.def_node
         @return_types = owner.return_types
         @current_call_block = owner.call_block
@@ -2299,6 +2347,7 @@ pub class MainVisitor < TypeNodeHost
       blk.body.accept(self)
       @super_barrier = saved_super_barrier
       @current_type = callee_type
+      @var_owners = callee_var_owners
       @jump_block = saved_jump_block
       @jump_whiles = saved_jump_whiles
       @handler_direct_exit = old_handler_direct_exit
@@ -3214,9 +3263,15 @@ pub class MainVisitor < TypeNodeHost
     old_block_context_vars = @current_block_context_vars
     old_yield_nodes = @current_yield_nodes
     old_var_unions = @var_unions
+    old_nil_candidates = @nil_candidates
+    old_nil_resets = @nil_resets
+    old_var_owners = @var_owners
     old_untyped_locals = @untyped_locals
     @untyped_locals = Hash(String, String).new
     @var_unions = Hash(String, Type).new
+    @nil_candidates = Set(String).new
+    @nil_resets = Set(String).new
+    @var_owners = Hash(String, LocalStorage).new
     old_break_types = @break_types
     old_next_types = @next_types
     old_return_types = @return_types
@@ -3236,7 +3291,10 @@ pub class MainVisitor < TypeNodeHost
       @current_block_context_vars = @vars.dup
       @current_yield_nodes = [] of Yield
       if blk = block
-        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope, writer_type)
+        writer_owners = old_var_owners.dup
+        writer_storage = LocalStorage.new(old_var_unions, old_nil_candidates, old_nil_resets)
+        @vars.each_key { |name| writer_owners[name] = writer_storage unless writer_owners.has_key?(name) }
+        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope, writer_type, writer_owners)
       end
     end
 
@@ -3382,7 +3440,11 @@ pub class MainVisitor < TypeNodeHost
     @current_block_context_vars = old_block_context_vars
     @current_yield_nodes = old_yield_nodes
     @def_var_unions[target_def] = @var_unions
+    @def_nil_resets[target_def] = @nil_resets
     @var_unions = old_var_unions
+    @nil_candidates = old_nil_candidates
+    @nil_resets = old_nil_resets
+    @var_owners = old_var_owners
     @untyped_locals = old_untyped_locals
     @type_filters = old_type_filters
     @needs_type_filters = old_needs_type_filters
@@ -3529,6 +3591,9 @@ pub class MainVisitor < TypeNodeHost
     saved_inside_ensure = @handler_inside_ensure
     saved_inside_defer = @handler_inside_defer
     saved_var_unions = @var_unions
+    saved_nil_candidates = @nil_candidates
+    saved_nil_resets = @nil_resets
+    saved_var_owners = @var_owners
     saved_untyped_locals = @untyped_locals
     saved_while_break_vars = @while_break_vars
     @vars = block_vars
@@ -3547,6 +3612,9 @@ pub class MainVisitor < TypeNodeHost
     @handler_inside_ensure = false
     @handler_inside_defer = false
     @var_unions = Hash(String, Type).new
+    @nil_candidates = Set(String).new
+    @nil_resets = Set(String).new
+    @var_owners = Hash(String, LocalStorage).new
     @untyped_locals = Hash(String, String).new
     @while_break_vars = [] of Array(Hash(String, Type))
     saved_super_barrier = @super_barrier
@@ -3571,6 +3639,9 @@ pub class MainVisitor < TypeNodeHost
     @handler_inside_ensure = saved_inside_ensure
     @handler_inside_defer = saved_inside_defer
     @var_unions = saved_var_unions
+    @nil_candidates = saved_nil_candidates
+    @nil_resets = saved_nil_resets
+    @var_owners = saved_var_owners
     @untyped_locals = saved_untyped_locals
     @while_break_vars = saved_while_break_vars
     answered
@@ -3852,6 +3923,7 @@ pub class MainVisitor < TypeNodeHost
         set_type(local_read, vt)
         @expansions[node] = local_read
         set_type(node, vt)
+        observe_nil_if_read(node.name, vt)
         if needs_type_filters?
           @type_filters = TypeFilters.truthy(node.name)
         end
@@ -4381,6 +4453,7 @@ pub class MainVisitor < TypeNodeHost
     inner.typed_instances = @typed_instances
     inner.def_instances = @def_instances
     inner.def_var_unions = @def_var_unions
+    inner.def_nil_resets = @def_nil_resets
     inner.def_free_types = @def_free_types
     inner.untyped_locals = Hash(String, String).new
     inner.fun_inline_file = @fun_inline_file

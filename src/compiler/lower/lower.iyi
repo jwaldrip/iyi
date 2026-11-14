@@ -149,6 +149,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
 
   fn = low.begin_main_function(main_function_name(analysed), entry_type, true)
   low.current_context.var_unions = analysed.var_unions
+  low.current_context.nil_resets = analysed.nil_resets
   fn.linkage = Linkage::Internal
   # Both program entries use the internal convention, including aggregate results.
   fn.call_convention = CallConv::Iyi

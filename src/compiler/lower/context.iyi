@@ -70,6 +70,8 @@ pub class LowerContext
   # The union type of each variable the function's body assigns more than one type (the analysis's
   # `def_var_unions` for the instantiated def, keyed by name). A variable in this table is stored as its union.
   property var_unions : Hash(String, Type)?
+  # Locals read while possibly unassigned, initialized to nil at allocation.
+  property nil_resets : Set(String)?
   # The block frame and the phis of the context (hosted Context#return_phi, break_phi, next_phi, block, block_context).
   property return_phi : BranchPhi?
   property break_phi : BranchPhi?
@@ -85,6 +87,7 @@ pub class LowerContext
     @return_type = nil
     @top_level = false
     @var_unions = nil
+    @nil_resets = nil
     @return_phi = nil
     @break_phi = nil
     @next_phi = nil

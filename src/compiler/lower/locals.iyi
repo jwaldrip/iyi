@@ -2,6 +2,9 @@ module compiler/lower/locals
 
 import compiler/syntax/ast::{ASTNode, Assign, Block, Call, ClassDef, Def, FunDef, If, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroVerbatim, ModuleDef, Out, Path, ProcLiteral, TypeDeclaration, UninitializedVar, Var}
 import compiler/syntax/visitor::{Visitor}
+import compiler/ir/values::{Value}
+import compiler/lower/cast::{assign}
+import compiler/lower/helpers::{llvm_nil}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/top_level::{NoReturnType, Type, VoidType}
@@ -66,9 +69,20 @@ pub class LocalOrder < Visitor
   end
 end
 
+
+pub def reset_nil_slot(low : Lowerer, pointer : Value, type : Type) : Nil
+  old = low.builder.insert_block
+  low.builder.position_at_end(low.current_alloca_block)
+  assign(low, pointer, type, low.analysed.program.nil_type, llvm_nil(low))
+  if block = old
+    low.builder.position_at_end(block)
+  end
+  nil
+end
 pub def preallocate_locals(low : Lowerer, body : ASTNode, skip : Array(String)) : Nil
   collector = LocalOrder.new(low.analysed)
   body.accept(collector)
+  resets = low.current_context.nil_resets
   collector.vars.each do |var|
     name = var.name
     next if skip.includes?(name) || low.current_context.vars[name]?
@@ -80,5 +94,8 @@ pub def preallocate_locals(low : Lowerer, body : ASTNode, skip : Array(String)) 
     type = t.as(Type)
     pointer = low.alloca(low.typer.llvm_type(type), name)
     low.current_context.vars[name] = LowerVar.new(pointer, type, false)
+    if r = resets
+      reset_nil_slot(low, pointer, type) if r.includes?(name) && type.nilable?
+    end
   end
 end
