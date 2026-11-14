@@ -808,9 +808,9 @@ static_array_return_at_floor() {
 prove_mutation "a static array return annotation is typed as the bare StaticArray(T, N)" "$REPO/src/compiler/semantic/top_level.iyi" \
   "hook.resolve_node?(node, current_type)" \
   "hook.resolve_node?(g.name, current_type)" -- static_array_return_at_floor || status=1
-prove_mutation "a written static array's element is not made virtual" "$REPO/src/compiler/types/lookup.iyi" \
-  "@instances.static_array_of(TypeQueries.virtual_type(elem_type), size)" \
-  "@instances.static_array_of(elem_type, size)" -- static_array_return_at_floor || status=1
+prove_mutation "a static array prints its element's virtual type" "$REPO/src/compiler/types/types.iyi" \
+  '"StaticArray(#{@element_type.devirtualize.arg_full_name}, #{@size_int})"' \
+  '"StaticArray(#{@element_type.full_name}, #{@size_int})"' -- static_array_return_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"
