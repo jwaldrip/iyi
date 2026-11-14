@@ -208,6 +208,11 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
       e2e_fail=$((e2e_fail + 1))
       continue
     fi
+    if ! codesign -v --strict "$WORK/$name.native" > /dev/null 2>&1; then
+      echo "  $name: FAIL, native signature invalid"
+      e2e_fail=$((e2e_fail + 1))
+      continue
+    fi
     timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
     timeout 30 "$WORK/$name" > "$WORK/$name.hosted.out" 2>&1; hs=$?
     if [ "$name" = lowcall_super ] && [ "$hs" -ne 42 ]; then
@@ -239,6 +244,11 @@ for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
   if ! "$IYI" build --prelude empty --no-debug -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1 ||
      ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1; then
     echo "  $name: compilation failed"
+    status=1
+    continue
+  fi
+  if ! codesign -v --strict "$WORK/$name.native" > /dev/null 2>&1; then
+    echo "  $name: FAIL, native signature invalid"
     status=1
     continue
   fi
@@ -294,6 +304,7 @@ generic_constructor_check() {
     fixture="$REPO/bench/fixtures/$name.iyi"
     rm -f "$WORK/constructor.check.exe"
     IYI_PATH="$REPO/src" "$WORK/constructor.check.tool" "$fixture" -o "$WORK/constructor.check.exe" --pipeline typed > "$WORK/constructor.check.log" 2>&1 || return 1
+    codesign -v --strict "$WORK/constructor.check.exe" > /dev/null 2>&1 || { echo "  $name: FAIL, native signature invalid"; return 1; }
     timeout 30 "$WORK/constructor.check.exe" > "$WORK/constructor.check.out" 2>&1; result=$?
     [ "$result" -eq 7 ] && cmp -s "$WORK/constructor.check.out" "$WORK/$name.hosted.out" || return 1
   done
@@ -362,7 +373,8 @@ echo "== 3c. Top-level imports and inherited names across units"
 unit_fixture="$REPO/bench/fixtures/inherited_unit_name/main.iyi"
 if [ -x "$WORK/compile_native" ] && \
    "$IYI" build --prelude empty --no-debug -o "$WORK/unit_name.hosted" "$unit_fixture" > "$WORK/unit_name.hosted.log" 2>&1 && \
-   IYI_PATH="$REPO/src" "$WORK/compile_native" "$unit_fixture" -o "$WORK/unit_name.native" --pipeline typed > "$WORK/unit_name.native.log" 2>&1; then
+   IYI_PATH="$REPO/src" "$WORK/compile_native" "$unit_fixture" -o "$WORK/unit_name.native" --pipeline typed > "$WORK/unit_name.native.log" 2>&1 && \
+   codesign -v --strict "$WORK/unit_name.native" > /dev/null 2>&1; then
   timeout 30 "$WORK/unit_name.hosted" > "$WORK/unit_name.hosted.out" 2>&1; hs=$?
   timeout 30 "$WORK/unit_name.native" > "$WORK/unit_name.native.out" 2>&1; ns=$?
   if [ "$hs" -eq 7 ] && [ "$ns" -eq "$hs" ] && cmp -s "$WORK/unit_name.hosted.out" "$WORK/unit_name.native.out"; then
