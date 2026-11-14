@@ -197,6 +197,12 @@ tls_check() {
   out=$("$bin" verify bench/fixtures/ir/bad/tls_fresh_call.ir 2>&1) && return 1
   echo "$out" | grep -q 'error\[tls-fresh\]'
 }
+ptrtoint_check() {
+  local bin="$1" out
+  out=$("$bin" verify bench/fixtures/ir/bad/ptrtoint_aggregate.ir 2>&1) && return 1
+  echo "$out" | grep -q 'error\[types\].*ptrtoint needs a pointer operand and integer result'
+}
+
 
 # The named-struct C-convention fixture must be refused under cc-lowered. Non-zero when it is accepted or refused another way.
 cc_named_check() {
@@ -480,6 +486,11 @@ prove_mutation "printer: mentioned named types are written in table creation ord
   $'    found\n  end' \
   $'    @module.types.named.select { |t| visited.includes?(t.key) }\n  end' \
   named_type_order_check
+prove_mutation "verifier: ptrtoint accepts an aggregate operand" \
+  src/compiler/ir/verifier.iyi \
+  'unless operand_type(i.args[0]).pointer? && i.type.int?' \
+  'unless true' \
+  ptrtoint_check
 prove_mutation "verifier: a call no longer kills thread-local values" \
   src/compiler/ir/verifier.iyi \
   '    if i.op == Op::Call || i.op == Op::Invoke' \
