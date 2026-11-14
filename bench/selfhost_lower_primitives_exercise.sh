@@ -369,6 +369,14 @@ prove_mutation "float greater-than uses less-than" "$REPO/src/compiler/lower/pri
   '    return low.builder.fcmp(RealPredicate::OGT, left, right)' '    return low.builder.fcmp(RealPredicate::OLT, left, right)' -- lower_primitives_check || status=1
 prove_mutation "float greater-or-equal uses less-than" "$REPO/src/compiler/lower/primitives.iyi" \
   '    return low.builder.fcmp(RealPredicate::OGE, left, right)' '    return low.builder.fcmp(RealPredicate::OLT, left, right)' -- lower_primitives_check || status=1
+prove_mutation "float addition uses subtraction" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    result = low.builder.fadd(left, right)' '    result = low.builder.fsub(left, right)' -- lower_primitives_check || status=1
+prove_mutation "float subtraction uses addition" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    result = low.builder.fsub(left, right)' '    result = low.builder.fadd(left, right)' -- lower_primitives_check || status=1
+prove_mutation "float multiplication uses division" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    result = low.builder.fmul(left, right)' '    result = low.builder.fdiv(left, right)' -- lower_primitives_check || status=1
+prove_mutation "float division uses multiplication" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    result = low.builder.fdiv(left, right)' '    result = low.builder.fmul(left, right)' -- lower_primitives_check || status=1
 prove_mutation "checked UInt128 to Float32 must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
   '      pending_visit_node("checked UInt128 to Float32 (hosted codegen_out_of_range)")' '      return value' -- lower_primitives_check || status=1
 prove_mutation "checked float narrowing must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
