@@ -18,7 +18,7 @@ bench/fixtures/sem_bodies_ensure.iyi 41
 bench/fixtures/sem_bodies_enum_member.iyi 6
 bench/fixtures/sem_bodies_flow.iyi 36
 bench/fixtures/sem_bodies_flow_assign.iyi 95
-bench/fixtures/sem_bodies_flow_dead_tail.iyi 49
+bench/fixtures/sem_bodies_flow_dead_tail.iyi 54
 bench/fixtures/sem_bodies_flow_early_exit.iyi 54
 bench/fixtures/sem_bodies_flow_is_a.iyi 71
 bench/fixtures/sem_bodies_flow_nil.iyi 48
