@@ -74,6 +74,10 @@ for ir in "$FIX"/*.ir; do
     fail "$base: cc did not link the native object"
     continue
   fi
+  if ! codesign -v --strict "$WORK/$base.native"; then
+    fail "$base: native executable failed codesign"
+    continue
+  fi
   "$WORK/$base.native" >"$WORK/$base.native.out" 2>/dev/null
   echo $? >"$WORK/$base.native.status"
   if ! ./bin/iyi build -o "$WORK/$base.hosted" "$iy" >"$WORK/$base.hosted.log" 2>&1; then
@@ -101,6 +105,8 @@ if ! "$DRV" obj bench/fixtures/native_tp/threadpointer.ir "$WORK/tp.o" >"$WORK/t
   fail "threadpointer: the native backend refused the fixture"
 elif ! cc "$WORK/tp.o" bench/fixtures/native_tp/tp_main.c -o "$WORK/tp.bin" >"$WORK/tp.link.log" 2>&1; then
   fail "threadpointer: cc did not link the native object"
+elif ! codesign -v --strict "$WORK/tp.bin"; then
+  fail "threadpointer: native executable failed codesign"
 elif ! "$WORK/tp.bin"; then
   fail "threadpointer: the masked thread pointer is zero, unaligned, or differs between reads"
 else
@@ -182,7 +188,8 @@ if "$DRV" obj "$RTF/rt_helpers.ir" "$WORK/rth.o" >"$WORK/rth.obj.log" 2>&1 \
    && cc "$WORK/rth.o" "$WORK/rt_native.o" -o "$WORK/rth_native" \
    && cc -c "$FIX/rt_stub.c" -o "$WORK/rt_stub.o" \
    && cc "$WORK/rth.o" "$WORK/rt_stub.o" -o "$WORK/rth_stub" \
-   && ./bin/iyi build -o "$WORK/rth_hosted" "$RTF/rt_helpers.iyi" >"$WORK/rth_hosted.log" 2>&1; then
+   && ./bin/iyi build -o "$WORK/rth_hosted" "$RTF/rt_helpers.iyi" >"$WORK/rth_hosted.log" 2>&1 \
+   && codesign -v --strict "$WORK/rth_native" && codesign -v --strict "$WORK/rth_stub"; then
   "$WORK/rth_native" >"$WORK/rth_native.out"; s1=$?
   "$WORK/rth_stub" >"$WORK/rth_stub.out"; s2=$?
   "$WORK/rth_hosted" >"$WORK/rth_hosted.out"; s3=$?
@@ -359,11 +366,14 @@ prove_mutation() {
     fail "mutation $name: the mutant does not build, so it proves nothing"
     return
   fi
-  if "$check" "$mut" >/dev/null 2>&1; then
-    cp "$backup" "$file"
+  "$check" "$mut" >/dev/null 2>&1
+  local check_status=$?
+  cp "$backup" "$file"
+  if [ "$check_status" -eq 125 ]; then
+    fail "mutation $name: native executable failed codesign"
+  elif [ "$check_status" -eq 0 ]; then
     fail "mutation $name: NOT caught"
   else
-    cp "$backup" "$file"
     echo "caught: $name"
   fi
 }
@@ -373,6 +383,7 @@ check_fixture() {
   local drv=$1 base=$2
   "$drv" obj "$FIX/$base.ir" "$WORK/m.$base.o" >/dev/null 2>&1 || return 1
   cc "$WORK/m.$base.o" "$FIX/rt_stub.c" -o "$WORK/m.$base.bin" >/dev/null 2>&1 || return 1
+  codesign -v --strict "$WORK/m.$base.bin" || return 125
   "$WORK/m.$base.bin" >"$WORK/m.$base.out" 2>/dev/null
   local status=$?
   cmp -s "$WORK/m.$base.out" "$WORK/$base.hosted.out" && [ "$status" = "$(tr -d '\n' <"$WORK/$base.hosted.status")" ]
@@ -413,8 +424,44 @@ check_bind() { check_fixture "$1" asm_addone; }
 # scan does and the pin allocator never does, so this check always runs linear, whatever the gate was started with.
 check_clobber() { IYI_NATIVE_REGALLOC=linear check_fixture "$1" asm_clobber; }
 check_reloc() { check_fixture "$1" asm_reloc; }
+check_narrow_cmpxchg() { check_fixture "$1" narrow_cmpxchg; }
+check_narrow_switch() { check_fixture "$1" narrow_switch; }
+check_narrow_call() { check_fixture "$1" narrow_call; }
+check_narrow_i1() { check_fixture "$1" narrow_i1; }
+check_narrow_param() { check_fixture "$1" narrow_param; }
+check_narrow_asm() { check_fixture "$1" narrow_asm; }
 
 echo "== 6. mutations are each caught"
+prove_mutation "asm: leave a narrow result uncanonicalised" \
+  src/compiler/native/aarch64/isel.iyi \
+  '      out_regs[k] = canon(out_regs[k], out_types[k])' \
+  '      out_regs[k] = out_regs[k]' \
+  check_narrow_asm
+prove_mutation "cmpxchg: compare the zero-extended exclusive load" \
+  src/compiler/native/aarch64/isel.iyi \
+  'compare(canon(old, value_type), expected)' \
+  'compare(old, expected)' \
+  check_narrow_cmpxchg
+prove_mutation "switch: retain the raw narrow case key" \
+  src/compiler/native/aarch64/isel.iyi \
+  'key = key - span if key >= span // 2_i64' \
+  'key = key' \
+  check_narrow_switch
+prove_mutation "call: leave a narrow result uncanonicalised" \
+  src/compiler/native/aarch64/isel.iyi \
+  'regs << canon(d, loc.leaf_type)' \
+  'regs << d' \
+  check_narrow_call
+prove_mutation "signed i1: interpret one as positive" \
+  src/compiler/native/aarch64/isel.iyi \
+  '    return v unless t.int? && t.bits == 1' \
+  '    return v' \
+  check_narrow_i1
+prove_mutation "parameter: leave a narrow incoming value uncanonicalised" \
+  src/compiler/native/aarch64/isel.iyi \
+  '          regs[k] = canon(dst, loc.leaf_type)' \
+  '          regs[k] = dst' \
+  check_narrow_param
 prove_mutation "isel: the subtraction's operands swap" \
   src/compiler/native/aarch64/isel.iyi \
   'bind_result(i, [canon(binop(kind, a, b), t)])' \

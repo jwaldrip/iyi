@@ -32,6 +32,8 @@ tool_src=src/compiler/tools/obj_macho.iyi
 macho_src=src/compiler/native/obj/macho.iyi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/native_obj.XXXXXX")" || exit 1
+. bench/lib/native_signature.sh
+export NATIVE_SIGNATURE_FAILURE_FILE="$work/signature-failure"
 restore=""
 backup=""
 cleanup() {
@@ -90,6 +92,7 @@ check_relinked() {
   rt_line="${rt_line// -o $work\/corpus\/$name / -o $rt_exe }"
   rm -f "$rt_exe"
   sh -c "$rt_line" >"$work/corpus/$name.rt.link.log" 2>&1 || return 1
+  native_signature_ok "$rt_exe" || return 1
   rt_status="$(run_program "$rt_exe" "$work/corpus/$name.rt.out")"
   orig_status="$(cat "$work/corpus/$name.status")"
   [ "$rt_status" = "$orig_status" ] && cmp -s "$work/corpus/$name.out" "$work/corpus/$name.rt.out"
@@ -261,6 +264,7 @@ fi
 # Restore the driver built from the unmutated source for the remaining checks.
 cp "$work/bin/obj_macho.good" "$work/bin/obj_macho"
 
+[ ! -e "$NATIVE_SIGNATURE_FAILURE_FILE" ] || fail "a native executable failed signature verification"
 if [ "$failures" -eq 0 ]; then
   echo "== ALL NATIVE_OBJ CHECKS PASSED"
   exit 0
