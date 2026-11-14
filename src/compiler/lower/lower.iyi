@@ -1024,14 +1024,26 @@ end
 # first, as the hosted `request_value(value)` does, then stored at the field (instance_var.iyi).
 pub def codegen_instance_var_assign(low : Lowerer, node : Assign) : Nil
   target = node.target.as(InstanceVar)
-  wants = low.needs_value
-  low.needs_value = true
-  codegen_node(low, node.value)
-  low.needs_value = wants
-  value = low.last
-  raise "BUG: the assigned value left no value (hosted codegen.cr: codegen_assign)" if value.nil?
   value_type = low.analysed.type_of?(node.value)
   raise "BUG: the analysed program has no type for the assigned value (hosted codegen.cr: codegen_assign)" if value_type.nil?
+  value : Value? = nil
+  if node.value.is_a?(Var)
+    if slot = low.current_context.vars[node.value.as(Var).name]?
+      if !slot.already_loaded && passed_by_value?(slot.type) && slot.type.full_name == value_type.as(Type).full_name
+        # Hosted request_value keeps a by-value local's address. The field store
+        # loads it only after computing the destination and its union tag.
+        value = slot.pointer
+      end
+    end
+  end
+  if value.nil?
+    wants = low.needs_value
+    low.needs_value = true
+    codegen_node(low, node.value)
+    low.needs_value = wants
+    value = low.last
+  end
+  raise "BUG: the assigned value left no value (hosted codegen.cr: codegen_assign)" if value.nil?
   store_instance_var(low, target.name, value.as(Value), value_type.as(Type))
   low.last = value
 end
@@ -1535,6 +1547,10 @@ pub def codegen_cast(low : Lowerer, node : Cast) : Nil
   raise "BUG: Cast node has no analysed type (hosted codegen.cr: visit(Cast))" if res_t.nil?
   resulting_type = TypeIndirection.remove_indirection(res_t.as(Type))
   if node.upcast
+    if resulting_type.is_a?(MixedUnionType) && obj_type.full_name != resulting_type.full_name
+      low.last = union_temp(low, resulting_type, obj_type, last_value)
+      return
+    end
     low.last = upcast(low, last_value, obj_type, resulting_type)
     return
   end
