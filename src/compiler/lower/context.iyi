@@ -80,6 +80,7 @@ pub class LowerContext
   property closure_names : Array(String)
   property closure_types : Array(Type)
   property closure_facts : ClosureFacts?
+  property closure_parent : LowerContext?
   # The block frame and the phis of the context (hosted Context#return_phi, break_phi, next_phi, block, block_context).
   property return_phi : BranchPhi?
   property break_phi : BranchPhi?
@@ -101,6 +102,7 @@ pub class LowerContext
     @closure_names = [] of String
     @closure_types = [] of Type
     @closure_facts = nil
+    @closure_parent = nil
     @return_phi = nil
     @break_phi = nil
     @next_phi = nil
@@ -109,6 +111,15 @@ pub class LowerContext
     @return_target = nil
     @break_target = nil
     @next_target = nil
+  end
+
+  def copy_closure_from(other : LowerContext) : Nil
+    @closure_type = other.closure_type
+    @closure_ptr = other.closure_ptr
+    @closure_names = other.closure_names
+    @closure_types = other.closure_types
+    @closure_facts = other.closure_facts
+    @closure_parent = other.closure_parent
   end
 end
 

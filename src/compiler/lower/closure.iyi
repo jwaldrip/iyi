@@ -4,14 +4,16 @@ import compiler/ir/inst::{CallConv, Op}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
-import compiler/lower/helpers::{abi_name}
+import compiler/lower/helpers::{abi_name, load_aligned}
+import compiler/lower/cast::{assign}
+import compiler/types/types::{PointerInstanceType}
 import compiler/lower/layouts::{has_inner_pointers?}
 import compiler/semantic/closures::{ClosureFrame}
 import compiler/semantic/top_level::{Type}
 
 # The hosted malloc_closure: captured variables share an allocated context,
 # rather than independent stack slots that outlive neither the call nor the proc.
-pub def allocate_closure(low : Lowerer, frame : ClosureFrame) : Nil
+pub def allocate_closure(low : Lowerer, frame : ClosureFrame, parent : LowerContext? = nil) : Nil
   names = [] of String
   types = [] of Type
   pointerful = false
@@ -20,11 +22,23 @@ pub def allocate_closure(low : Lowerer, frame : ClosureFrame) : Nil
     types << var.type
     pointerful = true if has_inner_pointers?(var.type)
   end
-  return if names.empty?
   context = low.current_context
+  if names.empty?
+    if outer = parent
+      context.closure_type = outer.closure_type
+      context.closure_ptr = outer.closure_ptr
+      context.closure_names = outer.closure_names
+      context.closure_types = outer.closure_types
+      context.closure_parent = outer.closure_parent
+    end
+    return
+  end
   context.closure_names = names
   context.closure_types = types
-  layout = low.typer.closure_context_type(types, false, nil)
+  has_parent = !parent.nil? && !parent.closure_ptr.nil?
+  context.closure_parent = has_parent ? parent : nil
+  pointerful = true if has_parent
+  layout = low.typer.closure_context_type(types, has_parent, nil)
   context.closure_type = layout
   suffix = pointerful ? "malloc64" : "malloc_atomic64"
   allocator_name = abi_name(low, suffix)
@@ -44,10 +58,17 @@ pub def allocate_closure(low : Lowerer, frame : ClosureFrame) : Nil
   size = low.builder.const_cast(Op::PtrToInt, endpoint, low.typer.size_t)
   ptr = low.builder.call(allocator.fn_type, allocator, [size] of Value, "")
   context.closure_ptr = ptr
-  setup_closure_vars(low, context, ptr)
+  if outer = context.closure_parent
+    zero = low.builder.const_int(low.module.types.int32, 0_i64).as(Value)
+    index = low.builder.const_int(low.module.types.int32, names.size.to_i64).as(Value)
+    parent_slot = low.builder.inbounds_gep(layout, ptr, [zero, index] of Value, "parent")
+    ptr_type = PointerInstanceType.new(low.analysed.program, low.analysed.program.nil_type)
+    assign(low, parent_slot, ptr_type, ptr_type, outer.closure_ptr.as(Value))
+  end
+  setup_closure_vars(low, context, ptr, true, false)
 end
 
-pub def setup_closure_vars(low : Lowerer, source : LowerContext, ptr : Value) : Nil
+pub def setup_closure_vars(low : Lowerer, source : LowerContext, ptr : Value, overwrite : Bool = true, include_parent : Bool = true) : Nil
   layout = source.closure_type
   raise "BUG: missing closure layout" if layout.nil?
   zero = low.builder.const_int(low.module.types.int32, 0_i64).as(Value)
@@ -55,10 +76,18 @@ pub def setup_closure_vars(low : Lowerer, source : LowerContext, ptr : Value) : 
   while i < source.closure_names.size
     index = low.builder.const_int(low.module.types.int32, i.to_i64).as(Value)
     name = source.closure_names[i]
-    slot = low.builder.inbounds_gep(layout.as(IrType), ptr, [zero, index] of Value, name)
-    var = LowerVar.new(slot, source.closure_types[i], false)
-    var.closure_slot = true
-    low.current_context.vars[name] = var
+    if overwrite || low.current_context.vars[name]?.nil?
+      slot = low.builder.inbounds_gep(layout.as(IrType), ptr, [zero, index] of Value, name)
+      var = LowerVar.new(slot, source.closure_types[i], false)
+      var.closure_slot = true
+      low.current_context.vars[name] = var
+    end
     i += 1
+  end
+  if parent = include_parent ? source.closure_parent : nil
+    index = low.builder.const_int(low.module.types.int32, source.closure_names.size.to_i64).as(Value)
+    slot = low.builder.inbounds_gep(layout.as(IrType), ptr, [zero, index] of Value, "parent_ptr")
+    outer_ptr = load_aligned(low, low.module.types.ptr(0), slot)
+    setup_closure_vars(low, parent, outer_ptr, false)
   end
 end

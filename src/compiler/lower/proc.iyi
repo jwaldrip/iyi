@@ -15,6 +15,7 @@ import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
 import compiler/syntax/ast::{ASTNode, Assign, Call, ClassDef, Def, InstanceVar, ModuleDef, ProcLiteral, Self, Var}
 import compiler/syntax/visitor::{Visitor}
+import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/top_level::{NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, SemanticProgram, Type}
 import compiler/types/types::{ProcInstanceType}
 
@@ -80,7 +81,7 @@ pub class ProcScan < Visitor
   getter receiverless_calls : Array(Call)
   getter refused : String?
 
-  def initialize
+  def initialize(@analysed : MainVisitor)
     @referenced = [] of String
     @assigned = [] of String
     @receiverless_calls = [] of Call
@@ -88,6 +89,16 @@ pub class ProcScan < Visitor
   end
 
   def visit_any(node : ASTNode) : Bool
+    if expanded = @analysed.expansions[node]?
+      expanded.accept(self)
+      return false
+    end
+    if node.is_a?(Call)
+      if expanded = node.as(Call).expanded
+        expanded.accept(self)
+        return false
+      end
+    end
     if node.is_a?(Compiler::Syntax::Ast::Block)
       @refused = "a block inside a proc literal (hosted closure over the block context, lower/block.iyi)" if @refused.nil?
       return false
@@ -150,7 +161,7 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   proc = proc_type.as(ProcInstanceType)
 
   # Keep the unsupported self and nested-scope forms explicitly refused.
-  scan = ProcScan.new
+  scan = ProcScan.new(low.analysed)
   node.def.body.accept(scan)
   refused = scan.refused
   if refused
