@@ -25,7 +25,7 @@ module compiler/lower/block
 import compiler/syntax/ast::{ASTNode, Splat, Yield}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
-import compiler/lower/cast::{assign, to_rhs}
+import compiler/lower/cast::{assign, union_temp}
 import compiler/lower/context::{BranchPhi, Lowerer, LowerContext, LowerVar}
 import compiler/lower/fun::{block_ended?, visit_node}
 import compiler/lower/helpers::{llvm_nil}
@@ -33,6 +33,8 @@ import compiler/lower/pending::{pending_visit_node, refuse_port}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/ensure::{execute_ensures_until, set_ensure_exception_handler}
 import compiler/semantic/top_level::{NilType, NoReturnType, Type, VoidType}
+import compiler/lower/typer::{passed_by_value?}
+import compiler/types/indirection::{TypeIndirection}
 import compiler/types/types::{TupleInstanceType}
 
 
@@ -51,7 +53,7 @@ impl BranchPhi for NoReturnPhi
     end
   end
 
-  def merge_type : IrType?
+  def semantic_join_type : Type?
     nil
   end
 end
@@ -80,6 +82,14 @@ pub def store_local(low : Lowerer, var : LowerVar, value_type : Type, value : Va
   unless var.type.is_a?(NilType) && value_type.is_a?(NilType)
     assign(low, var.pointer, var.type, value_type, value)
   end
+end
+
+# Passed-by-value joins use the address of the semantic join type, as hosted Phi#add does.
+pub def join_pointer(low : Lowerer, value : Value, value_type : Type, join_type : Type) : Value
+  if value.type.pointer? && TypeIndirection.remove_indirection(value_type).full_name == TypeIndirection.remove_indirection(join_type).full_name
+    return value
+  end
+  union_temp(low, join_type, value_type, value)
 end
 
 # The hosted `visit(Yield)`. The block's arguments take the values of the yield's expressions; the
@@ -145,10 +155,12 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
   raise "BUG: the analysed program has no type for a block (hosted codegen.cr: visit(Yield))" if bt.nil?
   noreturn = bt.as(Type).is_a?(NoReturnType)
   merge : IrType? = nil
+  join : Type? = nil
   if wants && !noreturn
-    merge = low.typer.llvm_type(bt.as(Type))
+    join = bt.as(Type)
+    merge = passed_by_value?(bt.as(Type)) ? low.module.types.ptr(0) : low.typer.llvm_type(bt.as(Type))
   end
-  phi = LowerPhi.new(wants && !noreturn, merge)
+  phi = LowerPhi.new(wants && !noreturn, merge, join)
 
   # The hosted `with_cloned_context(block_context)`: the body's context shares the block context's
   # variables and its return; `break` is the call's value, `next` is this yield's phi.
@@ -186,10 +198,10 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
     end
   else
     value = low.last
-    if phi.needs_value && !block_ended?(low) && !value.nil? && value.as(Value).type.pointer?
+    if phi.needs_value && !block_ended?(low) && !value.nil? && passed_by_value?(bt.as(Type))
       body_type = low.analysed.type_of?(block.body)
       raise "BUG: the yielded block body has no type" if body_type.nil?
-      low.last = to_rhs(low, value.as(Value), body_type.as(Type))
+      low.last = join_pointer(low, value.as(Value), body_type.as(Type), bt.as(Type))
     end
     phi.add(low, low.last, true)
   end
@@ -208,12 +220,12 @@ end
 # The hosted `break_phi.add @last, node_type`, `next_phi.add` and `return_phi.add` (codegen.cr visit(Break),
 # visit(Next), codegen_return_node): the value of the expression goes to the phi, which branches to its
 # exit. A nil or void value adds no value to the phi; a value of another type than the phi's merges is
-# refused by name (the hosted upcast). A NoReturn phi takes the value as `unreachable` (`NoReturnPhi`).
+# refused by name (the hosted upcast). Passed-by-value joins take addresses after ensures run.
+# A NoReturn phi takes the value as `unreachable` (`NoReturnPhi`).
 pub def branch_to_phi(low : Lowerer, phi : BranchPhi, exp : ASTNode?, target : ASTNode?) : Nil
-  nil_ir = low.typer.llvm_type(low.analysed.program.nil_type)
   value : Value? = nil
   value_type : Type? = nil
-  got_ir = nil_ir
+  got : Type = low.analysed.program.nil_type
   if e = exp
     wants = low.needs_value
     low.needs_value = true
@@ -227,7 +239,7 @@ pub def branch_to_phi(low : Lowerer, phi : BranchPhi, exp : ASTNode?, target : A
     value_type = et_t
     unless et_t.is_a?(NilType) || et_t.is_a?(VoidType)
       value = v.as(Value)
-      got_ir = low.typer.llvm_type(et_t)
+      got = et_t
     end
   else
     low.last = llvm_nil(low)
@@ -235,12 +247,12 @@ pub def branch_to_phi(low : Lowerer, phi : BranchPhi, exp : ASTNode?, target : A
   execute_ensures_until(low, target, value_type)
   return if block_ended?(low)
   value = low.last if !value.nil?
-  merged = phi.merge_type
-  if !merged.nil? && merged.as(IrType).to_s != got_ir.to_s
+  join = phi.semantic_join_type
+  if !join.nil? && low.typer.llvm_type(join.as(Type)).to_s != low.typer.llvm_type(got).to_s
     refuse_port("a break, next or return of a block call with a value of another type than the call (hosted upcast, not ported)")
   end
-  if !merged.nil? && !value.nil? && value.as(Value).type.pointer?
-    value = to_rhs(low, value.as(Value), value_type.as(Type))
+  if !join.nil? && !value.nil? && passed_by_value?(join.as(Type))
+    value = join_pointer(low, value.as(Value), got, join.as(Type))
   end
   phi.add_branch(low, value, false)
   low.last = llvm_nil(low)
