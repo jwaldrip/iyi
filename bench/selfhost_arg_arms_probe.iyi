@@ -6,8 +6,17 @@ import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/method_lookup::{ArmWalk}
 
+class InputWalk < Visitor
+  getter counts : Hash(UInt64, Int32) = Hash(UInt64, Int32).new
+
+  def visit(node : Call) : Bool
+    @counts[node.object_id] = node.args.size
+    true
+  end
+end
+
 class ArmProbe < Visitor
-  def initialize(@program : SemanticProgram, @typer : MainVisitor, @name : String)
+  def initialize(@program : SemanticProgram, @typer : MainVisitor, @name : String, @counts : Hash(UInt64, Int32))
   end
 
   def visit(node : Call) : Bool
@@ -20,8 +29,18 @@ class ArmProbe < Visitor
           return true
         end
       end
-      found = @typer.lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents)
+      if named = node.named_args
+        named.each { |arg| arg.value.accept(@typer) }
+      end
+      # The legacy visitor can expand named arguments in node.args. Preserve
+      # the positional count captured before typing for this matcher probe.
+      count = @counts[node.object_id]? || node.args.size
+      positional = node.args[0, count]
+      found = @typer.lookup_call_arms(receiver, receiver, node.name, positional, node, ArmWalk::Parents)
       puts "arms=#{found.matches.size} cover=#{found.cover_all?}"
+      if error = found.error
+        puts "error=#{error}"
+      end
       found.matches.each do |match|
         puts "#{match.defining.full_name}##{match.definition.name}:#{match.arg_types.map(&.full_name).join(",")}"
         if node.name == "new"
@@ -41,8 +60,10 @@ program.search_path = [Program.args[1]]
 top = TopLevelVisitor.new(program, path)
 node.accept(top)
 top.finish
+inputs = InputWalk.new
+node.accept(inputs)
 typer = MainVisitor.new(program)
 typer.total = true
 node.accept(typer)
-probe = ArmProbe.new(program, typer, Program.args[2])
+probe = ArmProbe.new(program, typer, Program.args[2], inputs.counts)
 node.accept(probe)
