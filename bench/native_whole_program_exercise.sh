@@ -114,10 +114,6 @@ phase_of() {
     printf 'native\t%s\n' "$(head -n 1 "$dir/native.log")"
     return
   fi
-  if ! native_signature_ok "$dir/native"; then
-    printf 'native\tinvalid executable signature\n'
-    return
-  fi
   # The executable loads libSystem and the frameworks the hosted link named that it calls, and nothing else.
   local libs extra
   libs=$(otool -L "$dir/native" | awk 'NR > 1 { print $1 }')
@@ -129,6 +125,10 @@ phase_of() {
     return
   fi
   local ns
+  if ! native_signature_ok "$dir/native"; then
+    printf 'native\tinvalid executable signature\n'
+    return
+  fi
   ns=$(run_bounded "$dir/native" "$dir/n.out" "$dir/n.err")
   if [ "$ns" = "$(cat "$dir/h.status")" ] && cmp -s "$dir/h.out" "$dir/n.out"; then
     printf 'run-equal\t\n'
@@ -260,11 +260,13 @@ else
   else
     fail "cn1 and cn2 differ: the natively built compiler does not compile as the hosted-built one does"
   fi
-  if ! native_signature_ok "$self/b/cn"; then
-    fail "cn2 has an invalid signature"
-  elif [ -f "$hello_dir/p.ir" ]; then
+  if [ -f "$hello_dir/p.ir" ]; then
     "$tools/compile_native" "$hello_dir/p.ir" -o "$self/h1/hello" >/dev/null 2>&1
-    "$self/b/cn" "$hello_dir/p.ir" -o "$self/h2/hello" >/dev/null 2>&1
+    if native_signature_ok "$self/b/cn"; then
+      "$self/b/cn" "$hello_dir/p.ir" -o "$self/h2/hello" >/dev/null 2>&1
+    else
+      fail "cn2 has an invalid signature"
+    fi
     if [ -x "$self/h2/hello" ] && cmp -s "$self/h1/hello" "$self/h2/hello"; then
       echo "   cn2 builds hello to the bytes the tool builds it to"
     else

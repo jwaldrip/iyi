@@ -27,6 +27,31 @@ IYI="$REPO/bin/iyi"
 WORK="$(mktemp -d)"
 
 trap 'rm -rf "$WORK"' EXIT
+# LLVM writes switch cases on separate lines without separators; the IR reader
+# accepts comma-separated cases on one line. Reject malformed input, not just
+# unterminated switches, before handing it to the reader.
+normalize_switches() {
+  awk '
+    in_switch {
+      if ($0 ~ /^[[:space:]]*][[:space:]]*$/) { print line " ]"; in_switch=0; next }
+      if ($0 !~ /^[[:space:]]*i[0-9]+ -?[0-9]+, label %[^[:space:]]+[[:space:]]*$/) { bad=1; exit 1 }
+      sub(/^[[:space:]]*/, "")
+      line=line (count++ ? ", " : " ") $0
+      next
+    }
+    /switch .*\[$/ { line=$0; in_switch=1; count=0; next }
+    { print }
+    END { if (in_switch || bad) exit 1 }
+  '
+}
+switch_result="$(printf '  switch i32 %%x, label %%else [\n    i32 1, label %%a\n    i32 2, label %%b\n  ]\n' | normalize_switches)"
+if [ "$switch_result" != '  switch i32 %x, label %else [ i32 1, label %a, i32 2, label %b ]' ] ||
+   printf 'switch i32 %%x, label %%else [\n i32 1, label %%a\n' | normalize_switches >/dev/null ||
+   printf 'switch i32 %%x, label %%else [\n nonsense\n]\n' | normalize_switches >/dev/null; then
+  echo "switch normalization regression"
+  exit 1
+fi
+
 
 echo "== 1. Building the port driver"
 if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_primitives_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
@@ -47,7 +72,6 @@ waiting=0
 # taken off this list, so a wait cannot outlive its cause unnoticed.
 waiting_on() {
   case "$1" in
-    lowprim_enum) echo "enum members type as Int32 until the bodies lane's enum Path fix lands" ;;
   esac
 }
 
@@ -76,7 +100,11 @@ for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
     diverged=$((diverged + 1))
     continue
   fi
-  awk "$CALL_TYPES" "$WORK/$name.ll" > "$WORK/$name.oracle.ll"
+  if ! awk "$CALL_TYPES" "$WORK/$name.ll" | normalize_switches > "$WORK/$name.oracle.ll"; then
+    echo "  $name: malformed switch in hosted module"
+    diverged=$((diverged + 1))
+    continue
+  fi
 
   if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
     if [ -n "$(waiting_on "$name")" ]; then
@@ -139,6 +167,11 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
       e2e_fail=$((e2e_fail + 1))
       continue
     fi
+    if ! codesign -v --strict "$WORK/$name.native"; then
+      echo "  $name: native executable failed strict signature verification"
+      e2e_fail=$((e2e_fail + 1))
+      continue
+    fi
     timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
     timeout 30 "$WORK/$name" > "$WORK/$name.hosted.out" 2>&1; hs=$?
     if [ "$ns" = "$hs" ] && cmp -s "$WORK/$name.native.out" "$WORK/$name.hosted.out"; then
@@ -171,10 +204,28 @@ binary_union_check() {
     awk '/lower: visit\(binary <= with operand IR types .* inconsistent with Int64 and Int64 \(hosted codegen_binary_op\)\)/ { found = 1 } END { exit !found }' "$WORK/union.err" || return 1
   done
 }
+convert_refusal_check() {
+  local driver="$1"
+  for spec in "UInt128 Float32 checked checked UInt128 to Float32" \
+              "Float64 Float32 checked checked float narrowing" \
+              "Float64 Int32 checked float to integer" \
+              "Float64 Int32 unchecked float to integer"; do
+    set -- $spec
+    from=$1; to=$2; check=$3; shift 3
+    if "$driver" convert_refusal "$from" "$to" "$check" > "$WORK/refuse.out" 2> "$WORK/refuse.err"; then
+      return 1
+    fi
+    awk -v reason="$*" 'index($0, reason) { found=1 } END { exit !found }' "$WORK/refuse.err" || return 1
+  done
+}
 if binary_union_check "$WORK/port"; then
   echo "  union comparison: both operand positions refused by name"
 else
   echo "  union comparison: missing named refusal"
+  status=1
+fi
+if ! convert_refusal_check "$WORK/port"; then
+  echo "  conversion: missing named refusal"
   status=1
 fi
 
@@ -194,6 +245,7 @@ lower_primitives_check() {
   "$WORK/mut" generic_pointerful > "$WORK/mut.pointerful" 2>"$WORK/mut.pointerful.err" || return 1
   awk '/^generic_pointerful=1$/ { found = 1 } END { exit !found }' "$WORK/mut.pointerful" || return 1
   binary_union_check "$WORK/mut" || return 1
+  convert_refusal_check "$WORK/mut" || return 1
   return 0
 }
 pointer_check() {
@@ -299,6 +351,30 @@ prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/pr
   "    if op == \"==\"" "    if op == \"!=\"" -- lower_primitives_check || status=1
 prove_mutation "the class type id is stored one struct over" "$REPO/src/compiler/lower/primitives.iyi" \
   "  zero = low.builder.const_int(low.module.types.int32, 0_i64)" "  zero = low.builder.const_int(low.module.types.int32, 1_i64)" -- lower_primitives_check || status=1
+prove_mutation "integer to Char uses the wrong signed width" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return codegen_convert_int(low, from, low.analysed.program.int32_type, value, checked)' '    return value' -- lower_primitives_check || status=1
+prove_mutation "Char to equal width integer extends" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    if value.type.key == low.typer.llvm_type(to).key' '    if false' -- lower_primitives_check || status=1
+prove_mutation "signed integer to float uses unsigned conversion" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      return low.builder.si_to_fp(value, low.typer.llvm_type(to))' '      return low.builder.ui_to_fp(value, low.typer.llvm_type(to))' -- lower_primitives_check || status=1
+prove_mutation "float less-than uses less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::OLT, left, right)' '    return low.builder.fcmp(RealPredicate::OLE, left, right)' -- lower_primitives_check || status=1
+prove_mutation "float equality uses inequality" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::OEQ, left, right)' '    return low.builder.fcmp(RealPredicate::UNE, left, right)' -- lower_primitives_check || status=1
+prove_mutation "float inequality uses equality" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::UNE, left, right)' '    return low.builder.fcmp(RealPredicate::OEQ, left, right)' -- lower_primitives_check || status=1
+prove_mutation "float less-or-equal uses greater-than" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::OLE, left, right)' '    return low.builder.fcmp(RealPredicate::OGT, left, right)' -- lower_primitives_check || status=1
+prove_mutation "float greater-than uses less-than" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::OGT, left, right)' '    return low.builder.fcmp(RealPredicate::OLT, left, right)' -- lower_primitives_check || status=1
+prove_mutation "float greater-or-equal uses less-than" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::OGE, left, right)' '    return low.builder.fcmp(RealPredicate::OLT, left, right)' -- lower_primitives_check || status=1
+prove_mutation "checked UInt128 to Float32 must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      pending_visit_node("checked UInt128 to Float32 (hosted codegen_out_of_range)")' '      return value' -- lower_primitives_check || status=1
+prove_mutation "checked float narrowing must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
+  '        pending_visit_node("checked float narrowing #{from.full_name} to #{to.full_name} (hosted codegen_out_of_range)")' '        return value' -- lower_primitives_check || status=1
+prove_mutation "float to integer must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    pending_visit_node("float to integer #{from.full_name} to #{to.full_name} (hosted codegen_convert)")' '    return value' -- lower_primitives_check || status=1
 
 echo
 echo "== 5. Checked arithmetic in an isolated def from a required runtime"
