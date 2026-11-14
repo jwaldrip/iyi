@@ -110,7 +110,7 @@ pub class TypeLookup
       end
       if curr.nil?
         if ns = root.namespace
-          curr = find_item(ns, name, false, true)
+          curr = unit_loses_to_program(find_item(ns, name, false, true), name)
         end
       end
     end
@@ -147,10 +147,22 @@ pub class TypeLookup
     end
     if lookup_in_namespace && !scope.is_a?(SemanticProgram)
       if ns = scope.namespace
-        return find_item(ns, name, false, lookup_in_namespace)
+        return unit_loses_to_program(find_item(ns, name, false, lookup_in_namespace), name)
       end
     end
     nil
+  end
+
+  # A sibling unit module found by walking out through a namespace loses to the program's type of the same name
+  # (hosted path_lookup.cr:177-187): inside `Compiler::Lower::Asm`, `Compiler` is the program's module and not the
+  # unit `Compiler::Compiler`. A real type declared in the namespace keeps its place.
+  def unit_loses_to_program(match : Type?, name : String) : Type?
+    if match.is_a?(ModuleType) && match.as(ModuleType).iyi_unit
+      if top = program.lookup_type(name)
+        return top
+      end
+    end
+    match
   end
 
   # An alias stands for the type its value names, through any chain of aliases

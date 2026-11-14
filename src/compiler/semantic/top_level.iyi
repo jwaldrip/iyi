@@ -2019,6 +2019,13 @@ pub class SemanticProgram < NonGenericModuleType
         break if ns.is_a?(SemanticProgram)
         match = ns.lookup_type(first_name)
         if match
+          # iyi: a sibling unit module found by walking out loses to the program's type of the same name
+          # (hosted path_lookup.cr:177-187): inside `Compiler::Lower::Asm`, `Compiler` is the program's.
+          if match.is_a?(ModuleType) && match.as(ModuleType).iyi_unit
+            if top = lookup_type(first_name)
+              match = top
+            end
+          end
           t = match
           break
         end
