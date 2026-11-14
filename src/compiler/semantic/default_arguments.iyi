@@ -22,10 +22,11 @@ import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, Expressions, Magic
 # or names no parameter, and a parameter with no default that no argument fills
 # (the call does not match, so there is no list to build).
 #
-# The hosted expansion keeps the def's body (rather than forwarding) when a
-# default has a restriction, or the def takes a block or a special variable. That
-# changes where the defaults are evaluated, not which values reach the parameters,
-# so the list is the same and the port does not distinguish the two.
+# The hosted expansion keeps the def's body (rather than forwarding) when a default has a restriction, or the def
+# takes a block parameter or is a macro def, or takes a splat or a special variable. That changes where the
+# defaults are evaluated, not which values reach the parameters, so the list is the same and the port does not
+# distinguish the two. A kept body is a def of its own: it keeps the block parameter of the original, and the
+# flags its body sets.
 pub class DefaultArguments
   # Hosted default_arguments.cr:4-35, 146-197, 258-297. Instantiate the
   # expansion in the original def's scope, rather than visiting defaults at
@@ -35,7 +36,6 @@ pub class DefaultArguments
       return expand_splat(rec_def, given, splat_names)
     end
     return "not ported: splat or unmatched default arguments" unless supported_count?(rec_def, given, named_args)
-    return "not ported: default expansion with block parameter or macro def" if rec_def.block_arg || rec_def.macro_def
     expansion = wrapper_def(rec_def, given, named_args)
     expansion.nil? ? rec_def : expansion.as(Def)
   end
@@ -91,7 +91,7 @@ pub class DefaultArguments
                                 body << original.clone
                                 Expressions.new(body)
                               end
-    wrapper = Def.new(rec_def.name, new_args, expanded_body, copy_node(rec_def.receiver), nil, copy_node(rec_def.return_type), rec_def.macro_def, rec_def.abstract, nil, nil, copy_free_vars(rec_def.free_vars), rec_def.uses_block_arg)
+    wrapper = Def.new(rec_def.name, new_args, expanded_body, copy_node(rec_def.receiver), copy_arg(rec_def.block_arg), copy_node(rec_def.return_type), rec_def.macro_def, rec_def.abstract, nil, nil, copy_free_vars(rec_def.free_vars), rec_def.uses_block_arg)
     wrapper.calls_super = rec_def.calls_super
     wrapper.calls_initialize = rec_def.calls_initialize
     wrapper.calls_previous_def = rec_def.calls_previous_def
@@ -196,17 +196,12 @@ pub class DefaultArguments
   # defaults in order, or every default left over is a magic constant (the hosted early
   # returns), and the call targets *rec_def* itself.
   #
-  # Two shapes are not built. A block parameter or a macro def is refused (the hosted
-  # expansion keeps the body there). A default with a restriction keeps the body too,
-  # with the defaults as assignments before it: the hosted assignment carries the
-  # restriction check (AssignWithRestriction), which this port's syntax tree does not
-  # have, so the wrapper takes a plain assignment and the check is not made here.
+  # One shape is not built exactly. A default with a restriction keeps the body, with the defaults as assignments
+  # before it: the hosted assignment carries the restriction check (AssignWithRestriction), which this port's
+  # syntax tree does not have, so the wrapper takes a plain assignment and the check is not made here.
   def self.wrapper_def(rec_def : Def, given : Int32, named_args : Array(NamedArgument)?) : Def?
     if !DefaultArguments.supported_count?(rec_def, given, named_args)
       raise "BUG: no wrapper for #{rec_def.name}: the call is not supported"
-    end
-    if rec_def.block_arg || rec_def.macro_def
-      raise "BUG: no wrapper for #{rec_def.name}: a block parameter or a macro def is not ported"
     end
     count = rec_def.args.size
     if named_args
@@ -216,7 +211,7 @@ pub class DefaultArguments
     else
       return nil if DefaultArguments.all_magic_from?(rec_def, given)
     end
-    retain = false
+    retain = !rec_def.block_arg.nil? || rec_def.macro_def
     rec_def.args.each do |arg|
       retain = true if arg.default_value && arg.restriction
     end
@@ -269,8 +264,11 @@ pub class DefaultArguments
 
     receiver = rec_def.receiver
     return_type = rec_def.return_type
-    wrapper = Def.new(new_name, new_args, Expressions.new(body_list), DefaultArguments.copy_node(receiver), nil, DefaultArguments.copy_node(return_type), false, false, nil, nil, nil, false)
+    wrapper = Def.new(new_name, new_args, Expressions.new(body_list), DefaultArguments.copy_node(receiver), DefaultArguments.copy_arg(rec_def.block_arg), DefaultArguments.copy_node(return_type), rec_def.macro_def, false, nil, nil, nil, rec_def.uses_block_arg)
     wrapper.free_vars = DefaultArguments.copy_free_vars(rec_def.free_vars)
+    wrapper.calls_super = rec_def.calls_super
+    wrapper.calls_initialize = rec_def.calls_initialize
+    wrapper.calls_previous_def = rec_def.calls_previous_def
     wrapper
   end
 
@@ -289,6 +287,12 @@ pub class DefaultArguments
   def self.copy_node(node : ASTNode?) : ASTNode?
     return nil if node.nil?
     node.clone
+  end
+
+  # A copy of an optional parameter, or nil.
+  def self.copy_arg(arg : Arg?) : Arg?
+    return nil if arg.nil?
+    arg.clone.as(Arg)
   end
 
   # A copy of the optional list of free variables, or nil.
