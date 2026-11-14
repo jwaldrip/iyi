@@ -161,6 +161,24 @@ else
 fi
 
 echo
+echo "== 2d. Abstract requirements supply a return type without a typed body"
+abstract_fixture="$REPO/bench/fixtures/bodies_abstract_requirement.iyi"
+abstract_probe="$WORK/abstract_requirement_probe"
+abstract_expected="$WORK/abstract_requirement.expected"
+printf '%s\n' 'refusals: 0' 'item.greet: String' 'abstract instances: 0' > "$abstract_expected"
+"$IYI" build -o "$abstract_probe" "$REPO/bench/selfhost_abstract_requirement_probe.iyi" > "$WORK/abstract_build.log" 2>&1 || {
+  cat "$WORK/abstract_build.log"
+  echo "  ABSTRACT: failed to build probe"
+  exit 1
+}
+if ! "$abstract_probe" "$abstract_fixture" "$REPO/src" > "$WORK/abstract.actual" 2> "$WORK/abstract_run.log" ||
+   ! diff -u "$abstract_expected" "$WORK/abstract.actual"; then
+  cat "$WORK/abstract_run.log"
+  echo "  ABSTRACT: incorrect requirement typing"
+  status=1
+fi
+
+echo
 echo "== 2c. A call in a fun body's macro branch is typed after expansion"
 splice_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
 echo "  sem_bodies_fun_splice.iyi typed instances: ${splice_count:-none} (expected 1)"
@@ -277,9 +295,22 @@ setter_typed_as_value() {
   "$MUT_TD" "$fx" "$REPO/src" > "$WORK/setter_mut.port" 2>/dev/null || return 1
   diff -q "$WORK/setter_mut.hosted" "$WORK/setter_mut.port" >/dev/null
 }
+abstract_probe_at_expected() {
+  if ! "$IYI" build -o "$WORK/abstract_mutant" "$REPO/bench/selfhost_abstract_requirement_probe.iyi" > "$WORK/abstract_mutant_build.log" 2>&1; then
+    body_build_failed "$WORK/abstract_mutant_build.log"
+    return $?
+  fi
+  if ! "$WORK/abstract_mutant" "$abstract_fixture" "$REPO/src" > "$WORK/abstract_mutant.actual" 2> "$WORK/abstract_mutant_run.log"; then
+    echo "INVALID MUTANT: abstract requirement probe failed to run" >&2
+    cat "$WORK/abstract_mutant_run.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  diff -u "$abstract_expected" "$WORK/abstract_mutant.actual"
+}
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
 prove_mutation "an abstract requirement is typed as an empty implementation" "$MAIN_VISITOR" \
-  '    if target_def.abstract' '    if false && target_def.abstract' -- bodies_at_floor || status=1
+  '    if target_def.abstract' '    if false && target_def.abstract' -- abstract_probe_at_expected || status=1
 owner_mutant_at_expected() {
   if ! "$IYI" build -o "$WORK/owner_mutant" "$REPO/bench/selfhost_program_owner_probe.iyi" > "$WORK/owner_mutant_build.log" 2>&1; then
     echo "INVALID MUTANT: owner probe failed to build" >&2
