@@ -897,14 +897,32 @@ prove_mutation "a supplied named parameter is not defaulted" "$REPO/src/compiler
   "      if k != index && !named_given?(named_args, rec_def.args[k].external_name)" \
   "      if k != index" -- bare_splat_bounds || status=1
 restriction_scope_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
-  fixture="$REPO/bench/fixtures/sem_bodies_restriction_scope.iyi"
-  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
-  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
-  matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
-  floor=$(awk '$1 == "bench/fixtures/sem_bodies_restriction_scope.iyi" { print $2 }' "$FLOOR_FILE")
-  [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
+  if ! "$IYI" build -o "$WORK/scope_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/scope_tool_build.log" 2>&1; then
+    body_build_failed "$WORK/scope_tool_build.log"
+    return $?
+  fi
+  if ! "$WORK/scope_tool" "$REPO/bench/fixtures/sem_bodies_restriction_scope.iyi" \
+      -o "$WORK/scope_native" --pipeline typed --prelude > "$WORK/scope_build.log" 2>&1; then
+    if [ "${_PM_ARMED:-0}" = 1 ]; then
+      if grep -Fq "no overload matches 'T6Scope::Visitor::Visitor#check' with type T6Scope::Types::Call" "$WORK/scope_build.log"; then
+        return 1
+      fi
+      echo "INVALID MUTANT: scope fixture failed for an unexpected reason" >&2
+      cat "$WORK/scope_build.log" >&2
+      return 0
+    fi
+    cat "$WORK/scope_build.log" >&2
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/scope_native" > "$WORK/scope_sign.log" 2>&1; then
+    echo "INVALID PROOF: scope fixture did not pass strict codesign" >&2
+    cat "$WORK/scope_sign.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  [ "$("$WORK/scope_native")" = 42 ]
 }
+restriction_scope_at_floor || status=1
 prove_mutation "a restriction resolves in its definition owner scope" "$MAIN_VISITOR" \
   "      if owner = @program.def_owner(d)
         @current_type = owner" \
