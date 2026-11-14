@@ -70,6 +70,17 @@ CRYSTAL_PATH="$REPO/src" IYI_CONFIG_PATH="$REPO/src" "$CRYSTAL" build -Di_know_w
 "$IYI" build -o "$WORK/typed_trait" "$REPO/src/compiler/semantic/typed.iyi" > "$WORK/trait_build.log" 2>&1 \
   || { cat "$WORK/trait_build.log"; fatal "FAILED to build src/compiler/semantic/typed.iyi"; }
 echo "  built: oracle, typed_dump, contract trait"
+if "$TYPED" bench/fixtures/sem_parity_missing_receiver.iyi "$REPO/src" > "$WORK/missing_receiver.out" 2>&1 &&
+   grep -Fxq '2:22 Var String' "$WORK/missing_receiver.out" &&
+   grep -Fxq '2:29 StringLiteral String' "$WORK/missing_receiver.out" &&
+   grep -Fxq 'untyped: undefined constant MissingReceiver' "$WORK/missing_receiver.out" &&
+   ! grep -Eq '^2:[0-9]+ Call ' "$WORK/missing_receiver.out"; then
+  echo "  unresolved receiver: argument nodes typed and receiver refused"
+else
+  echo "  unresolved receiver argument traversal FAILED:"
+  cat "$WORK/missing_receiver.out"
+  status=1
+fi
 
 if [ "$CHILD" = 0 ]; then
   echo
