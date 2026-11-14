@@ -573,20 +573,12 @@ pub def codegen_pointerof_class_var(low : Lowerer, node : Compiler::Syntax::Ast:
   low.last = class_var_pointer(low, cvar)
 end
 
-# The hosted `codegen_assign` for a class variable target with a type (codegen.cr:1543-1556), once the value is evaluated:
-# the value is stored in the variable's global. A nilable reference variable takes a reference value as it is and nil
-# as the null pointer (cast.iyi `assign`). Any other value of another type is refused by name: the hosted assign into a
-# union is not ported yet (hosted cast.cr).
+# The hosted class-variable assignment stores through the shared conversion path.
+# Supported nullable and union stores use the same rules as local variables;
+# assign refuses conversions that have no lowering.
 pub def store_class_var(low : Lowerer, node : Compiler::Syntax::Ast::ClassVar, value : Value, value_type : Type) : Nil
   cvar = class_var_of(low, node)
   ptr = class_var_pointer(low, cvar)
-  if cvar.type.full_name == value_type.full_name
-    assign(low, ptr, cvar.type, value_type, value)
-    return
-  end
-  if !nilable_reference_type?(cvar.type)
-    refuse_port("lower: class variable #{cvar.name} is assigned a #{value_type.full_name}, not its type #{cvar.type.full_name}: the assign into a union is not ported yet (hosted codegen.cr: codegen_assign)")
-  end
   assign(low, ptr, cvar.type, value_type, value)
 end
 
