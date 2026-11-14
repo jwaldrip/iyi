@@ -212,7 +212,14 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       end
     end
   end
-  if node.obj.nil? && !low.current_context.type.nil?
+  if node.obj.nil? && !node.super?
+    if defining = low.analysed.program.def_owner(def_node)
+      if defining.is_a?(ModuleType) && defining.as(ModuleType).iyi_unit
+        class_owner = defining
+      end
+    end
+  end
+  if node.obj.nil? && class_owner.nil? && !low.current_context.type.nil?
     ct = low.current_context.type.as(Type)
     if low.current_context.vars["self"]?.nil?
       # A non-generic class method has no self argument. An unqualified call to
