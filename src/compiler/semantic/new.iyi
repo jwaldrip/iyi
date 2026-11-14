@@ -25,13 +25,8 @@ import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, DoubleSplat, Expre
 import compiler/semantic/method_lookup::{MethodLookup}
 import compiler/semantic/top_level::{GenericClassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, Type}
 
-# `allocate` with no receiver, for every class. The hosted expansion names a generic class's
-# type (`Box(T).allocate`) so that `T` is bound in the body. The port's body typer does not
-# bind a type parameter in a metaclass scope yet (undefined constant T), so a generic `new`
-# would lose its body and its call target. The scope already carries the instance type
-# (`Box(Int32).class` allocates `Box(Int32)`), so the receiver-less form types the same, and
-# the census compares the call's result and target, not the body's spelling. The type
-# parameters are kept in the signature so a later port of the hosted form changes one line.
+# The receiverless allocation uses the instantiated constructor scope, so its
+# result is the same instance type as an explicit generic receiver.
 pub def allocate_call(type_name : String, type_vars : Array(String)?, splat_index : Int32?) : Call
   Call.new(nil, "allocate")
 end
@@ -177,6 +172,7 @@ pub def define_default_generic_new(program : SemanticProgram, type : GenericClas
       made.visibility = Visibility::Public
       fill_body_from_initialize(made, type.name, type.type_vars, type.splat_index)
       type.metaclass.add_def(made)
+      program.record_generated_new(made)
     end
     return
   end

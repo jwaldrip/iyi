@@ -233,6 +233,38 @@ if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
 fi
 
 echo
+echo "== 3a. Generic constructor inference and refusal boundaries"
+for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
+  fixture="$REPO/bench/fixtures/$name.iyi"
+  if ! "$IYI" build --prelude empty --no-debug -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1 ||
+     ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1; then
+    echo "  $name: compilation failed"
+    status=1
+    continue
+  fi
+  timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
+  timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
+  if [ "$hs" -ne 7 ] || [ "$ns" -ne "$hs" ] || ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out"; then
+    echo "  $name: hosted status $hs, native status $ns, or output differs"
+    status=1
+  fi
+done
+for name in lowcallwait_uninferred_generic_new lowcallwait_generic_handwritten_make lowcallwait_generic_handwritten_new lowcallwait_generic_default_new; do
+  fixture="$REPO/bench/fixtures/$name.iyi"
+  if IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1 || [ -e "$WORK/$name.native" ]; then
+    echo "  $name: expected refusal without an executable"
+    status=1
+  elif [ "$name" != lowcallwait_uninferred_generic_new ] && ! grep -Fq 'expected type, got T' "$WORK/$name.native.log"; then
+    echo "  $name: unexpected refusal"
+    status=1
+  fi
+done
+if "$IYI" build --prelude empty -o "$WORK/uninferred.hosted" "$REPO/bench/fixtures/lowcallwait_uninferred_generic_new.iyi" > "$WORK/uninferred.hosted.log" 2>&1; then
+  echo "  uninferred generic: hosted compiler unexpectedly accepted"
+  status=1
+fi
+
+echo
 echo "== 3b. A recursive call targets the instance still being typed"
 if [ -x "$WORK/compile_native" ]; then
   for fixture in "$REPO"/bench/fixtures/sem_bodies_recursion_mutual.iyi "$REPO"/bench/fixtures/sem_bodies_recursion_state.iyi; do

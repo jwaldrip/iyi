@@ -298,6 +298,7 @@ pub class MainVisitor < TypeNodeHost
   # The constant each path names in its lexical scope (hosted Path#target_const,
   # main_visitor.cr:235). Lowering reads this binding instead of resolving it again.
   property target_consts : NodeMap(Const) = NodeMap(Const).new
+  property call_receivers : NodeMap(Type) = NodeMap(Type).new
   property type_filters : TypeFilters? = nil
   property needs_type_filters : Int32 = 0
   property unreachable : Bool = false
@@ -522,6 +523,10 @@ pub class MainVisitor < TypeNodeHost
   # Nil when the path names a type rather than a constant.
   def target_const?(path : Path) : Const?
     @target_consts[path]?
+  end
+
+  def call_receiver?(call : Call) : Type?
+    @call_receivers[call]?
   end
 
   def dispatch_targets?(call : Call) : Array(DispatchTarget)?
@@ -2713,7 +2718,7 @@ pub class MainVisitor < TypeNodeHost
 
   # The overload a call resolves to, or nil when it cannot: strict mode raises
   # the error, total mode records it on the call and returns nil.
-  def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, pinned : Array(Def)? = nil) : Def?
+  def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, pinned : Array(Def)? = nil, infer_class_vars : Bool = false) : Def?
     i = 0
     while i < args.size
       return nil if child_type(args[i]).nil?
@@ -2859,6 +2864,7 @@ pub class MainVisitor < TypeNodeHost
     arg_types = [] of Type
     args.each { |arg| arg_types << type_of(arg) }
     signature = CallSignature.new(name, arg_types, nil, call_node.block != nil)
+    signature.infer_class_vars = infer_class_vars
     widened = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args, call_node.iyi_synthetic)
     if widened.error.nil? && widened.definition && pinned_allows?(pinned, widened.definition.as(Def))
       @matched_call_args[call_node] = widened.arg_types
@@ -3981,6 +3987,7 @@ pub class MainVisitor < TypeNodeHost
     node.args.each do |arg|
       arg.accept(self)
     end
+    @call_receivers.delete(node)
     @needs_type_filters = saved_call_ntf
     if node.obj.nil? && node.name == "super"
       return visit_super(node)
@@ -4020,9 +4027,37 @@ pub class MainVisitor < TypeNodeHost
       end
     end
 
-    target_def = lookup_method_matching(rec_type, node.name, node.args, node)
+    infer_class_vars = node.named_args.nil? && node.block.nil? && node.block_arg.nil?
+    target_def = lookup_method_matching(rec_type, node.name, node.args, node, nil, infer_class_vars)
     return false if target_def.nil?
     original_def = target_def
+    if infer_class_vars
+      if generic = CallMatch.inferable_generic(@program, rec_type, @program.def_owner(original_def), original_def, node.args.size)
+        arg_types = [] of Type
+        node.args.each do |arg|
+          if arg_type = child_type(arg)
+            arg_types << arg_type
+          end
+        end
+        if arg_types.size == node.args.size
+          if bound = FreeBindings.of_def(original_def, arg_types, type_node_system(@program), generic.type_vars)
+            ordered = [] of Type
+            generic.type_vars.each do |name|
+              if arg_type = bound[name]?
+                ordered << arg_type
+              end
+            end
+            if ordered.size == generic.type_vars.size
+              instantiated = type_node_system(@program).instantiate_type(generic, ordered)
+              if receiver = type_node_metaclass(instantiated)
+                rec_type = receiver
+                @call_receivers[node] = receiver
+              end
+            end
+          end
+        end
+      end
+    end
     # A receiverless fallback to a program def is instantiated by the program,
     # not by the type that happened to call it. Methods retain the actual
     # receiver, including generic instances and inherited methods.
@@ -4480,6 +4515,7 @@ pub class MainVisitor < TypeNodeHost
     inner.lib_call_targets = @lib_call_targets
     inner.expansions = @expansions
     inner.target_consts = @target_consts
+    inner.call_receivers = @call_receivers
     inner.total = @total
     inner.typing_stack = @typing_stack
     inner.refusals = @refusals
