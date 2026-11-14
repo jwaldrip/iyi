@@ -269,9 +269,9 @@ else
   prove_mutation "super uses dynamic scope instead of lexical owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '    super_ancestors(owner_module, parents)' '    super_ancestors(scope.as(ModuleType), parents)' -- super_check || status=1
   prove_mutation "super recursion key loses defining owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-    '      key = key + "^#{owner.full_name}"' '      key = key' -- super_check || status=1
+    '      key = key + "^#{owner.full_name}"' '      key = "#{rec_type.full_name}##{target_def.name}(#{parts.join(",")})"' -- super_check || status=1
   prove_mutation "super symbol loses recorded owner" "$REPO/src/compiler/lower/fun.iyi" \
-    '    found = recorded if start.as(Type).object_id == recorded.object_id || walk_reaches?(start.as(Type), recorded, [] of UInt64)' '    found = found if start.as(Type).object_id == recorded.object_id || walk_reaches?(start.as(Type), recorded, [] of UInt64)' -- super_check || status=1
+    '    found = recorded if start.as(Type).object_id == recorded.object_id || walk_reaches?(start.as(Type), recorded, [] of UInt64)' '    found = start if start.as(Type).object_id == recorded.object_id || walk_reaches?(start.as(Type), recorded, [] of UInt64)' -- super_check || status=1
   prove_mutation "bare super stops forwarding arguments" "$REPO/src/compiler/semantic/normalizer.iyi" \
     '                node.args << Var.new(arg.name)' '                node.args.size' -- super_check || status=1
   prove_mutation "missing super loses its method diagnostic" "$REPO/src/compiler/semantic/main_visitor.iyi" \
