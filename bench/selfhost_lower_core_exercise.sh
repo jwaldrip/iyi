@@ -305,7 +305,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
-CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_while_true lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union lower_trait lower_nilable_reference_union_assign"
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_while_true lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union lower_trait lower_nilable_reference_union_assign lower_union_consumers lower_union_block_jumps"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -412,6 +412,12 @@ else
   echo "    NO: the mutation proofs below would prove nothing"
   status=1
 fi
+prove_mutation "a by-value block call joins by value, not by address" "$REPO/src/compiler/lower/call.iyi" \
+  "    merge = passed_by_value?(ret) ? low.module.types.ptr(0) : low.typer.llvm_type(ret)" \
+  "    merge = low.typer.llvm_type(ret)" -- lower_core_check || status=1
+prove_mutation "a by-value yield tail joins without its address" "$REPO/src/compiler/lower/block.iyi" \
+  "      low.last = join_pointer(low, value.as(Value), body_type.as(Type), bt.as(Type))" \
+  "      low.last = low.last" -- lower_core_check || status=1
 prove_mutation "a long string constant is named in full, not truncated" "$REPO/src/compiler/lower/helpers.iyi" \
   'name_text = first_chars(str, 19) + "..."' 'name_text = str' -- long_name_check || status=1
 prove_mutation "a non-ASCII long string constant is cut in bytes, not characters" "$REPO/src/compiler/lower/helpers.iyi" \

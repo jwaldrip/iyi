@@ -47,7 +47,7 @@ import compiler/ir/function::{Function, Global, TlsModel}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
-import compiler/lower/block::{NoReturnPhi, alloca_local, copy_vars}
+import compiler/lower/block::{NoReturnPhi, alloca_local, copy_vars, join_pointer}
 import compiler/lower/locals::{LocalOrder}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
 import compiler/lower/cast::{to_rhs, type_id_value, upcast, downcast, pointer_of_value, type_id_of_value, mixed_type_id_of_pointer, match_type_id}
@@ -681,6 +681,7 @@ end
 # is then inlined in a frame of its own: `self` (when there is a receiver) and the def's arguments and
 # locals are bound there, and each `yield` in the body runs the block (block.iyi). The value of the
 # body is the call's value, merged by a phi (hosted `Phi.open(self, node)`, which always wants a value).
+# Passed-by-value results are merged by address.
 # A call whose type is NoReturn merges nothing: its body ends in `unreachable` (`NoReturnPhi`).
 pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Call, block : Block, def_node : Def, ret : Type, self_type : Type?, self_value : Value?, arg_types : Array(Type), values : Array(Value), class_owner : Type?) : Nil
   set_ensure_exception_handler(low, node)
@@ -714,12 +715,15 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   allocate_block_vars(low, block, block_ctx.vars)
 
   # The inlined def's frame (hosted `with_cloned_context`): the block it yields to, the block's
-  # context, and the phi the value and the `break`s of the call go to.
+  # context, and the phi the value and the `break`s of the call go to. Passed-by-value results merge
+  # addresses, with each value converted by `join_pointer`.
   merge : IrType? = nil
+  join : Type? = nil
   unless noreturn
-    merge = low.typer.llvm_type(ret)
+    merge = passed_by_value?(ret) ? low.module.types.ptr(0) : low.typer.llvm_type(ret)
+    join = ret
   end
-  phi = LowerPhi.new(true, merge)
+  phi = LowerPhi.new(true, merge, join)
   frame = LowerContext.new(caller.fun, caller.fun_type, def_context_type(self_type, class_owner), Hash(String, LowerVar).new)
   frame.block_node = block
   frame.block_context = block_ctx
@@ -749,8 +753,8 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   else
     unless body_no_return
       value = low.last
-      if !block_ended?(low) && !value.nil? && value.as(Value).type.pointer?
-        low.last = to_rhs(low, value.as(Value), body_t.as(Type))
+      if !block_ended?(low) && !value.nil? && passed_by_value?(ret)
+        low.last = join_pointer(low, value.as(Value), body_t.as(Type), ret)
       end
       phi.add(low, low.last, true)
     end

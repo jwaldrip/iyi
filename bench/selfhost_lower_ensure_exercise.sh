@@ -96,7 +96,7 @@ fi
 echo '== 2. Hosted and port function bodies and native executions'
 passed=0
 failed_names=""
-for name in fallthrough value return break next block_break block_next boundary nested_loops around_yield nested nested_return invoke union; do
+for name in fallthrough value return break next block_break block_next boundary nested_loops around_yield nested nested_return invoke union block_union; do
   if ! IYI_PATH="$WORK/prelude" "$IYI" build --prelude prelude --emit llvm-ir --no-debug -o "$WORK/${name}.host" "$REPO/bench/fixtures/lowens_${name}.iyi" > "$WORK/${name}.host.log" 2>&1; then
     echo "  FAIL: $name hosted compilation"
     awk 'NR <= 8 { print }' "$WORK/${name}.host.log"
@@ -133,7 +133,7 @@ else
 fi
 
 echo '== 4. Mutation proofs'
-if [ "$passed" -eq 14 ] || { [ "$passed" -eq 13 ] && [ "$failed_names" = " invoke" ]; }; then
+if [ "$passed" -eq 15 ] || { [ "$passed" -eq 14 ] && [ "$failed_names" = " invoke" ]; }; then
   file="$REPO/src/compiler/lower/ensure.iyi"
   prove_mutation 'fallthrough cleanup' "$file" 'visit_node(low, cleanup.as(ASTNode))' 'low.last = value' -- mutation_check fallthrough || status=1
   prove_mutation 'fallthrough cleanup runs twice' "$file" '    visit_node(low, cleanup.as(ASTNode))' '    visit_node(low, cleanup.as(ASTNode)); visit_node(low, cleanup.as(ASTNode))' -- mutation_check fallthrough || status=1

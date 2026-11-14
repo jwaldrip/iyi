@@ -14,10 +14,12 @@ module compiler/lower/phi
 # branch's value. A phi is made only when a value is wanted (the hosted `needs_value`), so a
 # statement emits no phi. Not ported: `force_exit_block` (used by the while loop in the hosted
 # code, which the core ports with its own blocks).
+# Block-call and yield phis over passed-by-value types merge pointers supplied by join_pointer.
 
 import compiler/ir/inst::{Block}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
+import compiler/semantic/top_level::{Type}
 import compiler/lower/context::{BranchPhi, Lowerer}
 import compiler/lower/helpers::{at_terminator?, llvm_nil}
 
@@ -29,7 +31,7 @@ pub class LowerPhi
   getter count : Int32
   getter exit_block : Block?
 
-  def initialize(@needs_value : Bool, @type : IrType?)
+  def initialize(@needs_value : Bool, @type : IrType?, @node_type : Type? = nil)
     @values = [] of Value
     @blocks = [] of Block
     @count = 0
@@ -96,7 +98,10 @@ impl BranchPhi for LowerPhi
     add(low, value, last)
   end
 
-  def merge_type : IrType?
-    @type
+  def semantic_join_type : Type?
+    return nil unless @needs_value
+    t = @node_type
+    raise "BUG: a block phi that merges a value has no analysed type (hosted phi.cr: node_type)" if t.nil?
+    t
   end
 end
