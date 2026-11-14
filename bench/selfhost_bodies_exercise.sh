@@ -859,7 +859,7 @@ self_return_at_floor() {
   floor=$(awk '$1 == "bench/fixtures/sem_bodies_class_self_return.iyi" { print $2 }' "$FLOOR_FILE")
   [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
 }
-prove_mutation "class method self return denotes the instance type" "$MAIN_VISITOR" \
+prove_mutation "class method self return denotes the instance type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   "    if node.is_a?(Self) && return_owner.is_a?(MetaclassType)" \
   "    if false && node.is_a?(Self) && return_owner.is_a?(MetaclassType)" -- self_return_at_floor || status=1
 if [ "$status" -eq 0 ]; then
