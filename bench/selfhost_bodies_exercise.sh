@@ -473,9 +473,17 @@ prove_mutation "enum members have the enum type" "$MAIN_VISITOR" \
 prove_mutation "a generic union member retains its arguments" "$MAIN_VISITOR" \
   "    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
   "    found = @program.lookup_type_node?(restriction, @current_type) || LookupError.new(\"not found\")" -- bodies_at_floor || status=1
+type_lookup_at_expected() {
+  if ! "$IYI" build -o "$WORK/type_lookup_probe" "$REPO/bench/selfhost_type_lookup_probe.iyi" > "$WORK/type_lookup_probe.build.log" 2>&1; then
+    body_build_failed "$WORK/type_lookup_probe.build.log"
+    return $?
+  fi
+  "$WORK/type_lookup_probe"
+}
+type_lookup_at_expected || status=1
 prove_mutation "written class types are virtualized" "$MAIN_VISITOR" \
   "      return TypeQueries.virtual_type(quiet)" \
-  "      return quiet" -- bodies_at_floor || status=1
+  "      return quiet" -- type_lookup_at_expected || status=1
 prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" \
   "    rec_type : Type
     if obj = node.obj
@@ -851,7 +859,7 @@ static_array_return_at_floor() {
 }
 prove_mutation "a static array return annotation is typed as the bare StaticArray(T, N)" "$REPO/src/compiler/semantic/top_level.iyi" \
   "hook.resolve_node?(node, current_type)" \
-  "hook.resolve_node?(g.name, current_type)" -- static_array_return_at_floor || status=1
+  "hook.resolve_node?(g.name, current_type)" -- type_lookup_at_expected || status=1
 prove_mutation "a static array prints its element's virtual type" "$REPO/src/compiler/types/types.iyi" \
   '"StaticArray(#{@element_type.devirtualize.arg_full_name}, #{@size_int})"' \
   '"StaticArray(#{@element_type.full_name}, #{@size_int})"' -- static_array_return_at_floor || status=1
