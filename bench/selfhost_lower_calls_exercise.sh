@@ -339,7 +339,7 @@ fi
 echo
 echo "== 3b. A recursive call targets the instance still being typed"
 if [ -x "$WORK/compile_native" ]; then
-  for fixture in "$REPO"/bench/fixtures/sem_bodies_recursion_mutual.iyi "$REPO"/bench/fixtures/sem_bodies_recursion_state.iyi; do
+  for fixture in "$REPO"/bench/fixtures/sem_bodies_recursion_mutual.iyi "$REPO"/bench/fixtures/sem_bodies_recursion_state.iyi "$REPO"/bench/fixtures/sem_bodies_recursive_helper.iyi; do
     name="$(basename "$fixture" .iyi)"
     IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.probe.exe" --pipeline typed --probe-phase --keep-going > "$WORK/$name.probe" 2>&1 || true
     if grep -E 'untyped instantiated parameter|no type for the call' "$WORK/$name.probe"; then
