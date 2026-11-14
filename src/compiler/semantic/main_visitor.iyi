@@ -1179,6 +1179,15 @@ pub class MainVisitor < TypeNodeHost
     end
 
     rec_type : Type = @scope || @current_type
+    if rec_type.is_a?(VirtualType) || rec_type.is_a?(UnionType)
+      call = Call.new(nil, node.name).at(node)
+      @expansions[node] = call
+      call.accept(self)
+      if ret_type = child_type(call)
+        set_type(node, ret_type)
+      end
+      return false
+    end
     all_defs = [] of Def
     visited = Set(String).new
     collect_candidate_defs(rec_type, node.name, all_defs, visited)
@@ -4394,17 +4403,6 @@ pub class MainVisitor < TypeNodeHost
       end
     end
 
-    # An uninitialized class receiver is virtual in both native and hosted definition probes.
-    # Resolve each concrete type's override, retaining that concrete self in its body.
-    if !node.obj.nil? && rec_type.is_a?(VirtualType)
-      virtual_t = rec_type.as(VirtualType)
-      arms = virtual_t.subtypes
-      arms << virtual_t.base_type if arms.empty?
-      return dispatch_call(node, arms)
-    end
-    if rec_type.is_a?(UnionType)
-      return dispatch_call(node, rec_type.as(UnionType).union_types)
-    end
 
     if node.obj.nil?
       if global_fun = global_fun_named(node.name)
@@ -4417,9 +4415,36 @@ pub class MainVisitor < TypeNodeHost
     end
 
     infer_class_vars = node.named_args.nil? && node.block.nil? && node.block_arg.nil?
-    target_def = lookup_method_matching(rec_type, node.name, node.args, node, nil, infer_class_vars)
-    return false if target_def.nil?
-    original_def = target_def
+    arms = receiver_dispatch_arms(node, rec_type, infer_class_vars)
+    return false if arms.nil?
+    matches = arms.as(Array(Match))
+    if matches.size > 1
+      if trait_receiver
+        refuse_call(node, "not ported: an argument dispatch on a trait receiver (hosted semantic/call.cr)")
+        return false
+      end
+      matches.each do |match|
+        if free = match.definition.free_vars
+          unless free.empty?
+            refuse_call(node, "not ported: an argument dispatch into a def with free variables (hosted semantic/call.cr instantiate binds them from the match)")
+            return false
+          end
+        end
+      end
+      if node.name == "new" && infer_class_vars && infer_constructor_receiver(node, rec_type, matches[0].definition)
+        refuse_call(node, "not ported: an argument dispatch on a constructor that infers generic type variables")
+        return false
+      end
+    end
+    if matches.size > 1 || rec_type.is_a?(UnionType) || rec_type.is_a?(VirtualType)
+      return dispatch_call(node, matches)
+    end
+    if matches.empty?
+      refuse_uncovered(node, rec_type, node.name, node.args)
+      return false
+    end
+    original_def = matches[0].definition
+    @matched_call_args[node] = matches[0].arg_types
     if infer_class_vars
       if receiver = infer_constructor_receiver(node, rec_type, original_def)
         rec_type = receiver
@@ -4435,10 +4460,108 @@ pub class MainVisitor < TypeNodeHost
         instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)
       end
     end
-    instantiate_call_target(node, rec_type, instance_owner, original_def, trait_receiver)
+    result = instantiate_call_target(node, rec_type, instance_owner, original_def, trait_receiver)
+    @matched_call_args.delete(node)
+    result
   end
 
-  def dispatch_call(node : Call, arms : Array(Type)) : Bool
+  # The receiver groups follow VirtualTypeLookup: subtype-owned definitions
+  # precede the base, while each subtype searches only its own modules.
+  def virtual_dispatch_arms(node : Call, receiver : VirtualType, infer_class_vars : Bool) : Array(Match)?
+    base = receiver.base_type
+    base_matches = lookup_call_arms(base, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    subtypes = TypeQueries.all_subclasses(base)
+    if subtypes.empty?
+      unless base_matches.cover_all?
+        refuse_uncovered(node, receiver, node.name, node.args)
+        return nil
+      end
+      return base_matches.matches
+    end
+    if !base.abstract? && !base_matches.cover_all?
+      refuse_uncovered(node, receiver, node.name, node.args)
+      return nil
+    end
+    covered = Hash(String, Bool).new
+    groups = [] of Array(Match)
+    i = 0
+    while i < subtypes.size
+      subtype = subtypes[i]
+      i += 1
+      next if subtype.is_a?(GenericClassType) || TypeQueries.unbound?(subtype)
+      next if subtype.abstract? && TypeQueries.subclasses(subtype).empty?
+      owner = TypeQueries.virtual_type(subtype)
+      found = lookup_call_arms(subtype, owner, node.name, node.args, node, ArmWalk::Modules, infer_class_vars)
+      if !subtype.abstract? && !base_matches.cover_all? && !found.cover_all?
+        unless virtual_superclass_covered?(subtype, base, covered)
+          refuse_uncovered(node, receiver, node.name, node.args)
+          return nil
+        end
+      end
+      covered[subtype.full_name] = found.cover_all? unless found.empty?
+      groups << found.matches unless found.empty?
+    end
+    result = [] of Match
+    i = groups.size
+    while i > 0
+      i -= 1
+      groups[i].each { |match| result << match }
+    end
+    base_matches.matches.each { |match| result << match }
+    if result.empty?
+      refuse_uncovered(node, receiver, node.name, node.args)
+      return nil
+    end
+    result
+  end
+
+  def virtual_superclass_covered?(subtype : Type, base : Type, covered : Hash(String, Bool)) : Bool
+    current : Type? = nil
+    if subtype.is_a?(ClassType)
+      current = subtype.as(ClassType).superclass
+    elsif subtype.is_a?(GenericClassInstanceType)
+      current = subtype.as(GenericClassInstanceType).superclass
+    end
+    while parent = current
+      break if parent.full_name == base.full_name
+      return true if covered[parent.full_name]?
+      if parent.is_a?(ClassType)
+        current = parent.as(ClassType).superclass
+      elsif parent.is_a?(GenericClassInstanceType)
+        current = parent.as(GenericClassInstanceType).superclass
+      else
+        current = nil
+      end
+    end
+    false
+  end
+
+  def receiver_dispatch_arms(node : Call, receiver : Type, infer_class_vars : Bool) : Array(Match)?
+    if receiver.is_a?(VirtualType)
+      return virtual_dispatch_arms(node, receiver.as(VirtualType), infer_class_vars)
+    end
+    if receiver.is_a?(UnionType)
+      result = [] of Match
+      receiver.as(UnionType).union_types.each do |member|
+        arms = receiver_dispatch_arms(node, member, infer_class_vars)
+        return nil if arms.nil?
+        arms.as(Array(Match)).each { |arm| result << arm }
+      end
+      return result
+    end
+    found = lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    unless found.cover_all?
+      if message = found.error
+        refuse_call(node, message)
+      else
+        refuse_uncovered(node, receiver, node.name, node.args)
+      end
+      return nil
+    end
+    found.matches
+  end
+
+  def dispatch_call(node : Call, arms : Array(Match)) : Bool
     ret_types = [] of Type
     first_target_def : Def? = nil
     dispatch_targets = [] of DispatchTarget
@@ -4451,10 +4574,11 @@ pub class MainVisitor < TypeNodeHost
     i = 0
     while i < arms.size
       node.args = supplied_args.dup
-      ut = arms[i]
-      target_def = lookup_method_matching(ut, node.name, node.args, node)
-      return false if target_def.nil?
+      arm = arms[i]
+      target_def = arm.definition
       original_def = target_def
+      ut = arm.owner
+      @matched_call_args[node] = arm.arg_types
       union_instance_owner : Type = ut
       if node.obj.nil?
         if declared_owner = @program.def_owner(target_def)
@@ -4463,11 +4587,15 @@ pub class MainVisitor < TypeNodeHost
       end
       dkey = def_instance_key(target_def, union_instance_owner, node)
       expanded = defaults_expand_call(node, target_def)
-      return false if expanded.nil?
+      if expanded.nil?
+        @matched_call_args.delete(node)
+        return false
+      end
       target_def = expanded
       if previous_args = expanded_args
         if previous_args.map(&.to_s) != node.args.map(&.to_s)
           refuse_call(node, "not ported: differing union call-site defaults")
+          @matched_call_args.delete(node)
           return false
         end
       else
@@ -4483,15 +4611,19 @@ pub class MainVisitor < TypeNodeHost
       else
         ret_t = type_method_body(instantiated_def, union_instance_owner, node.args, node.block, node, dkey, node)
       end
-      return false if ret_t.nil?
+      if ret_t.nil?
+        @matched_call_args.delete(node)
+        return false
+      end
       if first_target_def.nil?
         first_target_def = instantiated_def
       end
-      dispatch_targets << DispatchTarget.new(ut, instantiated_def, ret_t)
+      dispatch_targets << DispatchTarget.new(ut, instantiated_def, ret_t.as(Type), arm.arg_types)
       ret_types << ret_t
       i = i + 1
     end
     node.args = expanded_args || supplied_args
+    @matched_call_args.delete(node)
 
     if td = first_target_def
       @call_target_defs[node] = td
