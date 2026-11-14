@@ -40,8 +40,15 @@ through linking and exit 0. Both failed on an unbound `U` in the preceding stage
 At `d08d64739`, the generic-instance checks accept nullable unions and reject
 incompatible members, and the IR builder passes 16 exact constant-fold checks
 and 20 retained-instruction checks. The keyword-predicate fixture matches all
-three hosted functions and its module-level IR. Parser compilation next stops
-at the unimplemented `super` call in `Parser#initialize`.
+three hosted functions and its module-level IR.
+
+At `c0f74685f`, the superclass fixture matches all 11 hosted functions and its
+module-level IR, and its native executable exits 42 like hosted. Missing parent
+methods and unsupported default forwarding remain named refusals. The exported
+fun-definition fixture also matches all five functions and its module-level IR.
+Parser compilation now passes the `super` call in `Parser#initialize` and stops
+in the nil-parameter fallback `string_pool || StringPool.new` in `Lexer#initialize`:
+`variable 'string_pool' cannot be typed`.
 
 The omitted-fun-return, inline-macro-expansion and nested-body-scope regressions
 compile, link and run natively. Their results match hosted execution: status 0,

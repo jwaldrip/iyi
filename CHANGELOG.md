@@ -34,6 +34,11 @@
   remainder, flagged operations, wide integers and out-of-range shifts remain instructions.
 - Union joins reuse an existing pointer when its type already matches the join, avoiding extra
   loads, stores and allocations in nested conditionals. SSA aggregates still get a temporary.
+- Non-generic instance methods resolve explicit and forwarded `super` calls from the defining
+  class while retaining the concrete receiver. Definition probes dispatch virtual receivers
+  across their concrete types. The superclass fixture matches all 11 hosted functions and exits 42.
+- Receiverless free-function calls leave their bodies deferred until the program body is lowered,
+  matching the hosted declaration order. Qualified library calls still mark their bindings used.
 - **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
   [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
   the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,
