@@ -8,7 +8,7 @@ def run
 end
 
 value = run do
-  item : Int32 = 17
-  item
+  item : (Int32 | Nil) = 17
+  item.nil? ? 0 : item
 end
 LibC.exit(value)
