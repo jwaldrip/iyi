@@ -305,7 +305,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
-CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_while_true lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union lower_trait"
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_while_true lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union lower_trait lower_nilable_reference_union_assign"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -1032,6 +1032,9 @@ fi
 prove_mutation "a captured block loses its ampersand" "$REPO/src/compiler/lower/fun.iyi" \
   '      names << "&" + symbol_type(bt)' \
   '      names << symbol_type(bt)' -- name_block_check || status=1
+prove_mutation "a pointer union value stores into a nilable reference union" "$REPO/src/compiler/lower/cast.iyi" \
+  '    if TypeQueries.reference_like?(value_type)' \
+  '    if !value_type.is_a?(UnionType) && TypeQueries.reference_like?(value_type)' -- lower_core_check || status=1
 
 echo
 echo
