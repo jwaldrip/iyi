@@ -59,7 +59,7 @@ import compiler/lower/phi::{LowerPhi}
 import compiler/lower/proc::{make_fun}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/helpers::{int1}
-import compiler/semantic/top_level::{ClassType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, TraitType, Type, UnionType, VoidType}
+import compiler/semantic/top_level::{ClassType, EnumType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, TraitType, Type, UnionType, VoidType}
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name, lower_primitive_call, lower_primitive_with_values, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
@@ -630,7 +630,7 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
 end
 
 def checked_dispatch_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : Type, target : Def?) : Type
-  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType))
+  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType) && !owner.is_a?(EnumType))
     pending_visit_node("a dispatched call on unsupported receiver #{owner.full_name}")
   end
   checked_receiver(low, node, owner, target)

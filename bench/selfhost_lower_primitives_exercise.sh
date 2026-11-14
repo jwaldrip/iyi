@@ -359,6 +359,16 @@ prove_mutation "signed integer to float uses unsigned conversion" "$REPO/src/com
   '      return low.builder.si_to_fp(value, low.typer.llvm_type(to))' '      return low.builder.ui_to_fp(value, low.typer.llvm_type(to))' -- lower_primitives_check || status=1
 prove_mutation "float less-than uses less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   '    return low.builder.fcmp(RealPredicate::OLT, left, right)' '    return low.builder.fcmp(RealPredicate::OLE, left, right)' -- lower_primitives_check || status=1
+prove_mutation "float equality uses inequality" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::OEQ, left, right)' '    return low.builder.fcmp(RealPredicate::UNE, left, right)' -- lower_primitives_check || status=1
+prove_mutation "float inequality uses equality" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::UNE, left, right)' '    return low.builder.fcmp(RealPredicate::OEQ, left, right)' -- lower_primitives_check || status=1
+prove_mutation "float less-or-equal uses greater-than" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::OLE, left, right)' '    return low.builder.fcmp(RealPredicate::OGT, left, right)' -- lower_primitives_check || status=1
+prove_mutation "float greater-than uses less-than" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::OGT, left, right)' '    return low.builder.fcmp(RealPredicate::OLT, left, right)' -- lower_primitives_check || status=1
+prove_mutation "float greater-or-equal uses less-than" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::OGE, left, right)' '    return low.builder.fcmp(RealPredicate::OLT, left, right)' -- lower_primitives_check || status=1
 prove_mutation "checked UInt128 to Float32 must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
   '      pending_visit_node("checked UInt128 to Float32 (hosted codegen_out_of_range)")' '      return value' -- lower_primitives_check || status=1
 prove_mutation "checked float narrowing must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
