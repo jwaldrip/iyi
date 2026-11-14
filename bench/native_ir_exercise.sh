@@ -438,7 +438,7 @@ echo "== 8. mutations are each caught"
 prove_mutation "layout: offset_of drops its alignment rounding" \
   src/compiler/ir/layout.iyi \
   'off = ((off + a - 1) // a) * a' \
-  'off = off' \
+  'off = off + 0' \
   struct_check
 prove_mutation "layout: an integer wider than 64 bits is 8-byte aligned, not 16" \
   src/compiler/ir/layout.iyi \
