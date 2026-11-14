@@ -531,8 +531,8 @@ pub abstract class ModuleType < NamedType
 
   def include(mod : Type) : Nil
     @parents.insert(0, mod)
-    if mod.is_a?(NonGenericModuleType)
-      mod.as(NonGenericModuleType).add_including_type(self)
+    if mod.is_a?(NonGenericModuleType) || (mod.is_a?(TraitType) && !mod.is_a?(GenericTraitType))
+      mod.as(ModuleType).add_including_type(self)
     end
   end
 

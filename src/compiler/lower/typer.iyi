@@ -21,6 +21,7 @@ import compiler/semantic/top_level::{Type, ClassType, EnumType, LibType, Metacla
 import compiler/types/types::{PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, NamedTupleInstanceType, GenericClassInstanceType, GenericModuleInstanceType, MixedUnionType, VirtualType, VirtualMetaclassType, NilableType, ReferenceUnionType, NilableReferenceUnionType, NilableProcType, TypeQueries}
 import compiler/types/merge::{TypeMerge}
 import compiler/lower/unions::{mixed_union_body, mixed_union_value_area}
+import compiler/types/indirection::{TypeIndirection}
 
 # The builtin primitives. The hosted semantic model makes them PrimitiveType
 # subclasses with a byte size, and a builtin is never a user type. The port's
@@ -86,6 +87,10 @@ pub def passed_by_value?(type : Type) : Bool
   end
   if type.is_a?(VirtualType)
     return type.struct?
+  end
+  if type.is_a?(TraitType)
+    concrete = TypeIndirection.trait_value_type(type)
+    return passed_by_value?(concrete) unless concrete.object_id == type.object_id
   end
   if type.is_a?(NonGenericModuleType) || type.is_a?(TraitType)
     # The hosted rule (codegen/types.cr; TraitType < NonGenericModuleType there): the union of the
@@ -318,6 +323,10 @@ pub class LowerTyper
       # This can only be reached if the generic class has no implementors.
       return @table.int1
     end
+    if type.is_a?(TraitType)
+      concrete = TypeIndirection.trait_value_type(type)
+      return llvm_type(concrete, wants_size) unless concrete.object_id == type.object_id
+    end
     if (type.is_a?(NonGenericModuleType) || type.is_a?(TraitType)) && !type.is_a?(LibType)
       # A namespace or trait has no implementors and answers `i1`: the hosted typer's answer for a
       # NonGenericModuleType / TraitType (codegen/llvm_typer.cr, `create_llvm_type(NonGenericModuleType | GenericClassType)`).
@@ -452,7 +461,7 @@ pub class LowerTyper
     max_alignment = pointer_size.to_i32
     type.as(UnionType).union_types.each do |member|
       next if member.is_a?(VoidType) || member.is_a?(NoReturnType)
-      raise "BUG: a module member of a union is not ported (hosted types.cr expand_union_types, NEEDS.md row 7)" if member.is_a?(NonGenericModuleType)
+      raise "BUG: a module or trait member of a union is not ported (hosted types.cr expand_union_types, NEEDS.md row 7)" if member.is_a?(NonGenericModuleType) || member.is_a?(TraitType)
       member_type = llvm_type(member, true)
       size = size_of(member_type)
       align = align_of(member_type)
