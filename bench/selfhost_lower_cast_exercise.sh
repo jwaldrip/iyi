@@ -196,6 +196,8 @@ prove_mutation "mixed subunion realignment loses payload" "$REPO/src/compiler/lo
   '  count = low.builder.const_int(low.typer.size_t, size)' '  count = low.builder.const_int(low.typer.size_t, 0_i64)' -- new_cast_check || status=1
 cast_fixture=virtual_range
 new_cast_check || { echo "  baseline: virtual range differs"; status=1; }
+prove_mutation "an IsA restriction loses its virtual range" "$REPO/src/compiler/lower/lower.iyi" \
+  '  ct = TypeQueries.virtual_type(ct)' '  ct = TypeIndirection.remove_indirection(ct)' -- new_cast_check || status=1
 prove_mutation "virtual range excludes its first type id" "$REPO/src/compiler/lower/cast.iyi" \
   '      lower = low.builder.icmp(IntPredicate::SGE, param_tid, min_id)' '      lower = low.builder.icmp(IntPredicate::SGT, param_tid, min_id)' -- new_cast_check || status=1
 no_return_check() {
