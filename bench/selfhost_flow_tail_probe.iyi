@@ -1,0 +1,51 @@
+import compiler/syntax/ast::{ASTNode, Call}
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/visitor::{Visitor}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
+import compiler/semantic/main_visitor::{MainVisitor}
+
+class FlowTailWalk < Visitor
+  getter found : Int32
+
+  def initialize(@mv : MainVisitor, @expect_typed : Bool)
+    @found = 0
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    if node.is_a?(Call) && node.as(Call).name == "value"
+      @found += 1
+      typed = !@mv.type_of?(node).nil?
+      raise "wrong flow tail type" unless typed == @expect_typed
+    end
+    true
+  end
+end
+
+path = Program.args[0]
+parser = Parser.new(File.read(path), path)
+program = SemanticProgram.new
+node = program.normalizer.normalize(parser.parse)
+program.total_mode = true
+program.search_path = [Program.args[1]]
+tl = TopLevelVisitor.new(program, path)
+node.accept(tl)
+tl.finish
+declare_guessed_instance_vars(program)
+mv = MainVisitor.new(program)
+mv.total = true
+node.accept(mv)
+seen = Set(String).new
+mv.typed_instances.each do |inst|
+  name = inst.definition.name
+  dead = name == "flow_concrete" || name == "flow_chain"
+  live = name == "flow_and" || name == "flow_supertype" || name == "flow_nil" || name == "flow_noreturn" || name == "flow_loop" || name == "flow_case"
+  if dead || live
+    walk = FlowTailWalk.new(mv, live)
+    inst.definition.body.accept(walk)
+    raise "flow tail missing" unless walk.found == 1
+    seen.add(name)
+  end
+end
+raise "flow instance missing" unless seen.size == 8
+puts "flow tails: 2 dead, 6 live"

@@ -308,6 +308,24 @@ abstract_probe_at_expected() {
   fi
   diff -u "$abstract_expected" "$WORK/abstract_mutant.actual"
 }
+flow_tail_check() {
+  if ! "$IYI" build -o "$WORK/flow-tail-probe" "$REPO/bench/selfhost_flow_tail_probe.iyi" > "$WORK/flow-tail-build.log" 2>&1; then
+    body_build_failed "$WORK/flow-tail-build.log"
+    return $?
+  fi
+  "$WORK/flow-tail-probe" "$REPO/bench/fixtures/sem_bodies_flow_dead_tail.iyi" "$REPO/src" > "$WORK/flow-tail.out" 2>&1 || return 1
+  grep -Fxq 'flow tails: 2 dead, 6 live' "$WORK/flow-tail.out"
+}
+echo "  checking instantiated flow tails:"
+if flow_tail_check; then
+  prove_mutation "narrowed terminating branches do not mark the tail dead" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    @flow_dead = (then_unreachable && else_dead) || (else_unreachable && then_dead) || (then_dead && else_dead)' \
+    '    @flow_dead = false' -- flow_tail_check || status=1
+else
+  echo "  FAIL: instantiated flow tails were typed incorrectly"
+  cat "$WORK/flow-tail.out"
+  status=1
+fi
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
 prove_mutation "an abstract requirement is typed as an empty implementation" "$MAIN_VISITOR" \
   '    if target_def.abstract' '    if false && target_def.abstract' -- abstract_probe_at_expected || status=1

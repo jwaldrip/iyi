@@ -1,4 +1,7 @@
 class FlowNode
+  def value : Int32
+    3
+  end
 end
 class FlowA < FlowNode
   def value : Int32
@@ -47,7 +50,7 @@ def flow_supertype(node : FlowNode) : Int32
   if node.is_a?(FlowA)
     return 1
   end
-  2
+  node.value
 end
 
 def flow_nil(node : FlowA | Nil) : Int32
@@ -83,7 +86,7 @@ def flow_case(node : FlowNode) : Int32
   when FlowB
     return 2
   end
-  3
+  node.value
 end
 
 a = FlowA.new

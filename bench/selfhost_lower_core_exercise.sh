@@ -342,6 +342,15 @@ nil_flow_check() {
     awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/nil-flow.out" || return 1
   done
 }
+if nil_flow_check lower_flow_dead_tail; then
+  prove_mutation "short-circuit expansion loses its last truthiness" "$REPO/src/compiler/lower/cleanup.iyi" \
+    '      return cleanup_truthiness(low, expanded)' '      return nil' -- nil_flow_check lower_flow_dead_tail || status=1
+  prove_mutation "a truthy or condition loses its truthiness" "$REPO/src/compiler/lower/cleanup.iyi" \
+    '      return true if cond == true' '      return nil if cond == true' -- nil_flow_check lower_flow_dead_tail || status=1
+else
+  echo "FAIL: narrowed dead tail does not match the hosted module"
+  status=1
+fi
 if nil_flow_check lower_or_nil_left; then
   prove_mutation "a nil-left alternative loses its live branch type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '    elsif else_type && (then_unreachable || then_dead || speculative)' \
