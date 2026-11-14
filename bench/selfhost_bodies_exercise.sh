@@ -192,6 +192,11 @@ if [ "${proc_scope_count:-}" != 7 ]; then
   echo "  PROC SCOPE: expected both helper calls to be typed"
   status=1
 fi
+if ! "$IYI" build -o "$WORK/proc_scope_probe" "$REPO/bench/selfhost_proc_scope_probe.iyi" > "$WORK/proc_scope_probe.build.log" 2>&1 ||
+   ! "$WORK/proc_scope_probe" "$REPO/bench/fixtures/sem_bodies_proc_scope.iyi" "$REPO/src"; then
+  echo "  PROC SCOPE: the class and instance helper definitions must both be instantiated"
+  status=1
+fi
 
 echo
 echo "== 2d. A nilable property setter is the type of the value it is given"
