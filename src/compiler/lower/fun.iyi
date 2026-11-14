@@ -252,6 +252,12 @@ pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types
   end
   name = mangled_name(target.name, self_type, arg_types, ret, class_owner, block_type, low.analysed.program.def_owner(target))
   if existing = low.module.get_function?(name)
+    expected = arg_types.size
+    expected += 1 unless self_type.nil?
+    expected += 1 unless block_type.nil?
+    if existing.as(Function).function_type.params.size != expected
+      raise "BUG: incompatible arity reusing #{name}"
+    end
     return existing.as(Function) if fun_emission_done?(low.module, name) || low.emitting[name]?
     low.module.remove_function(existing.as(Function))
     clear_fun_emission_done(low.module, name)

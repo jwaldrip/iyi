@@ -1,0 +1,15 @@
+class Holder
+  @value : Int32
+
+  def initialize(@value : Int32)
+  end
+
+  def read(other : Holder) : Int32
+    other.@value
+  end
+end
+
+class Child < Holder
+end
+
+Holder.new(4).read(Child.new(42))
