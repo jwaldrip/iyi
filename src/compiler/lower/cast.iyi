@@ -19,11 +19,8 @@ module compiler/lower/cast
 #     `downcast_distinct(MixedUnionType)`): the value area is read at the target's type.
 #   - `type_id_value`: the type id of a type, read from its global `@"<Name>:type_id"` as the
 #     hosted `type_id` does (an internal constant global, loaded).
-# Refused by name: a union into a union whose members are not all members of the target, or with
-# a different alignment (hosted store_union_in_union, a memcpy: a later increment); a nilable
-# target (NilableType: the reference and nilable forms need class lowering); a reference union,
-# a tuple or named tuple store, a virtual type, a proc, a pointer (their helpers are later
-# increments); downcast from any other union, and downcast of a nilable or virtual type.
+# Refused by name: union copies requiring compatible-member casts or different alignment,
+# nil into a virtual slot, indirectly passed values, and conversions not covered below.
 
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{CallConv, Inst, IntPredicate, Op}
@@ -35,7 +32,7 @@ import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{primitive_kind, passed_by_value?}
 import compiler/lower/unions::{mixed_union_value_area}
-import compiler/semantic/top_level::{MetaclassType, NilType, Type, UnionType, VoidType}
+import compiler/semantic/top_level::{EnumType, MetaclassType, NilType, Type, UnionType, VoidType}
 import compiler/syntax/ast::{ASTNode, Var}
 import compiler/types/indirection::{TypeIndirection}
 import compiler/types/rendering::{TypeRenderer}
@@ -131,8 +128,34 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
     store_aligned(low, value, pointer)
     return
   end
+  # A virtual slot holds the reference itself; mixed unions hold it in the value area.
+  if target.is_a?(VirtualType) || target.is_a?(VirtualMetaclassType)
+    if value_type.nil_type?
+      pending_visit_node("assign Nil to #{target.full_name} (virtual target, hosted assign_distinct)")
+      return
+    end
+    if value_type.is_a?(MixedUnionType)
+      if low.typer.passed_indirectly?(target)
+        pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (virtual target, hosted copy_value)")
+        return
+      end
+      field = union_value_ptr(low, low.typer.llvm_type(value_type), value)
+      store_aligned(low, load_aligned(low, low.typer.llvm_type(target), field), pointer)
+      return
+    end
+    if TypeQueries.reference_like?(value_type) || value_type.is_a?(ReferenceUnionType) || value_type.is_a?(MetaclassType) || value_type.is_a?(VirtualMetaclassType)
+      store_aligned(low, value, pointer)
+      return
+    end
+    pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (virtual target, hosted assign_distinct)")
+    return
+  end
   if target.is_a?(MixedUnionType) && value_type.is_a?(MixedUnionType)
     assign_union_in_union(low, pointer, target, value_type, value)
+    return
+  end
+  if target.is_a?(MixedUnionType) && (value_type.is_a?(NilableType) || value_type.is_a?(ReferenceUnionType) || value_type.is_a?(NilableReferenceUnionType))
+    store_in_union(low, target, pointer, value_type, value)
     return
   end
   if value_type.is_a?(UnionType)
@@ -236,14 +259,12 @@ pub def bool_widened(low : Lowerer, value : Value, int_type : IrType) : Value
   low.builder.zext(value, int_type)
 end
 
-# The hosted `store_in_union` (unions.cr): the type id, then the value into the value area.
-# A Bool is zero-extended to the width of the area (hosted store_bool_in_union), a nil writes
-# the zeroed area (hosted store_nil_in_union), and a number, Char or Symbol is stored at its
-# own width. Any other value type is refused by name (its store is a later increment).
+# The hosted `store_in_union` writes a runtime type id and then the value area. A Bool is
+# widened, Nil zeroes the area, and numbers, enums and references retain their own width.
 pub def store_in_union(low : Lowerer, union_type : Type, union_pointer : Value, value_type : Type, value : Value) : Nil
   struct_ir = low.typer.llvm_type(union_type)
   area = mixed_union_value_area(struct_ir)
-  store_aligned(low, type_id_value(low, value_type), union_type_id_ptr(low, struct_ir, union_pointer))
+  store_aligned(low, nonmixed_type_id_of_value(low, value, value_type), union_type_id_ptr(low, struct_ir, union_pointer))
   field = union_value_ptr(low, struct_ir, union_pointer)
   kind = primitive_kind(value_type)
   if value_type.is_a?(NilType)
@@ -256,11 +277,11 @@ pub def store_in_union(low : Lowerer, union_type : Type, union_pointer : Value, 
     store_aligned(low, widened, field)
     return
   end
-  if kind == "int" || kind == "char" || kind == "symbol" || kind == "float"
+  if kind == "int" || kind == "char" || kind == "symbol" || kind == "float" || value_type.is_a?(EnumType)
     store_aligned(low, value, field)
     return
   end
-  if value_type.is_a?(PointerInstanceType) || TypeQueries.reference_like?(value_type)
+  if value_type.is_a?(PointerInstanceType) || TypeQueries.reference_like?(value_type) || value_type.is_a?(NilableType) || value_type.is_a?(ReferenceUnionType) || value_type.is_a?(NilableReferenceUnionType)
     store_aligned(low, value, field)
     return
   end
@@ -354,10 +375,6 @@ end
 # A Bool is a byte truncated to one bit; any other type is read as its embedded type (hosted
 # `to_lhs` of the area pointer, with the same passed-by-value rule).
 pub def downcast_from_mixed(low : Lowerer, value : Value, to_type : Type, from_type : MixedUnionType) : Value
-  if to_type.is_a?(NilableType)
-    pending_visit_node("downcast #{from_type.full_name} to #{to_type.full_name} (nilable target, hosted downcast_distinct NilableType)")
-    return value
-  end
   struct_ir = low.typer.llvm_type(from_type)
   value_ptr = union_value_ptr(low, struct_ir, value)
   if primitive_kind(to_type) == "bool"
@@ -396,6 +413,15 @@ end
 # The runtime type id of a value (hosted `type_id(value, type)`, type_id.cr:4-79 and unions.cr:182-185).
 pub def type_id_of_value(low : Lowerer, node : ASTNode, value : Value, t : Type) : Value
   rt = TypeIndirection.remove_indirection(t)
+  if rt.is_a?(MixedUnionType)
+    uptr = pointer_of_value(low, node, value, rt)
+    return mixed_type_id_of_pointer(low, uptr, rt)
+  end
+  nonmixed_type_id_of_value(low, value, rt)
+end
+
+# Runtime IDs for scalar representations, including nullable and polymorphic pointers.
+def nonmixed_type_id_of_value(low : Lowerer, value : Value, rt : Type) : Value
   if rt.is_a?(NilableType)
     is_null = low.builder.icmp(IntPredicate::EQ, value, low.builder.const_null_pointer)
     nil_id = type_id_value(low, low.analysed.program.nil_type)
@@ -426,10 +452,6 @@ pub def type_id_of_value(low : Lowerer, node : ASTNode, value : Value, t : Type)
     proc_id = type_id_value(low, rt.as(NilableProcType).proc_type)
     return low.builder.select(is_null, nil_id, proc_id)
   end
-  if rt.is_a?(MixedUnionType)
-    uptr = pointer_of_value(low, node, value, rt)
-    return mixed_type_id_of_pointer(low, uptr, rt)
-  end
   type_id_value(low, rt)
 end
 
@@ -455,7 +477,7 @@ pub def match_any_type_id(low : Lowerer, type : Type, tid : Value) : Value
 end
 
 private def match_any_type_id_with_function(low : Lowerer, type : Type, tid : Value) : Value
-  if type.is_a?(VirtualType) || type.is_a?(VirtualMetaclassType)
+  if type.is_a?(VirtualMetaclassType)
     pending_visit_node("match_type_id against #{type.full_name} (hosted match.cr: VirtualType range)")
     return low.builder.const_int(low.module.types.int1, 0_i64)
   end
@@ -470,12 +492,22 @@ private def match_any_type_id_with_function(low : Lowerer, type : Type, tid : Va
     created.linkage = Linkage::Internal
     param_tid = created.param(0)
     acc : Value? = nil
-    type.as(UnionType).union_types.each do |sub_type|
-      cond = match_any_type_id(low, sub_type, param_tid)
-      if cur = acc
-        acc = low.builder.bitwise_or(cur, cond)
-      else
-        acc = cond
+    if type.is_a?(VirtualType)
+      bounds = low.type_ids.min_max(type.as(VirtualType).base_type)
+      raise "BUG: virtual base has no type-id range" if bounds.nil?
+      min_id = low.builder.const_int(low.module.types.int32, bounds[0].to_i64)
+      max_id = low.builder.const_int(low.module.types.int32, bounds[1].to_i64)
+      lower = low.builder.icmp(IntPredicate::SGE, param_tid, min_id)
+      upper = low.builder.icmp(IntPredicate::SLE, param_tid, max_id)
+      acc = low.builder.bitwise_and(lower, upper)
+    else
+      type.as(UnionType).union_types.each do |sub_type|
+        cond = match_any_type_id(low, sub_type, param_tid)
+        if cur = acc
+          acc = low.builder.bitwise_or(cur, cond)
+        else
+          acc = cond
+        end
       end
     end
     raise "BUG: empty union restriction in match_type_id" if acc.nil?
