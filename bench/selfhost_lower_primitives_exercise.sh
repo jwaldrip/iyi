@@ -27,6 +27,31 @@ IYI="$REPO/bin/iyi"
 WORK="$(mktemp -d)"
 
 trap 'rm -rf "$WORK"' EXIT
+# LLVM writes switch cases on separate lines without separators; the IR reader
+# accepts comma-separated cases on one line. Reject malformed input, not just
+# unterminated switches, before handing it to the reader.
+normalize_switches() {
+  awk '
+    in_switch {
+      if ($0 ~ /^[[:space:]]*][[:space:]]*$/) { print line " ]"; in_switch=0; next }
+      if ($0 !~ /^[[:space:]]*i[0-9]+ -?[0-9]+, label %[^[:space:]]+[[:space:]]*$/) { bad=1; exit 1 }
+      sub(/^[[:space:]]*/, "")
+      line=line (count++ ? ", " : " ") $0
+      next
+    }
+    /switch .*\[$/ { line=$0; in_switch=1; count=0; next }
+    { print }
+    END { if (in_switch || bad) exit 1 }
+  '
+}
+switch_result="$(printf '  switch i32 %%x, label %%else [\n    i32 1, label %%a\n    i32 2, label %%b\n  ]\n' | normalize_switches)"
+if [ "$switch_result" != '  switch i32 %x, label %else [ i32 1, label %a, i32 2, label %b ]' ] ||
+   printf 'switch i32 %%x, label %%else [\n i32 1, label %%a\n' | normalize_switches >/dev/null ||
+   printf 'switch i32 %%x, label %%else [\n nonsense\n]\n' | normalize_switches >/dev/null; then
+  echo "switch normalization regression"
+  exit 1
+fi
+
 
 echo "== 1. Building the port driver"
 if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_primitives_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
@@ -47,7 +72,6 @@ waiting=0
 # taken off this list, so a wait cannot outlive its cause unnoticed.
 waiting_on() {
   case "$1" in
-    lowprim_enum) echo "enum members type as Int32 until the bodies lane's enum Path fix lands" ;;
   esac
 }
 
@@ -76,7 +100,11 @@ for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
     diverged=$((diverged + 1))
     continue
   fi
-  awk "$CALL_TYPES" "$WORK/$name.ll" > "$WORK/$name.oracle.ll"
+  if ! awk "$CALL_TYPES" "$WORK/$name.ll" | normalize_switches > "$WORK/$name.oracle.ll"; then
+    echo "  $name: malformed switch in hosted module"
+    diverged=$((diverged + 1))
+    continue
+  fi
 
   if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
     if [ -n "$(waiting_on "$name")" ]; then
@@ -136,6 +164,11 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
         continue
       fi
       echo "  $name: the native tool refuses the port's module: $(awk 'NR==1' "$WORK/$name.native.log")"
+      e2e_fail=$((e2e_fail + 1))
+      continue
+    fi
+    if ! codesign -v --strict "$WORK/$name.native"; then
+      echo "  $name: native executable failed strict signature verification"
       e2e_fail=$((e2e_fail + 1))
       continue
     fi
@@ -299,6 +332,14 @@ prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/pr
   "    if op == \"==\"" "    if op == \"!=\"" -- lower_primitives_check || status=1
 prove_mutation "the class type id is stored one struct over" "$REPO/src/compiler/lower/primitives.iyi" \
   "  zero = low.builder.const_int(low.module.types.int32, 0_i64)" "  zero = low.builder.const_int(low.module.types.int32, 1_i64)" -- lower_primitives_check || status=1
+prove_mutation "integer to Char uses the wrong signed width" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return codegen_convert_int(low, from, low.analysed.program.int32_type, value, checked)' '    return value' -- lower_primitives_check || status=1
+prove_mutation "Char to equal width integer extends" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    if value.type.key == low.typer.llvm_type(to).key' '    if false' -- lower_primitives_check || status=1
+prove_mutation "signed integer to float uses unsigned conversion" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      return low.builder.si_to_fp(value, low.typer.llvm_type(to))' '      return low.builder.ui_to_fp(value, low.typer.llvm_type(to))' -- lower_primitives_check || status=1
+prove_mutation "float less-than uses less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return low.builder.fcmp(RealPredicate::OLT, left, right)' '    return low.builder.fcmp(RealPredicate::OLE, left, right)' -- lower_primitives_check || status=1
 
 echo
 echo "== 5. Checked arithmetic in an isolated def from a required runtime"
