@@ -14,6 +14,8 @@
 - Native lowering selects a program's `malloc64` or `malloc_atomic64` by the allocated type's pointer content,
   falling back to C `malloc` only when the required allocator kind is absent. Allocator-selection fixtures
   match hosted IR and execution, including a class allocation through the typed pipeline.
+- Empty methods retain their instantiated parameter types. Argument expressions still run when the body is
+  empty; class and struct constructors with unused initializer arguments compile through the typed pipeline.
 - **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
   [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
   the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,
