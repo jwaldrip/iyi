@@ -47,6 +47,8 @@ trap 'rm -rf "$work"' EXIT
 . bench/lib/tripwire.sh
 # shellcheck source=bench/lib/mutation.sh
 . bench/lib/mutation.sh
+. bench/lib/native_signature.sh
+export NATIVE_SIGNATURE_FAILURE_FILE="$work/signature-failure"
 
 failures=0
 fail() {
@@ -110,6 +112,10 @@ phase_of() {
   [ -s "$dir/frameworks" ] && cp "$dir/frameworks" "$dir/p.ir.imports"
   if ! PATH="$TRIPWIRE_PATH:$PATH" "$tools/compile_native" "$dir/p.ir" -o "$dir/native" >"$dir/native.log" 2>&1; then
     printf 'native\t%s\n' "$(head -n 1 "$dir/native.log")"
+    return
+  fi
+  if ! native_signature_ok "$dir/native"; then
+    printf 'native\tinvalid executable signature\n'
     return
   fi
   # The executable loads libSystem and the frameworks the hosted link named that it calls, and nothing else.
@@ -242,6 +248,8 @@ elif ! "$tools/iyi-ir" import "$self/hosted.ll" >"$self/cn.ir" 2>"$self/import.e
   fail "the tool's own IR is refused by the import: $(import_refusal "$self/import.err" "$self/cn.ir")"
 elif ! PATH="$TRIPWIRE_PATH:$PATH" "$tools/compile_native" "$self/cn.ir" -o "$self/a/cn" >"$self/a.log" 2>&1; then
   fail "the tool does not build its own IR: $(head -n 1 "$self/a.log")"
+elif ! native_signature_ok "$self/a/cn"; then
+  fail "cn1 has an invalid signature"
 elif ! PATH="$TRIPWIRE_PATH:$PATH" "$self/a/cn" "$self/cn.ir" -o "$self/b/cn" >"$self/b.log" 2>&1; then
   fail "the natively built tool does not build its own IR: $(head -n 1 "$self/b.log")"
 else
@@ -252,7 +260,9 @@ else
   else
     fail "cn1 and cn2 differ: the natively built compiler does not compile as the hosted-built one does"
   fi
-  if [ -f "$hello_dir/p.ir" ]; then
+  if ! native_signature_ok "$self/b/cn"; then
+    fail "cn2 has an invalid signature"
+  elif [ -f "$hello_dir/p.ir" ]; then
     "$tools/compile_native" "$hello_dir/p.ir" -o "$self/h1/hello" >/dev/null 2>&1
     "$self/b/cn" "$hello_dir/p.ir" -o "$self/h2/hello" >/dev/null 2>&1
     if [ -x "$self/h2/hello" ] && cmp -s "$self/h1/hello" "$self/h2/hello"; then
@@ -327,6 +337,7 @@ else
   [ "$status" -eq 0 ] || fail "a mutation was not caught"
 fi
 
+[ ! -e "$NATIVE_SIGNATURE_FAILURE_FILE" ] || fail "a native executable failed signature verification"
 echo
 if [ "$failures" -eq 0 ]; then
   echo "== ALL NATIVE WHOLE PROGRAM CHECKS PASSED"

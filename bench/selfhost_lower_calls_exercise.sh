@@ -49,6 +49,10 @@ if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_calls_exercise.iyi
   exit 1
 fi
 echo "  driver built"
+if ! "$WORK/port" triple; then
+  echo "  FAIL: target triple frame-pointer classification"
+  status=1
+fi
 
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
@@ -419,6 +423,11 @@ lower_calls_check() {
   return 0
 }
 
+triple_check() {
+  "$IYI" build -o "$WORK/triple-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/triple-mut.build.log" 2>&1 || return 1
+  "$WORK/triple-mut" triple > "$WORK/triple-mut.out" 2>&1
+}
+
 super_check() {
   if ! "$IYI" build -o "$WORK/super_mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/super_mut.build.log" 2>&1; then
     cat "$WORK/super_mut.build.log" > "$WORK/super.invalid"
@@ -580,6 +589,8 @@ prove_mutation "a def's unwind table is async on aarch64" "$REPO/src/compiler/lo
   'return "sync"' 'return "async"' -- lower_calls_check || status=1
 prove_mutation "a def loses its darwin frame pointers" "$REPO/src/compiler/lower/fun.iyi" \
   "  if darwin_triple?(triple)" "  if false" -- lower_calls_check || status=1
+prove_mutation "a macOS triple loses its frame pointers" "$REPO/src/compiler/lower/fun.iyi" \
+  '  triple.includes?("darwin") || triple.includes?("macosx")' '  triple.includes?("darwin")' -- triple_check || status=1
 prove_mutation "the printer writes uwtable as an attribute, not uwtable(sync)" "$REPO/src/compiler/ir/printer.iyi" \
   'return "uwtable(" + s + ")" if a.name == "uwtable"' 'return "uwtable=" + ir_quote(s) if a.name == "uwtable"' -- lower_calls_check || status=1
 prove_mutation "a NoReturn def carries no noreturn attribute" "$REPO/src/compiler/lower/fun.iyi" \

@@ -73,6 +73,7 @@ run_gate native_encode any bench/native_encode_exercise.sh
 run_gate native_regalloc darwin-arm64 bench/native_regalloc_exercise.sh
 run_gate native_asm any bench/native_asm_exercise.sh aarch64
 run_gate native_codegen darwin-arm64 bench/native_codegen_exercise.sh
+run_gate native_ir_diff darwin-arm64 bench/native_ir_diff.sh
 run_gate native_llvm_roundtrip any bench/native_llvm_roundtrip_exercise.sh
 run_gate native_x86_64 any bench/native_x86_64_exercise.sh
 run_gate native_wasm any bench/native_wasm_exercise.sh

@@ -27,6 +27,9 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
     owner.add_def(primitive_def("to_i32", [] of Arg, Path.new("Int32"), "convert"))
     owner.add_def(primitive_def("to_u32", [] of Arg, Path.new("UInt32"), "convert"))
     owner.add_def(primitive_def("to_u64", [] of Arg, Path.new("UInt64"), "convert"))
+    owner.add_def(primitive_def("unsafe_chr", [] of Arg, Path.new("Char"), "unchecked_convert"))
+    owner.add_def(primitive_def("to_f32", [] of Arg, Path.new("Float32"), "convert"))
+    owner.add_def(primitive_def("to_f64", [] of Arg, Path.new("Float64"), "convert"))
     ["==", "!=", "<", "<=", ">", ">="].each do |op|
       owner.add_def(binary_def(op, tn, "Bool"))
     end
@@ -50,9 +53,22 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
   ["==", "!=", "<", "<=", ">", ">="].each do |op|
     char.add_def(binary_def(op, "Char", "Bool"))
   end
+  char.add_def(primitive_def("ord", [] of Arg, Path.new("Int32"), "unchecked_convert"))
+  ["Float32", "Float64"].each do |tn|
+    owner = prog.lookup_type_node(Path.new(tn), prog).as(NonGenericClassType)
+    ["Float32", "Float64"].each do |other|
+      ["+", "-", "*", "/", "fdiv"].each do |op|
+        owner.add_def(binary_def(op, other, tn))
+      end
+      ["==", "!=", "<", "<=", ">", ">="].each do |op|
+        owner.add_def(binary_def(op, other, "Bool"))
+      end
+    end
+  end
   reference = prog.lookup_type_node(Path.new("Reference"), prog).as(NonGenericClassType)
   reference.add_def(primitive_def("object_id", [] of Arg, Path.new("UInt64"), "object_id"))
   object = prog.lookup_type_node(Path.new("Object"), prog).as(NonGenericClassType)
+  object.add_def(primitive_def("class", [] of Arg, nil, "class"))
   object.add_def(primitive_def("crystal_type_id", [] of Arg, Path.new("Int32"), "object_crystal_type_id"))
   declare_pointer_primitives(prog)
   # The literal-index fixture alone installs its concrete tuple primitive.

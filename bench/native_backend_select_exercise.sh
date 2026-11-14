@@ -13,6 +13,7 @@ TOOL_SRC="$REPO/src/compiler/tools/compile_native.iyi"
 BACKEND_SRC="$REPO/src/compiler/backend/backend.iyi"
 FIXTURE="$REPO/bench/fixtures/backend_select_exit.iyi"
 . "$REPO/bench/lib/mutation.sh"
+. "$REPO/bench/lib/native_signature.sh"
 
 WORK="$(mktemp -d /tmp/iyi-backend-select.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
@@ -61,7 +62,7 @@ fi
 hosted_rc=$?
 if "$WORK/tool" "$FIXTURE" -o "$WORK/prog.ir" --emit ir >"$WORK/emit.log" 2>&1 && [ -s "$WORK/prog.ir" ]; then
   echo "   wrote $(wc -l <"$WORK/prog.ir" | tr -d ' ') lines of IR"
-  if "$WORK/tool" "$WORK/prog.ir" -o "$WORK/from_ir" >"$WORK/from_ir.log" 2>&1; then
+  if "$WORK/tool" "$WORK/prog.ir" -o "$WORK/from_ir" >"$WORK/from_ir.log" 2>&1 && native_signature_ok "$WORK/from_ir"; then
     "$WORK/from_ir" >/dev/null 2>&1
     ir_rc=$?
     if [ "$ir_rc" = "$hosted_rc" ]; then
