@@ -348,7 +348,7 @@ if generic_constructor_check && [ ! -e "$WORK/constructor.invalid" ]; then
     '  if recorded = low.analysed.call_receiver?(node)' \
     '  if recorded = (node.obj.nil? ? low.analysed.call_receiver?(node) : nil)' || status=1
   constructor_prove "generic struct allocation leaves an address" "$REPO/src/compiler/lower/call.iyi" \
-    '      if passed_by_value?(allocated_type)' '      if passed_by_value?(inst)' || status=1
+    '      if passed_by_value?(allocated_type)' '      if false' || status=1
 else
   echo "  constructor mutation baseline failed or did not build"
   status=1
