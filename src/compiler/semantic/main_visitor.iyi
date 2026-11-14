@@ -2599,6 +2599,10 @@ pub class MainVisitor < TypeNodeHost
   def collect_candidate_defs(rec_type : Type, name : String, result : Array(Def), visited : Set(String)) : Nil
     return if visited.includes?(rec_type.full_name)
     visited.add(rec_type.full_name)
+    if rec_type.is_a?(VirtualType)
+      collect_candidate_defs(rec_type.as(VirtualType).base_type, name, result, visited)
+      return
+    end
 
     if rec_type.is_a?(ModuleType)
       mod = rec_type.as(ModuleType)
