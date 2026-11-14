@@ -31,18 +31,17 @@ import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symb
 import compiler/lower/type_id::{LowerTypeIds}
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Function, Linkage}
-import compiler/ir/function::{Global, TlsModel}
 import compiler/ir/inst::{Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper, passed_by_value?}
-import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, NilableReferenceUnionType, NilableProcType, PointerInstanceType, TypeQueries, VirtualType}
+import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, NilableReferenceUnionType, NilableProcType, PointerInstanceType, ProcInstanceType, TypeQueries, VirtualType}
 import compiler/lower/context::{BodyVisit, BranchPhi, Lowerer, LowerVar}
 import compiler/lower/helpers::{abi_name, int1, llvm_nil, load_aligned, store_aligned, at_terminator?, raise_overflow_name}
 import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
-import compiler/lower/call::{codegen_call_node, codegen_responds_to, responds_to_value}
+import compiler/lower/call::{codegen_call_node, codegen_responds_to, responds_to_value, declare_lib_var}
 import compiler/lower/block::{branch_to_phi, lower_yield}
 import compiler/lower/ensure::{lower_exception_handler, execute_ensures_until, set_ensure_exception_handler}
 import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun, clear_fun_emission_done}
@@ -717,7 +716,7 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   end
   if node.is_a?(PointerOf)
     # The hosted `visit(PointerOf)` (codegen.cr:1001-1038): a local's pointer, an instance
-    # field address, or an initialized class variable's global address.
+    # field address, an initialized class variable, or an external lib variable's global address.
     exp = node.as(PointerOf).exp
     if exp.is_a?(Var)
       var = low.current_context.vars[exp.as(Var).name]?
@@ -741,14 +740,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
         if owner.is_a?(LibType)
           external = owner.as(LibType).lookup_fun(call.name)
           if external && external.external_var && external.primitive == "external_var_get"
-            var_type = external.resolved_return
-            raise "BUG: external variable #{external.real_name} has no resolved type" if var_type.nil?
-            global = low.module.get_global?(external.real_name)
-            if global.nil?
-              global = low.module.add_global(external.real_name, low.typer.llvm_return_type(var_type.as(Type)))
-              global.as(Global).tls = TlsModel::GeneralDynamic if external.thread_local
+            if external.resolved_return.is_a?(ProcInstanceType)
+              pending_visit_node("pointerof of the proc external variable #{external.real_name} (hosted visit(PointerOf) passes its address through check_c_fun)")
             end
-            low.last = global.as(Value)
+            low.last = declare_lib_var(low, external, call).as(Value)
             return
           end
         end

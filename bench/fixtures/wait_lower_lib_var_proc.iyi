@@ -1,0 +1,8 @@
+@[Unsafe("reads a C function pointer global and exits through a C runtime function")]
+lib LibC
+  $vprintf_stderr_func : UInt8*, Void* -> Int32
+  fun exit(status : Int32) : NoReturn
+end
+
+hook = LibC.vprintf_stderr_func
+LibC.exit(7)

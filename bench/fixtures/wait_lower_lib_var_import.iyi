@@ -1,0 +1,11 @@
+@[Unsafe("reads a C global and exits through a C runtime function")]
+@[Link("m")]
+lib LibM
+  $signgam : Int32
+end
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+sign = LibM.signgam
+LibC.exit(7)
