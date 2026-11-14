@@ -288,6 +288,8 @@ pub class MainVisitor < TypeNodeHost
   property type_filters : TypeFilters? = nil
   property needs_type_filters : Int32 = 0
   property unreachable : Bool = false
+  # A filter can leave a variable no type, making its guarded branch impossible.
+  property narrowed_out : Bool = false
   property while_break_vars : Array(Array(Hash(String, Type))) = [] of Array(Hash(String, Type))
   # Assignment types visible from each enclosing handler's ensure.
   property handler_vars : Array(Hash(String, Type)) = [] of Hash(String, Type)
@@ -1100,6 +1102,10 @@ pub class MainVisitor < TypeNodeHost
       return false
     end
     if reason = @untyped_locals[node.name]?
+      if reason == narrowed_out_reason(node.name)
+        @untyped_reasons[node] = reason
+        return false
+      end
       return untyped(node, reason)
     end
 
@@ -1643,6 +1649,10 @@ pub class MainVisitor < TypeNodeHost
     @program.type_merge(a, b)
   end
 
+  def narrowed_out_reason(name : String) : String
+    "variable '#{name}' cannot be typed"
+  end
+
   # Applies a TypeFilters map to @vars for the current branch.
   def filter_vars(filters : TypeFilters?) : Nil
     return nil if filters.nil?
@@ -1652,7 +1662,8 @@ pub class MainVisitor < TypeNodeHost
           @vars[name] = narrowed
         else
           @vars.delete(name)
-          @untyped_locals[name] = "variable '#{name}' cannot be typed"
+          @untyped_locals[name] = narrowed_out_reason(name)
+          @narrowed_out = true
         end
       end
     end
@@ -1816,7 +1827,9 @@ pub class MainVisitor < TypeNodeHost
     @untyped_locals = cond_untyped.dup
     @type_filters = nil
     @unreachable = false
+    @narrowed_out = false
     filter_vars(cond_type_filters)
+    then_dead = @narrowed_out
     node.then = splice_def_body(node.then)
     node.then.accept(self)
     then_vars = @vars
@@ -1828,7 +1841,9 @@ pub class MainVisitor < TypeNodeHost
     @untyped_locals = cond_untyped.dup
     @type_filters = nil
     @unreachable = false
+    @narrowed_out = false
     filter_vars(TypeFilters.invert(cond_type_filters))
+    else_dead = @narrowed_out
     node.else = splice_def_body(node.else)
     node.else.accept(self)
     else_vars = @vars
@@ -1854,15 +1869,15 @@ pub class MainVisitor < TypeNodeHost
 
     @unreachable = then_unreachable && else_unreachable
 
-    then_type = child_type(node.then)
-    else_type = child_type(node.else)
+    then_type = then_dead ? type_of?(node.then) : child_type(node.then)
+    else_type = else_dead ? type_of?(node.else) : child_type(node.else)
     speculative = @speculation.depth > 0
     if then_type && else_type
       merged = merge_flow(then_type, else_type)
       set_type(node, merged)
-    elsif then_type && (else_unreachable || speculative)
+    elsif then_type && (else_unreachable || else_dead || speculative)
       set_type(node, then_type)
-    elsif else_type && (then_unreachable || speculative)
+    elsif else_type && (then_unreachable || then_dead || speculative)
       set_type(node, else_type)
     end
     false
