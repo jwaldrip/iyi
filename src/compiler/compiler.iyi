@@ -14,9 +14,10 @@ module compiler/compiler
 
 import compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, ModuleHeader, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
 import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dir_of}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dir_of, normalize_path}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/definition_typing::{append_definition_probes}
 import compiler/backend/backend::{Backend, BuildRequest}
 import compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, refuse_exception_handlers, register_primitive_operators}
 import compiler/platform/target
@@ -464,6 +465,15 @@ pub class Compiler
       top_level.concat(runtime_by_unit[mod_info.filename])
     end
     root = assemble_root(classes, libs, all_defs, funs, top_level)
+    user_files = Set(String).new
+    user_files.add(normalize_path(entry.filename))
+    resolved.each do |mod_info|
+      unless mod_info.user_imports.empty?
+        user_files.add(normalize_path(mod_info.filename))
+        mod_info.user_imports.each { |file| user_files.add(normalize_path(file)) }
+      end
+    end
+    append_definition_probes(typed.prog, root, user_files)
     TypedProgram.new(root, typed.prog, typed.visitor, typed.links)
   end
 

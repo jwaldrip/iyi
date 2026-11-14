@@ -2738,7 +2738,18 @@ pub class Lexer
             delimiter_state = ds.with_open_count_delta(1)
           end
         elsif whitespace
-          kw = lookahead_macro_keyword { macro_starts_with_keyword?(beginning_of_line) }
+          if char == 'y' && lookahead_macro_keyword {
+               if char_sequence?('i', 'e', 'l', 'd') && !ident_part_or_end?(peek_next_char)
+                 MacroKeywordState::Other
+               else
+                 nil
+               end
+             }
+            yields = true
+            char = current_char
+            beginning_of_line = false
+          else
+            kw = lookahead_macro_keyword { macro_starts_with_keyword?(beginning_of_line) }
           if kw
             char = current_char
             if kw != MacroKeywordState::AbstractDef
@@ -2746,6 +2757,7 @@ pub class Lexer
             end
             beginning_of_line = false
             next
+          end
           end
         end
 

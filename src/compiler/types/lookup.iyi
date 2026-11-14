@@ -76,7 +76,7 @@ pub class TypeLookup
   # ---- paths ----
 
   def lookup_path_node(scope : ModuleType, path : Path) : Type | LookupError
-    found = find_path(scope, path, false)
+    found = find_path(scope, path, path.iyi_synthetic)
     if found.nil?
       hidden = find_path(scope, path, true)
       if hidden

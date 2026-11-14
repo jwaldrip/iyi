@@ -1320,6 +1320,7 @@ end
 pub class Path < ASTNode
   property names : Array(String)
   property global : Bool
+  property iyi_synthetic : Bool = false
 
   def initialize(@names : Array(String) = [] of String, @global : Bool = false)
   end
@@ -1337,7 +1338,9 @@ pub class Path < ASTNode
   end
 
   def clone_without_location : self
-    Path.new(@names.dup, @global)
+    copy = Path.new(@names.dup, @global)
+    copy.iyi_synthetic = @iyi_synthetic
+    copy
   end
 
   def ==(other : self) : Bool
@@ -1785,6 +1788,7 @@ pub class If < ASTNode
   property from_or : Bool
   property truthy : Bool
   property falsey : Bool
+  property iyi_definition_probe : Bool = false
 
   def initialize(@cond : ASTNode, a_then : ASTNode? = nil, a_else : ASTNode? = nil, @ternary : Bool = false)
     @then = a_then || Nop.new
@@ -1801,6 +1805,7 @@ pub class If < ASTNode
     copy.from_or = @from_or
     copy.truthy = @truthy
     copy.falsey = @falsey
+    copy.iyi_definition_probe = @iyi_definition_probe
     copy
   end
 
@@ -3038,6 +3043,7 @@ pub class Call < ASTNode
   property name_location : Location? = nil
   property global : Bool = false
   property iyi_group : Bool = false
+  property iyi_synthetic : Bool = false
   property expanded : ASTNode? = nil
 
   def initialize(
@@ -3094,7 +3100,7 @@ pub class Call < ASTNode
     else
       cloned_named_args = nil
     end
-    Call.new(
+    copy = Call.new(
       clone_node(@obj),
       @name,
       clone_nodes(@args),
@@ -3107,6 +3113,8 @@ pub class Call < ASTNode
       @iyi_group,
       clone_node(@expanded),
     )
+    copy.iyi_synthetic = @iyi_synthetic
+    copy
   end
 
   def accept_children(visitor) : Nil
@@ -3464,6 +3472,7 @@ pub class Def < ASTNode
   property calls_initialize : Bool = false
   property calls_previous_def : Bool = false
   property uses_block_arg : Bool = false
+  property macro_yields : Bool = false
   # The def this one replaced, and the def that replaced this one.
   # Hosted `Def#previous` is a DefWithMetadata; the port keeps the def itself.
   property previous : Def? = nil
@@ -3543,6 +3552,7 @@ pub class Def < ASTNode
     d.calls_initialize = @calls_initialize
     d.calls_previous_def = @calls_previous_def
     d.uses_block_arg = @uses_block_arg
+    d.macro_yields = @macro_yields
     # Hosted syntax Def#clone_without_location does not copy previous or next.
     # The semantic reopening copies previous only; iyi cannot reopen that class.
     d.iyi_defer = @iyi_defer

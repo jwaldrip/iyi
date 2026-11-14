@@ -82,6 +82,7 @@ pub class Parser < Lexer
   property var_scopes : Array(Set(String))
   property stop_on_do : Bool
   property stop_on_yield : Int32
+  property definition_macro_yields : Bool = false
   property inside_defer : Int32
   property wants_doc : Bool
   property doc_enabled : Bool
@@ -4176,6 +4177,7 @@ pub class Parser < Lexer
     while true
       next_macro_token(macro_state, skip_whitespace)
       macro_state = @token.macro_state
+      @definition_macro_yields = true if macro_state.yields
 
       skip_whitespace = false
 
@@ -4241,6 +4243,7 @@ pub class Parser < Lexer
   end
 
   def parse_def(is_abstract : Bool = false) : ASTNode
+    @definition_macro_yields = false
     prepare_parse_def
     a_def = with_isolated_var_scope do
       parse_def_helper(is_abstract)
@@ -4249,6 +4252,7 @@ pub class Parser < Lexer
     a_def.calls_initialize = @calls_initialize
     a_def.calls_previous_def = @calls_previous_def
     a_def.uses_block_arg = @uses_block_arg
+    a_def.macro_yields = @definition_macro_yields
     prepare_parse_def
     a_def
   end

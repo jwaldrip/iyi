@@ -102,7 +102,7 @@ end
 # double splat with a restriction.
 pub class CallMatch
   def self.yields?(definition : Def) : Bool
-    return true if definition.block_arg
+    return true if definition.block_arg || definition.macro_yields
     finder = YieldFinder.new
     definition.body.accept(finder)
     finder.found
