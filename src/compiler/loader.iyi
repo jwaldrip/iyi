@@ -203,12 +203,14 @@ pub class Loader
   # every `{% if %}`'s first branch instead loaded `iyi/chaos` and `iyi/chaos_points` into every program
   # (src/iyi/prelude.iyi, under `flag?(:iyi_chaos)`), and with them a second `Atomic#get` that no build without
   # `-Diyi_chaos` has.
-  def self.collect_import_paths(node : ASTNode, into : Array(String), engine : MacroEngine, filename : String, import_only : Bool = false) : Nil
+  def self.collect_import_paths(node : ASTNode, into : Array(String), engine : MacroEngine, filename : String, user_imports : Array(String)) : Nil
     if node.is_a?(ImportDecl)
-      into << node.as(ImportDecl).path.join("/")
-    elsif node.is_a?(Require) && !import_only
+      path = node.as(ImportDecl).path.join("/")
+      into << path
+      user_imports << path
+    elsif node.is_a?(Require)
       into << node.as(Require).string
-    elsif node.is_a?(Call) && !import_only
+    elsif node.is_a?(Call)
       call_node = node.as(Call)
       if call_node.name == "require" && call_node.args.size == 1
         if call_node.args[0].is_a?(StringLiteral)
@@ -220,14 +222,14 @@ pub class Loader
       if report.failure.nil? && !report.skipped
         text = report.output
         if text.bytesize > 0
-          collect_import_paths(Parser.new(text, filename).parse, into, engine, filename, import_only)
+          collect_import_paths(Parser.new(text, filename).parse, into, engine, filename, user_imports)
         end
       elsif node.is_a?(MacroIf)
         # The engine refused the site (a macro method it has not ported): what the loader did before, the
         # first branch's text, so a file loaded until now is not dropped.
-        collect_import_paths(node.as(MacroIf).then, into, engine, filename, import_only)
+        collect_import_paths(node.as(MacroIf).then, into, engine, filename, user_imports)
       end
-    elsif node.is_a?(MacroLiteral) && !import_only
+    elsif node.is_a?(MacroLiteral)
       ml = node.as(MacroLiteral)
       lines = ml.value.split('\n')
       lines.each do |line|
@@ -239,7 +241,7 @@ pub class Loader
       end
     elsif node.is_a?(Expressions)
       node.as(Expressions).expressions.each do |e|
-        collect_import_paths(e, into, engine, filename, import_only)
+        collect_import_paths(e, into, engine, filename, user_imports)
       end
     end
   end
@@ -292,9 +294,8 @@ pub class Loader
     ast = parser.parse
 
     import_paths = [] of String
-    Loader.collect_import_paths(ast, import_paths, @macro_engine, clean_fn)
     user_import_paths = [] of String
-    Loader.collect_import_paths(ast, user_import_paths, @macro_engine, clean_fn, true)
+    Loader.collect_import_paths(ast, import_paths, @macro_engine, clean_fn, user_import_paths)
 
     imported_filenames = [] of String
     user_imported_filenames = [] of String
