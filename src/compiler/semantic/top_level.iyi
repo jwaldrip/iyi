@@ -2223,6 +2223,10 @@ pub class TopLevelVisitor < Visitor
     @exp_nest = 0
     @pending_ivars = [] of PendingIvar
     @pending_annotations = [] of Annotation
+    if file = @file
+      @program.file_imports[file] = @program.current_imports
+      @program.file_import_defs[file] = @program.current_import_defs
+    end
   end
 
   # `@[Primitive(:name)]` makes a def's body the compiler's own primitive, located at
@@ -2364,6 +2368,8 @@ pub class TopLevelVisitor < Visitor
     # it read is declared (the hosted pass resolves them after all top-level declarations).
     inner.exp_nest = 1
     @program.current_import_defs = Hash(String, Array(Def)).new
+    @program.file_imports[file] = @program.current_imports
+    @program.file_import_defs[file] = @program.current_import_defs
     nodes.accept(inner)
     inner.take_pending_ivars.each { |pi| @pending_ivars << pi }
     @program.current_imports = saved
