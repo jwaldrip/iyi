@@ -391,6 +391,8 @@ pub class TypeLookup
   end
 
   # `StaticArray(T, N)`: N is a number literal. A constant size is not ported.
+  # Check and virtualize the element like lookup_type_args and the body's
+  # `uninitialized` path, so both produce the same StaticArray instance.
   def lookup_static_array(scope : ModuleType, node : Generic) : Type | LookupError
     elem = lookup(scope, node.type_vars[0])
     return elem if elem.is_a?(LookupError)
@@ -398,8 +400,12 @@ pub class TypeLookup
     unless size_node.is_a?(NumberLiteral)
       return LookupError.new("a constant size of StaticArray is not ported yet")
     end
+    elem_type = elem.as(Type)
+    unless can_be_stored?(elem_type)
+      return LookupError.new("can't use #{shown(elem_type)} as a generic type argument yet, use a more specific type")
+    end
     size = size_node.as(NumberLiteral).value.to_i64
-    @instances.static_array_of(elem.as(Type), size)
+    @instances.static_array_of(TypeQueries.virtual_type(elem_type), size)
   end
 
   # The type arguments of a generic written in *scope*. A splat of a tuple

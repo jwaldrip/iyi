@@ -790,6 +790,27 @@ fi
 prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
   "@def_free_types[target_def] = free_types unless free_types.empty?" \
   "        nil" -- atomic_free_at_floor || status=1
+# Concrete static array annotations retain their element type and size.
+static_array_return_at_floor() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/static_array_mut_build.log" 2>&1; then
+    body_build_failed "$WORK/static_array_mut_build.log"
+    return $?
+  fi
+  fx="$REPO/bench/fixtures/sem_bodies_static_array_return.iyi"
+  rel="bench/fixtures/sem_bodies_static_array_return.iyi"
+  "$ORACLE" "$fx" 2>/dev/null | sort > "$WORK/static_array_mut.hosted" || return 1
+  "$MUT_TD" "$fx" "$REPO/src" 2>/dev/null | sort > "$WORK/static_array_mut.port" || return 1
+  matched=$(comm -12 "$WORK/static_array_mut.hosted" "$WORK/static_array_mut.port" | wc -l | tr -d ' ')
+  floor=$(awk -v r="$rel" '$1 == r { print $2 }' "$FLOOR_FILE" 2>/dev/null)
+  # Without a floor the mutation must not be credited as caught.
+  [ "$matched" -ge "${floor:-0}" ]
+}
+prove_mutation "a static array return annotation is typed as the bare StaticArray(T, N)" "$REPO/src/compiler/semantic/top_level.iyi" \
+  "hook.resolve_node?(node, current_type)" \
+  "hook.resolve_node?(g.name, current_type)" -- static_array_return_at_floor || status=1
+prove_mutation "a written static array's element is not made virtual" "$REPO/src/compiler/types/lookup.iyi" \
+  "@instances.static_array_of(TypeQueries.virtual_type(elem_type), size)" \
+  "@instances.static_array_of(elem_type, size)" -- static_array_return_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"

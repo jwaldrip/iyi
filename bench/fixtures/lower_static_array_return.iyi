@@ -1,0 +1,31 @@
+# Like the prelude's __iyi_kevent_change, return an initialized UInt64[4]
+# by value and read every element from the caller's copy. Exit 42 on success.
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def pack_words(a : UInt64, b : UInt64) : UInt64[4]
+  words = uninitialized UInt64[4]
+  slots = pointerof(words).as(Pointer(UInt64))
+  slots.value = a
+  (slots + 1_i64).value = b
+  (slots + 2_i64).value = 0_u64
+  (slots + 3_i64).value = 0_u64
+  words
+end
+
+def total : UInt64
+  packed = pack_words(5_u64, 37_u64)
+  read = pointerof(packed).as(Pointer(UInt64))
+  read.value &+ (read + 1_i64).value &+ (read + 2_i64).value &+ (read + 3_i64).value
+end
+
+def exit_code(value : UInt64) : Int32
+  if value == 42_u64
+    42
+  else
+    1
+  end
+end
+
+LibC.exit(exit_code(total))

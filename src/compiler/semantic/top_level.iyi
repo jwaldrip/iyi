@@ -1157,6 +1157,8 @@ end
 pub abstract class TypeHook
   abstract def merge_members(types : Array(Type)) : Type
   abstract def resolve_node(node : ASTNode, current_type : ModuleType) : Type
+  # The same lookup without raising or creating an UnresolvedType on failure.
+  abstract def resolve_node?(node : ASTNode, current_type : ModuleType) : Type?
   abstract def instantiate_type(base : Type, type_args : Array(Type)) : Type
   # The virtual type of a type, as the hosted `Type#virtual_type` (an explicit instance variable
   # is typed by it: hosted declare_instance_var).
@@ -1890,6 +1892,11 @@ pub class SemanticProgram < NonGenericModuleType
               type_args << arg
             end
             return hook.instantiate_type(base_type, type_args)
+          end
+          # Non-plain generics need the hook's lookup, just as on the strict path.
+          # Preserve the base-only answer for unresolved free splats such as Tuple(*U).
+          if resolved = hook.resolve_node?(node, current_type)
+            return resolved
           end
         end
       end

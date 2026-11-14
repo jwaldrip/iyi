@@ -47,6 +47,12 @@ pub class TypeSystem < TypeHook
     found.as(Type)
   end
 
+  def resolve_node?(node : ASTNode, current_type : ModuleType) : Type?
+    found = TypeLookup.new(@instances).lookup(current_type, node)
+    return nil if found.is_a?(LookupError)
+    found.as(Type)
+  end
+
   private def register_builtin_types : Nil
     unless @program.types["Tuple"]?
       tup = GenericClassType.new(@program, @program, "Tuple", ["*T"], 0, @program.struct_type)
