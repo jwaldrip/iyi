@@ -9,11 +9,28 @@ def truth(value : Choice) : Int32
   value ? 1 : 0
 end
 
+def choose(index : Int32, pointer : Pointer(Int32)) : Choice
+  if index == 0
+    nil
+  elsif index == 1
+    false
+  elsif index == 2
+    nil.as(Pointer(Int32))
+  elsif index == 3
+    0
+  elsif index == 4
+    true
+  else
+    pointer
+  end
+end
+
 slot = 42
-result = truth(nil.as(Choice))
-result = result &+ truth(false.as(Choice))
-result = result &+ truth(nil.as(Pointer(Int32)).as(Choice))
-result = result &+ truth(0.as(Choice))
-result = result &+ truth(true.as(Choice))
-result = result &+ truth(pointerof(slot).as(Choice))
+pointer = pointerof(slot)
+result = truth(choose(0, pointer))
+result = result &+ truth(choose(1, pointer))
+result = result &+ truth(choose(2, pointer))
+result = result &+ truth(choose(3, pointer))
+result = result &+ truth(choose(4, pointer))
+result = result &+ truth(choose(5, pointer))
 LibC.exit(result &* 14)
