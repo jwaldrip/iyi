@@ -10,6 +10,9 @@
 # object is linked with the native runtime (rt/builtins.ir) by the native linker, which writes the signature too. No
 # host tool takes part: no ld, cc, clang, codesign or LLVM. A refusal names the function, construct or symbol, and the
 # tool exits 1 with no output written.
+#
+# Pipeline phases run as tasks, and body typing nests along the call graph; this tool requests 1 GiB fiber stacks
+# through IyiFiber.stack_bytes before its first task. Other programs keep 256 KiB.
 
 @[Unsafe("declares the C library exit to set the process status; the tool handles no raw memory")]
 module compiler/tools/compile_native
@@ -35,6 +38,8 @@ end
 
 module CompileNative
   TARGET = "aarch64-apple-darwin"
+  # Headroom for the compiler pipeline's nested body typing.
+  PHASE_STACK_BYTES = 1073741824_u64
 
   def self.fail(message : String) : Nil
     STDERR.puts "iyi-compile-native: #{message}"
@@ -77,6 +82,7 @@ module CompileNative
   end
 
   def self.run : Nil
+    IyiFiber.stack_bytes = PHASE_STACK_BYTES
     args = Program.args
     if args.size < 3 || args[1] != "-o"
       fail("usage: iyi-compile-native <program.iyi|program.ir> -o <exe> [--backend native] [--target #{TARGET}]")
