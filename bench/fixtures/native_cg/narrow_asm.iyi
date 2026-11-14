@@ -1,4 +1,4 @@
 module narrow_asm
 
-v = 128_u8
-puts "#{v.to_i8! < 0 ? 1 : 0}"
+v = 0_i32 - 128_i32
+puts "#{v < 0 ? 1 : 0}"
