@@ -10,6 +10,7 @@ module bench/selfhost_lower_calls_exercise
 #   port emit <fixture.iyi> <oracle.ll>     the port's module as text, for the native tool
 
 import bench/lib/lower_gate::{analyse, run_emit, run_lower, run_oracle}
+import compiler/lower/fun::{darwin_triple?}
 
 def run : Nil
   args = Program.args
@@ -20,7 +21,12 @@ def run : Nil
     return
   end
   mode = args[0]
-  if mode == "oracle"
+  if mode == "triple"
+    raise "darwin target lacks frame pointers" unless darwin_triple?("aarch64-apple-darwin")
+    raise "macOS target lacks frame pointers" unless darwin_triple?("aarch64-apple-macosx28.0")
+    raise "Linux target has Darwin frame pointers" if darwin_triple?("aarch64-unknown-linux-gnu")
+    puts "TRIPLE OK"
+  elsif mode == "oracle"
     run_oracle(args[1], "::")
   elsif mode == "lower"
     run_lower(args[1], args[2], "::", true)

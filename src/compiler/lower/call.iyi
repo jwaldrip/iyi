@@ -59,9 +59,9 @@ import compiler/lower/phi::{LowerPhi}
 import compiler/lower/proc::{make_fun}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/helpers::{int1}
-import compiler/semantic/top_level::{ClassType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, TraitType, Type, UnionType, VoidType}
+import compiler/semantic/top_level::{ClassType, EnumType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, TraitType, Type, UnionType, VoidType}
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
-import compiler/lower/primitives::{primitive_name, lower_primitive_call, primitive_allocate}
+import compiler/lower/primitives::{primitive_name, lower_primitive_call, lower_primitive_with_values, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
 import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType, GenericClassInstanceMetaclassType, IntegerType, FloatType}
 import compiler/semantic/lib_call::{LibCallTarget}
@@ -166,7 +166,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   self_value : Value? = nil
   class_owner : Type? = nil
   unless node.obj.nil?
-    recv_type = single_dispatch ? checked_dispatch_receiver(low, node, single_dispatch.as(DispatchTarget).receiver) : receiver_owner(low, node)
+    recv_type = single_dispatch ? checked_dispatch_receiver(low, node, single_dispatch.as(DispatchTarget).receiver, single_dispatch.as(DispatchTarget).definition) : receiver_owner(low, node)
     if recv_type.is_a?(GenericClassInstanceMetaclassType)
       self_type = recv_type
       inferred_receiver = low.analysed.call_receiver?(node)
@@ -196,7 +196,11 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       if literal_body?(def_node.body) && node.block.nil?
         discard_receiver(low, node)
       else
-        if storage = receiver_storage(low, node, self_type.as(Type))
+        if recv_type.is_a?(NilType)
+          lower_receiver(low, node)
+          return if block_ended?(low)
+          self_value = low.builder.const_zero(low.typer.nil_type)
+        elsif storage = receiver_storage(low, node, self_type.as(Type))
           self_value = storage.as(Value)
         else
           recv = lower_receiver(low, node)
@@ -205,7 +209,14 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       end
     end
   end
-  if node.obj.nil? && !low.current_context.type.nil?
+  if node.obj.nil? && !node.super?
+    if defining = low.analysed.program.def_owner(def_node)
+      if defining.is_a?(ModuleType) && defining.as(ModuleType).iyi_unit
+        class_owner = defining
+      end
+    end
+  end
+  if node.obj.nil? && class_owner.nil? && !low.current_context.type.nil?
     ct = low.current_context.type.as(Type)
     if low.current_context.vars["self"]?.nil?
       # A non-generic class method has no self argument. An unqualified call to
@@ -348,26 +359,32 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
   if node.super? || node.previous_def?
     pending_visit_node("super or previous_def dispatched over #{runtime_type.full_name}")
   end
-  if passed_by_value?(ret)
-    pending_visit_node("a dispatched call returning by value #{ret.full_name}")
+  if runtime_type.is_a?(VirtualType) && node.args.empty?
+    all_class = true
+    targets.each do |arm|
+      all_class = false unless primitive_name(arm.definition.body) == "class"
+    end
+    if all_class
+      lower_primitive_call(low, node, targets[0].definition)
+      return
+    end
   end
   arg_types = [] of Type
   node.args.each do |arg|
     t = low.analysed.type_of?(arg)
     raise "BUG: dispatched argument has no type" if t.nil?
     at = t.as(Type)
-    if passed_by_value?(at)
-      pending_visit_node("a dispatched call with by-value argument #{at.full_name}")
-    end
     arg_types << at
   end
   targets.each do |arm|
-    checked_dispatch_receiver(low, node, arm.receiver)
+    checked_dispatch_receiver(low, node, arm.receiver, arm.definition)
     if arm.definition.abstract
       pending_visit_node("a dispatched abstract def #{arm.definition.name} on #{arm.receiver.full_name}")
     end
-    unless primitive_name(arm.definition.body).nil?
-      pending_visit_node("a dispatched primitive def #{arm.definition.name} on #{arm.receiver.full_name}")
+    if prim = primitive_name(arm.definition.body)
+      if prim.starts_with?("pointer_") || prim == "load_atomic" || prim == "store_atomic" || prim == "atomicrmw" || prim == "cmpxchg" || prim == "tuple_indexer_known_index" || prim == "enum_new"
+        pending_visit_node("a dispatched primitive def #{arm.definition.name} on #{arm.receiver.full_name} requires AST operands")
+      end
     end
     if node.args.size != arm.definition.args.size || !arm.definition.splat_index.nil?
       pending_visit_node("a dispatched call with default arguments or a splat")
@@ -409,12 +426,14 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     end
     value = low.last
     raise "BUG: dispatched argument left no value" if value.nil?
-    values << (arg_types[i].is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))
-    arg_tids << type_id_of_value(low, arg, value.as(Value), arg_types[i])
+    raw = value.as(Value)
+    arg_tids << type_id_of_value(low, arg, raw, arg_types[i])
+    passed = arg_types[i].is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : raw
+    values << passed
   end
   phi_wants = wants && !ret.is_a?(NilType) && !ret.is_a?(VoidType) && !ret.is_a?(NoReturnType)
   phi_type : IrType? = nil
-  phi_type = low.typer.llvm_type(ret) if phi_wants
+  phi_type = passed_by_value?(ret) ? low.module.types.ptr(0) : low.typer.llvm_type(ret) if phi_wants
   phi = LowerPhi.new(phi_wants, phi_type)
   targets.each do |arm|
     matches = match_type_id(low, runtime_type, arm.receiver, tid)
@@ -431,14 +450,30 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     low.builder.cond_br(matches, blocks[0], blocks[1])
     low.builder.position_at_end(blocks[0])
     concrete = downcast(low, receiver, arm.receiver, runtime_type, true)
-    self_value = self_argument(low, obj, concrete, arm.receiver)
+    self_value = arm.receiver.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : self_argument(low, obj, concrete, arm.receiver)
+    arm_values = [] of Value
+    i = 0
+    while i < values.size
+      passed = values[i]
+      passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?
+      arm_values << passed
+      i += 1
+    end
     low.needs_value = phi_wants
-    emit_single_call(low, node, arm.definition, arm.return_type, arm.receiver, self_value, nil, arg_types, values)
+    if prim = primitive_name(arm.definition.body)
+      prim_values = [self_value] of Value
+      arm_values.each do |value|
+        prim_values << value
+      end
+      lower_primitive_with_values(low, node, arm.definition, prim, self_value, arm.receiver, prim_values, arg_types)
+    else
+      emit_single_call(low, node, arm.definition, arm.return_type, arm.receiver, self_value, nil, arg_types, arm_values)
+    end
     unless block_ended?(low)
       if phi_wants
         value = low.last
         raise "BUG: dispatched arm left no value" if value.nil?
-        low.last = upcast(low, value.as(Value), arm.return_type, ret)
+        low.last = passed_by_value?(ret) ? join_pointer(low, value.as(Value), arm.return_type, ret) : upcast(low, value.as(Value), arm.return_type, ret)
       end
       phi.add(low, low.last, false)
     end
@@ -598,29 +633,27 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
     end
     return owner
   end
-  return checked_receiver(low, node, owner, false)
+  return checked_receiver(low, node, owner, low.analysed.target_def?(node))
 end
 
-def checked_dispatch_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : Type) : Type
-  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType))
+def checked_dispatch_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : Type, target : Def?) : Type
+  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType) && !owner.is_a?(EnumType))
     pending_visit_node("a dispatched call on unsupported receiver #{owner.full_name}")
   end
-  checked_receiver(low, node, owner, true)
+  checked_receiver(low, node, owner, target)
 end
 
-def checked_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : Type, dispatched : Bool) : Type
+def checked_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call, owner : Type, target : Def?) : Type
+  return owner if owner.is_a?(NilType)
   if owner.is_a?(TraitType)
     pending_visit_node("a call on trait #{owner.full_name} (hosted call.cr: trait dispatch)")
   end
-  if owner.is_a?(UnionType) || owner.is_a?(MixedUnionType) || owner.is_a?(VirtualType) || owner.is_a?(NilableType) || owner.is_a?(NilableReferenceUnionType) || owner.is_a?(NilableProcType) || owner.is_a?(NilType)
+  if owner.is_a?(UnionType) || owner.is_a?(MixedUnionType) || owner.is_a?(VirtualType) || owner.is_a?(NilableType) || owner.is_a?(NilableReferenceUnionType) || owner.is_a?(NilableProcType)
     pending_visit_node("a call on a receiver of type #{owner.full_name} (hosted call.cr: prepare_call_args, owner is not a class or struct)")
   end
   if owner.is_a?(ModuleType)
     if owner.as(ModuleType).defs[node.name]?.nil?
-      if dispatched
-        pending_visit_node("a dispatched call to #{node.name} inherited from a superclass of #{owner.full_name}")
-      end
-      if target = low.analysed.target_def?(node)
+      if target
         return owner if low.analysed.program.def_owner(target)
       end
       pending_visit_node("a call to #{node.name} inherited from a superclass of #{owner.full_name} (hosted call.cr: target_def.owner is the defining type)")
@@ -705,9 +738,6 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   # A body typed NoReturn never yields a value: its block jumps out with `break` or `next`, so the hosted upcast of the body's
   # value does not apply and the body adds no value to the phi.
   body_no_return = body_t.as(Type).is_a?(NoReturnType)
-  if !body_no_return && body_t.as(Type).full_name != ret.full_name
-    pending_visit_node("a block call to #{node.name} whose body is #{body_t.as(Type).full_name} and whose call is #{ret.full_name} (hosted upcast of the body's value)")
-  end
 
   wants = low.needs_value
   caller = low.current_context
@@ -762,8 +792,12 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   else
     unless body_no_return
       value = low.last
-      if !block_ended?(low) && !value.nil? && passed_by_value?(ret)
-        low.last = join_pointer(low, value.as(Value), body_t.as(Type), ret)
+      if !block_ended?(low) && !value.nil? && !ret.is_a?(NilType)
+        if passed_by_value?(ret)
+          low.last = join_pointer(low, value.as(Value), body_t.as(Type), ret)
+        else
+          low.last = upcast(low, value.as(Value), body_t.as(Type), ret)
+        end
       end
       phi.add(low, low.last, true)
     end
@@ -794,9 +828,6 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
   end
   collector = LocalOrder.new(low.analysed)
   block.body.accept(collector)
-  if collector.declared
-    pending_visit_node("a typed declaration in a block (hosted alloca_non_closured_vars, TypeDeclaration), not ported yet")
-  end
   collector.vars.each do |var|
     name = var.name
     t = low.analysed.type_of?(var)
@@ -822,9 +853,6 @@ pub def allocate_def_vars(low : Lowerer, def_node : Def, arg_types : Array(Type)
   end
   collector = LocalOrder.new(low.analysed)
   def_node.body.accept(collector)
-  if collector.declared
-    pending_visit_node("a typed declaration in an inlined def (hosted alloca_vars, TypeDeclaration), not ported yet")
-  end
   collector.vars.each do |var|
     name = var.name
     t = low.analysed.type_of?(var)

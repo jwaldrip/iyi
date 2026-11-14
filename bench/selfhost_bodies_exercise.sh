@@ -381,6 +381,18 @@ recursion_fresh_clone() {
   if grep -q '^cycle_a target=.* untyped-params' "$WORK/recursion_mutant.txt"; then return 1; fi
   return 0
 }
+unit_cycle_targets_ok() {
+  if ! "$IYI" build -o "$WORK/unit_cycle_compiler" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/unit_cycle_build.log" 2>&1; then
+    echo "INVALID MUTANT: unit cycle compiler failed to build" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  IYI_PATH="$REPO/src" "$WORK/unit_cycle_compiler" "$REPO/bench/fixtures/lowcall_cycle_untyped_clone.iyi" -o "$WORK/unit_cycle_native" --pipeline typed --prelude --probe-phase > "$WORK/unit_cycle.log" 2>&1
+}
+unit_cycle_targets_ok || status=1
+prove_mutation "unit helper cycle uses its defining owner" "$MAIN_VISITOR" \
+  "      key_owner = owner if owner.iyi_unit" \
+  "      key_owner = rec_type if owner.iyi_unit" -- unit_cycle_targets_ok || status=1
 prove_mutation "a recursive call targets a fresh clone" "$MAIN_VISITOR" \
   "remember_def_instance(cache_key, target_def, provisional)" \
   "nil" -- recursion_fresh_clone || status=1

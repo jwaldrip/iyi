@@ -49,6 +49,16 @@ if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_calls_exercise.iyi
   exit 1
 fi
 echo "  driver built"
+if ! "$WORK/port" triple; then
+  echo "  FAIL: target triple frame-pointer classification"
+  status=1
+fi
+printf '%s\n' 'import no_such_cycle_unit::{Missing}' > "$WORK/missing_import.iyi"
+if "$WORK/port" lower "$WORK/missing_import.iyi" "$WORK/no_oracle.ll" > "$WORK/missing_import.out" 2> "$WORK/missing_import.err" ||
+   ! grep -Fq "can't find module 'no_such_cycle_unit'" "$WORK/missing_import.err"; then
+  echo "  FAIL: missing fixture import was not rejected by name"
+  status=1
+fi
 
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
@@ -208,8 +218,8 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
       e2e_fail=$((e2e_fail + 1))
       continue
     fi
-    if ! codesign -v --strict "$WORK/$name.native" > /dev/null 2>&1; then
-      echo "  $name: FAIL, native signature invalid"
+    if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/$name.native"; then
+      echo "  $name: native signature verification failed"
       e2e_fail=$((e2e_fail + 1))
       continue
     fi
@@ -247,12 +257,12 @@ for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
     status=1
     continue
   fi
-  if ! codesign -v --strict "$WORK/$name.native" > /dev/null 2>&1; then
-    echo "  $name: FAIL, native signature invalid"
+  timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/$name.native"; then
+    echo "  $name: native signature verification failed"
     status=1
     continue
   fi
-  timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
   timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
   if [ "$hs" -ne 7 ] || [ "$ns" -ne "$hs" ] || ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out"; then
     echo "  $name: hosted status $hs, native status $ns, or output differs"
@@ -304,7 +314,10 @@ generic_constructor_check() {
     fixture="$REPO/bench/fixtures/$name.iyi"
     rm -f "$WORK/constructor.check.exe"
     IYI_PATH="$REPO/src" "$WORK/constructor.check.tool" "$fixture" -o "$WORK/constructor.check.exe" --pipeline typed > "$WORK/constructor.check.log" 2>&1 || return 1
-    codesign -v --strict "$WORK/constructor.check.exe" > /dev/null 2>&1 || { echo "  $name: FAIL, native signature invalid"; return 1; }
+    if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/constructor.check.exe"; then
+      touch "$WORK/constructor.invalid"
+      return 1
+    fi
     timeout 30 "$WORK/constructor.check.exe" > "$WORK/constructor.check.out" 2>&1; result=$?
     [ "$result" -eq 7 ] && cmp -s "$WORK/constructor.check.out" "$WORK/$name.hosted.out" || return 1
   done
@@ -341,7 +354,7 @@ if generic_constructor_check && [ ! -e "$WORK/constructor.invalid" ]; then
     '  if recorded = low.analysed.call_receiver?(node)' \
     '  if recorded = (node.obj.nil? ? low.analysed.call_receiver?(node) : nil)' || status=1
   constructor_prove "generic struct allocation leaves an address" "$REPO/src/compiler/lower/call.iyi" \
-    '      if passed_by_value?(allocated_type)' '      if passed_by_value?(inst)' || status=1
+    '      if passed_by_value?(allocated_type)' '      if false' || status=1
 else
   echo "  constructor mutation baseline failed or did not build"
   status=1
@@ -350,7 +363,7 @@ fi
 echo
 echo "== 3b. A recursive call targets the instance still being typed"
 if [ -x "$WORK/compile_native" ]; then
-  for fixture in "$REPO"/bench/fixtures/sem_bodies_recursion_mutual.iyi "$REPO"/bench/fixtures/sem_bodies_recursion_state.iyi; do
+  for fixture in "$REPO"/bench/fixtures/sem_bodies_recursion_mutual.iyi "$REPO"/bench/fixtures/sem_bodies_recursion_state.iyi "$REPO"/bench/fixtures/sem_bodies_recursive_helper.iyi; do
     name="$(basename "$fixture" .iyi)"
     IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.probe.exe" --pipeline typed --probe-phase --keep-going > "$WORK/$name.probe" 2>&1 || true
     if grep -E 'untyped instantiated parameter|no type for the call' "$WORK/$name.probe"; then
@@ -373,10 +386,15 @@ echo "== 3c. Top-level imports and inherited names across units"
 unit_fixture="$REPO/bench/fixtures/inherited_unit_name/main.iyi"
 if [ -x "$WORK/compile_native" ] && \
    "$IYI" build --prelude empty --no-debug -o "$WORK/unit_name.hosted" "$unit_fixture" > "$WORK/unit_name.hosted.log" 2>&1 && \
-   IYI_PATH="$REPO/src" "$WORK/compile_native" "$unit_fixture" -o "$WORK/unit_name.native" --pipeline typed > "$WORK/unit_name.native.log" 2>&1 && \
-   codesign -v --strict "$WORK/unit_name.native" > /dev/null 2>&1; then
+   IYI_PATH="$REPO/src" "$WORK/compile_native" "$unit_fixture" -o "$WORK/unit_name.native" --pipeline typed > "$WORK/unit_name.native.log" 2>&1; then
   timeout 30 "$WORK/unit_name.hosted" > "$WORK/unit_name.hosted.out" 2>&1; hs=$?
-  timeout 30 "$WORK/unit_name.native" > "$WORK/unit_name.native.out" 2>&1; ns=$?
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/unit_name.native"; then
+    echo "  FAIL: inherited unit name native signature verification failed"
+    status=1
+    ns=1
+  else
+    timeout 30 "$WORK/unit_name.native" > "$WORK/unit_name.native.out" 2>&1; ns=$?
+  fi
   if [ "$hs" -eq 7 ] && [ "$ns" -eq "$hs" ] && cmp -s "$WORK/unit_name.hosted.out" "$WORK/unit_name.native.out"; then
     echo "  inherited unit name: native executable runs to the hosted result (status 7, stdout identical)"
   else
@@ -409,6 +427,11 @@ lower_calls_check() {
     awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
   done
   return 0
+}
+
+triple_check() {
+  "$IYI" build -o "$WORK/triple-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/triple-mut.build.log" 2>&1 || return 1
+  "$WORK/triple-mut" triple > "$WORK/triple-mut.out" 2>&1
 }
 
 super_check() {
@@ -572,6 +595,8 @@ prove_mutation "a def's unwind table is async on aarch64" "$REPO/src/compiler/lo
   'return "sync"' 'return "async"' -- lower_calls_check || status=1
 prove_mutation "a def loses its darwin frame pointers" "$REPO/src/compiler/lower/fun.iyi" \
   "  if darwin_triple?(triple)" "  if false" -- lower_calls_check || status=1
+prove_mutation "a macOS triple loses its frame pointers" "$REPO/src/compiler/lower/fun.iyi" \
+  '  triple.includes?("darwin") || triple.includes?("macosx")' '  triple.includes?("darwin")' -- triple_check || status=1
 prove_mutation "the printer writes uwtable as an attribute, not uwtable(sync)" "$REPO/src/compiler/ir/printer.iyi" \
   'return "uwtable(" + s + ")" if a.name == "uwtable"' 'return "uwtable=" + ir_quote(s) if a.name == "uwtable"' -- lower_calls_check || status=1
 prove_mutation "a NoReturn def carries no noreturn attribute" "$REPO/src/compiler/lower/fun.iyi" \
@@ -640,6 +665,28 @@ prove_mutation "a computed metaclass receiver is not evaluated" "$REPO/src/compi
   '      unless node.obj.as(ASTNode).is_a?(Path)' '      if false' -- lower_calls_check || status=1
 prove_mutation "an inherited call loses its defining owner" "$REPO/src/compiler/lower/call.iyi" \
   '    if defining = low.analysed.program.def_owner(target)' '    if defining = nil' -- lower_calls_check || status=1
+prove_mutation "an inherited dispatch arm loses its defining owner" "$REPO/src/compiler/lower/call.iyi" \
+  '        return owner if low.analysed.program.def_owner(target)' '        return owner if false' -- lower_calls_check || status=1
+prove_mutation "a nil receiver is not accepted" "$REPO/src/compiler/lower/call.iyi" \
+  '  return owner if owner.is_a?(NilType)' '  pending_visit_node("nil receiver") if owner.is_a?(NilType)' -- lower_calls_check || status=1
+prove_mutation "an aggregate dispatch argument remains a pointer" "$REPO/src/compiler/lower/call.iyi" \
+  '      passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?' '      passed = values[i]' -- lower_calls_check || status=1
+prove_mutation "a nil block call collects its body value" "$REPO/src/compiler/lower/phi.iyi" \
+  '    if @needs_value && !@node_type.is_a?(NilType) && !@node_type.is_a?(VoidType)' '    if @needs_value' -- lower_calls_check || status=1
+prove_mutation "an aggregate dispatch result uses a value phi" "$REPO/src/compiler/lower/call.iyi" \
+  '  phi_type = passed_by_value?(ret) ? low.module.types.ptr(0) : low.typer.llvm_type(ret) if phi_wants' '  phi_type = low.typer.llvm_type(ret) if phi_wants' -- lower_calls_check || status=1
+prove_mutation "a typed block declaration is refused" "$REPO/src/compiler/lower/call.iyi" \
+  '  block.body.accept(collector)' '  block.body.accept(collector)
+  if collector.declared
+    pending_visit_node("typed block declaration")
+  end' -- lower_calls_check || status=1
+prove_mutation "primitive dispatch loses its receiver" "$REPO/src/compiler/lower/call.iyi" \
+  '      prim_values = [self_value] of Value' '      prim_values = [] of Value' -- lower_calls_check || status=1
+prove_mutation "virtual class dispatch is expanded into concrete primitives" "$REPO/src/compiler/lower/call.iyi" \
+  '    if all_class' '    if false' -- lower_calls_check || status=1
+prove_mutation "enum dispatch receivers are refused" "$REPO/src/compiler/lower/call.iyi" \
+  '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType) && !owner.is_a?(EnumType))' \
+  '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType))' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \

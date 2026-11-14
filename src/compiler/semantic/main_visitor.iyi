@@ -3070,7 +3070,11 @@ pub class MainVisitor < TypeNodeHost
       parts << at.full_name
       i = i + 1
     end
-    key = "#{origin.node_id}|#{rec_type.full_name}(#{parts.join(",")})"
+    key_owner = rec_type
+    if owner = @program.def_owner(origin)
+      key_owner = owner if owner.iyi_unit
+    end
+    key = "#{origin.node_id}|#{key_owner.full_name}(#{parts.join(",")})"
     if blk = block
       key = key + "&#{blk.node_id}"
     end
@@ -3567,7 +3571,14 @@ pub class MainVisitor < TypeNodeHost
     @jump_whiles = saved_jump_whiles
     @typing_stack.pop
 
-    return nil unless params_typed
+    unless params_typed
+      if call = call_node
+        refuse(call, "cannot bind instantiated parameters of '#{target_def.name}'")
+      elsif report_site = site
+        refuse(report_site, "cannot bind instantiated parameters of '#{target_def.name}'")
+      end
+      return nil
+    end
     bt = body_type
     # A body that cannot be typed (its refusal is recorded on the body's own nodes)
     # still leaves a call its declared return type, as the oracle types it
@@ -4073,6 +4084,13 @@ pub class MainVisitor < TypeNodeHost
       if ot = child_type(obj)
         rec_type = ot
       else
+        # Total analysis still records independent argument nodes when the
+        # receiver cannot be typed. The call itself remains unresolved.
+        if @total
+          node.args.each do |arg|
+            arg.accept(self)
+          end
+        end
         @needs_type_filters = saved_call_ntf
         @type_filters = nil
         return false

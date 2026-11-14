@@ -23,21 +23,19 @@ module compiler/lower/primitives
 #     check, then the signed or unsigned compare). An arithmetic result is truncated back
 #     to the left operand when that one was narrower (codegen_trunc_binary_op_result).
 #     Bool and Symbol equality; Char equality and order (unsigned code points).
-#   - `convert` and `unchecked_convert` from an integer to an integer: the same width is the
-#     value, a wider type extends (sign extension for a signed source), a narrower truncates
-#     (hosted codegen_convert, integer overloads); Char to an integer zero-extends
-#     (`Char#ord`); Symbol to an integer is the value (`Symbol#to_i`).
-# Refused by name, at the primitive that reaches them: a float paired with an integer or
-# another float (hosted codegen_binary_op for FloatType, not the integer extend), a
-# multiplication of mixed signedness, the range checks of the checked conversions and of a
-# checked widening, every other primitive.
+#   - Integer and Char conversions, integer-to-float and float-to-float conversions;
+#     floating arithmetic and comparisons, including mixed integer operands.
+#   - Runtime class lookup through the program's type-to-metaclass mapping.
+# Refused by name: float-to-integer, checked float narrowing, checked UInt128-to-Float32,
+# mixed-signed multiplication and primitives without a lowering.
 #
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
 import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, Generic, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
 import compiler/ir/function::{Function, Global, Linkage}
-import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallAux, CallConv, Ordering}
+import compiler/ir/inst::{IntPredicate, RealPredicate, Attribute, Inst, Op, CallAux, CallConv, Ordering, Block}
+import compiler/types/unification::{TypeUnification}
 import compiler/lower/cast::{assign, type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
@@ -129,6 +127,13 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     # passed as self means llvm_self. allocate with a nil receiver is handled
     # in call.iyi before this. A class method has no self variable.
     sv = low.current_context.vars["self"]?
+    if sv.nil? && name == "class"
+      result_type = low.analysed.type_of?(node)
+      raise "BUG: class has no analysed type" if result_type.nil?
+      low.last = type_id_value(low, result_type.as(Type))
+      low.needs_value = wants
+      return
+    end
     raise "BUG: a primitive call has no receiver (hosted call.cr: codegen_primitive)" if sv.nil?
     recv = sv.as(LowerVar).pointer
     t1 = sv.as(LowerVar).type
@@ -151,6 +156,13 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     values << value.as(Value)
   end
   low.needs_value = wants
+  lower_primitive_with_values(low, node, target, name.as(String), recv, t1, values, arg_types)
+end
+
+# Lower a primitive from the already evaluated operands of a dispatch arm.
+pub def lower_primitive_with_values(low : Lowerer, node : Call, target : Def, name : String, recv : Value, t1 : Type, values : Array(Value), arg_types : Array(Type)) : Nil
+  wants = low.needs_value
+  obj = node.obj
   if name == "proc_call"
     codegen_primitive_proc_call(low, node, t1, values, arg_types, wants)
     return
@@ -187,7 +199,52 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     low.last = codegen_primitive_convert(low, t1, ret_type.as(Type), values[0], name == "convert")
     return
   end
+  if name == "class"
+    if t1.is_a?(VirtualType)
+      tid = type_id_of_value(low, obj || node, recv, t1)
+      low.last = primitive_metaclass_id(low, tid)
+    else
+      meta = TypeUnification.metaclass_of(t1)
+      raise "BUG: no metaclass for #{t1.full_name}" if meta.nil?
+      low.last = type_id_value(low, meta.as(Type))
+    end
+    return
+  end
   pending_visit_node("primitive #{name} (hosted codegen_primitive, primitives.cr)")
+end
+
+pub def primitive_metaclass_id(low : Lowerer, tid : Value) : Value
+  fn = low.module.get_function?("~metaclass")
+  if fn.nil?
+    ty = low.module.types.func([low.module.types.int32] of IrType, low.module.types.int32)
+    saved = low.enter_main
+    made = low.begin_main_function("~metaclass", ty, false)
+    made.call_convention = CallConv::Iyi
+    made.linkage = Linkage::Internal
+    entry = low.builder.insert_block
+    cases = [] of {Value, Block}
+    id = 0
+    while id <= low.type_ids.last_id
+      meta = low.type_ids.metaclass_of_id(id)
+      if !meta.nil?
+        block = low.new_block("type_#{id}")
+        cases << {low.builder.const_int(low.module.types.int32, id.to_i64).as(Value), block}
+        low.builder.position_at_end(block)
+        low.builder.ret(low.builder.const_int(low.module.types.int32, meta.as(Int32).to_i64))
+      end
+      id = id + 1
+    end
+    otherwise = low.new_block("otherwise")
+    low.builder.position_at_end(otherwise)
+    low.builder.unreachable
+    low.builder.position_at_end(entry.as(Block))
+    low.builder.switch(made.param(0), otherwise, cases)
+    low.finish_main_function
+    low.leave_main(saved)
+    fn = made
+  end
+  f = fn.as(Function)
+  low.builder.call(f.fn_type, f, [tid] of Value, "")
 end
 
 # Hosted primitives.cr 1142-1212: a proc contains its function and optional
@@ -474,13 +531,9 @@ end
 # prepare_call_args does. `pointer_new` is a class method: its call's receiver (the metaclass) is not
 # lowered, and its argument is the address. `pointer_malloc` is a class method too: its argument is the count. Ported: `pointer_address` (ptr2int to Int64), `pointer_add` (a
 # gep of the element type, `pointer_new`, `pointer_get`, and `pointer_set`.
-# `pointer_realloc` is the program's `realloc64` or C `realloc` over the count times the element's size. `pointer_diff` remains
-# refused.
+# `pointer_realloc` uses the program's `realloc64` or C `realloc`; `pointer_diff`
+# divides the byte difference by the embedded element size.
 pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
-  if name == "pointer_diff"
-    pending_visit_node("primitive #{name} (hosted codegen_primitive_#{name}, primitives.cr 905-965: its helper is not ported)")
-    return
-  end
   wants = low.needs_value
   low.needs_value = true
   values = [] of Value
@@ -521,6 +574,17 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
     return
   end
   elem = pointer_element_of(ptr_type)
+  if name == "pointer_diff"
+    lhs = low.builder.ptr_to_int(values[0], low.typer.size_t)
+    rhs = low.builder.ptr_to_int(values[1], low.typer.size_t)
+    bytes = low.builder.sub(lhs, rhs)
+    zero = low.builder.const_null_pointer
+    one = low.builder.const_int(low.module.types.int32, 1_i64)
+    offset = low.builder.const_gep(low.typer.llvm_embedded_type(elem), zero, [one] of Value, true)
+    size = low.builder.const_cast(Op::PtrToInt, offset, low.typer.size_t)
+    low.last = low.builder.exact_sdiv(bytes, size)
+    return
+  end
   if name == "pointer_realloc"
     low.last = pointer_realloc_value(low, elem, values[0], values[1])
     return
@@ -685,6 +749,16 @@ pub def codegen_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 :
     end
     return codegen_int_binary_op(low, op, t1, t2, p1, p2)
   end
+  other_kind = primitive_kind(t2)
+  if kind == "int" && other_kind == "float"
+    return codegen_float_binary_op(low, op, t2, t2, codegen_primitive_convert(low, t1, t2, p1, false), p2)
+  end
+  if kind == "float" && other_kind == "int"
+    return codegen_float_binary_op(low, op, t1, t1, p1, codegen_primitive_convert(low, t2, t1, p2, false))
+  end
+  if kind == "float" && other_kind == "float"
+    return codegen_float_binary_op(low, op, t1, t2, p1, p2)
+  end
   if t1.full_name != t2.full_name
     pending_visit_node("binary #{op} on #{t1.full_name} and #{t2.full_name} (mixed operands, hosted codegen_binary_extend_int)")
   end
@@ -721,6 +795,45 @@ pub def codegen_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 :
   end
   pending_visit_node("binary #{op} on #{t1.full_name} (hosted codegen_binary_op: no overload for this type yet)")
   p1
+end
+
+pub def codegen_float_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 : Value, p2 : Value) : Value
+  left = p1
+  right = p2
+  if primitive_bytes(t1) < primitive_bytes(t2)
+    left = low.builder.fp_ext(left, low.typer.llvm_type(t2))
+  elsif primitive_bytes(t1) > primitive_bytes(t2)
+    right = low.builder.fp_ext(right, low.typer.llvm_type(t1))
+  end
+  if op == "=="
+    return low.builder.fcmp(RealPredicate::OEQ, left, right)
+  elsif op == "!="
+    return low.builder.fcmp(RealPredicate::UNE, left, right)
+  elsif op == "<"
+    return low.builder.fcmp(RealPredicate::OLT, left, right)
+  elsif op == "<="
+    return low.builder.fcmp(RealPredicate::OLE, left, right)
+  elsif op == ">"
+    return low.builder.fcmp(RealPredicate::OGT, left, right)
+  elsif op == ">="
+    return low.builder.fcmp(RealPredicate::OGE, left, right)
+  end
+  result = left
+  if op == "+"
+    result = low.builder.fadd(left, right)
+  elsif op == "-"
+    result = low.builder.fsub(left, right)
+  elsif op == "*"
+    result = low.builder.fmul(left, right)
+  elsif op == "/" || op == "fdiv"
+    result = low.builder.fdiv(left, right)
+  else
+    pending_visit_node("binary #{op} on #{t1.full_name} and #{t2.full_name} (hosted float codegen_binary_op)")
+  end
+  if primitive_bytes(t1) < primitive_bytes(t2)
+    return low.builder.fp_trunc(result, low.typer.llvm_type(t1))
+  end
+  result
 end
 
 # The hosted integer `codegen_binary_op` (primitives.cr 128-160). Checked `+`, `-` and `*`
@@ -1249,13 +1362,43 @@ pub def codegen_primitive_convert(low : Lowerer, from : Type, to : Type, value :
   from_kind = primitive_kind(from)
   to_kind = primitive_kind(to)
   if from_kind == "char" && to_kind == "int"
+    if value.type.key == low.typer.llvm_type(to).key
+      return value
+    end
     return low.builder.zext(value, low.typer.llvm_type(to))
+  end
+  if from_kind == "int" && to_kind == "char"
+    return codegen_convert_int(low, from, low.analysed.program.int32_type, value, checked)
   end
   if from_kind == "symbol" && to_kind == "int"
     return value
   end
   if from_kind == "int" && to_kind == "int"
     return codegen_convert_int(low, from, to, value, checked)
+  end
+  if from_kind == "int" && to_kind == "float"
+    if checked && from.full_name == "UInt128" && to.full_name == "Float32"
+      pending_visit_node("checked UInt128 to Float32 (hosted codegen_out_of_range)")
+    end
+    if is_signed?(from)
+      return low.builder.si_to_fp(value, low.typer.llvm_type(to))
+    end
+    return low.builder.ui_to_fp(value, low.typer.llvm_type(to))
+  end
+  if from_kind == "float" && to_kind == "float"
+    if primitive_bytes(from) < primitive_bytes(to)
+      return low.builder.fp_ext(value, low.typer.llvm_type(to))
+    end
+    if primitive_bytes(from) > primitive_bytes(to)
+      if checked
+        pending_visit_node("checked float narrowing #{from.full_name} to #{to.full_name} (hosted codegen_out_of_range)")
+      end
+      return low.builder.fp_trunc(value, low.typer.llvm_type(to))
+    end
+    return value
+  end
+  if from_kind == "float" && to_kind == "int"
+    pending_visit_node("float to integer #{from.full_name} to #{to.full_name} (hosted codegen_convert)")
   end
   pending_visit_node("convert #{from.full_name} to #{to.full_name} (hosted codegen_convert, not ported)")
   value
