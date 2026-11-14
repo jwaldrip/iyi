@@ -68,8 +68,9 @@ pub class DispatchTarget
   getter receiver : Type
   getter definition : Def
   getter return_type : Type
+  getter arg_types : Array(Type)?
 
-  def initialize(@receiver : Type, @definition : Def, @return_type : Type)
+  def initialize(@receiver : Type, @definition : Def, @return_type : Type, @arg_types : Array(Type)? = nil)
   end
 end
 
@@ -1016,6 +1017,10 @@ pub class MainVisitor < TypeNodeHost
 
     if node.name == "class"
       if sc = @scope
+        if sc.is_a?(VirtualType)
+          set_type(node, sc.as(VirtualType).metaclass)
+          return false
+        end
         if sc.is_a?(ModuleType)
           set_type(node, sc.as(ModuleType).metaclass)
           return false
@@ -1206,6 +1211,7 @@ pub class MainVisitor < TypeNodeHost
                   else
                     target_scope
                   end
+    target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
     if target_type.is_a?(ModuleType)
       if ivar = target_type.as(ModuleType).lookup_instance_var?(node.name)
         set_type(node, ivar.type)
@@ -1231,6 +1237,7 @@ pub class MainVisitor < TypeNodeHost
                   else
                     target_scope
                   end
+    target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
     if target_type.is_a?(ModuleType)
       if cvar = target_type.as(ModuleType).lookup_class_var?(node.name)
         set_type(node, cvar.type)
@@ -1305,6 +1312,7 @@ pub class MainVisitor < TypeNodeHost
                     else
                       target_scope
                     end
+      target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
       if target_type.is_a?(ModuleType)
         mod_type = target_type.as(ModuleType)
         if ivar = mod_type.lookup_instance_var?(ivar_node.name)
@@ -1344,6 +1352,7 @@ pub class MainVisitor < TypeNodeHost
                     else
                       target_scope
                     end
+      target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
       if target_type.is_a?(ModuleType)
         mod_type = target_type.as(ModuleType)
         if cvar = mod_type.lookup_class_var?(cvar_node.name)
@@ -1460,6 +1469,7 @@ pub class MainVisitor < TypeNodeHost
                       else
                         target_scope
                       end
+        target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
           mod_type.instance_vars[ivar_node.name] = MetaTypeVar.new(ivar_node.name, decl_type, val)
@@ -1476,6 +1486,7 @@ pub class MainVisitor < TypeNodeHost
                       else
                         target_scope
                       end
+        target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
           replace_class_var(mod_type, cvar_node.name, MetaTypeVar.new(cvar_node.name, decl_type, val))
@@ -1500,6 +1511,7 @@ pub class MainVisitor < TypeNodeHost
                       else
                         target_scope
                       end
+        target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
           mod_type.instance_vars[ivar_node.name] = MetaTypeVar.new(ivar_node.name, decl_type, nil)
@@ -1516,6 +1528,7 @@ pub class MainVisitor < TypeNodeHost
                       else
                         target_scope
                       end
+        target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
           replace_class_var(mod_type, cvar_node.name, MetaTypeVar.new(cvar_node.name, decl_type, nil))
@@ -3291,6 +3304,21 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     key = "#{rec_type.full_name}##{target_def.name}(#{parts.join(",")})"
+    restrictions = [] of String
+    target_def.args.each do |param|
+      if restriction = param.restriction
+        text = restriction.as(ASTNode).to_s
+        restrictions << "#{text.bytesize}:#{text}"
+      else
+        restrictions << "0:"
+      end
+    end
+    key = key + "|signature(" + restrictions.join(",") + ")"
+    if index = target_def.splat_index
+      key = key + "|splat=#{index}"
+    end
+    key = key + "|double-splat" unless target_def.double_splat.nil?
+    key = key + "|block-arg" unless target_def.block_arg.nil?
     if owner = @program.def_owner(target_def)
       key = key + "^#{owner.full_name}"
     end
