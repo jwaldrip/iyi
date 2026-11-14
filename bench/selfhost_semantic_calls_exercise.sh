@@ -246,7 +246,7 @@ prove_mutation "the less specific of two overloads is chosen" "$LOOKUP_FILE" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a private method called with an explicit receiver is allowed" "$CALL_FILE" \
-  "      if explicit && single.definition.visibility == Visibility::Private" \
+  "      if explicit && !synthetic && single.definition.visibility == Visibility::Private" \
   "      if false" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
