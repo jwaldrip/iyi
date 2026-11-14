@@ -722,16 +722,18 @@ prove_mutation "a callee's free types are unavailable to body and return lookup"
   "found = LookupError.new(\"unbound\")" -- free_types_at_floor || status=1
 block_free_output_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
-  fixture="$REPO/bench/fixtures/sem_bodies_block_free_output.iyi"
-  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
-  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
-  matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
-  floor=$(awk '$1 == "bench/fixtures/sem_bodies_block_free_output.iyi" { print $2 }' "$FLOOR_FILE")
-  [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
+  for name in sem_bodies_block_free_output sem_bodies_block_free_body; do
+    fixture="$REPO/bench/fixtures/$name.iyi"
+    "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+    "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+    matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
+    floor=$(awk -v r="bench/fixtures/$name.iyi" '$1 == r { print $2 }' "$FLOOR_FILE")
+    { [ -n "$floor" ] && [ "$matched" -ge "$floor" ]; } || return 1
+  done
 }
-prove_mutation "block output binds its callee's free variable" "$MAIN_VISITOR" \
-  "                        @def_free_types[cd] = bound" \
-  "                        nil" -- block_free_output_at_floor || status=1
+prove_mutation "a yielded block's output binds its callee's free variable before the body" "$MAIN_VISITOR" \
+  "@def_free_types[target_def] = output_bound unless output_bound.empty?" \
+  "nil" -- block_free_output_at_floor || status=1
 captured_free_output_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_capture_free_output.iyi"

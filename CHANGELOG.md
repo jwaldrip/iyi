@@ -24,6 +24,10 @@
 - Definition checks print source-facing type names and construct calls as AST nodes, so nested virtual
   unions and reserved enum predicate names no longer produce malformed probe source. Enum predicates
   carry their generated bodies, and union subtyping checks every source member against the target.
+- A yielded block whose declared result names a free variable (`def map(& : T -> U) : Array(U) forall U`)
+  is typed where it is written before the callee's return annotation and body, as the hosted pass types it.
+  Its parameters take the restriction's inputs, so `T` is the receiver's, and `U` is the block's type;
+  a block whose type does not fit the declared result is refused at the call.
 - **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
   [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
   the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,

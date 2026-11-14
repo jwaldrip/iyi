@@ -314,6 +314,17 @@ pub class FreeBindings
     false
   end
 
+  # True when *node* writes a name in *free* that *bound* does not bind yet.
+  def self.unbound?(node : ASTNode, free : Array(String), bound : Hash(String, Type)) : Bool
+    unbound = [] of String
+    i = 0
+    while i < free.size
+      unbound << free[i] unless bound.has_key?(free[i])
+      i += 1
+    end
+    FreeBindings.mentions?(node, unbound)
+  end
+
   # Binds the free names *free* that *node* writes against *arg_type*. False when a name
   # is already bound to a different type, so the argument does not match.
   def self.bind(node : ASTNode, arg_type : Type, free : Array(String), bound : Hash(String, Type)) : Bool

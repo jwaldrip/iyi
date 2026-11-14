@@ -2322,8 +2322,10 @@ pub class MainVisitor < TypeNodeHost
                 if out_node = pn.output
                   # `& : T -> _` leaves the block's result free (hosted: an Underscore output matches any type).
                   unless out_node.is_a?(Underscore)
-                    # Hosted call.cr 1489-1493 restricts the block's result in
-                    # the callee's match context, binding an output free variable.
+                    # Hosted call.cr 1489-1493 restricts the block's result in the
+                    # callee's match context. bind_yield_block_output bound an output
+                    # variable before the body where it could; each yield is checked
+                    # against that binding, and a variable still unbound binds here.
                     if free_names = cd.free_vars
                       if FreeBindings.mentions?(out_node, free_names)
                         bound = @def_free_types[cd]? || Hash(String, Type).new
@@ -3104,6 +3106,7 @@ pub class MainVisitor < TypeNodeHost
         end
       end
     end
+    return nil unless bind_yield_block_output(target_def, rec_type, block, writer_type, site, call_node)
     body = target_def.body
     if body.nil? || body.is_a?(MacroLiteral)
       if rt = target_def.return_type
@@ -3385,6 +3388,143 @@ pub class MainVisitor < TypeNodeHost
       remember_def_instance(cache_key, target_def, bt)
       bt
     end
+  end
+
+  # Hosted Call#match_block_arg types a yielded block where it is written, before
+  # check_return_type and the body (call.cr 583, 632-633, 697-714). Its parameters take
+  # the restriction's inputs in the callee's match context (call.cr 1262-1334), so `T` is
+  # the receiver's, and a free variable its output names is bound to the block's type
+  # (call.cr 1472-1519). `def map(& : T -> U) : Array(U) forall U` names `U` in its
+  # annotation and in `Array(U).new` before any yield. A captured block is bound above.
+  # A splat input, an input naming an unbound variable, or an output this leaves unbound
+  # stays with visit(Yield), which also checks every yield against this binding. False
+  # after refusing a block whose type the declared output does not fit.
+  def bind_yield_block_output(target_def : Def, rec_type : Type, block : Block?, writer_type : ModuleType, site : ASTNode?, call_node : Call?) : Bool
+    return true if target_def.uses_block_arg?
+    blk = block
+    return true if blk.nil?
+    ba = target_def.block_arg
+    return true if ba.nil?
+    restriction = ba.restriction
+    return true unless restriction.is_a?(ProcNotation)
+    notation = restriction.as(ProcNotation)
+    output = notation.output
+    return true if output.nil?
+    return true if output.is_a?(Underscore)
+    free = target_def.free_vars
+    return true if free.nil?
+    output_bound = @def_free_types[target_def]? || Hash(String, Type).new
+    return true unless FreeBindings.unbound?(output, free, output_bound)
+    inputs = notation.inputs || [] of ASTNode
+    i = 0
+    while i < inputs.size
+      return true if inputs[i].is_a?(Splat) || FreeBindings.unbound?(inputs[i], free, output_bound)
+      i += 1
+    end
+    input_types = [] of Type
+    i = 0
+    while i < inputs.size
+      input_type = lookup_def_return(inputs[i], rec_type, target_def)
+      return true if input_type.is_a?(UnresolvedType)
+      input_types << input_type
+      i += 1
+    end
+    block_type = type_block_before_body(blk, input_types, writer_type)
+    return true if block_type.nil?
+    anchor : ASTNode = blk
+    if s = site
+      anchor = s
+    elsif c = call_node
+      anchor = c
+    end
+    unless FreeBindings.bind(output, block_type, free, output_bound)
+      refuse(anchor, "expected block to return #{output}, not #{block_type.full_name}")
+      return false
+    end
+    @def_free_types[target_def] = output_bound unless output_bound.empty?
+    set_type(blk, block_type)
+    return true if FreeBindings.unbound?(output, free, output_bound)
+    expected = lookup_def_return(output, rec_type, target_def)
+    unless expected.nil_type? || expected.is_a?(VoidType) || block_type.subtype_of?(expected)
+      refuse(anchor, "expected block to return #{expected.full_name}, not #{block_type.full_name}")
+      return false
+    end
+    true
+  end
+
+  # Type the block in its writer's environment with isolated body scratch state.
+  # Each yield types it again, joining parameter types with earlier typings.
+  def type_block_before_body(blk : Block, input_types : Array(Type), writer_type : ModuleType) : Type?
+    block_vars = @vars.dup
+    blk.args.each_with_index do |arg, index|
+      if index < input_types.size
+        param_type = input_types[index]
+        if earlier = type_of?(arg)
+          param_type = @program.type_merge(earlier, param_type)
+        end
+        block_vars[arg.name] = param_type
+        set_type(arg, param_type)
+      end
+    end
+    saved_vars = @vars
+    saved_current_type = @current_type
+    saved_imports = @program.current_imports
+    saved_import_defs = @program.current_import_defs
+    saved_break_types = @break_types
+    saved_next_types = @next_types
+    saved_jump_block = @jump_block
+    saved_jump_whiles = @jump_whiles
+    saved_type_filters = @type_filters
+    saved_needs_type_filters = @needs_type_filters
+    saved_unreachable = @unreachable
+    saved_direct_exit = @handler_direct_exit
+    saved_handler_vars = @handler_vars
+    saved_handler_writes = @handler_writes
+    saved_inside_ensure = @handler_inside_ensure
+    saved_inside_defer = @handler_inside_defer
+    saved_var_unions = @var_unions
+    saved_untyped_locals = @untyped_locals
+    saved_while_break_vars = @while_break_vars
+    @vars = block_vars
+    @current_type = writer_type
+    enter_file_scope(blk)
+    @break_types = @block_breaks[blk]?
+    @next_types = [] of Type?
+    @jump_block = blk
+    @jump_whiles = [] of While
+    @type_filters = nil
+    @needs_type_filters = 0
+    @unreachable = false
+    @handler_direct_exit = false
+    @handler_vars = [] of Hash(String, Type)
+    @handler_writes = [] of Set(String)
+    @handler_inside_ensure = false
+    @handler_inside_defer = false
+    @var_unions = Hash(String, Type).new
+    @untyped_locals = Hash(String, String).new
+    @while_break_vars = [] of Array(Hash(String, Type))
+    blk.body.accept(self)
+    answered = merge_jump_values(child_type(blk.body), @next_types)
+    @vars = saved_vars
+    @current_type = saved_current_type
+    @program.current_imports = saved_imports
+    @program.current_import_defs = saved_import_defs
+    @break_types = saved_break_types
+    @next_types = saved_next_types
+    @jump_block = saved_jump_block
+    @jump_whiles = saved_jump_whiles
+    @type_filters = saved_type_filters
+    @needs_type_filters = saved_needs_type_filters
+    @unreachable = saved_unreachable
+    @handler_direct_exit = saved_direct_exit
+    @handler_vars = saved_handler_vars
+    @handler_writes = saved_handler_writes
+    @handler_inside_ensure = saved_inside_ensure
+    @handler_inside_defer = saved_inside_defer
+    @var_unions = saved_var_unions
+    @untyped_locals = saved_untyped_locals
+    @while_break_vars = saved_while_break_vars
+    answered
   end
 
   # iyi: `out x` in a lib call declares `x` as the parameter's pointee (see declare_out). Visited
