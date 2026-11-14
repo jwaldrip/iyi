@@ -5,16 +5,16 @@ lib LibC
 end
 
 def deferred(flag : Bool) : Int32
-  value = 11
-  defer { value = value &+ 1 }
+  ptr = LibC.malloc(64_u64)
+  defer LibC.free(ptr)
   i = 0
   while i < 1000
-    ptr = LibC.malloc(64_u64)
-    LibC.free(ptr)
+    temporary = LibC.malloc(64_u64)
+    LibC.free(temporary)
     i = i &+ 1
   end
-  return value if flag
-  value
+  return 11 if flag
+  11
 end
 
 LibC.exit(deferred(true) &- 11)

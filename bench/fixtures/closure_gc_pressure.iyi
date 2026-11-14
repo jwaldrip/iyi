@@ -12,11 +12,16 @@ def make_reader
   -> { box = CaptureBox.new(box.value + 1); box.value }
 end
 
-reader = make_reader
-index = 0
-while index < 10000
-  Array(Int32).new(1024, index)
-  index = index + 1
+def pressure
+  index = 0
+  while index < 10000
+    Array(Int32).new(1024, index)
+    index = index + 1
+  end
 end
+
+reader = make_reader
+pressure
 puts reader.call
+pressure
 puts reader.call
