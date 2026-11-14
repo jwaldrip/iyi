@@ -228,9 +228,15 @@ class DefinitionProbeRunner
 
   def storable?(type : Type) : Bool
     if type.is_a?(NonGenericClassType) && type.namespace.is_a?(SemanticProgram)
-      ["Object", "Reference", "Value", "Number", "Int", "Float", "Struct", "Enum"].each do |name|
-        return false if @program.types[name]? == type
-      end
+      id = type.object_id
+      return false if id == @program.types["Object"].object_id
+      return false if id == @program.types["Reference"].object_id
+      return false if id == @program.types["Value"].object_id
+      return false if id == @program.types["Number"].object_id
+      return false if id == @program.types["Int"].object_id
+      return false if id == @program.types["Float"].object_id
+      return false if id == @program.types["Struct"].object_id
+      return false if id == @program.types["Enum"].object_id
     end
     TypeLookup.new(type_node_system(@program).instances).can_be_stored?(type)
   end
@@ -267,29 +273,28 @@ class DefinitionProbeRunner
     end
     return false unless definition.return_type
     return false if definition.abstract || definition.name == "initialize" || definition.name.empty?
-    valid_name = true
-    definition.name.each_char do |ch|
-      valid_name = false unless Unicode.letter?(ch) || Unicode.number?(ch) || ch == '_' || ch == '?' || ch == '!'
-    end
-    return false unless valid_name
-    first = definition.name[0]
-    return false unless Unicode.lowercase?(first) || first == '_'
+    return false unless identifier?(definition.name, true)
     splat = definition.splat_index
     definition.args.each_with_index do |arg, index|
       next if splat == index && arg.name.empty?
       return false unless arg.restriction
       if splat && index > splat
-        external = arg.external_name
-        return false if external.empty?
-        first = external[0]
-        return false unless Unicode.lowercase?(first) || first == '_'
-        valid_external = true
-        external.each_char do |ch|
-          valid_external = false unless Unicode.letter?(ch) || Unicode.number?(ch) || ch == '_'
-        end
-        return false unless valid_external
+        return false unless identifier?(arg.external_name, false)
       end
     end
     true
+  end
+
+  def identifier?(name : String, suffix : Bool) : Bool
+    valid = true
+    first = true
+    name.each_char do |ch|
+      if first
+        valid = false unless Unicode.lowercase?(ch) || ch == '_'
+        first = false
+      end
+      valid = false unless Unicode.letter?(ch) || Unicode.number?(ch) || ch == '_' || (suffix && (ch == '?' || ch == '!'))
+    end
+    valid && !first
   end
 end
