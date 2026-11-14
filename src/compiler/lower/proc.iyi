@@ -9,6 +9,8 @@ module compiler/lower/proc
 # the line; a second literal of one name is `~proc2...`, counted per module), the fun (codegen_fun, with the
 # literal's parameters and return), and the value (an alloca, the function and the null context stored into its
 # two fields, the struct loaded: hosted make_fun).
+# A capture-free literal in a non-generic class or module method keeps that lexical owner, without a self
+# argument or a context pointer. Receiverless instance calls still need a closure and are refused.
 #
 # Refused by name, at the literal that reaches them: a literal that reads a local the body does not declare
 # (a closure: hosted closured_vars and malloc_closure), a literal that reads `self` or an instance variable, a
@@ -23,9 +25,9 @@ import compiler/lower/context::{Lowerer}
 import compiler/lower/fun::{codegen_fun}
 import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
-import compiler/syntax/ast::{ASTNode, Assign, ClassDef, Def, InstanceVar, ModuleDef, ProcLiteral, Self, Var}
+import compiler/syntax/ast::{ASTNode, Assign, Call, ClassDef, Def, InstanceVar, ModuleDef, ProcLiteral, Self, Var}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{NoReturnType, Type}
+import compiler/semantic/top_level::{NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, SemanticProgram, Type}
 import compiler/types/types::{ProcInstanceType}
 
 # The hosted `Iyi.symbol_text` (util.cr:59): a text someone else chose, written into a symbol with `%`, `@` and
@@ -87,11 +89,13 @@ end
 pub class ProcScan < Visitor
   getter referenced : Array(String)
   getter assigned : Array(String)
+  getter receiverless_calls : Array(Call)
   getter refused : String?
 
   def initialize
     @referenced = [] of String
     @assigned = [] of String
+    @receiverless_calls = [] of Call
     @refused = nil
   end
 
@@ -111,6 +115,9 @@ pub class ProcScan < Visitor
     if node.is_a?(InstanceVar)
       @refused = "an instance variable read by a proc literal (hosted closure over self)" if @refused.nil?
       return false
+    end
+    if node.is_a?(Call) && node.obj.nil?
+      @receiverless_calls << node
     end
     if node.is_a?(Var)
       @referenced << node.as(Var).name
@@ -172,6 +179,20 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
     end
   end
 
+  class_owner : Type? = nil
+  frame = low.current_context.type
+  if (frame.is_a?(NonGenericClassType) || frame.is_a?(NonGenericModuleType)) && !frame.is_a?(NilType) && low.current_context.vars["self"]?.nil?
+    class_owner = frame
+  end
+  scan.receiverless_calls.each do |call|
+    if target = low.analysed.target_def?(call)
+      owner = low.analysed.program.def_owner(target)
+      if owner && !owner.is_a?(SemanticProgram) && class_owner.nil?
+        refuse_port("proc literal calls #{call.name} with an implicit self or class context that is not carried by the capture-free proc (hosted closure)")
+      end
+    end
+  end
+
   body_t = low.analysed.type_of?(node.def.body)
   raise "BUG: the analysed program has no type for a proc literal's body (hosted codegen.cr: visit(ProcLiteral))" if body_t.nil?
   if body_t.as(Type).full_name != proc.return_type.full_name && !proc.return_type.nil_type?
@@ -185,7 +206,7 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   end
   ret_ir = low.typer.llvm_type(proc.return_type)
   fn_type = low.module.types.func(params, ret_ir)
-  fn = codegen_fun(low, name, node.def, nil, proc.arg_types, fn_type, ret_ir, proc.return_type)
+  fn = codegen_fun(low, name, node.def, nil, proc.arg_types, fn_type, ret_ir, proc.return_type, class_owner)
   if proc.return_type.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
   end

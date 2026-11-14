@@ -16,7 +16,7 @@ module compiler/lower/class_var
 #
 # Refused by name, with the hosted function each stands for, until ported:
 #   - a read before the declaration when `__iyi_once` is not declared (hosted `run_once`, once.cr:22);
-#   - a class variable declared without an initialiser, unless it is a nilable reference (its global starts as null);
+#   - a class variable declared without an initialiser, unless it is a nilable reference or proc (its global starts as null or a zero pair);
 #   - a class variable whose owner is generic, or a module some type includes (its hosted `llvm_name`; an includer reads its own copy, types.cr lookup_class_var?);
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
 # Thread-local class variables: a `@[ThreadLocal]` variable's global is local-exec (hosted `declare_thread_local`,
@@ -449,13 +449,16 @@ pub def initialize_class_var(low : Lowerer, cvar : MetaTypeVar) : Nil
   low.builder.call(ft, fn.as(Function), [] of Value, "")
 end
 
-# The hosted `read_class_var_ptr` for a class variable declared without an initialiser (class_var.cr:227-231): its global is
-# read or stored straight off, with no initialiser function and no flag. The hosted `declare_class_var` makes the global of
-# a nilable reference start as null; a variable of any other type has no initial value in this port, which is not ported yet.
+# A class variable declared without an initialiser is read or stored directly, with no initialiser function
+# or flag (hosted read_class_var_ptr, class_var.cr:227-231). get_global_var (codegen.cr:1722-1735) supplies its
+# zero initializer: null for a nilable reference, a zero aggregate for a nilable proc.
 pub def uninitialised_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, st : ClassVarState) : Global
   take_thread_local_annotation(low, cvar)
+  if cvar.type.is_a?(NilableProcType)
+    return nilable_proc_global(low, cvar, name, cvar_ir_type(low, cvar), st)
+  end
   if !nilable_reference_type?(cvar.type)
-    refuse_port("lower: class variable #{cvar.name} is declared without an initialiser and is not a nilable reference: its hosted global has no initial value, not ported yet (hosted class_var.cr: declare_class_var)")
+    refuse_port("lower: class variable #{cvar.name} is declared without an initialiser and is not a nilable reference or proc: its zero value is not ported yet (hosted class_var.cr: declare_class_var)")
   end
   ir = cvar_ir_type(low, cvar)
   g = declare_cvar_global(low, cvar, name, ir, st)
