@@ -210,7 +210,7 @@ src/iyi/io.iyi 53
 src/iyi/macros.iyi 1
 src/iyi/number.iyi 35
 src/iyi/object.iyi 26
-src/iyi/prelude.iyi 55
+src/iyi/prelude.iyi 49
 src/iyi/primitives.iyi 36
 src/iyi/range.iyi 18
 src/iyi/set.iyi 15
