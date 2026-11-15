@@ -10,6 +10,7 @@ src/compiler/backend/native.iyi parse
 src/compiler/codegen/codegen.iyi parse
 src/compiler/command/daemon.iyi parse
 src/compiler/command/driver.iyi parse
+src/compiler/command/execute.iyi parse
 src/compiler/compiler.iyi parse
 src/compiler/foundation/enums.iyi semantic
 src/compiler/foundation/errors.iyi semantic
@@ -135,6 +136,8 @@ src/compiler/semantic/new.iyi parse
 src/compiler/semantic/normalizer.iyi parse
 src/compiler/semantic/recursive_struct_checker.iyi parse
 src/compiler/semantic/restrictions.iyi parse
+src/compiler/semantic/share.iyi parse
+src/compiler/semantic/spawn_placement.iyi parse
 src/compiler/semantic/top_level.iyi parse
 src/compiler/semantic/type_node_host.iyi parse
 src/compiler/semantic/type_nodes.iyi parse
