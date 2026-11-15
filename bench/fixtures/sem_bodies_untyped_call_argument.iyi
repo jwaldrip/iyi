@@ -1,0 +1,24 @@
+class CensusReceiver
+  def consume(value : Int32) : Int32
+    value
+  end
+end
+
+class CensusChild < CensusReceiver
+end
+
+class CensusParent
+  def compute : Int32
+    yield 7
+  end
+end
+
+class CensusDerived < CensusParent
+  def compute : Int32
+    fresh = super { |value| value }
+    receiver : CensusReceiver = CensusChild.new
+    receiver.consume(fresh)
+  end
+end
+
+CensusDerived.new.compute
