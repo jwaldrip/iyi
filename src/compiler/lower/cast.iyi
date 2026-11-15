@@ -347,6 +347,15 @@ pub def assign_mixed_union(low : Lowerer, pointer : Value, target : MixedUnionTy
   target.union_types.each do |ut|
     member = true if ut.full_name == value_type.full_name
   end
+  if !member && (value_type.is_a?(TupleInstanceType) || value_type.is_a?(NamedTupleInstanceType))
+    target.union_types.each do |ut|
+      if value_type.implements?(ut)
+        converted = upcast(low, value, value_type, ut)
+        assign(low, pointer, target, ut, converted)
+        return
+      end
+    end
+  end
   unless member
     pending_visit_node("assign #{value_type.full_name} to #{target.full_name}: not a member (hosted cast.cr, compatible type)")
     return
@@ -479,6 +488,13 @@ pub def downcast_distinct(low : Lowerer, value : Value, to_type : Type, from_typ
       return value
     end
   end
+  # Hosted cast.cr:470-501 converts tuple fields into fresh destination storage.
+  if to_type.is_a?(TupleInstanceType) && from_type.is_a?(TupleInstanceType)
+    return downcast_tuple(low, value, to_type.as(TupleInstanceType), from_type.as(TupleInstanceType))
+  end
+  if to_type.is_a?(NamedTupleInstanceType) && from_type.is_a?(NamedTupleInstanceType)
+    return downcast_named_tuple(low, value, to_type.as(NamedTupleInstanceType), from_type.as(NamedTupleInstanceType))
+  end
   if from_type.is_a?(MixedUnionType) && to_type.is_a?(MixedUnionType)
     return downcast_mixed_union(low, value, to_type.as(MixedUnionType), from_type.as(MixedUnionType))
   end
@@ -487,6 +503,47 @@ pub def downcast_distinct(low : Lowerer, value : Value, to_type : Type, from_typ
   end
   pending_visit_node("downcast #{from_type.full_name} to #{to_type.full_name} (hosted cast.cr downcast_distinct, not ported)")
   value
+end
+
+def downcast_tuple(low : Lowerer, value : Value, target : TupleInstanceType, source : TupleInstanceType) : Value
+  result = low.alloca(low.typer.llvm_type(target), "")
+  from = aggregate_pointer(low, source, value)
+  i = 0
+  while i < source.tuple_types.size
+    target_ptr = aggregate_field(low, target, result, i)
+    source_ptr = aggregate_field(low, source, from, i)
+    source_type = source.tuple_types[i]
+    target_type = target.tuple_types[i]
+    loaded = to_lhs(low, source_ptr, source_type)
+    converted = downcast(low, loaded, target_type, source_type, true)
+    stored = passed_by_value?(target_type) && converted.type.pointer? ? to_rhs(low, converted, target_type) : converted
+    store_aligned(low, stored, target_ptr)
+    i += 1
+  end
+  result
+end
+
+def downcast_named_tuple(low : Lowerer, value : Value, target : NamedTupleInstanceType, source : NamedTupleInstanceType) : Value
+  result = low.alloca(low.typer.llvm_type(target), "")
+  from = aggregate_pointer(low, source, value)
+  i = 0
+  while i < source.entries.size
+    entry = source.entries[i]
+    j = 0
+    while j < target.entries.size && target.entries[j].name != entry.name
+      j += 1
+    end
+    raise "BUG: named tuple key missing" if j == target.entries.size
+    source_ptr = aggregate_field(low, source, from, i)
+    loaded = to_lhs(low, source_ptr, entry.type)
+    target_type = target.entries[j].type
+    converted = downcast(low, loaded, target_type, entry.type, true)
+    target_ptr = aggregate_field(low, target, result, j)
+    stored = passed_by_value?(target_type) && converted.type.pointer? ? to_rhs(low, converted, target_type) : converted
+    store_aligned(low, stored, target_ptr)
+    i += 1
+  end
+  result
 end
 
 # Hosted downcast_distinct_union_types: equal alignment permits reusing the
