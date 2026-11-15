@@ -1075,7 +1075,7 @@ fi
 step "a different fiber size is refused after a thread starts"
 
 for size in 300000 131072; do
-  printf 'module stack_shape_%s\n\nIyiFiber.stack_bytes = %s_u64\n' "$size" "$size" > "$work/stack_shape_$size.iyi"
+  printf 'module stack_shape\n\nIyiFiber.stack_bytes = %s_u64\n' "$size" > "$work/stack_shape_$size.iyi"
   run "$work/stack_shape_$size.iyi"
   [ "$code" = 1 ] || fail "fiber size $size exited $code: $out"
   printf '%s\n' "$out" | grep -Fq "iyi: panic: IyiFiber.stack_bytes: a fiber stack is a whole number of 64 KiB and no smaller than 256 KiB" ||
