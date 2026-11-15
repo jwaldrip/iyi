@@ -224,15 +224,11 @@ end
 
 # Drops every function a probe added. A failed probe leaves nothing a later probe can reuse.
 pub def discard_probe_functions(m : Module, before : Array(String)) : Nil
+  prior = Set(String).new
+  before.each { |name| prior.add(name) }
   added = [] of Function
   m.functions.each do |fn|
-    seen = false
-    i = 0
-    while i < before.size
-      seen = true if before[i] == fn.name
-      i += 1
-    end
-    added << fn unless seen
+    added << fn unless prior.includes?(fn.name)
   end
   added.each do |fn|
     clear_fun_emission_done(m, fn.name)
