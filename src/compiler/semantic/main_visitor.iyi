@@ -343,6 +343,7 @@ pub class MainVisitor < TypeNodeHost
   property jump_block_calls : NodeMap(Call) = NodeMap(Call).new
   property jump_block : Block? = nil
   property jump_whiles : Array(While) = [] of While
+  property block_may_repeat : Bool = false
   # The record of each call on a lib (see visit_lib_call): the fun, the result type and the
   # arguments the lowering passes.
   property lib_call_targets : NodeMap(LibCallTarget) = NodeMap(LibCallTarget).new
@@ -2549,6 +2550,8 @@ pub class MainVisitor < TypeNodeHost
       enter_file_scope(blk)
       saved_jump_block = @jump_block
       saved_jump_whiles = @jump_whiles
+      saved_block_may_repeat = @block_may_repeat
+      @block_may_repeat = @block_may_repeat || !saved_jump_whiles.empty?
       @jump_block = blk
       @jump_whiles = [] of While
       old_handler_direct_exit = @handler_direct_exit
@@ -2556,6 +2559,26 @@ pub class MainVisitor < TypeNodeHost
       saved_super_barrier = @super_barrier
       @super_barrier = "a block"
       blk.body.accept(self)
+      # A yield in a loop can observe writes made by earlier invocations of
+      # the block. Revisit the block with those captured values merged into
+      # its entry flow, like hosted's loop-carried variable bindings.
+      if @block_may_repeat
+        if ctx = callee_context_vars
+          ctx.each do |name, before|
+            if after = @vars[name]?
+              blk_vars[name] = @program.type_merge(before, after)
+            end
+          end
+          blk.args.each do |arg|
+            if arg_type = type_of?(arg)
+              blk_vars[arg.name] = arg_type
+            end
+          end
+          @vars = blk_vars
+          blk.body.accept(self)
+        end
+      end
+      @block_may_repeat = saved_block_may_repeat
       @super_barrier = saved_super_barrier
       @current_type = callee_type
       @var_owners = callee_var_owners
@@ -2585,7 +2608,7 @@ pub class MainVisitor < TypeNodeHost
           blk.args.each { |arg| shadowed = true if arg.name == k }
           next if shadowed
           if new_v = @vars[k]?
-            ctx[k] = new_v
+            ctx[k] = @program.type_merge(ctx[k], new_v)
           end
         end
       end
