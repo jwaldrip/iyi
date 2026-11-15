@@ -67,7 +67,7 @@ src/compiler/llvm/values.iyi 0
 src/compiler/loader.iyi 54
 src/compiler/lower/abi/aarch64.iyi 4
 src/compiler/lower/asm.iyi 10
-src/compiler/lower/block.iyi 17
+src/compiler/lower/block.iyi 12
 src/compiler/lower/call.iyi 24
 src/compiler/lower/cast.iyi 17
 src/compiler/lower/class_var.iyi 28
