@@ -1,0 +1,15 @@
+def count_loop(n : Int32) : Int32
+  i = 0
+  while i < n
+    i = i &+ 1
+  end
+  i
+end
+
+def count_recursive(n : Int32) : Int32
+  return 0 if n <= 0
+  1 &+ count_recursive(n &- 1)
+end
+
+puts count_loop(4)
+puts count_recursive(4)
