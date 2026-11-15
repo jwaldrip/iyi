@@ -117,6 +117,13 @@ def stack_pointer?(pointer : Value) : Bool
   false
 end
 
+# A plain non-reference union has the same aggregate layout as MixedUnionType.
+# Nilable procs have their own scalar representation and must not use this path.
+pub def mixed_union_type?(type : Type) : Bool
+  return true if type.is_a?(MixedUnionType)
+  type.is_a?(UnionType) && !type.is_a?(NilableProcType) && !reference_union?(type.as(UnionType))
+end
+
 # Aliases can resolve to a plain UnionType, whose layout is nevertheless
 # mixed when any member is not a reference (hosted union representation).
 def specialize_mixed_union(type : Type) : Type
@@ -501,6 +508,13 @@ pub def downcast_distinct(low : Lowerer, value : Value, to_type : Type, from_typ
       return value
     end
   end
+  # Some callers have a loaded aggregate rather than an address. Both mixed-union
+  # downcast paths access fields through GEP, so materialize that value once.
+  if from_type.is_a?(MixedUnionType) && !value.type.pointer?
+    temp = low.alloca(low.typer.llvm_type(from_type), "")
+    store_aligned(low, value, temp)
+    value = temp
+  end
   if from_type.is_a?(MixedUnionType) && to_type.is_a?(MixedUnionType)
     return downcast_mixed_union(low, value, to_type.as(MixedUnionType), from_type.as(MixedUnionType))
   end
@@ -573,7 +587,7 @@ pub def pointer_of_value(low : Lowerer, node : ASTNode, value : Value, t : Type)
   return value if value.type == low.module.types.ptr(0)
   if node.is_a?(Var)
     if lv = low.current_context.vars[node.as(Var).name]?
-      unless lv.already_loaded
+      if !lv.already_loaded && TypeIndirection.remove_indirection(lv.type).full_name == t.full_name
         return lv.pointer
       end
     end
@@ -596,7 +610,7 @@ end
 # The runtime type id of a value (hosted `type_id(value, type)`, type_id.cr:4-79 and unions.cr:182-185).
 pub def type_id_of_value(low : Lowerer, node : ASTNode, value : Value, t : Type) : Value
   rt = TypeIndirection.remove_indirection(t)
-  if rt.is_a?(MixedUnionType)
+  if mixed_union_type?(rt)
     uptr = pointer_of_value(low, node, value, rt)
     return mixed_type_id_of_pointer(low, uptr, rt)
   end

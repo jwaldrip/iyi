@@ -10,11 +10,14 @@ module bench/selfhost_lower_cast_exercise
 #   port emit <fixture.iyi> <oracle.ll>     the port's module as text, for the native tool
 
 import bench/lib/lower_gate::{analyse, ir_module, run_emit, run_lower, run_oracle}
+import compiler/ir/inst::{Inst, Op}
+import compiler/ir/types::{IrType}
+import compiler/ir/verifier::{verify_function}
 import compiler/ir/values::{Value}
-import compiler/lower/cast::{assign, assign_mixed_union}
+import compiler/lower/cast::{assign, assign_mixed_union, downcast, mixed_union_type?, type_id_of_value}
 import compiler/lower/context::{Lowerer}
 import compiler/lower/typer::{LowerTyper}
-import compiler/semantic/top_level::{Type}
+import compiler/semantic/top_level::{Type, UnionType}
 import compiler/types/types::{MixedUnionType}
 
 def refuse_wrong_union_member : Nil
@@ -41,6 +44,37 @@ def skip_noreturn_assignment : Nil
   assign(low, Value.new(m.types.ptr), target, prog.no_return_type, Value.new(m.types.int32))
 end
 
+# Exercise both semantic union classes with a loaded aggregate, as a getter returns.
+def check_union_representations : Nil
+  analysis = analyse("nil\n", "union_representations.iyi", true)
+  prog = analysis.visitor.program
+  int_type = prog.lookup_type("Int32").as(Type)
+  bool_type = prog.lookup_type("Bool").as(Type)
+  members = [int_type, bool_type] of Type
+  plain = UnionType.new(prog, members)
+  mixed = MixedUnionType.new(prog, members)
+  reference = UnionType.new(prog, [prog.object_type, prog.nil_type] of Type)
+  raise "plain union was not classified as mixed" unless mixed_union_type?(plain)
+  raise "specialized union was not classified as mixed" unless mixed_union_type?(mixed)
+  raise "reference union was classified as mixed" if mixed_union_type?(reference)
+
+  m = ir_module("arm64-apple-macosx")
+  low = Lowerer.new(m, LowerTyper.new(m.types, m.layout, analysis.iyi), analysis.visitor)
+  unions = [plain.as(Type), mixed.as(Type)] of Type
+  names = ["plain", "specialized"]
+  unions.each_with_index do |union, i|
+    fn = low.begin_main_function(names[i], m.types.func([] of IrType, m.types.void), true)
+    value = low.builder.const_zero(low.typer.llvm_type(union))
+    tid = type_id_of_value(low, analysis.root, value, union)
+    raise "#{names[i]} union used a static type id" unless tid.is_a?(Inst) && tid.as(Inst).op == Op::Load && tid.as(Inst).args[0].is_a?(Inst) && tid.as(Inst).args[0].as(Inst).op == Op::Gep
+    downcast(low, value, int_type, union, true)
+    low.builder.ret_void
+    low.finish_main_function
+    errors = verify_function(m, fn)
+    raise "#{names[i]} union emitted invalid IR: #{errors[0].message}" unless errors.empty?
+  end
+end
+
 def run : Nil
   args = Program.args
   if args.empty?
@@ -60,6 +94,8 @@ def run : Nil
     refuse_wrong_union_member
   elsif mode == "skip_noreturn"
     skip_noreturn_assignment
+  elsif mode == "union_representations"
+    check_union_representations
   else
     raise "unknown mode #{mode}"
   end
