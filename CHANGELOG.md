@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- The hosted-built stage-one command entry routes `build` and `run` through
+  the native typed pipeline, refuses unimplemented options and verbs, and
+  protects resolved sources from being replaced by output. Native linking
+  writes a fresh executable inode before replacing an existing output.
 
 - The typed pipeline resolves omitted `fun` returns to `Nil`, lowers recorded inline macro expansions, and
   resolves nested class and module declarations in their enclosing body. Native regression executables match
