@@ -100,7 +100,7 @@ module_same=0
 module_differ=0
 diverged=0
 waiting=0
-for fixture in "$REPO"/bench/fixtures/lower_*.iyi "$REPO"/bench/fixtures/lowdecl_nested_case_block.iyi; do
+for fixture in "$REPO"/bench/fixtures/lower_*.iyi "$REPO"/bench/fixtures/lowdecl_nested_case_block.iyi "$REPO"/bench/fixtures/lowconst_*.iyi; do
   name="$(basename "$fixture" .iyi)"
   # lower_headed_late is proved in section 2c against the arena prelude. The empty-prelude
   # loop names its proc Proc(Base, Base); the port, having made the virtual type, names Base+.
@@ -329,6 +329,18 @@ lower_core_check() {
   done
   return 0
 }
+
+folded_const_check() {
+  if ! "$IYI" build -o "$WORK/const-fold-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-fold-mut.log" 2>&1; then
+    touch "$WORK/m.invalid"
+    return 1
+  fi
+  "$WORK/const-fold-mut" lower "$REPO/bench/fixtures/lowconst_fold_int.iyi" "$WORK/lowconst_fold_int.oracle.ll" > "$WORK/const-fold-mut.out" 2>&1 || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-fold-mut.out"
+}
+prove_mutation "integer constant expressions are not folded" "$REPO/src/compiler/lower/const.iyi" \
+  '  result = MathInterpreter.new.interpret(const.value)' '  return nil
+  result = MathInterpreter.new.interpret(const.value)' -- folded_const_check || status=1
 
 nested_case_block_check() {
   "$IYI" build -o "$WORK/nested-case-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/nested-case.build.log" 2>&1 || return 1
