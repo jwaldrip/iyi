@@ -110,11 +110,12 @@ end
 # is visited, so a hit on one of these entries identifies a recursive cycle.
 pub class RecursiveFrame
   getter key : String?
+  getter stack_key : String
   getter definition : Def
   property cyclic : Bool = false
   property estimating : Bool = false
 
-  def initialize(@key : String?, @definition : Def)
+  def initialize(@key : String?, @definition : Def, @stack_key : String)
   end
 end
 
@@ -3924,6 +3925,17 @@ pub class MainVisitor < TypeNodeHost
     # instantiations whose argument types keep growing.
     key = instance_key(rec_type, target_def, args, block)
     if @typing_stack.includes?(key)
+      # Named/default calls are not cached, but a recursive call must still
+      # target the active typed clone, whose parameters are already bound.
+      # Hosted call.cr 625-630 installs that clone before visiting its body.
+      if call = call_node
+        @speculation.recursive_frames.each do |frame|
+          if frame.stack_key == key
+            @call_target_defs[call] = frame.definition
+            break
+          end
+        end
+      end
       if rt = target_def.return_type
         return return_contract(rt, rec_type, target_def)
       end
@@ -4094,7 +4106,7 @@ pub class MainVisitor < TypeNodeHost
     end
     body = splice_def_body(body.as(ASTNode))
     target_def.body = body.as(ASTNode)
-    recursive_frame = RecursiveFrame.new(cache_key, target_def)
+    recursive_frame = RecursiveFrame.new(cache_key, target_def, key)
     @speculation.recursive_frames << recursive_frame
     recursive_cache_mark = @speculation.recursive_cache_writes.size
     recursive_instance_mark = @typed_instances.size
@@ -5160,7 +5172,9 @@ pub class MainVisitor < TypeNodeHost
         instantiated_def = hit.definition
         ret_t = hit.return_type
       else
+        @call_target_defs[node] = instantiated_def
         ret_t = type_method_body(instantiated_def, union_instance_owner, arguments, node.block, node, dkey, node)
+        instantiated_def = @call_target_defs[node]? || instantiated_def
       end
       if ret_t.nil?
         @matched_call_args.delete(node)
@@ -5306,6 +5320,7 @@ pub class MainVisitor < TypeNodeHost
         @block_breaks[blk] = [] of Type?
       end
       body_ret = type_method_body(instantiated_def, instance_owner, arguments, node.block, nil, dkey, node)
+      instantiated_def = @call_target_defs[node]? || instantiated_def
     end
     if trait_receiver && body_ret
       @call_dispatch_targets[node] = [DispatchTarget.new(rec_type, instantiated_def, body_ret)] of DispatchTarget
