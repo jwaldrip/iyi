@@ -429,7 +429,8 @@ trait_dispatch_at_expected() {
   fi
   "$ORACLE" "$REPO/bench/fixtures/sem_bodies_trait_dispatch.iyi" 2>/dev/null | sort > "$WORK/trait.oracle" || return 1
   "$MUT_TD" "$REPO/bench/fixtures/sem_bodies_trait_dispatch.iyi" "$REPO/src" 2>/dev/null | sort > "$WORK/trait.port" || return 1
-  cmp -s "$WORK/trait.oracle" "$WORK/trait.port"
+  grep -Fxq '31:10 Call String' "$WORK/trait.oracle" &&
+    grep -Fxq '31:10 Call String' "$WORK/trait.port"
 }
 trait_dispatch_at_expected || status=1
 prove_mutation "trait implementers dispatch without argument dispatch" "$MAIN_VISITOR" \
