@@ -484,8 +484,8 @@ if ! super_check; then
   echo "  super baseline failed; mutations cannot prove coverage"
   status=1
 else
-  prove_mutation "virtual definition probes lose concrete receiver lookup" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-    '    if !node.obj.nil? && rec_type.is_a?(VirtualType)' '    if false && !node.obj.nil? && rec_type.is_a?(VirtualType)' -- super_check || status=1
+  prove_mutation "virtual receivers skip subtype groups" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    if receiver.is_a?(VirtualType)' '    if false' -- lower_calls_check || status=1
   prove_mutation "super uses dynamic scope instead of lexical owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '    super_ancestors(owner_module, parents)' '    super_ancestors(scope.as(ModuleType), parents)' -- super_check || status=1
   prove_mutation "super recursion key loses defining owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \
@@ -737,6 +737,19 @@ prove_mutation "lowering ignores recorded argument order" "$REPO/src/compiler/lo
   '  low.analysed.call_arguments[node]? || node.args' '  node.args' -- lower_calls_check || status=1
 prove_mutation "recursion keys omit the written overload signature" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '    key = key + "|signature(" + restrictions.join(",") + ")"' '    key = key + ""' -- lower_calls_check || status=1
+prove_mutation "virtual field reads lose their base scope" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)' \
+  '    target_type = target_type.as(VirtualType).base_type if false' -- lower_calls_check || status=1
+prove_mutation "virtual field writes lose their base scope" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)' \
+  '      target_type = target_type.as(VirtualType).base_type if false' -- lower_calls_check || status=1
+prove_mutation "virtual class primitive loses its metaclass" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        if sc.is_a?(VirtualType)' '        if false' -- lower_calls_check || status=1
+prove_mutation "virtual methods lose priority over global functions" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    if rec_type.is_a?(VirtualType)
+      collect_candidate_defs(rec_type.as(VirtualType).base_type, name, result, visited)' \
+  '    if false
+      collect_candidate_defs(rec_type.as(VirtualType).base_type, name, result, visited)' -- lower_calls_check || status=1
 prove_mutation "subtype groups use the base match" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '      groups[i].each { |match| result << match }' \
   '      base_matches.matches.each { |match| result << match }' -- lower_calls_check || status=1
