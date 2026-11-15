@@ -46,7 +46,7 @@ ROOT_MIN_GB="${SELFHOST_PIPELINE_ROOT_MIN_GB:-96}"
 if [ -n "${SELFHOST_PIPELINE_HOST_GB:-}" ]; then
   HOST_GB="$SELFHOST_PIPELINE_HOST_GB"
 elif [ "$(uname -s)" = Darwin ]; then
-  HOST_GB="$(sysctl -n hw.memsize | awk '{printf "%.0f", int($1 / 1073741824)}')"
+  HOST_GB="$({ /usr/sbin/sysctl -n hw.memsize 2>/dev/null || sysctl -n hw.memsize; } | awk '{printf "%.0f", int($1 / 1073741824)}')"
 else
   HOST_GB="$(awk '/^MemTotal:/ {printf "%.0f", int($2 / 1048576); found=1} END {if (!found) exit 1}' /proc/meminfo)"
 fi
