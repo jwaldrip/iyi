@@ -1,6 +1,6 @@
 module compiler/semantic/match
 
-import compiler/syntax/ast::{ASTNode, Call, Def, NumberLiteral, Splat, Yield}
+import compiler/syntax/ast::{ASTNode, Call, Def, NumberLiteral, ProcNotation, Splat, Yield}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{GenericClassType, MetaclassType, ModuleType, NoReturnType, SemanticProgram, Type}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
@@ -132,7 +132,9 @@ pub class CallMatch
     splat = definition.splat_index
     if splat
       k = splat.as(Int32)
-      return MatchAttempt.failed("parameters after a splat are not ported") if count > k + 1
+      if count > k + 1 && !definition.args[k].name.empty?
+        return MatchAttempt.failed("parameters after a named splat are not ported")
+      end
     end
     splat_restriction = CallMatch.splat_restriction_of(definition, splat)
     dsplat = definition.double_splat
@@ -146,6 +148,9 @@ pub class CallMatch
     given = signature.arg_types.size
     prefix = splat ? splat.as(Int32) : count
     return MatchAttempt.none if !splat && given > count
+    if splat && definition.args[splat.as(Int32)].name.empty? && given > prefix
+      return MatchAttempt.none
+    end
     splat_types = [] of Type
     if splat
       si = prefix
@@ -315,7 +320,21 @@ pub class CallMatch
     if free_names.size > 0
       j = 0
       while j < free_names.size
-        return MatchAttempt.failed("undefined constant #{free_names[j]}") if bound[free_names[j]]?.nil?
+        if bound[free_names[j]]?.nil?
+          deferred = false
+          if signature.block
+            if block_arg = definition.block_arg
+              if restriction = block_arg.restriction
+                if restriction.is_a?(ProcNotation)
+                  if output = restriction.as(ProcNotation).output
+                    deferred = FreeBindings.mentions?(output, [free_names[j]])
+                  end
+                end
+              end
+            end
+          end
+          return MatchAttempt.failed("undefined constant #{free_names[j]}") unless deferred
+        end
         j += 1
       end
     end

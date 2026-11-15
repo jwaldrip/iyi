@@ -25,7 +25,7 @@ module compiler/lower/block
 import compiler/syntax/ast::{ASTNode, Splat, Yield}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
-import compiler/lower/cast::{assign, union_temp}
+import compiler/lower/cast::{assign, union_temp, upcast}
 import compiler/lower/context::{BranchPhi, Lowerer, LowerContext, LowerVar}
 import compiler/lower/fun::{block_ended?, visit_node}
 import compiler/lower/helpers::{llvm_nil}
@@ -250,11 +250,16 @@ pub def branch_to_phi(low : Lowerer, phi : BranchPhi, exp : ASTNode?, target : A
   return if block_ended?(low)
   value = low.last if !value.nil?
   join = phi.semantic_join_type
-  if !join.nil? && low.typer.llvm_type(join.as(Type)).to_s != low.typer.llvm_type(got).to_s
-    refuse_port("a break, next or return of a block call with a value of another type than the call (hosted upcast, not ported)")
-  end
-  if !join.nil? && !value.nil? && passed_by_value?(join.as(Type))
-    value = join_pointer(low, value.as(Value), got, join.as(Type))
+  if !join.nil?
+    join_t = join.as(Type)
+    unless join_t.is_a?(NilType) || join_t.is_a?(VoidType)
+      branch = value || llvm_nil(low)
+      if passed_by_value?(join_t)
+        value = join_pointer(low, branch, got, join_t)
+      else
+        value = upcast(low, branch, got, join_t)
+      end
+    end
   end
   phi.add_branch(low, value, false)
   low.last = llvm_nil(low)

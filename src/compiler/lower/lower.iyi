@@ -22,11 +22,13 @@ import compiler/syntax/ast::{NamedTupleLiteral, EnumDef}
 import compiler/syntax/ast::{ImplDef, TraitDef}
 import compiler/types/types::{NamedTupleInstanceType}
 import compiler/syntax/ast::{TupleLiteral, Splat, Generic}
+import compiler/syntax/ast::{ReadInstanceVar}
 import compiler/syntax/ast::{ExceptionHandler, Case}
 import compiler/syntax/ast::{MacroIf, MacroFor, MacroExpression, MacroVerbatim}
 import compiler/syntax/ast::{Include, Extend}
 import compiler/syntax/ast::{ModuleHeader, UsingDecl}
 import compiler/types/types::{TupleInstanceType}
+import compiler/types/types::{GenericClassInstanceMetaclassType}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -59,6 +61,7 @@ import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/semantic/top_level::{LibType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants, path_const}
 import compiler/lower/class_var::{class_body_enter, class_body_leave, module_body_enter, codegen_class_var_read, codegen_class_var_assign, codegen_pointerof_class_var, codegen_type_declaration_class_var, in_class_body?, store_class_var}
+import compiler/lower/instance_var::{read_instance_var, self_argument}
 import compiler/lower/instance_var::{codegen_instance_var_read, codegen_pointerof_instance_var, store_instance_var}
 import compiler/syntax/ast::{FunDef}
 import compiler/syntax/ast::{Annotation}
@@ -84,11 +87,12 @@ pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type)
   ids.assign_all(program.object_type)
   low.type_ids = ids
   low.string_type_id = ids.type_id(program.string_type)
+  initialize_probe_constants(low)
   body_t = analysed.type_of?(target.body)
   raise "BUG: the analysed program has no type for the body of #{target.name} (hosted codegen_fun: return type)" if body_t.nil?
   result_t = analysed.type_of?(target) || body_t
   built : Function? = nil
-  if self_type.is_a?(MetaclassType)
+  if self_type.is_a?(MetaclassType) && !self_type.is_a?(GenericClassInstanceMetaclassType)
     built = target_def_fun(low, target, nil, arg_types, result_t.as(Type), self_type.as(MetaclassType).instance_type)
   else
     built = target_def_fun(low, target, self_type, arg_types, result_t.as(Type))
@@ -102,6 +106,24 @@ pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type)
     raise "error[#{err.kind}]: #{err.message}"
   end
   nil
+end
+
+def initialize_probe_constants(low : Lowerer) : Nil
+  m = low.module
+  i32 = m.types.int32
+  ptr = m.types.ptr(0)
+  argc_global = m.get_global?("ARGC_UNSAFE") || m.add_global("ARGC_UNSAFE", i32)
+  argc_global.linkage = Linkage::Internal
+  argc_global.initializer = low.builder.const_int(i32, 0)
+  argv_global = m.get_global?("ARGV_UNSAFE") || m.add_global("ARGV_UNSAFE", ptr)
+  argv_global.linkage = Linkage::Internal
+  argv_global.initializer = low.builder.const_null(ptr)
+  argc_state = low.globals.const_state("ARGC_UNSAFE")
+  argc_state.global = argc_global
+  argc_state.no_init_flag = true
+  argv_state = low.globals.const_state("ARGV_UNSAFE")
+  argv_state.global = argv_global
+  argv_state.no_init_flag = true
 end
 
 # Whether the program's root defines a top-level `fun main`, the prelude's C entry. Its own `main` then
@@ -137,20 +159,9 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   root.accept(collector)
   emit_symbol_table(low, collector.names)
 
-  argc_global = m.add_global("ARGC_UNSAFE", i32)
-  argc_global.linkage = Linkage::Internal
-  argc_global.initializer = low.builder.const_int(i32, 0)
-  argv_global = m.add_global("ARGV_UNSAFE", ptr)
-  argv_global.linkage = Linkage::Internal
-  argv_global.initializer = low.builder.const_null(ptr)
-  # The entry stores argc and argv before the program's own code (hosted initialize_predefined_constants), so a
-  # read of either constant is a load of its global, never an initialiser of its own.
-  argc_state = low.globals.const_state("ARGC_UNSAFE")
-  argc_state.global = argc_global
-  argc_state.no_init_flag = true
-  argv_state = low.globals.const_state("ARGV_UNSAFE")
-  argv_state.global = argv_global
-  argv_state.no_init_flag = true
+  initialize_probe_constants(low)
+  argc_global = m.get_global?("ARGC_UNSAFE") || raise "BUG: missing ARGC_UNSAFE"
+  argv_global = m.get_global?("ARGV_UNSAFE") || raise "BUG: missing ARGV_UNSAFE"
 
   program_type = analysed.type_of?(root)
   raise "BUG: the analysed program has no type for its root expression (hosted codegen.cr: codegen)" if program_type.nil?
@@ -432,7 +443,7 @@ def codegen_tuple(low : Lowerer, node : TupleLiteral) : Nil
     assign(low, ptr, tuple_type.tuple_types[index], value_type.as(Type), low.last.as(Value))
   end
   low.needs_value = wants
-  low.last = load_aligned(low, ir_type, tuple)
+  low.last = tuple
 end
 
 pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
@@ -525,6 +536,30 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   end
   if node.is_a?(InstanceVar)
     codegen_instance_var_read(low, node.as(InstanceVar))
+    return
+  end
+  if node.is_a?(ReadInstanceVar)
+    read = node.as(ReadInstanceVar)
+    owner_opt = low.analysed.type_of?(read.obj)
+    node_type = low.analysed.type_of?(read)
+    raise "BUG: an instance variable receiver has no analysed type" if owner_opt.nil?
+    raise "BUG: an instance variable read has no analysed type" if node_type.nil?
+    owner = TypeIndirection.remove_indirection(owner_opt.as(Type))
+    if owner.is_a?(VirtualType)
+      owner = owner.as(VirtualType).base_type
+    end
+    if owner.is_a?(UnionType)
+      pending_visit_node("reading an instance variable of a union (hosted visit(ReadInstanceVar))")
+    end
+    wants = low.needs_value
+    low.needs_value = true
+    codegen_node(low, read.obj)
+    low.needs_value = wants
+    return if block_ended?(low)
+    value = low.last
+    raise "BUG: an instance variable receiver has no value" if value.nil?
+    pointer = self_argument(low, read.obj, value.as(Value), owner)
+    low.last = read_instance_var(low, node_type.as(Type), owner, read.name, pointer)
     return
   end
   if node.is_a?(Path)
@@ -1153,7 +1188,7 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     end
     return
   end
-  if cond_node.is_a?(IsA)
+  if cond_node.is_a?(IsA) && low.analysed.expansions[cond_node]?.nil?
     # The hosted cleanup replaces a type test the object's type decides with a literal (cleanup_transformer.cr
     # transform_is_a_or_responds_to: the test is true when the filtered type is the object's type, false when
     # nothing is left). The branch the test cannot take is never lowered: it may read a variable the test's own
@@ -1201,6 +1236,9 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     raise "BUG: the analysed program has no type for a branch (hosted codegen.cr: visit(If))" if merged.nil?
     merged_t = merged.as(Type)
     union_join = joins_by_pointer?(merged_t.as(Type))
+    if union_join && low.typer.passed_indirectly?(merged_t.as(Type))
+      pending_visit_node("a join of an indirectly passed #{merged_t.as(Type).full_name} (hosted copy_value)")
+    end
     if union_join
       merge_type = low.module.types.ptr(0)
     else
@@ -1239,18 +1277,9 @@ pub def static_is_a(low : Lowerer, node : IsA) : Bool?
   nil
 end
 
-# Whether a value of this type joins by pointer in the `if` phi: the hosted Phi takes a pointer to a
-# passed-by-value type (phi.cr `close`). Only the union case is ported here; another by-value type
-# (a struct) is refused by name, since its branch value needs a pointer the core does not build yet.
+# Passed-by-value joins hold an address, including structs and tuples.
 pub def joins_by_pointer?(t : Type) : Bool
-  if !passed_by_value?(t)
-    return false
-  end
-  if t.is_a?(UnionType) || t.is_a?(NilableType)
-    return true
-  end
-  pending_visit_node("a phi over a passed-by-value #{t.full_name} that is not a union (hosted phi.cr: close, struct pointer)")
-  false
+  passed_by_value?(t)
 end
 
 # One branch's value into the join. A union value already held by pointer passes through when
@@ -1490,6 +1519,7 @@ pub def codegen_return_node(low : Lowerer, node : Return) : Nil
     raise "BUG: the function has no analysed return type (hosted codegen_return)" if ret_type.nil?
     nil_type = low.analysed.program.nil_type
     returned = upcast(low, llvm_nil(low), nil_type, ret_type.as(Type))
+    returned = to_rhs(low, returned, ret_type.as(Type)) if returned.type.pointer?
     low.builder.ret(returned)
     return
   end
@@ -1522,6 +1552,10 @@ end
 # type-id word is read from the union value, which the casts slice builds with `upcast`, S2c3), and a
 # virtual or union restriction (the hosted match_any_type_id range, not ported yet).
 pub def codegen_is_a(low : Lowerer, node : IsA) : Nil
+  if isa_expanded = low.analysed.expansions[node]?
+    codegen_node(low, isa_expanded)
+    return
+  end
   wants = low.needs_value
   obj_t = low.analysed.type_of?(node.obj)
   if obj_t.nil?
@@ -1563,7 +1597,9 @@ end
 def eval_cast_operand(low : Lowerer, obj : ASTNode, obj_type : Type) : Value?
   if obj.is_a?(Var) && passed_by_value?(obj_type)
     if lv = low.current_context.vars[obj.as(Var).name]?
-      return lv.pointer unless lv.already_loaded
+      if !lv.already_loaded && TypeIndirection.remove_indirection(lv.type).full_name == obj_type.full_name
+        return lv.pointer
+      end
     end
   end
   wants = low.needs_value

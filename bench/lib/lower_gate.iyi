@@ -57,7 +57,7 @@ pub def analyse(source : String, filename : String, stand_in_libs : Bool) : Anal
   # The type system is installed before the top-level pass, as the semantic driver does: it makes the merged
   # unions (a variable's union, a type_merge) the hosted MixedUnionType and ReferenceUnionType, not a plain UnionType.
   ts = TypeSystem.new(prog)
-  tl = TopLevelVisitor.new(prog)
+  tl = TopLevelVisitor.new(prog, filename)
   root.accept(tl)
   tl.finish
   prog.resolve_declared_types

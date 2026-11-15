@@ -3045,6 +3045,7 @@ pub class Call < ASTNode
   property iyi_group : Bool = false
   property iyi_synthetic : Bool = false
   property expanded : ASTNode? = nil
+  property expansion : Bool = false
 
   def initialize(
     @obj : ASTNode? = nil,
@@ -3114,6 +3115,7 @@ pub class Call < ASTNode
       clone_node(@expanded),
     )
     copy.iyi_synthetic = @iyi_synthetic
+    copy.expansion = @expansion
     copy
   end
 

@@ -29,13 +29,33 @@ IYI="$REPO/bin/iyi"
 . "$REPO/bench/lib/lower_oracle.sh"
 WORK="$(mktemp -d)"
 
-# lowcall_capture_none waits on a real Proc#call: S1wDefaults3 expands the call to an
-# arity-specific target, and S2d13Primitives supplies the Primitive body. The gate fails if
-# that fixture stops refusing by this name, and it returns to the passing list when Proc lands.
-WAITING_FIXTURES="lowcall_capture_none"
+normalize_switches() {
+  awk '
+    in_switch {
+      if ($0 ~ /^[[:space:]]*][[:space:]]*$/) { print line " ]"; in_switch=0; next }
+      if ($0 !~ /^[[:space:]]*i[0-9]+ -?[0-9]+, label %[^[:space:]]+[[:space:]]*$/) { bad=1; exit 1 }
+      sub(/^[[:space:]]*/, "")
+      line=line (count++ ? ", " : " ") $0
+      next
+    }
+    /switch .*\[$/ { line=$0; in_switch=1; count=0; next }
+    { print }
+    END { if (in_switch || bad) exit 1 }
+  '
+}
+switch_result="$(printf '  switch i32 %%x, label %%else [\n    i32 1, label %%a\n    i32 2, label %%b\n  ]\n' | normalize_switches)"
+if [ "$switch_result" != '  switch i32 %x, label %else [ i32 1, label %a, i32 2, label %b ]' ] ||
+   printf 'switch i32 %%x, label %%else [\n i32 1, label %%a\n' | normalize_switches >/dev/null ||
+   printf 'switch i32 %%x, label %%else [\n nonsense\n]\n' | normalize_switches >/dev/null; then
+  echo "switch normalization regression"
+  exit 1
+fi
+
+# Fixtures with a named, intentionally unsupported refusal belong here until
+# their hosted and port modules agree.
+WAITING_FIXTURES=""
 waiting_reason() {
   case "$1" in
-    lowcall_capture_none) printf "%s" "undefined method 'call' for Proc(Int32)" ;;
     *) printf "%s" "" ;;
   esac
 }
@@ -53,12 +73,6 @@ if ! "$WORK/port" triple; then
   echo "  FAIL: target triple frame-pointer classification"
   status=1
 fi
-printf '%s\n' 'import no_such_cycle_unit::{Missing}' > "$WORK/missing_import.iyi"
-if "$WORK/port" lower "$WORK/missing_import.iyi" "$WORK/no_oracle.ll" > "$WORK/missing_import.out" 2> "$WORK/missing_import.err" ||
-   ! grep -Fq "can't find module 'no_such_cycle_unit'" "$WORK/missing_import.err"; then
-  echo "  FAIL: missing fixture import was not rejected by name"
-  status=1
-fi
 
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
@@ -73,7 +87,11 @@ for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi; do
     diverged=$((diverged + 1))
     continue
   fi
-  awk "$CALL_TYPES" "$WORK/$name.ll" > "$WORK/$name.oracle.ll"
+  if ! awk "$CALL_TYPES" "$WORK/$name.ll" | normalize_switches > "$WORK/$name.oracle.ll"; then
+    echo "  $name: malformed switch in hosted module"
+    diverged=$((diverged + 1))
+    continue
+  fi
 
   if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
     reason="$(awk 'NR==1' "$WORK/$name.port.err")"
@@ -119,6 +137,13 @@ if [ "$diverged" -gt 0 ] || [ "$passed" -eq 0 ]; then
   status=1
 fi
 
+printf '%s\n' 'import no_such_cycle_unit::{Missing}' > "$WORK/missing_import.iyi"
+if "$WORK/port" lower "$WORK/missing_import.iyi" "$WORK/lowcall_empty_body.oracle.ll" > "$WORK/missing_import.out" 2> "$WORK/missing_import.err" ||
+   ! grep -Fq "can't find module 'no_such_cycle_unit'" "$WORK/missing_import.err"; then
+  echo "  FAIL: missing fixture import was not rejected by name"
+  status=1
+fi
+
 super_refusal_checks() {
   local driver="$1" fixture line rc
   fixture="$REPO/bench/fixtures/lowcallwait_super_missing.iyi"
@@ -138,49 +163,33 @@ super_refusal_checks() {
   grep -Fq -- "$line" "$WORK/super_missing.err" || return 1
 
   fixture="$REPO/bench/fixtures/lowcallwait_super_forwarded_default.iyi"
-  "$IYI" build --prelude empty -o "$WORK/super_default" "$fixture" > "$WORK/super_default.log" 2>&1 || return 1
+  "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/super_default" "$fixture" > "$WORK/super_default.log" 2>&1 || return 1
   "$WORK/super_default" > "$WORK/super_default.run" 2>&1
   rc=$?
   [ "$rc" -eq 3 ] || return 1
-  if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/super_default.out" 2> "$WORK/super_default.err"; then
-    echo "  super default: port unexpectedly accepted"
-    return 1
-  fi
-  grep -Fq 'omitted defaults that forward' "$WORK/super_default.err" || return 1
+  awk "$CALL_TYPES" "$WORK/super_default.ll" | normalize_switches > "$WORK/super_default.oracle.ll" || return 1
+  "$driver" lower "$fixture" "$WORK/super_default.oracle.ll" > "$WORK/super_default.out" 2> "$WORK/super_default.err" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/super_default.out" || return 1
 
   fixture="$REPO/bench/fixtures/lowcallwait_previous_def_refused.iyi"
   if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/previous_def.out" 2> "$WORK/previous_def.err"; then
     echo "  previous_def: port unexpectedly accepted"
     return 1
   fi
-  grep -Fq "'previous_def'" "$WORK/previous_def.err" || return 1
+  grep -Fq "previous_def" "$WORK/previous_def.err" || return 1
+
+  fixture="$REPO/bench/fixtures/lowcallwait_super_argument_dispatch.iyi"
+  if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/super_args.out" 2> "$WORK/super_args.err"; then
+    echo "  super argument dispatch: port unexpectedly accepted"
+    return 1
+  fi
+  grep -Fq 'not ported: super with an argument dispatch (hosted codegen/call.cr:473-475)' "$WORK/super_args.err" || return 1
 }
 if ! super_refusal_checks "$WORK/port"; then
   echo "  super refusal checks failed"
   status=1
 fi
 
-break_upcast_reason="a break, next or return of a block call with a value of another type than the call (hosted upcast, not ported)"
-break_upcast_refusal() {
-  if "$1" emit "$REPO/bench/fixtures/lowcallwait_break_upcast.iyi" "$WORK/lowcall_super.oracle.ll" > "$WORK/break_upcast.out" 2> "$WORK/break_upcast.err"; then
-    return 1
-  fi
-  [ ! -s "$WORK/break_upcast.out" ] &&
-    [ "$(awk 'NR==1' "$WORK/break_upcast.err")" = "iyi: panic: $break_upcast_reason" ]
-}
-break_upcast_ready=0
-if "$IYI" build --prelude empty -o "$WORK/break_upcast" "$REPO/bench/fixtures/lowcallwait_break_upcast.iyi" > "$WORK/break_upcast.build.log" 2>&1; then
-  "$WORK/break_upcast" > "$WORK/break_upcast.hosted.out" 2>&1
-  break_upcast_status=$?
-  if [ "$break_upcast_status" -eq 1 ] && break_upcast_refusal "$WORK/port"; then
-    break_upcast_ready=1
-    echo "  block jump upcast: hosted exits 1, port retains its named refusal"
-  fi
-fi
-if [ "$break_upcast_ready" -ne 1 ]; then
-  echo "  FAIL: block jump upcast did not reach its expected refusal"
-  status=1
-fi
 
 # An uninstantiated generic receiver is a typing gap, not an owner that lowering
 # may guess. The hosted compiler still accepts the source and emits its module.
@@ -200,6 +209,36 @@ else
   echo "  uninstantiated generic: hosted compiler refused the fixture"
   status=1
 fi
+
+uncovered_check() {
+  local driver="$1" fixture="$REPO/bench/fixtures/lowcallwait_dispatch_uncovered.iyi"
+  if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/uncovered.out" 2> "$WORK/uncovered.err"; then
+    echo "  uncovered union: port unexpectedly accepted"
+    return 1
+  fi
+  grep -Fq "expected argument #1 to 'consume'" "$WORK/uncovered.err"
+}
+if "$IYI" build --prelude empty -o "$WORK/uncovered.hosted" "$REPO/bench/fixtures/lowcallwait_dispatch_uncovered.iyi" > "$WORK/uncovered.hosted.log" 2>&1; then
+  echo "  uncovered union: hosted compiler unexpectedly accepted"
+  status=1
+elif ! grep -Fq "expected argument #1 to 'consume'" "$WORK/uncovered.hosted.log" || ! uncovered_check "$WORK/port"; then
+  echo "  uncovered union: expected argument diagnostic missing"
+  status=1
+fi
+free_dispatch="$REPO/bench/fixtures/lowcallwait_dispatch_free_vars.iyi"
+if ! "$IYI" build --prelude empty -o "$WORK/free_dispatch.hosted" "$free_dispatch" > "$WORK/free_dispatch.hosted.log" 2>&1; then
+  echo "  free-variable dispatch: hosted compiler unexpectedly refused"
+  status=1
+elif "$WORK/port" emit "$free_dispatch" "$WORK/lowcall_super.oracle.ll" > "$WORK/free_dispatch.out" 2> "$WORK/free_dispatch.err"; then
+  echo "  free-variable dispatch: port unexpectedly accepted"
+  status=1
+elif ! grep -Fq 'not ported: an argument dispatch into a def with free variables (hosted semantic/call.cr instantiate binds them from the match)' "$WORK/free_dispatch.err"; then
+  echo "  free-variable dispatch: expected port limitation missing"
+  status=1
+else
+  echo "  free-variable dispatch: hosted accepted; port explicitly refused"
+fi
+
 
 echo
 echo "== 3. End to end: each fixture the port lowers identically, built natively and run"
@@ -246,6 +285,27 @@ echo "  end to end: $e2e_pass fixture(s) run to the hosted result, $e2e_fail fai
 if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
   status=1
 fi
+# Array#map and its block-output type variable require the real prelude. This
+# fixture must not run through the empty-prelude IR comparison above.
+map_fixture="$REPO/bench/fixtures/lowcallrun_block_map_u.iyi"
+if ! "$IYI" build --no-debug -o "$WORK/block_map.hosted" "$map_fixture" > "$WORK/block_map.hosted.log" 2>&1 ||
+   ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$map_fixture" -o "$WORK/block_map.native" --pipeline typed --prelude > "$WORK/block_map.native.log" 2>&1; then
+  echo "  block map: hosted or native source build failed"
+  status=1
+elif [ "$(uname -s)" = Darwin ] && { ! codesign -v --strict "$WORK/block_map.hosted" || ! codesign -v --strict "$WORK/block_map.native"; }; then
+  echo "  block map: signature verification failed"
+  status=1
+else
+  timeout 30 "$WORK/block_map.hosted" > "$WORK/block_map.hosted.out" 2>&1; hs=$?
+  timeout 30 "$WORK/block_map.native" > "$WORK/block_map.native.out" 2>&1; ns=$?
+  if [ "$hs" -ne 0 ] || [ "$ns" -ne "$hs" ] || ! cmp -s "$WORK/block_map.hosted.out" "$WORK/block_map.native.out" || [ "$(< "$WORK/block_map.native.out")" != "a-b" ]; then
+    echo "  block map: hosted and native output or exit status differs"
+    status=1
+  else
+    echo "  block map: real-prelude native matches hosted output a-b"
+  fi
+fi
+
 
 echo
 echo "== 3a. Generic constructor inference and refusal boundaries"
@@ -271,6 +331,13 @@ for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
     echo "  $name: native and hosted status 7, stdout identical"
   fi
 done
+generic_wait_reason() {
+  case "$1" in
+    lowcallwait_generic_handwritten_make) printf "%s" "expected argument #1 to 'Maker.make' to be T, not Int32" ;;
+    lowcallwait_generic_handwritten_new) printf "%s" "expected argument #1 to 'Maker.new' to be T, not Int32" ;;
+    lowcallwait_generic_default_new) printf "%s" "expected argument #1 to 'Opt.new' to be T, not Int32" ;;
+  esac
+}
 for name in lowcallwait_uninferred_generic_new lowcallwait_generic_handwritten_make lowcallwait_generic_handwritten_new lowcallwait_generic_default_new; do
   fixture="$REPO/bench/fixtures/$name.iyi"
   rm -f "$WORK/$name.native"
@@ -284,11 +351,14 @@ for name in lowcallwait_uninferred_generic_new lowcallwait_generic_handwritten_m
       echo "  $name: unexpected refusal"
       status=1
     fi
-  elif ! grep -Fq 'expected type, got T' "$WORK/$name.native.log"; then
-    echo "  $name: unexpected refusal"
+  elif ! "$IYI" build --prelude empty --no-codegen "$fixture" > "$WORK/$name.hosted.log" 2>&1; then
+    echo "  $name: hosted compiler unexpectedly refused"
+    status=1
+  elif ! grep -Fq "$(generic_wait_reason "$name")" "$WORK/$name.native.log"; then
+    echo "  $name: unexpected port refusal"
     status=1
   else
-    echo "  $name: expected type, got T; no executable"
+    echo "  $name: hosted accepted; port refuses unbound generic T"
   fi
 done
 if "$IYI" build --prelude empty -o "$WORK/uninferred.hosted" "$REPO/bench/fixtures/lowcallwait_uninferred_generic_new.iyi" > "$WORK/uninferred.hosted.log" 2>&1; then
@@ -299,6 +369,48 @@ elif ! grep -Fq 'can'"'"'t infer `T`' "$WORK/uninferred.hosted.log" && ! grep -F
   status=1
 else
   echo "  uninferred generic: hosted compiler could not infer T"
+fi
+
+# Generated new has a different expansion from hosted; compare its run only.
+name=lowcallrun_named_new
+fixture="$REPO/bench/fixtures/$name.iyi"
+if ! "$IYI" build --prelude empty --no-debug -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1 ||
+   ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1; then
+  echo "  $name: compilation failed"
+  status=1
+else
+  timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/$name.native"; then
+    echo "  $name: native signature verification failed"
+    status=1
+  else
+    timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
+    if [ "$ns" -ne "$hs" ] || [ $((hs & 255)) -ne 35 ] ||
+       ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out" ||
+       [ "$(< "$WORK/$name.hosted.out")" != "213" ]; then
+      echo "  $name: hosted/native status or output differs"
+      status=1
+    else
+      echo "  $name: hosted and native output 213, status 35"
+    fi
+  fi
+fi
+
+fixture="$REPO/bench/fixtures/lowcallwait_super_forwarded_default.iyi"
+if ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/super_default.native" --pipeline typed > "$WORK/super_default.native.log" 2>&1; then
+  echo "  super forwarded default: native compilation failed"
+  status=1
+elif [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/super_default.native"; then
+  echo "  super forwarded default: native signature verification failed"
+  status=1
+else
+  timeout 30 "$WORK/super_default.native" > "$WORK/super_default.native.out" 2>&1; ns=$?
+  if [ "$ns" -ne 3 ] || ! cmp -s "$WORK/super_default.run" "$WORK/super_default.native.out"; then
+    echo "  super forwarded default: native status $ns or output differs"
+    status=1
+  else
+    echo "  super forwarded default: native matches hosted status 3"
+  fi
 fi
 
 # A mutant that cannot build is invalid, not a caught regression. The marker
@@ -328,7 +440,7 @@ generic_constructor_check() {
       return 1
     fi
     [ ! -e "$WORK/constructor.check.exe" ] || return 1
-    grep -Fq 'expected type, got T' "$WORK/constructor.check.log" || return 1
+    grep -Fq "$(generic_wait_reason "$name")" "$WORK/constructor.check.log" || return 1
   done
 }
 
@@ -353,8 +465,10 @@ if generic_constructor_check && [ ! -e "$WORK/constructor.invalid" ]; then
   constructor_prove "lowering ignores the inferred receiver" "$REPO/src/compiler/lower/call.iyi" \
     '  if recorded = low.analysed.call_receiver?(node)' \
     '  if recorded = (node.obj.nil? ? low.analysed.call_receiver?(node) : nil)' || status=1
-  constructor_prove "generic struct allocation leaves an address" "$REPO/src/compiler/lower/call.iyi" \
-    '      if passed_by_value?(allocated_type)' '      if false' || status=1
+  # Leaving a struct address is indistinguishable in the exercised callers:
+  # their stores and returns load it. Force the opposite classification instead.
+  constructor_prove "class allocation is loaded as a struct" "$REPO/src/compiler/lower/call.iyi" \
+    '      if passed_by_value?(allocated_type)' '      if true' || status=1
 else
   echo "  constructor mutation baseline failed or did not build"
   status=1
@@ -414,7 +528,10 @@ echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires every call fixture
 # to match the hosted module exactly. It returns 0 only on the unmutated behaviour.
 lower_calls_check() {
-  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
   for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi; do
     name="$(basename "$fixture" .iyi)"
     if [ -n "$(waiting_reason "$name")" ]; then
@@ -429,8 +546,30 @@ lower_calls_check() {
   return 0
 }
 
+uncovered_mutation_check() {
+  if ! "$IYI" build -o "$WORK/uncovered-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/uncovered-mut.build.log" 2>&1; then
+    touch "$WORK/uncovered.invalid"
+    return 1
+  fi
+  uncovered_check "$WORK/uncovered-mut"
+}
+if uncovered_check "$WORK/port"; then
+  prove_mutation "uncovered argument combinations are accepted" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    found = lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    unless found.cover_all?' \
+    '    found = lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    unless true' -- uncovered_mutation_check || status=1
+else
+  echo "  FAIL: uncovered union baseline did not refuse"
+  status=1
+fi
+if [ -e "$WORK/uncovered.invalid" ]; then
+  echo "  FAIL: uncovered union mutation failed to compile"
+  status=1
+fi
+
 triple_check() {
-  "$IYI" build -o "$WORK/triple-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/triple-mut.build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/triple-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/triple-mut.build.log" 2>&1 || { touch "$WORK/general-mutation.invalid"; return 1; }
   "$WORK/triple-mut" triple > "$WORK/triple-mut.out" 2>&1
 }
 
@@ -447,8 +586,8 @@ if ! super_check; then
   echo "  super baseline failed; mutations cannot prove coverage"
   status=1
 else
-  prove_mutation "virtual definition probes lose concrete receiver lookup" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-    '    if !node.obj.nil? && rec_type.is_a?(VirtualType)' '    if false && !node.obj.nil? && rec_type.is_a?(VirtualType)' -- super_check || status=1
+  prove_mutation "virtual receivers skip subtype groups" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    if receiver.is_a?(VirtualType)' '    if false' -- lower_calls_check || status=1
   prove_mutation "super uses dynamic scope instead of lexical owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '    super_ancestors(owner_module, parents)' '    super_ancestors(scope.as(ModuleType), parents)' -- super_check || status=1
   prove_mutation "super recursion key loses defining owner" "$REPO/src/compiler/semantic/main_visitor.iyi" \
@@ -461,8 +600,10 @@ else
     '      unless pinned.nil?' '      unless true' -- super_check || status=1
   prove_mutation "super types its body with static self" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '    instantiate_call_target(node, scope, scope, target_def, false)' '    instantiate_call_target(node, @program.def_owner(target_def).as(Type), @program.def_owner(target_def).as(Type), target_def, false)' -- super_check || status=1
-  prove_mutation "super forwards an omitted default without its guard" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-    'DefaultArguments.forwards?(target_def, node.args.size)' 'false && DefaultArguments.forwards?(target_def, node.args.size)' -- super_check || status=1
+  prove_mutation "super permits argument dispatch" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '      if arms.matches.size > 1' '      if false' -- super_check || status=1
+  prove_mutation "an expansion call dispatches on self" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    if node.expansion && node.obj.nil?' '    if false' -- super_check || status=1
   prove_mutation "lowering refuses super as previous_def" "$REPO/src/compiler/lower/call.iyi" \
     '  if node.previous_def?' '  if node.previous_def? || node.super?' -- super_check || status=1
 fi
@@ -493,18 +634,6 @@ if [ -e "$WORK/block-nil.invalid" ]; then
   status=1
 fi
 
-break_upcast_check() {
-  if ! "$IYI" build -o "$WORK/break-upcast-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/break-upcast-mut.build.log" 2>&1; then
-    cat "$WORK/break-upcast-mut.build.log" > "$WORK/break-upcast.invalid"
-    return 1
-  fi
-  break_upcast_refusal "$WORK/break-upcast-mut"
-}
-if [ "$break_upcast_ready" -eq 1 ]; then
-  prove_mutation "a break of another type joins a block call" "$REPO/src/compiler/lower/block.iyi" \
-    '  if !join.nil? && low.typer.llvm_type(join.as(Type)).to_s != low.typer.llvm_type(got).to_s' \
-    '  if false' -- break_upcast_check || status=1
-fi
 
 lexical_owner_check() {
   if ! "$IYI" build -o "$WORK/lexical-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/lexical-mut.build.log" 2>&1; then
@@ -538,7 +667,7 @@ else
   echo "  FAIL: inherited constant binding differs from the hosted module"
   status=1
 fi
-for invalid in "$WORK/break-upcast.invalid" "$WORK/lexical.invalid" "$WORK/shadow.invalid"; do
+for invalid in "$WORK/lexical.invalid" "$WORK/shadow.invalid"; do
   if [ -e "$invalid" ]; then
     echo "  FAIL: a block-jump or lexical-binding mutation did not compile"
     cat "$invalid"
@@ -552,7 +681,7 @@ if ! lower_calls_check; then
   exit 1
 fi
 generic_gap_check() {
-  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || { touch "$WORK/general-mutation.invalid"; return 1; }
   if "$WORK/mut" lower "$generic_fixture" "$WORK/uninstantiated.oracle.ll" > "$WORK/generic.mut.out" 2> "$WORK/generic.mut.err"; then
     return 1
   fi
@@ -568,7 +697,7 @@ prove_mutation "an uninstantiated generic loses its typing-gap diagnostic" "$REP
 # comparison above drops the `import` text on both sides (lower_gate.iyi strip_import), so this check is the one
 # that proves it. It rebuilds the driver from the current source, so a mutation of the import is what it tests.
 link_import_check() {
-  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || { touch "$WORK/general-mutation.invalid"; return 1; }
   "$WORK/mut" emit "$REPO/bench/fixtures/lowcall_link_framework.iyi" "$WORK/lowcall_link_framework.oracle.ll" > "$WORK/mut.import.ir" 2>/dev/null || return 1
   awk '/^declare / && /@SecRandomCopyBytes\(/ && / import "Security"/ { ok = 1 } END { exit !ok }' "$WORK/mut.import.ir"
 }
@@ -612,13 +741,15 @@ prove_mutation "a block argument is never stored at a yield" "$REPO/src/compiler
 prove_mutation "a block call's value is merged as a non-final branch" "$REPO/src/compiler/lower/call.iyi" \
   "  phi.add(low, low.last, true)" "  phi.add(low, low.last, false)" -- lower_calls_check || status=1
 prove_mutation "a block call allocates none of the block's variables" "$REPO/src/compiler/lower/call.iyi" \
-  "  allocate_block_vars(low, block, block_ctx.vars)" "  block_ctx.vars.size" -- lower_calls_check || status=1
+  "  allocate_block_vars(low, block, block_ctx.vars, captured)" "  block_ctx.vars.size" -- lower_calls_check || status=1
 prove_mutation "an inlined def's argument is allocated with the nil type" "$REPO/src/compiler/lower/call.iyi" \
   "    alloca_local(low, vars, arg.name, arg_types[i])" "    alloca_local(low, vars, arg.name, low.analysed.program.nil_type)" -- lower_calls_check || status=1
 prove_mutation "a block branch's value is merged as the last branch" "$REPO/src/compiler/lower/block.iyi" \
   "  phi.add_branch(low, value, false)" "  phi.add_branch(low, value, true)" -- lower_calls_check || status=1
 prove_mutation "a block branch's value is dropped" "$REPO/src/compiler/lower/block.iyi" \
   "      value = v.as(Value)" "      value = nil" -- lower_calls_check || status=1
+prove_mutation "a block break skips its by-value join conversion" "$REPO/src/compiler/lower/block.iyi" \
+  '        value = join_pointer(low, branch, got, join_t)' '        value = branch' -- lower_calls_check || status=1
 prove_mutation "a break from a block drops its value" "$REPO/src/compiler/lower/lower.iyi" \
   "    branch_to_phi(low, block_phi.as(BranchPhi), node.exp, jump_target(node, low.current_context.break_target))" "    branch_to_phi(low, block_phi.as(BranchPhi), nil, jump_target(node, low.current_context.break_target))" -- lower_calls_check || status=1
 prove_mutation "a return from an inlined def drops its value" "$REPO/src/compiler/lower/lower.iyi" \
@@ -651,8 +782,24 @@ prove_mutation "a struct call result is returned as the aggregate, not its spill
   '        low.last = temp' '        low.last = inst' -- lower_calls_check || status=1
 prove_mutation "a module-level build constant is kept in the module (the module check catches it)" "$REPO/bench/lib/lower_gate.iyi" \
   'next if stripped.starts_with?("@") && build_constant?(stripped, builds) || stripped.starts_with?("%Nil = type")' 'next if stripped.starts_with?("%Nil = type")' -- lower_calls_check || status=1
-prove_mutation "a block body typed NoReturn is refused (no hosted upcast applies to a body that never returns)" "$REPO/src/compiler/lower/call.iyi" \
-  'body_no_return = body_t.as(Type).is_a?(NoReturnType)' 'body_no_return = false' -- lower_calls_check || status=1
+noreturn_phi_check() {
+  if ! "$IYI" build -o "$WORK/noreturn_phi" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/noreturn_phi.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/noreturn_phi"; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/noreturn_phi" noreturn-phi > "$WORK/noreturn_phi.out" 2>&1
+}
+if noreturn_phi_check; then
+  prove_mutation "a NoReturn body leaves an open block" "$REPO/src/compiler/lower/call.iyi" \
+    '  if ret.is_a?(NoReturnType) || body_t.is_a?(NoReturnType)' '  if ret.is_a?(NoReturnType)' -- noreturn_phi_check || status=1
+else
+  echo "  FAIL: NoReturn phi baseline did not pass"
+  status=1
+fi
 prove_mutation "a top-level fun with a body is emitted with the iyi calling convention" "$REPO/src/compiler/lower/fun.iyi" \
   "  CallConv::C
 end" "  CallConv::Iyi
@@ -670,9 +817,25 @@ prove_mutation "an inherited dispatch arm loses its defining owner" "$REPO/src/c
 prove_mutation "a nil receiver is not accepted" "$REPO/src/compiler/lower/call.iyi" \
   '  return owner if owner.is_a?(NilType)' '  pending_visit_node("nil receiver") if owner.is_a?(NilType)' -- lower_calls_check || status=1
 prove_mutation "an aggregate dispatch argument remains a pointer" "$REPO/src/compiler/lower/call.iyi" \
-  '      passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?' '      passed = values[i]' -- lower_calls_check || status=1
-prove_mutation "a nil block call collects its body value" "$REPO/src/compiler/lower/phi.iyi" \
-  '    if @needs_value && !@node_type.is_a?(NilType) && !@node_type.is_a?(VoidType)' '    if @needs_value' -- lower_calls_check || status=1
+  '      passed = to_rhs(low, passed, params[i]) if passed_by_value?(params[i]) && passed.type.pointer?' '      passed = values[i]' -- lower_calls_check || status=1
+nil_phi_check() {
+  if ! "$IYI" build -o "$WORK/nil_phi" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/nil_phi.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/nil_phi"; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/nil_phi" nil-phi > "$WORK/nil_phi.out" 2>&1
+}
+if nil_phi_check; then
+  prove_mutation "a nil block call collects its body value" "$REPO/src/compiler/lower/phi.iyi" \
+    '    if @needs_value && !@node_type.is_a?(NilType) && !@node_type.is_a?(VoidType)' '    if @needs_value' -- nil_phi_check || status=1
+else
+  echo "  FAIL: nil phi baseline did not pass"
+  status=1
+fi
 prove_mutation "an aggregate dispatch result uses a value phi" "$REPO/src/compiler/lower/call.iyi" \
   '  phi_type = passed_by_value?(ret) ? low.module.types.ptr(0) : low.typer.llvm_type(ret) if phi_wants' '  phi_type = low.typer.llvm_type(ret) if phi_wants' -- lower_calls_check || status=1
 prove_mutation "a typed block declaration is refused" "$REPO/src/compiler/lower/call.iyi" \
@@ -681,12 +844,54 @@ prove_mutation "a typed block declaration is refused" "$REPO/src/compiler/lower/
     pending_visit_node("typed block declaration")
   end' -- lower_calls_check || status=1
 prove_mutation "primitive dispatch loses its receiver" "$REPO/src/compiler/lower/call.iyi" \
-  '      prim_values = [self_value] of Value' '      prim_values = [] of Value' -- lower_calls_check || status=1
-prove_mutation "virtual class dispatch is expanded into concrete primitives" "$REPO/src/compiler/lower/call.iyi" \
-  '    if all_class' '    if false' -- lower_calls_check || status=1
+  '      prim_values = [self_value.as(Value)] of Value' '      prim_values = [] of Value' -- lower_calls_check || status=1
 prove_mutation "enum dispatch receivers are refused" "$REPO/src/compiler/lower/call.iyi" \
   '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType) && !owner.is_a?(EnumType))' \
   '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType))' -- lower_calls_check || status=1
+prove_mutation "global dispatch arms are repeated for virtual subtypes" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      return base_matches.matches if global_only' '      return base_matches.matches if false' -- lower_calls_check || status=1
+prove_mutation "global dispatch arms are treated as runtime receivers" "$REPO/src/compiler/lower/call.iyi" \
+  '    checked_dispatch_receiver(low, node, arm.receiver, arm.definition) if receiver_dynamic && !arm.receiver.is_a?(VirtualType) && !global_arm' \
+  '    checked_dispatch_receiver(low, node, arm.receiver, arm.definition) if receiver_dynamic && !arm.receiver.is_a?(VirtualType)' -- lower_calls_check || status=1
+prove_mutation "dispatch drops the argument type test" "$REPO/src/compiler/lower/call.iyi" \
+  '        matches = low.builder.bitwise_and(matches, match_type_id(low, arg_types[i], params[i], arg_tids[i]))' \
+  '        matches = int1(low, 1_i64)' -- lower_calls_check || status=1
+prove_mutation "dispatch drops the argument downcast" "$REPO/src/compiler/lower/call.iyi" \
+  '        passed = downcast(low, passed, params[i], arg_types[i], true)' \
+  '        passed = values[i]' -- lower_calls_check || status=1
+prove_mutation "dispatch evaluates an argument in every arm" "$REPO/src/compiler/lower/call.iyi" \
+  '      passed = values[i]' '      visit_node(low, arguments[i])
+      passed = values[i]' -- lower_calls_check || status=1
+prove_mutation "named arguments lose written order" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      named.each { |arg| arguments << arg.value }' '      named.reverse_each { |arg| arguments << arg.value }' -- lower_calls_check || status=1
+prove_mutation "typing mutates the written argument list" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    CallExpansion.new(target, arguments)' '    node.args = arguments
+    CallExpansion.new(target, arguments)' -- lower_calls_check || status=1
+prove_mutation "named argument match types are dropped" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      result << arg.type' '      result << arg.type if false' -- lower_calls_check || status=1
+prove_mutation "magic arguments precede named arguments" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      arguments << materialized_magic(node, value.as(MagicConstant))' \
+  '      arguments.unshift(materialized_magic(node, value.as(MagicConstant)))' -- lower_calls_check || status=1
+prove_mutation "lowering ignores recorded argument order" "$REPO/src/compiler/lower/call.iyi" \
+  '  low.analysed.call_arguments[node]? || node.args' '  node.args' -- lower_calls_check || status=1
+prove_mutation "recursion keys omit the written overload signature" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    key = key + "|signature(" + restrictions.join(",") + ")"' '    key = key + ""' -- lower_calls_check || status=1
+prove_mutation "virtual field reads lose their base scope" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)' \
+  '    target_type = target_type.as(VirtualType).base_type if false' -- lower_calls_check || status=1
+prove_mutation "virtual field writes lose their base scope" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)' \
+  '      target_type = target_type.as(VirtualType).base_type if false' -- lower_calls_check || status=1
+prove_mutation "virtual class primitive loses its metaclass" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        if sc.is_a?(VirtualType)' '        if false' -- lower_calls_check || status=1
+prove_mutation "virtual methods lose priority over global functions" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    if rec_type.is_a?(VirtualType)
+      collect_candidate_defs(rec_type.as(VirtualType).base_type, name, result, visited)' \
+  '    if false
+      collect_candidate_defs(rec_type.as(VirtualType).base_type, name, result, visited)' -- lower_calls_check || status=1
+prove_mutation "subtype groups use the base match" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      groups[i].each { |match| result << match }' \
+  '      base_matches.matches.each { |match| result << match }' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
@@ -724,13 +929,43 @@ prove_mutation "a recursive call targets a fresh clone" "$REPO/src/compiler/sema
   "remember_def_instance(cache_key, target_def, provisional)" \
   "nil" -- recursion_owner_check || status=1
 
+generic_frame_owner_check() {
+  if ! "$IYI" build -o "$WORK/frame_owner" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/frame_owner.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/frame_owner"; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/frame_owner" generic-frame "$REPO/bench/fixtures/lowcall_generic_self_new.iyi" > "$WORK/frame_owner.out" 2>&1
+}
+if ! generic_frame_owner_check; then
+  echo "  baseline: generic owner lost its metaclass context"
+  status=1
+else
+  prove_mutation "a generic class method drops its metaclass context" "$REPO/src/compiler/lower/fun.iyi" \
+    '      return owner.as(GenericClassInstanceType).metaclass' \
+    '      return owner' -- generic_frame_owner_check || status=1
+fi
+
 # A generic class method compiled without a runtime self (the typed probe drops
 # it) must still lower a receiverless new. Hosted fun.cr:289 keeps the metaclass
 # as context; call.cr:95 passes that type id as self.
 generic_frame_check() {
+  if ! "$IYI" build -o "$WORK/frame_lower" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/frame_lower.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/frame_lower"; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/frame_lower" generic-frame-lower "$REPO/bench/fixtures/lowcall_generic_self_new.iyi" > "$WORK/frame_lower.out" 2>&1 || return 1
   if ! "$IYI" build -o "$WORK/frame_native" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/frame_native.build.log" 2>&1; then
     echo "INVALID: generic frame probe did not build" >&2
     awk '!/^ld: warning/ && NR<=20' "$WORK/frame_native.build.log" >&2
+    touch "$WORK/general-mutation.invalid"
     return 1
   fi
   IYI_PATH="$REPO/src" "$WORK/frame_native" "$REPO/bench/fixtures/lowcall_generic_self_new.iyi" -o "$WORK/frame.probe.exe" --pipeline typed --probe-phase --keep-going > "$WORK/frame.probe" 2>&1 || true
@@ -745,13 +980,15 @@ if ! generic_frame_check; then
   exit 1
 fi
 echo "  generic class-method context lowers a receiverless new"
-prove_mutation "a generic class method drops its metaclass context" "$REPO/src/compiler/lower/fun.iyi" \
-  '      return owner.as(GenericClassInstanceType).metaclass' \
-  '      return owner' -- generic_frame_check || status=1
 prove_mutation "a receiverless call in a generic class method is treated as builtin" "$REPO/src/compiler/lower/call.iyi" \
   '      elsif class_meta = receiverless_class_metaclass(ct)' \
   '      elsif class_meta = nil' -- generic_frame_check || status=1
 
+
+if [ -e "$WORK/general-mutation.invalid" ]; then
+  echo "  FAIL: a mutation driver did not build; behavioral detection is unproven"
+  status=1
+fi
 
 echo
 if [ "$status" -eq 0 ]; then
