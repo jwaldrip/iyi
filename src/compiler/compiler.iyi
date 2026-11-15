@@ -27,6 +27,7 @@ import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/methods::{MacroMethods}
 import compiler/lower/program::{TypedProgram, declare_program, assemble_root, type_bodies, lower_program, native_objects, link_program, link_names, refusal_table, lowering_table}
+import compiler/lower/context::{Lowerer}
 
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
@@ -349,12 +350,19 @@ pub class Compiler
 
     typed_start("lower")
     name = Compiler.module_name_from_path(root_filename)
+    lower_context = [] of Lowerer
     lowered = group do |g|
-      task = g.spawn { lower_program(typed, triple, name, stub_defs, stubbed_defs) }
+      task = g.spawn { lower_program(typed, triple, name, stub_defs, stubbed_defs, lower_context) }
       task.value
     end
     if lowered.is_a?(Panicked)
-      return typed_refuse("lower", reached, lowered.message)
+      message = lowered.message
+      unless lower_context.empty?
+        if ctx = lower_context[0].context
+          message = message + "\n  in #{ctx.fun.name}"
+        end
+      end
+      return typed_refuse("lower", reached, message)
     end
     mod = lowered
     reached = typed_pass("lower")

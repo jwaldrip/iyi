@@ -129,12 +129,12 @@ private def iyi_object_layout?(prog : SemanticProgram) : Bool
 end
 
 # The lowering phase: the program's IR module for the target, with its entry and the rest of the program.
-pub def lower_program(typed : TypedProgram, triple : String, name : String, stub_defs : Hash(String, String)? = nil, stubbed_defs : Hash(String, String)? = nil) : Module
+pub def lower_program(typed : TypedProgram, triple : String, name : String, stub_defs : Hash(String, String)? = nil, stubbed_defs : Hash(String, String)? = nil, context_out : Array(Lowerer)? = nil) : Module
   made = Module.for_target(name, Target.new(triple))
   raise made.as(LayoutError).to_s if made.is_a?(LayoutError)
   m = made.as(Module)
   typer = LowerTyper.new(m.types, m.layout, iyi_object_layout?(typed.prog))
-  codegen_program(typed.root, typed.visitor, typer, m, stub_defs, stubbed_defs)
+  codegen_program(typed.root, typed.visitor, typer, m, stub_defs, stubbed_defs, context_out)
   m
 end
 
