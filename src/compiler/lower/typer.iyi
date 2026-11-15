@@ -22,6 +22,7 @@ import compiler/types/types::{PointerInstanceType, ProcInstanceType, StaticArray
 import compiler/types/merge::{TypeMerge}
 import compiler/lower/unions::{mixed_union_body, mixed_union_value_area}
 import compiler/types/indirection::{TypeIndirection}
+import compiler/types/intersect::{TypeIntersect}
 
 # The builtin primitives. The hosted semantic model makes them PrimitiveType
 # subclasses with a byte size, and a builtin is never a user type. The port's
@@ -144,6 +145,28 @@ pub def reference_union?(type : UnionType) : Bool
     found = true
   end
   found
+end
+
+# Hosted codegen/types.cr:169-179 expands each module member separately into
+# its includers before a mixed union's value area is sized.
+pub def expand_union_types(union : UnionType) : Array(Type)
+  members = union.union_types
+  return members unless members.any? { |member| member.is_a?(NonGenericModuleType) || member.is_a?(TraitType) }
+  expanded = [] of Type
+  members.each do |member|
+    if member.is_a?(NonGenericModuleType) || member.is_a?(TraitType) || member.is_a?(GenericModuleInstanceType)
+      includers = [] of Type
+      TypeIntersect.add_including_types(member, includers)
+      if includers.empty?
+        expanded << member
+      else
+        includers.each { |includer| expanded << includer }
+      end
+    else
+      expanded << member
+    end
+  end
+  expanded
 end
 
 pub class LowerTyper
@@ -459,9 +482,8 @@ pub class LowerTyper
     end
     max_size = 0_i64
     max_alignment = pointer_size.to_i32
-    type.as(UnionType).union_types.each do |member|
+    expand_union_types(type.as(UnionType)).each do |member|
       next if member.is_a?(VoidType) || member.is_a?(NoReturnType)
-      raise "BUG: a module or trait member of a union is not ported (hosted types.cr expand_union_types, NEEDS.md row 7)" if member.is_a?(NonGenericModuleType) || member.is_a?(TraitType)
       member_type = llvm_type(member, true)
       size = size_of(member_type)
       align = align_of(member_type)

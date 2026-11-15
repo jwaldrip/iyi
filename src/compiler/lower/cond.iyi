@@ -18,10 +18,10 @@ import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer}
 import compiler/lower/helpers::{int1, load_aligned}
 import compiler/lower/pending::{refuse_port}
-import compiler/semantic/top_level::{Type, NilType, TypeDefType, NonGenericModuleType, TraitType}
+import compiler/semantic/top_level::{Type, NilType, TypeDefType}
 import compiler/types/indirection::{TypeIndirection}
-import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, PointerInstanceType, GenericModuleInstanceType}
-import compiler/types/intersect::{TypeIntersect}
+import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, PointerInstanceType}
+import compiler/lower/typer::{expand_union_types}
 import compiler/lower/cast::{pointer_of_value, mixed_type_id_of_pointer, union_value_ptr, type_id_value}
 
 # The hosted `codegen_cond(type)` for the value of `node`, which the caller already lowered.
@@ -48,7 +48,7 @@ pub def cond_bool(low : Lowerer, node : ASTNode, value : Value) : Value
   end
   if ty.is_a?(MixedUnionType)
     union = ty.as(MixedUnionType)
-    members = condition_union_members(union)
+    members = expand_union_types(union)
     has_nil = members.any? { |member| member.is_a?(NilType) }
     has_bool = members.any? { |member| member.full_name == "Bool" }
     has_pointer = members.any? { |member| member.is_a?(PointerInstanceType) }
@@ -84,23 +84,6 @@ pub def cond_bool(low : Lowerer, node : ASTNode, value : Value) : Value
     return condition
   end
   int1(low, 1_i64)
-end
-
-# Hosted expand_union_types expands a module member into its includers.
-def condition_union_members(union : MixedUnionType) : Array(Type)
-  members = union.union_types
-  return members unless members.any? { |member| member.is_a?(NonGenericModuleType) || member.is_a?(TraitType) }
-  expanded = [] of Type
-  members.each do |member|
-    if member.is_a?(NonGenericModuleType) || member.is_a?(TraitType) || member.is_a?(GenericModuleInstanceType)
-      size = expanded.size
-      TypeIntersect.add_including_types(member, expanded)
-      expanded << member if expanded.size == size
-    else
-      expanded << member
-    end
-  end
-  expanded
 end
 
 # Whether the condition's analysed type is Nil. The hosted `cond` folds a constant false
