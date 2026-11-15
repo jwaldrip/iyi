@@ -557,6 +557,20 @@ underscore_check() {
 prove_mutation "underscore assignment is refused" "$REPO/src/compiler/lower/lower.iyi" \
   '  if node.target.is_a?(Underscore)' '  if false && node.target.is_a?(Underscore)' -- underscore_check || status=1
 
+block_decl_check() {
+  if ! "$IYI" build -o "$WORK/block-decl-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-decl-mut.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/block-decl-mut" lower "$REPO/bench/fixtures/lowdecl_typedecl_block.iyi" "$WORK/lowdecl_typedecl_block.oracle.ll" > "$WORK/block-decl-mut.out" 2>/dev/null || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-decl-mut.out"
+}
+prove_mutation "a block declaration allocates its initializer type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        set_type(v, decl_type)
+        merge_var_union(v.name, decl_type) unless stored.is_a?(NoReturnType)' \
+  '        set_type(v, stored)
+        merge_var_union(v.name, stored) unless stored.is_a?(NoReturnType)' -- block_decl_check || status=1
+
 uncovered_mutation_check() {
   if ! "$IYI" build -o "$WORK/uncovered-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/uncovered-mut.build.log" 2>&1; then
     touch "$WORK/uncovered.invalid"
