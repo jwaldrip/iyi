@@ -10,12 +10,14 @@ module bench/selfhost_lower_calls_exercise
 #   port emit <fixture.iyi> <oracle.ll>     the port's module as text, for the native tool
 
 import bench/lib/lower_gate::{analyse, ir_module, run_emit, run_lower, run_oracle}
-import compiler/lower/fun::{darwin_triple?, def_context_type}
+import compiler/lower/fun::{darwin_triple?, def_context_type, target_def_fun}
 import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType}
 import compiler/ir/types::{IrType}
 import compiler/lower/context::{Lowerer}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{LowerTyper}
+import compiler/lower/lower::{CoreBody}
+import compiler/lower/type_id::{LowerTypeIds}
 
 def run : Nil
   args = Program.args
@@ -64,6 +66,32 @@ def run : Nil
     end
     raise "fixture has no generic metaclass self" unless found
     puts "GENERIC FRAME OK"
+  elsif mode == "generic-frame-lower"
+    fixture = args[1]
+    analysis = analyse(File.read(fixture), fixture, true)
+    m = ir_module("aarch64-apple-darwin27.0.0")
+    typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
+    low = Lowerer.new(m, typer, analysis.visitor)
+    low.body_visitor = CoreBody.new
+    ids = LowerTypeIds.new
+    ids.assign_all(analysis.visitor.program.object_type)
+    low.type_ids = ids
+    low.string_type_id = ids.type_id(analysis.visitor.program.string_type)
+    found = false
+    analysis.visitor.typed_instances.each do |instance|
+      self_type = instance.self_type
+      if instance.definition.name == "make" && self_type.is_a?(GenericClassInstanceMetaclassType)
+        body_type = analysis.visitor.type_of?(instance.definition.body)
+        raise "generic make has no body type" if body_type.nil?
+        result_type = analysis.visitor.type_of?(instance.definition) || body_type
+        owner = self_type.as(GenericClassInstanceMetaclassType).instance_type
+        target_def_fun(low, instance.definition, nil, instance.arg_types, result_type, owner)
+        found = true
+        break
+      end
+    end
+    raise "fixture has no generic make instance" unless found
+    puts "GENERIC FRAME LOWER OK"
   elsif mode == "oracle"
     run_oracle(args[1], "::")
   elsif mode == "lower"

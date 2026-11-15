@@ -937,6 +937,15 @@ fi
 # it) must still lower a receiverless new. Hosted fun.cr:289 keeps the metaclass
 # as context; call.cr:95 passes that type id as self.
 generic_frame_check() {
+  if ! "$IYI" build -o "$WORK/frame_lower" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/frame_lower.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/frame_lower"; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/frame_lower" generic-frame-lower "$REPO/bench/fixtures/lowcall_generic_self_new.iyi" > "$WORK/frame_lower.out" 2>&1 || return 1
   if ! "$IYI" build -o "$WORK/frame_native" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/frame_native.build.log" 2>&1; then
     echo "INVALID: generic frame probe did not build" >&2
     awk '!/^ld: warning/ && NR<=20' "$WORK/frame_native.build.log" >&2
