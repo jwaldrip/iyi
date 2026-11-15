@@ -159,7 +159,7 @@ measured="$work/measured.floor"
 : >"$measured"
 total=0
 equal=0
-for src in samples/iyi/*.iyi "$FIX"/*.iyi; do
+for src in samples/iyi/*.iyi "$FIX"/*.iyi src/compiler/tools/parse.iyi; do
   [ -f "$src" ] || continue
   n=$(basename "$src" .iyi)
   dir="$work/p/$(dirname "$src" | tr '/' '_')_$n"
@@ -177,6 +177,29 @@ for src in samples/iyi/*.iyi "$FIX"/*.iyi; do
 done
 cat "$table"
 echo "   $equal of $total programs run equal to the hosted executable"
+
+echo "== 2c. parser and AST exercise over the source corpus"
+parser="$work/p/src_compiler_tools_parse"
+exercise="$work/p/parser_exercise"
+if ! awk '$1 == "src/compiler/tools/parse.iyi" && $2 == "run-equal" { found = 1 } END { exit !found }' "$measured"; then
+  fail "parser bridge executable did not run equal"
+elif ! hosted_of bench/selfhost_parser_exercise.iyi "$exercise"; then
+  fail "hosted parser exercise build failed"
+else
+  result=$(phase_of "$tools" "$exercise")
+  if [ "${result%%$'\t'*}" != "run-equal" ]; then
+    fail "parser exercise did not run equal: $result"
+  else
+    for pair in "$parser" "$exercise"; do
+      if ! bash bench/lib/parse_corpus_diff.sh "$pair/hosted" "$pair/native" >"$pair/corpus.log" 2>&1; then
+        grep -E '^(differ |summary:)' "$pair/corpus.log"
+        fail "corpus differs for $pair"
+      else
+        tail -n 1 "$pair/corpus.log"
+      fi
+    done
+  fi
+fi
 
 echo "== 2a. the floor"
 below=0
