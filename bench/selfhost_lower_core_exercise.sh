@@ -487,9 +487,9 @@ prove_mutation "a by-value yield tail joins without its address" "$REPO/src/comp
   "      low.last = join_pointer(low, value.as(Value), body_type.as(Type), bt.as(Type))" \
   "      low.last = low.last" -- lower_core_check || status=1
 prove_mutation "a long string constant is named in full, not truncated" "$REPO/src/compiler/lower/helpers.iyi" \
-  'name_text = first_chars(str, 19) + "..."' 'name_text = str' -- long_name_check || status=1
+  'name_text = first_chars(name_text, 19) + "..."' 'name_text = name_text' -- long_name_check || status=1
 prove_mutation "a non-ASCII long string constant is cut in bytes, not characters" "$REPO/src/compiler/lower/helpers.iyi" \
-  'name_text = first_chars(str, 19) + "..."' 'name_text = str[0, 19] + "..."' -- nonascii_name_check || status=1
+  'name_text = first_chars(name_text, 19) + "..."' 'name_text = name_text[0, 19] + "..."' -- nonascii_name_check || status=1
 prove_mutation "a renamed global takes the number after the next" "$REPO/src/compiler/lower/helpers.iyi" \
   'candidate = name + "." + low.last_unique.to_s' 'candidate = name + "." + (low.last_unique + 1_i64).to_s' -- collide_name_check || status=1
 prove_mutation "a taken global name is not renamed" "$REPO/src/compiler/lower/helpers.iyi" \
