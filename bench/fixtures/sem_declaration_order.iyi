@@ -44,6 +44,14 @@ def order_arity(x : Int32, y : Int32) : Int32
   x
 end
 
+def order_meta(x : Class) : String
+  "class"
+end
+
+def order_meta(x : OrderLeaf.class) : String
+  "leaf class"
+end
+
 def order_forward(x : OrderFuture) : String
   "future"
 end

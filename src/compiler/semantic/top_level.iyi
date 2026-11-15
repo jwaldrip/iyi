@@ -929,8 +929,15 @@ class DeclarationOrder
       end
       return false
     end
-    if first.is_a?(Metaclass) && second.is_a?(Metaclass)
-      return restriction_of?(first.as(Metaclass).name, second.as(Metaclass).name, owner, first_vars, second_vars)
+    if first.is_a?(Metaclass)
+      if second.is_a?(Metaclass)
+        return restriction_of?(first.as(Metaclass).name, second.as(Metaclass).name, owner, first_vars, second_vars)
+      end
+      if second.is_a?(Path)
+        other_type = path_type(second.as(Path), owner)
+        return true if other_type && owner.program.types["Class"].subtype_of?(other_type.as(Type))
+      end
+      return false
     end
     first == second
   end
