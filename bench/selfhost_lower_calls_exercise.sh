@@ -29,6 +29,28 @@ IYI="$REPO/bin/iyi"
 . "$REPO/bench/lib/lower_oracle.sh"
 WORK="$(mktemp -d)"
 
+normalize_switches() {
+  awk '
+    in_switch {
+      if ($0 ~ /^[[:space:]]*][[:space:]]*$/) { print line " ]"; in_switch=0; next }
+      if ($0 !~ /^[[:space:]]*i[0-9]+ -?[0-9]+, label %[^[:space:]]+[[:space:]]*$/) { bad=1; exit 1 }
+      sub(/^[[:space:]]*/, "")
+      line=line (count++ ? ", " : " ") $0
+      next
+    }
+    /switch .*\[$/ { line=$0; in_switch=1; count=0; next }
+    { print }
+    END { if (in_switch || bad) exit 1 }
+  '
+}
+switch_result="$(printf '  switch i32 %%x, label %%else [\n    i32 1, label %%a\n    i32 2, label %%b\n  ]\n' | normalize_switches)"
+if [ "$switch_result" != '  switch i32 %x, label %else [ i32 1, label %a, i32 2, label %b ]' ] ||
+   printf 'switch i32 %%x, label %%else [\n i32 1, label %%a\n' | normalize_switches >/dev/null ||
+   printf 'switch i32 %%x, label %%else [\n nonsense\n]\n' | normalize_switches >/dev/null; then
+  echo "switch normalization regression"
+  exit 1
+fi
+
 # lowcall_capture_none waits on a real Proc#call: S1wDefaults3 expands the call to an
 # arity-specific target, and S2d13Primitives supplies the Primitive body. The gate fails if
 # that fixture stops refusing by this name, and it returns to the passing list when Proc lands.
@@ -73,7 +95,11 @@ for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi; do
     diverged=$((diverged + 1))
     continue
   fi
-  awk "$CALL_TYPES" "$WORK/$name.ll" > "$WORK/$name.oracle.ll"
+  if ! awk "$CALL_TYPES" "$WORK/$name.ll" | normalize_switches > "$WORK/$name.oracle.ll"; then
+    echo "  $name: malformed switch in hosted module"
+    diverged=$((diverged + 1))
+    continue
+  fi
 
   if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
     reason="$(awk 'NR==1' "$WORK/$name.port.err")"
@@ -160,27 +186,6 @@ if ! super_refusal_checks "$WORK/port"; then
   status=1
 fi
 
-break_upcast_reason="a break, next or return of a block call with a value of another type than the call (hosted upcast, not ported)"
-break_upcast_refusal() {
-  if "$1" emit "$REPO/bench/fixtures/lowcallwait_break_upcast.iyi" "$WORK/lowcall_super.oracle.ll" > "$WORK/break_upcast.out" 2> "$WORK/break_upcast.err"; then
-    return 1
-  fi
-  [ ! -s "$WORK/break_upcast.out" ] &&
-    [ "$(awk 'NR==1' "$WORK/break_upcast.err")" = "iyi: panic: $break_upcast_reason" ]
-}
-break_upcast_ready=0
-if "$IYI" build --prelude empty -o "$WORK/break_upcast" "$REPO/bench/fixtures/lowcallwait_break_upcast.iyi" > "$WORK/break_upcast.build.log" 2>&1; then
-  "$WORK/break_upcast" > "$WORK/break_upcast.hosted.out" 2>&1
-  break_upcast_status=$?
-  if [ "$break_upcast_status" -eq 1 ] && break_upcast_refusal "$WORK/port"; then
-    break_upcast_ready=1
-    echo "  block jump upcast: hosted exits 1, port retains its named refusal"
-  fi
-fi
-if [ "$break_upcast_ready" -ne 1 ]; then
-  echo "  FAIL: block jump upcast did not reach its expected refusal"
-  status=1
-fi
 
 # An uninstantiated generic receiver is a typing gap, not an owner that lowering
 # may guess. The hosted compiler still accepts the source and emits its module.
@@ -493,18 +498,6 @@ if [ -e "$WORK/block-nil.invalid" ]; then
   status=1
 fi
 
-break_upcast_check() {
-  if ! "$IYI" build -o "$WORK/break-upcast-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/break-upcast-mut.build.log" 2>&1; then
-    cat "$WORK/break-upcast-mut.build.log" > "$WORK/break-upcast.invalid"
-    return 1
-  fi
-  break_upcast_refusal "$WORK/break-upcast-mut"
-}
-if [ "$break_upcast_ready" -eq 1 ]; then
-  prove_mutation "a break of another type joins a block call" "$REPO/src/compiler/lower/block.iyi" \
-    '  if !join.nil? && low.typer.llvm_type(join.as(Type)).to_s != low.typer.llvm_type(got).to_s' \
-    '  if false' -- break_upcast_check || status=1
-fi
 
 lexical_owner_check() {
   if ! "$IYI" build -o "$WORK/lexical-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/lexical-mut.build.log" 2>&1; then
@@ -538,7 +531,7 @@ else
   echo "  FAIL: inherited constant binding differs from the hosted module"
   status=1
 fi
-for invalid in "$WORK/break-upcast.invalid" "$WORK/lexical.invalid" "$WORK/shadow.invalid"; do
+for invalid in "$WORK/lexical.invalid" "$WORK/shadow.invalid"; do
   if [ -e "$invalid" ]; then
     echo "  FAIL: a block-jump or lexical-binding mutation did not compile"
     cat "$invalid"
@@ -619,6 +612,8 @@ prove_mutation "a block branch's value is merged as the last branch" "$REPO/src/
   "  phi.add_branch(low, value, false)" "  phi.add_branch(low, value, true)" -- lower_calls_check || status=1
 prove_mutation "a block branch's value is dropped" "$REPO/src/compiler/lower/block.iyi" \
   "      value = v.as(Value)" "      value = nil" -- lower_calls_check || status=1
+prove_mutation "a block break skips its by-value join conversion" "$REPO/src/compiler/lower/block.iyi" \
+  '        value = join_pointer(low, branch, got, join_t)' '        value = branch' -- lower_calls_check || status=1
 prove_mutation "a break from a block drops its value" "$REPO/src/compiler/lower/lower.iyi" \
   "    branch_to_phi(low, block_phi.as(BranchPhi), node.exp, jump_target(node, low.current_context.break_target))" "    branch_to_phi(low, block_phi.as(BranchPhi), nil, jump_target(node, low.current_context.break_target))" -- lower_calls_check || status=1
 prove_mutation "a return from an inlined def drops its value" "$REPO/src/compiler/lower/lower.iyi" \
