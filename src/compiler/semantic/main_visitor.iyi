@@ -1237,6 +1237,7 @@ pub class MainVisitor < TypeNodeHost
     end
     if reason = @untyped_locals[node.name]?
       if reason == narrowed_out_reason(node.name)
+        @node_types.delete(node)
         @untyped_reasons[node] = reason
         return false
       end
@@ -2564,6 +2565,7 @@ pub class MainVisitor < TypeNodeHost
       @handler_direct_exit = false
       saved_super_barrier = @super_barrier
       @super_barrier = "a block"
+      entry_untyped_locals = @untyped_locals.dup
       blk.body.accept(self)
       # A yield in a loop can observe writes made by earlier invocations of
       # the block. Revisit the block with those captured values merged into
@@ -2581,6 +2583,8 @@ pub class MainVisitor < TypeNodeHost
             end
           end
           @vars = blk_vars
+          @untyped_locals = entry_untyped_locals.dup
+          blk_vars.each_key { |name| @untyped_locals.delete(name) }
           blk.body.accept(self)
         end
       end
@@ -4855,6 +4859,29 @@ pub class MainVisitor < TypeNodeHost
         arg.value.accept(self)
       end
     end
+    # A narrowed-out local has no value on this path. Hosted leaves dependent
+    # calls untyped rather than treating that local as a method or a bad argument.
+    node.args.each do |arg|
+      if arg.is_a?(Var) && type_of?(arg).nil? && @untyped_reasons[arg]? == narrowed_out_reason(arg.as(Var).name)
+        @node_types.delete(node)
+        @untyped_reasons[node] = narrowed_out_reason(arg.as(Var).name)
+        @needs_type_filters = saved_call_ntf
+        @type_filters = nil
+        return false
+      end
+    end
+    if named = node.named_args
+      named.each do |arg|
+        value = arg.value
+        if value.is_a?(Var) && type_of?(value).nil? && @untyped_reasons[value]? == narrowed_out_reason(value.as(Var).name)
+          @node_types.delete(node)
+          @untyped_reasons[node] = narrowed_out_reason(value.as(Var).name)
+          @needs_type_filters = saved_call_ntf
+          @type_filters = nil
+          return false
+        end
+      end
+    end
     # Hosted call.cr:125-126,1055-1070 turns &proc into a block before
     # overload lookup, retaining the proc as the block's captured literal.
     if block_arg = node.block_arg
@@ -4902,7 +4929,6 @@ pub class MainVisitor < TypeNodeHost
       end
     end
 
-
     if node.obj.nil? && node.name != "super" && !node.expansion
       if global_fun = global_fun_named(node.name)
         own = [] of Def
@@ -4940,7 +4966,6 @@ pub class MainVisitor < TypeNodeHost
         end
       end
     end
-
 
     infer_class_vars = node.named_args.nil? && node.block_arg.nil?
     arms : Array(Match)? = nil
