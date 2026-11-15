@@ -43,6 +43,7 @@ import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/fun::{visit_node}
 import compiler/lower/helpers::{abi_name, int1, llvm_nil, raise_overflow_name}
+import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
@@ -1275,6 +1276,66 @@ pub def raise_overflow(low : Lowerer) : Nil
   end
   raise_fn = fn.as(Function)
   low.builder.call(raise_fn.fn_type, raise_fn, [] of Value, "")
+  low.builder.unreachable
+end
+
+# Hosted codegen.cr:2095-2127 builds this table on the first checked cast. The
+# runtime id indexes the same strings used for a value's dynamic class name.
+def cast_class_name(low : Lowerer, type_id : Value) : Value
+  name = abi_name(low, "type_id_to_class_name_map")
+  ptr = low.module.types.ptr(0)
+  table = low.module.get_global?(name)
+  if table.nil?
+    count = low.type_ids.last_id + 1
+    array_type = low.module.types.array_of(ptr, count.to_i64)
+    created = low.module.add_global(name, array_type)
+    created.linkage = Linkage::Internal
+    created.global_constant = true
+    values = [] of Value
+    i = 0
+    while i < count
+      if class_name = low.type_ids.name_of_id(i)
+        values << build_string_constant(low, class_name)
+      else
+        values << low.builder.const_null(ptr)
+      end
+      i = i + 1
+    end
+    created.initializer = low.builder.const_array(ptr, values)
+    table = created
+  end
+  index = low.builder.const_int(low.module.types.int32, 0_i64)
+  address = low.builder.gep(table.as(Global).value_type, table.as(Global), [index, type_id] of Value)
+  load_aligned(low, ptr, address)
+end
+
+# Hosted codegen.cr:2066-2085: the prelude supplies the ABI function; a
+# prelude-free program without it still needs the hosted AST fallback.
+pub def raise_cast_failed(low : Lowerer, type_id : Value, target : Type, node : ASTNode) : Nil
+  name = abi_name(low, "raise_cast_failed")
+  fn = low.module.get_function?(name)
+  if fn.nil?
+    found = false
+    low.analysed.program.global_funs.each do |record|
+      found = true if record.real_name == name
+    end
+    unless found
+      pending_visit_node("a checked cast with no #{name} in the program (hosted type_cast_exception_call)")
+      return
+    end
+    ptr = low.module.types.ptr(0)
+    fn_type = low.module.types.func([ptr, ptr, ptr] of IrType, low.module.types.void)
+    fn = low.module.add_function(name, fn_type, CallConv::C)
+  end
+  from_name = cast_class_name(low, type_id)
+  to_name = build_string_constant(low, target.full_name)
+  location : Value = low.builder.const_null(low.module.types.ptr(0))
+  if loc = node.location
+    location = build_string_constant(low, loc.to_s)
+  end
+  raise_fn = fn.as(Function)
+  # iyi has no rescue state; like raise_overflow, emit call after oracle unwind normalization.
+  low.builder.call(raise_fn.fn_type, raise_fn, [from_name, to_name, location] of Value, "")
   low.builder.unreachable
 end
 
