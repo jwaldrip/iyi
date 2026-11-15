@@ -83,6 +83,8 @@ pub class LowerContext
   property closure_types : Array(Type)
   property closure_facts : ClosureFacts?
   property closure_parent : LowerContext?
+  # The self value stored in this context's own heap block, if any.
+  property closure_self : Type?
   # Original source location while lowering a macro expansion.
   property macro_origin : Location?
   # The block frame and the phis of the context (hosted Context#return_phi, break_phi, next_phi, block, block_context).
@@ -107,6 +109,7 @@ pub class LowerContext
     @closure_types = [] of Type
     @closure_facts = nil
     @closure_parent = nil
+    @closure_self = nil
     @macro_origin = nil
     @return_phi = nil
     @break_phi = nil
@@ -125,6 +128,7 @@ pub class LowerContext
     @closure_types = other.closure_types
     @closure_facts = other.closure_facts
     @closure_parent = other.closure_parent
+    @closure_self = other.closure_self
   end
 end
 
