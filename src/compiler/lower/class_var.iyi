@@ -34,7 +34,7 @@ import compiler/ir/values::{Value}
 import compiler/ir/inst::{Attribute, Inst, Op, CallConv}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel}
 import compiler/ir/types::{IrType}
-import compiler/lower/context::{BodyVisit, Lowerer}
+import compiler/lower/context::{BodyVisit, LowerContext, Lowerer, LowerVar}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
 import compiler/lower/globals::{ClassVarState}
@@ -197,15 +197,15 @@ pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
   if nilable_aggregate_initializer?(cvar)
     return low.typer.llvm_type(cvar.type)
   end
-  if cvar.type.is_a?(ClassType) && cvar.type.struct?
+  if passed_by_value?(cvar.type)
     if low.typer.passed_indirectly?(cvar.type)
-      refuse_port("lower: class variable #{cvar.name} has an indirectly passed struct initializer: hosted copy_value is not ported yet")
+      refuse_port("lower: class variable #{cvar.name} has an indirectly passed aggregate initializer: hosted copy_value is not ported yet")
     end
     return low.typer.llvm_type(cvar.type)
   end
   ir = low.typer.llvm_type(cvar.type)
   if !(ir.int? || ir.float? || ir.pointer?)
-    refuse_port("lower: class variable #{cvar.name} is not an integer, a float or a pointer: aggregate initialisers are not ported yet (hosted class_var.cr: initialize_class_var)")
+    refuse_port("lower: class variable #{cvar.name} has an unsupported non-scalar type (hosted class_var.cr: initialize_class_var)")
   end
   ir
 end
@@ -361,11 +361,17 @@ pub def make_cvar_init_function(low : Lowerer, cvar : MetaTypeVar, init_name : S
   end
   ir = cvar_ir_type(low, cvar)
   node = cvar.initializer.as(ASTNode)
+  owner = cvar_owner(low, cvar.name)
   saved = low.enter_main
   fun_type = low.module.types.func([] of IrType, low.module.types.void)
   fn = low.begin_main_function(init_name, fun_type, true)
   fn.call_convention = CallConv::Iyi
   fn.linkage = Linkage::Internal
+  # Hosted class_var.cr:156-163 evaluates the initializer in its declaring
+  # class, with fresh locals, even when another function triggered a lazy read.
+  context = LowerContext.new(fn, fun_type, owner, Hash(String, LowerVar).new)
+  context.top_level = true
+  low.context = context
   low.needs_value = true
   low.body_visitor.as(BodyVisit).visit_body(low, node)
   v = low.last
@@ -373,7 +379,7 @@ pub def make_cvar_init_function(low : Lowerer, cvar : MetaTypeVar, init_name : S
     refuse_port("lower: class variable #{cvar.name} has no value to store (hosted class_var.cr: create_initialize_class_var_function)")
   end
   val = v.as(Value)
-  if val.is_a?(Inst) && (val.as(Inst).op == Op::ConstInt || val.as(Inst).op == Op::ConstFloat)
+  if (ir.int? || ir.float?) && val.is_a?(Inst) && (val.as(Inst).op == Op::ConstInt || val.as(Inst).op == Op::ConstFloat)
     global.initializer = val
   else
     if passed_by_value?(cvar.type)

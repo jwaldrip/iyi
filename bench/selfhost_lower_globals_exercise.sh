@@ -110,6 +110,7 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
   name="$(basename "$fixture" .iyi)"
   if ! hosted_module "$name" "$fixture" "$WORK/$name" "$WORK/$name.oracle.log" || [ ! -s "$WORK/$name.ll" ]; then
     echo "  $name: the hosted compiler did not emit its module (see $WORK/$name.oracle.log)"
+    awk 'NR<=15' "$WORK/$name.oracle.log"
     diverged=$((diverged + 1))
     continue
   fi
@@ -182,9 +183,20 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
       e2e_fail=$((e2e_fail + 1))
       continue
     fi
+    if ! codesign -v --strict "$WORK/$name.native" > "$WORK/$name.signature.log" 2>&1; then
+      echo "  $name: native signature invalid"
+      e2e_fail=$((e2e_fail + 1))
+      continue
+    fi
     timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
     timeout 30 "$WORK/$name" > "$WORK/$name.hosted.out" 2>&1; hs=$?
-    if [ "$ns" = "$hs" ] && cmp -s "$WORK/$name.native.out" "$WORK/$name.hosted.out"; then
+    expected="$hs"
+    case "$name" in
+      lowglob_cvar_generic_struct) expected=37 ;;
+      lowglob_cvar_lazy_aggregate) expected=1 ;;
+      lowglob_cvar_tuple) expected=28 ;;
+    esac
+    if [ "$ns" = "$hs" ] && [ "$hs" = "$expected" ] && cmp -s "$WORK/$name.native.out" "$WORK/$name.hosted.out"; then
       echo "  $name: native executable runs to the hosted result (status $hs, stdout identical)"
       e2e_pass=$((e2e_pass + 1))
     else
@@ -198,6 +210,33 @@ else
 fi
 echo "  end to end: $e2e_pass fixture(s) run to the hosted result, $e2e_fail failed"
 if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
+  status=1
+fi
+
+# This uses the real prelude's Atomic rather than the empty-prelude stand-in.
+# Compile from source through the typed native pipeline, then run both binaries.
+echo "== 3b. Real prelude Atomic class variable"
+atomic_fixture="$REPO/bench/fixtures/aggregate_cvar_atomic.iyi"
+if codesign -v --strict "$WORK/compile_native" > "$WORK/atomic-signature.log" 2>&1 &&
+   "$IYI" build -o "$WORK/atomic-hosted" "$atomic_fixture" > "$WORK/atomic-hosted.log" 2>&1 &&
+   "$WORK/compile_native" "$atomic_fixture" -o "$WORK/atomic-native" --pipeline typed --prelude > "$WORK/atomic-native.log" 2>&1 &&
+   codesign -v --strict "$WORK/atomic-native" >> "$WORK/atomic-signature.log" 2>&1; then
+  timeout 30 "$WORK/atomic-hosted" > "$WORK/atomic-hosted.out" 2>&1; hs=$?
+  timeout 30 "$WORK/atomic-native" > "$WORK/atomic-native.out" 2>&1; ns=$?
+  if [ "$hs" -eq 0 ] && [ "$ns" -eq 0 ] &&
+     grep -Fxq "atomic class variable: zero then nine" "$WORK/atomic-hosted.out" &&
+     cmp -s "$WORK/atomic-hosted.out" "$WORK/atomic-native.out"; then
+    echo "  hosted and signed native: $(cat "$WORK/atomic-native.out") (status 0)"
+  else
+    echo "  FAIL: atomic class variable, hosted status $hs, native status $ns"
+    cat "$WORK/atomic-hosted.out" "$WORK/atomic-native.out"
+    status=1
+  fi
+else
+  echo "  FAIL: real prelude Atomic source proof did not build or sign"
+  for log in "$WORK/atomic-signature.log" "$WORK/atomic-hosted.log" "$WORK/atomic-native.log"; do
+    [ ! -f "$log" ] || awk 'NR<=15' "$log"
+  done
   status=1
 fi
 
@@ -223,10 +262,6 @@ lowglob_check() {
 echo "  the mutation check passes on the unmutated code:"
 if lowglob_check; then
   echo "    unmutated: every fixture identical"
-else
-  echo "    FAIL: the unmutated code does not pass the check"
-  status=1
-fi
 prove_mutation "a program global is incorrectly stripped as a build constant" "$REPO/bench/lib/lower_gate.iyi" \
   "        if destination.starts_with?(prefix) && identity_names.includes?(destination[prefix.size..-1])" "        if destination.includes?(marker)" -- lowglob_check || status=1
 prove_mutation "indirect calls are left without a function type" "$REPO/bench/lib/lower_oracle.sh" \
@@ -237,8 +272,21 @@ prove_mutation "a nilable Proc initializer is not discarded" "$REPO/src/compiler
   "  node.is_a?(NilLiteral) && cvar.type.is_a?(NilableProcType)" "  false" -- lowglob_check || status=1
 prove_mutation "a pointer class variable is refused" "$REPO/src/compiler/lower/class_var.iyi" \
   "  if !(ir.int? || ir.float? || ir.pointer?)" "  if !(ir.int? || ir.float?)" -- lowglob_check || status=1
-prove_mutation "a nil aggregate initializer is refused" "$REPO/src/compiler/lower/class_var.iyi" \
-  "  if nilable_aggregate_initializer?(cvar)" "  if false" -- lowglob_check || status=1
+prove_mutation "a nil aggregate initializer is not discarded" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  if nilable_proc_initializer?(cvar, node) || nilable_aggregate_initializer?(cvar)" \
+  "  if nilable_proc_initializer?(cvar, node)" -- lowglob_check || status=1
+prove_mutation "a generic aggregate class variable is refused" "$REPO/src/compiler/lower/class_var.iyi" \
+  '  if passed_by_value?(cvar.type)'$'\n''    if low.typer.passed_indirectly?(cvar.type)' \
+  '  if cvar.type.is_a?(ClassType) && cvar.type.struct?'$'\n''    if low.typer.passed_indirectly?(cvar.type)' -- lowglob_check || status=1
+prove_mutation "an aggregate class variable starts undefined instead of zero" "$REPO/src/compiler/lower/class_var.iyi" \
+  '      global.initializer = low.builder.const_zero(ir)'$'\n''      value_type = low.analysed.type_of?(node).as(Type)' \
+  '      global.initializer = low.builder.const_undef(ir)'$'\n''      value_type = low.analysed.type_of?(node).as(Type)' -- lowglob_check || status=1
+prove_mutation "an aggregate initializer stores the old global instead of its result" "$REPO/src/compiler/lower/class_var.iyi" \
+  '      global.initializer = low.builder.const_zero(ir)'$'\n''      value_type = low.analysed.type_of?(node).as(Type)'$'\n''      assign(low, global, cvar.type, value_type, val)' \
+  '      global.initializer = low.builder.const_zero(ir)'$'\n''      value_type = low.analysed.type_of?(node).as(Type)'$'\n''      assign(low, global, cvar.type, value_type, global)' -- lowglob_check || status=1
+prove_mutation "a class variable initializer loses its declaring scope" "$REPO/src/compiler/lower/class_var.iyi" \
+  '  context = LowerContext.new(fn, fun_type, owner, Hash(String, LowerVar).new)' \
+  '  context = LowerContext.new(fn, fun_type, nil, Hash(String, LowerVar).new)' -- lowglob_check || status=1
 prove_mutation "an aggregate class variable is loaded instead of read by address" "$REPO/src/compiler/lower/class_var.iyi" \
   "  low.last = to_lhs(low, class_var_pointer(low, cvar), cvar.type)" \
   "  low.last = load_aligned(low, cvar_ir_type(low, cvar), class_var_pointer(low, cvar))" -- lowglob_check || status=1
@@ -321,11 +369,15 @@ prove_mutation "a float class-variable literal is not stored" "$REPO/src/compile
   "    return low.builder.const_float(low.typer.llvm_type(typ), text.to_f)" \
   "    return nil" -- lowglob_check || status=1
 prove_mutation "a class variable initializer stores null instead of its value" "$REPO/src/compiler/lower/class_var.iyi" \
-  "      global.initializer = low.builder.const_null(ir)"$'\n'"      store_aligned(low, val, global)" \
-  "      global.initializer = low.builder.const_null(ir)"$'\n'"      store_aligned(low, low.builder.const_null(ir), global)" -- lowglob_check || status=1
+  '      global.initializer = low.builder.const_null(ir)'$'\n''      value_type = low.analysed.type_of?(node).as(Type)'$'\n''      assign(low, global, cvar.type, value_type, val)' \
+  '      global.initializer = low.builder.const_null(ir)'$'\n''      value_type = low.analysed.type_of?(node).as(Type)'$'\n''      assign(low, global, cvar.type, value_type, low.builder.const_null(ir))' -- lowglob_check || status=1
 prove_mutation "the initialiser function is not passed to once" "$REPO/src/compiler/lower/const.iyi" \
   '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), fn.as(Value)] of Value, "")' \
   '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), flag.as(Value)] of Value, "")' -- lowglob_check || status=1
+else
+  echo "    FAIL: the unmutated code does not pass the check; mutations were not run"
+  status=1
+fi
 
 
 echo
