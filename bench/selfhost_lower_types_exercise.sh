@@ -310,6 +310,12 @@ prove_mutation "mixed union aligned to 4 bytes, not the largest member" "$TYPER_
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a module or trait union member is laid out as itself" "$TYPER_FILE" \
+  "        includers.each { |includer| expanded << includer }" \
+  "        expanded << member" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 
 prove_mutation "indirect threshold above a 136-byte value" "$TYPER_FILE" \
   "    size_of(llvm_type(type)) > 128" \
