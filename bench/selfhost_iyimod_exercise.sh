@@ -357,7 +357,7 @@ prove_mutation "section count bound" "$IYIMOD" \
   -- check_hardened_refusal count_room "a section counts 2147483647" || status=1
 prove_mutation "string length bound" "$IYIMOD" \
   'len = read_count(1)' 'len = read_count(2)' \
-  -- check_hardened_refusal string_room "a section counts 4294967280" || status=1
+  -- check_hardened_refusal string_room "a section counts 4294967280 of something that takes 1 byte or more each, and has 26 bytes left" || status=1
 prove_mutation "cumulative claim bound" "$IYIMOD" \
   'if @claimed > @size.to_u64' 'if false' \
   -- check_hardened_refusal nested_claims "a section's counts claim 769769 bytes" || status=1
