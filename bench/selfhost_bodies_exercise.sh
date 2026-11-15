@@ -476,30 +476,30 @@ recursion_fresh_clone() {
     if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
     return 1
   fi
-  if ! "$WORK/recursion_mutant" "$REPO/bench/fixtures/lowcall_recursion_top.iyi" "$REPO/src" > "$WORK/recursion_mutant.txt" 2>"$WORK/recursion_mutant.err"; then
+  if ! "$WORK/recursion_mutant" "$REPO/bench/fixtures/sem_bodies_recursive_named_default.iyi" "$REPO/src" > "$WORK/recursion_mutant.txt" 2>"$WORK/recursion_mutant.err"; then
     echo "INVALID MUTANT: recursion probe failed to run" >&2
     cat "$WORK/recursion_mutant.err" >&2
     if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
     return 1
   fi
-  if grep -q '^cycle_a target=.* untyped-params' "$WORK/recursion_mutant.txt"; then return 1; fi
-  return 0
+  awk '/^recursive_named_default target=.* typed-params Bool,Bool$/ { id = $2; if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 2 && kinds == 1) }' "$WORK/recursion_mutant.txt"
 }
 unit_cycle_targets_ok() {
-  if ! "$IYI" build -o "$WORK/unit_cycle_compiler" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/unit_cycle_build.log" 2>&1; then
-    echo "INVALID MUTANT: unit cycle compiler failed to build" >&2
+  if ! "$IYI" build -o "$WORK/unit_cycle_probe" "$REPO/bench/selfhost_recursion_target_probe.iyi" > "$WORK/unit_cycle_build.log" 2>&1; then
+    echo "INVALID MUTANT: unit cycle probe failed to build" >&2
     if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
     return 1
   fi
-  IYI_PATH="$REPO/src" "$WORK/unit_cycle_compiler" "$REPO/bench/fixtures/lowcall_cycle_untyped_clone.iyi" -o "$WORK/unit_cycle_native" --pipeline typed --prelude --probe-phase > "$WORK/unit_cycle.log" 2>&1
+  "$WORK/unit_cycle_probe" "$REPO/bench/fixtures/lowcall_cycle_untyped_clone.iyi" "$REPO/src" unit-keys "$REPO/bench/fixtures" > "$WORK/unit_cycle.log" 2>&1 || return 1
+  grep -Fxq 'unit-key-equal=true' "$WORK/unit_cycle.log"
 }
 unit_cycle_targets_ok || status=1
 prove_mutation "unit helper cycle uses its defining owner" "$MAIN_VISITOR" \
   "      key_owner = owner if owner.iyi_unit" \
   "      key_owner = rec_type if owner.iyi_unit" -- unit_cycle_targets_ok || status=1
 prove_mutation "a recursive call targets a fresh clone" "$MAIN_VISITOR" \
-  "remember_def_instance(cache_key, target_def, provisional)" \
-  "nil" -- recursion_fresh_clone || status=1
+  "@call_target_defs[call] = frame.definition" \
+  "@call_target_defs.delete(call)" -- recursion_fresh_clone || status=1
 prove_mutation "program defs use their declared owner" "$MAIN_VISITOR" \
   "        instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)" \
   "        instance_owner = rec_type if declared_owner.is_a?(SemanticProgram)" -- owner_mutant_at_expected || status=1
@@ -934,8 +934,10 @@ captured_free_output_at_floor() {
   [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
 }
 prove_mutation "captured block output binds its callee's free variable" "$MAIN_VISITOR" \
-  "                        @def_free_types[target_def] = bound unless bound.empty?" \
-  "                        nil" -- captured_free_output_at_floor || status=1
+  "                      if FreeBindings.bind(output, bt, free_names, bound)
+                        @def_free_types[target_def] = bound unless bound.empty?" \
+  "                      if FreeBindings.bind(output, bt, free_names, bound)
+                        nil" -- captured_free_output_at_floor || status=1
 generic_rebuild_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   touch "$WORK/imported_generic_mutant_built"
@@ -1047,9 +1049,20 @@ generic_alias_restriction_safe() {
     -o "$WORK/alias_probe" --pipeline typed --prelude --probe-phase > "$WORK/alias_probe.log" 2>&1
 }
 generic_alias_restriction_safe || status=1
-prove_mutation "generic arguments resolve their aliases before instantiation" "$REPO/src/compiler/semantic/top_level.iyi" \
-  "              type_args << remove_alias(arg)" \
-  "              type_args << arg" -- generic_alias_restriction_safe || status=1
+CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing -o "$WORK/alias_types_oracle" "$REPO/bench/selfhost_semantic_types_oracle.cr" > "$WORK/alias_types_oracle_build.log" 2>&1 || { cat "$WORK/alias_types_oracle_build.log"; exit 1; }
+"$WORK/alias_types_oracle" "$REPO/bench/fixtures/semty_nested_alias_lookup.iyi" > "$WORK/alias_types.hosted" || exit 1
+generic_alias_lookup_matches() {
+  if ! "$IYI" build -o "$WORK/alias_types" "$REPO/bench/selfhost_semantic_types_exercise.iyi" > "$WORK/alias_types_build.log" 2>&1; then
+    body_build_failed "$WORK/alias_types_build.log"
+    return $?
+  fi
+  "$WORK/alias_types" "$REPO/bench/fixtures/semty_nested_alias_lookup.iyi" > "$WORK/alias_types.port" || return 1
+  diff -q "$WORK/alias_types.hosted" "$WORK/alias_types.port" >/dev/null
+}
+generic_alias_lookup_matches || status=1
+prove_mutation "generic arguments resolve their aliases before instantiation" "$REPO/src/compiler/types/lookup.iyi" \
+  "      return expand(target.as(Type))" \
+  "      return type" -- generic_alias_lookup_matches || status=1
 prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
   "@def_free_types[target_def] = free_types unless free_types.empty?" \
   "        nil" -- atomic_free_at_floor || status=1
