@@ -402,6 +402,17 @@ wide_constant_check() {
 prove_mutation "a wide constant loses its high word" "$REPO/src/compiler/lower/const.iyi" \
   '      hi = u64_as_i64((bits >> 64).to_u64)' '      hi = 0_i64' -- wide_constant_check || status=1
 
+shift_constant_check() {
+  if ! "$IYI" build -o "$WORK/const-shift-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-shift-mut.log" 2>&1; then
+    touch "$WORK/m.invalid"
+    return 1
+  fi
+  "$WORK/const-shift-mut" lower "$REPO/bench/fixtures/lowconst_shift.iyi" "$WORK/lowconst_shift.oracle.ll" > "$WORK/const-shift-mut.out" 2>&1 || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-shift-mut.out"
+}
+prove_mutation "constant shifts leave the left operand unchanged" "$REPO/src/compiler/semantic/math_interpreter.iyi" \
+  '      shift_left(left, right.value)' '      left' -- shift_constant_check || status=1
+
 nested_case_block_check() {
   "$IYI" build -o "$WORK/nested-case-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/nested-case.build.log" 2>&1 || return 1
   "$WORK/nested-case-port" lower "$REPO/bench/fixtures/lowdecl_nested_case_block.iyi" "$WORK/lowdecl_nested_case_block.oracle.ll" > "$WORK/nested-case.out" 2> "$WORK/nested-case.err" || return 1
