@@ -247,7 +247,7 @@ awk -F'\t' '$1 == "BELOW FLOOR" || $1 == "RAISE THE FLOOR" || $1 == "NO FLOOR" {
 fails=$(cat "$WORK/nfails.txt")
 awk '!/^[0-9]+$/' "$WORK/fails.txt"
 echo "  $fails file(s) below or missing their floor"
-if [ "$fails" -gt 0 ] && [ "$RAISE" != 1 ]; then
+if [ "$fails" -gt 0 ]; then
   status=1
 fi
 
