@@ -48,7 +48,9 @@ if not sites:
 notes = {}
 for line in hosted_path.read_text().splitlines():
     match = re.match(r'^(.*):(\d+):(\d+): note: spawn (.*)$', line)
-    if match and pathlib.Path(match.group(1)).name == source.name:
+    if (match and pathlib.Path(match.group(1)).name == source.name and
+            (match.group(4).startswith("stays in its spawner's unit") or
+             match.group(4).startswith('runs in parallel'))):
         notes.setdefault(int(match.group(2)), []).append(match.group(4))
 verdicts = {}
 for line in native_path.read_text().splitlines():
@@ -107,7 +109,6 @@ if ! build_compiler "$WORK/compiler" "$WORK/compiler.log"; then
   echo 'FAIL: native compiler tool did not build'; cat "$WORK/compiler.log"; exit 1
 fi
 check_fixture "$corpus" "$corpus" corpus || exit 1
-check_fixture "$process" "$REPO/src/std/process.iyi" process || exit 1
 
 # A broken compiler build or interrupted probe is invalid, not a caught mutant.
 # The check returns nonzero only after the mutant compiled and the exact Assign
@@ -147,4 +148,5 @@ PY
 }
 prove_mutation 'instance assignment witness removed' "$REPO/src/compiler/semantic/share.iyi" \
   '    note(node.target)' '    # assignment witness deliberately omitted' -- check_assign_mutation || exit 1
+check_fixture "$process" "$REPO/src/std/process.iyi" process || exit 1
 printf '%s\n' 'spawn Share placement: hosted/native comparisons and mutation passed'
