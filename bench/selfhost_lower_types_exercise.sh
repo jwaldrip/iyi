@@ -68,7 +68,7 @@ else
   echo "  FAIL: type-id fork baseline failed"
   status=1
 fi
-if "$IYI" build --no-codegen "$REPO/bench/fixtures/lower_type_id_tuple_write.iyi" > "$WORK/tuple_write.log" 2>&1 ||
+if "$IYI" build --no-codegen "$REPO/bench/fixtures/refuse_type_id_tuple_write.iyi" > "$WORK/tuple_write.log" 2>&1 ||
    ! grep -Fq "undefined method '[]=' for Tuple(Int32, Int32)" "$WORK/tuple_write.log"; then
   echo "  FAIL: tuple element assignment was not rejected"
   status=1
