@@ -277,6 +277,9 @@ pub class ArgRestriction
       inner = ArgRestriction.restrict_argument(ts, scope, node.type_vars[i], inst.type_args[i], owner, free, bound)
       return inner if inner.error
       return RestrictResult.no_match if inner.type.nil?
+      # Hosted restrict_type_var requires the entire element type to match,
+      # not just a nonempty intersection (restrictions.cr:1329).
+      return RestrictResult.no_match if inner.type.as(Type).full_name != inst.type_args[i].full_name
       i += 1
     end
     RestrictResult.matched(inst)

@@ -371,6 +371,19 @@ forward_block_at_expected || status=1
 prove_mutation "forwarded proc is presented as a call block" "$MAIN_VISITOR" \
   "      node.block = forwarded" \
   "      nil" -- forward_block_at_expected || status=1
+array_restriction_matches() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/array_restriction_mut_build.log" 2>&1; then
+    body_build_failed "$WORK/array_restriction_mut_build.log"
+    return $?
+  fi
+  local fx="$REPO/bench/fixtures/sem_bodies_array_literal_restriction.iyi"
+  "$ORACLE" "$fx" > "$WORK/array_restriction.hosted" 2>/dev/null || return 1
+  "$MUT_TD" "$fx" "$REPO/src" > "$WORK/array_restriction.port" 2>/dev/null || return 1
+  diff -q "$WORK/array_restriction.hosted" "$WORK/array_restriction.port" >/dev/null
+}
+prove_mutation "generic argument restrictions accept covariant element types" "$REPO/src/compiler/semantic/match.iyi" \
+  'if restricted.nil? && written.is_a?(Generic) && arg_type.is_a?(GenericInstanceType)' \
+  'if false && restricted.nil? && written.is_a?(Generic) && arg_type.is_a?(GenericInstanceType)' -- array_restriction_matches || status=1
 prove_mutation "an abstract requirement is typed as an empty implementation" "$MAIN_VISITOR" \
   '    if target_def.abstract' '    if false && target_def.abstract' -- abstract_probe_at_expected || status=1
 owner_mutant_at_expected() {
