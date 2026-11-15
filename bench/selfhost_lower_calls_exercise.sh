@@ -483,7 +483,10 @@ echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires every call fixture
 # to match the hosted module exactly. It returns 0 only on the unmutated behaviour.
 lower_calls_check() {
-  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
   for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi; do
     name="$(basename "$fixture" .iyi)"
     if [ -n "$(waiting_reason "$name")" ]; then
@@ -521,7 +524,7 @@ if [ -e "$WORK/uncovered.invalid" ]; then
 fi
 
 triple_check() {
-  "$IYI" build -o "$WORK/triple-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/triple-mut.build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/triple-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/triple-mut.build.log" 2>&1 || { touch "$WORK/general-mutation.invalid"; return 1; }
   "$WORK/triple-mut" triple > "$WORK/triple-mut.out" 2>&1
 }
 
@@ -633,7 +636,7 @@ if ! lower_calls_check; then
   exit 1
 fi
 generic_gap_check() {
-  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || { touch "$WORK/general-mutation.invalid"; return 1; }
   if "$WORK/mut" lower "$generic_fixture" "$WORK/uninstantiated.oracle.ll" > "$WORK/generic.mut.out" 2> "$WORK/generic.mut.err"; then
     return 1
   fi
@@ -649,7 +652,7 @@ prove_mutation "an uninstantiated generic loses its typing-gap diagnostic" "$REP
 # comparison above drops the `import` text on both sides (lower_gate.iyi strip_import), so this check is the one
 # that proves it. It rebuilds the driver from the current source, so a mutation of the import is what it tests.
 link_import_check() {
-  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || { touch "$WORK/general-mutation.invalid"; return 1; }
   "$WORK/mut" emit "$REPO/bench/fixtures/lowcall_link_framework.iyi" "$WORK/lowcall_link_framework.oracle.ll" > "$WORK/mut.import.ir" 2>/dev/null || return 1
   awk '/^declare / && /@SecRandomCopyBytes\(/ && / import "Security"/ { ok = 1 } END { exit !ok }' "$WORK/mut.import.ir"
 }
@@ -693,7 +696,7 @@ prove_mutation "a block argument is never stored at a yield" "$REPO/src/compiler
 prove_mutation "a block call's value is merged as a non-final branch" "$REPO/src/compiler/lower/call.iyi" \
   "  phi.add(low, low.last, true)" "  phi.add(low, low.last, false)" -- lower_calls_check || status=1
 prove_mutation "a block call allocates none of the block's variables" "$REPO/src/compiler/lower/call.iyi" \
-  "  allocate_block_vars(low, block, block_ctx.vars)" "  block_ctx.vars.size" -- lower_calls_check || status=1
+  "  allocate_block_vars(low, block, block_ctx.vars, captured)" "  block_ctx.vars.size" -- lower_calls_check || status=1
 prove_mutation "an inlined def's argument is allocated with the nil type" "$REPO/src/compiler/lower/call.iyi" \
   "    alloca_local(low, vars, arg.name, arg_types[i])" "    alloca_local(low, vars, arg.name, low.analysed.program.nil_type)" -- lower_calls_check || status=1
 prove_mutation "a block branch's value is merged as the last branch" "$REPO/src/compiler/lower/block.iyi" \
@@ -768,6 +771,11 @@ prove_mutation "primitive dispatch loses its receiver" "$REPO/src/compiler/lower
 prove_mutation "enum dispatch receivers are refused" "$REPO/src/compiler/lower/call.iyi" \
   '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType) && !owner.is_a?(EnumType))' \
   '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType))' -- lower_calls_check || status=1
+prove_mutation "global dispatch arms are repeated for virtual subtypes" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      return base_matches.matches if global_only' '      return base_matches.matches if false' -- lower_calls_check || status=1
+prove_mutation "global dispatch arms are treated as runtime receivers" "$REPO/src/compiler/lower/call.iyi" \
+  '    checked_dispatch_receiver(low, node, arm.receiver, arm.definition) if receiver_dynamic && !arm.receiver.is_a?(VirtualType) && !arm.receiver.is_a?(SemanticProgram)' \
+  '    checked_dispatch_receiver(low, node, arm.receiver, arm.definition) if receiver_dynamic && !arm.receiver.is_a?(VirtualType)' -- lower_calls_check || status=1
 prove_mutation "dispatch drops the argument type test" "$REPO/src/compiler/lower/call.iyi" \
   '        matches = low.builder.bitwise_and(matches, match_type_id(low, arg_types[i], params[i], arg_tids[i]))' \
   '        matches = int1(low, 1_i64)' -- lower_calls_check || status=1
@@ -851,6 +859,7 @@ generic_frame_check() {
   if ! "$IYI" build -o "$WORK/frame_native" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/frame_native.build.log" 2>&1; then
     echo "INVALID: generic frame probe did not build" >&2
     awk '!/^ld: warning/ && NR<=20' "$WORK/frame_native.build.log" >&2
+    touch "$WORK/general-mutation.invalid"
     return 1
   fi
   IYI_PATH="$REPO/src" "$WORK/frame_native" "$REPO/bench/fixtures/lowcall_generic_self_new.iyi" -o "$WORK/frame.probe.exe" --pipeline typed --probe-phase --keep-going > "$WORK/frame.probe" 2>&1 || true
@@ -872,6 +881,11 @@ prove_mutation "a receiverless call in a generic class method is treated as buil
   '      elsif class_meta = receiverless_class_metaclass(ct)' \
   '      elsif class_meta = nil' -- generic_frame_check || status=1
 
+
+if [ -e "$WORK/general-mutation.invalid" ]; then
+  echo "  FAIL: a mutation driver did not build; behavioral detection is unproven"
+  status=1
+fi
 
 echo
 if [ "$status" -eq 0 ]; then

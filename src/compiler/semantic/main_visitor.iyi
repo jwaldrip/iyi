@@ -4591,6 +4591,16 @@ pub class MainVisitor < TypeNodeHost
       covered[subtype.full_name] = found.cover_all? unless found.empty?
       groups << found.matches unless found.empty?
     end
+    # A receiverless call resolved entirely in the program has no dynamic
+    # receiver. The subtype searches rediscover the same global overloads.
+    if node.obj.nil? && base_matches.cover_all?
+      global_only = !base_matches.matches.empty?
+      base_matches.matches.each { |match| global_only = false unless match.owner.is_a?(SemanticProgram) }
+      groups.each do |group|
+        group.each { |match| global_only = false unless match.owner.is_a?(SemanticProgram) }
+      end
+      return base_matches.matches if global_only
+    end
     result = [] of Match
     i = groups.size
     while i > 0
@@ -4793,7 +4803,8 @@ pub class MainVisitor < TypeNodeHost
     unless owner.is_a?(NonGenericClassType)
       return refuse_call(node, "not ported: super in a method of #{owner.full_name} (hosted call.cr lookup_super_matches: only a non-generic class owner is ported)")
     end
-    unless scope.is_a?(NonGenericClassType)
+    self_base = scope.is_a?(VirtualType) ? scope.as(VirtualType).base_type : scope
+    unless self_base.is_a?(NonGenericClassType)
       return refuse_call(node, "not ported: super with the self #{scope.full_name} (hosted call.cr lookup_super_matches: only a non-generic class self is ported)")
     end
     owner_module = owner.as(ModuleType)
