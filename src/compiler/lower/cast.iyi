@@ -289,8 +289,9 @@ def assign_named_tuple(low : Lowerer, pointer : Value, target : NamedTupleInstan
     end
     raise "BUG: named tuple key missing" if j == target.entries.size
     source_ptr = aggregate_field(low, source, from, i)
+    loaded_value = to_lhs(low, source_ptr, entry.type)
     target_ptr = aggregate_field(low, target, pointer, j)
-    assign(low, target_ptr, target.entries[j].type, entry.type, to_lhs(low, source_ptr, entry.type))
+    assign(low, target_ptr, target.entries[j].type, entry.type, loaded_value)
     i += 1
   end
 end
