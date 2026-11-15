@@ -38,6 +38,7 @@ import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/context::{Lowerer}
+import compiler/lower/type_id::{LowerTypeIds}
 import compiler/lower/lower::{codegen_program, emit_probe_well_known, lower_def_probe}
 import compiler/lower/primitives::{primitive_name}
 import compiler/lower/fun::{mangled_name, discard_probe_functions}
@@ -529,6 +530,8 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   origin_counts = [] of Int32
   origin_examples = [] of String
   origin_probes = Hash(String, Bool).new
+  base_ids = LowerTypeIds.new
+  base_ids.assign_all(typed.prog.object_type)
   typed.visitor.typed_instances.each do |inst|
     d = inst.definition
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
@@ -541,7 +544,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     probe_lowerer = Lowerer.new(m, typer, typed.visitor)
     probe_lowerer.spawn_analysis = spawn_analysis
     outcome = group do |g|
-      task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m, probe_lowerer) }
+      task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m, probe_lowerer, base_ids.fork) }
       task.value
     end
     failed = false

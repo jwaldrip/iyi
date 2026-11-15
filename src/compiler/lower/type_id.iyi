@@ -35,6 +35,15 @@ pub class LowerTypeIds
     @types = [] of Type
   end
 
+  # A probe may assign IDs for additional types. Copy the numbered baseline
+  # so those assignments cannot affect any later probe's numbering.
+  def fork : LowerTypeIds
+    LowerTypeIds.new(@ids.dup, @id_to_metaclass.dup, @next_id, @names.dup, @types.dup)
+  end
+
+  def initialize(@ids : Hash(String, Array(Int32)), @id_to_metaclass : Hash(Int32, Int32), @next_id : Int32, @names : Hash(Int32, String), @types : Array(Type))
+  end
+
   # The hosted `LLVMId#initialize`: number every class reachable from *root* (Object), then
   # number the metaclasses in the same walk order.
   def assign_all(root : Type) : Nil
