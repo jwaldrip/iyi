@@ -292,6 +292,76 @@ rm -rf "$REACH/shelf"
 reach "reading the artifact" use --use-iyimod mods
 reach "reading it --release" use-release --release --use-iyimod modsr
 
+# The artifact's cast-failure path reads the consumer's type-id-to-name table.
+# The consumer has no cast of its own, so its codegen must still define the map.
+# Both a successful cast and the failing diagnostic exercise the linked object.
+CAST="$WORK/cast-map"
+mkdir -p "$CAST/kit"
+cat > "$CAST/kit/cast.iyi" <<'IYI'
+module kit/cast
+
+pub def as_text(value : Int32 | String) : String
+  value.as(String)
+end
+IYI
+cat > "$CAST/producer.iyi" <<'IYI'
+module producer
+
+import kit/cast::{as_text}
+
+value = Program.args.empty? ? "ok" : 17
+puts as_text(value)
+IYI
+cat > "$CAST/consumer.iyi" <<'IYI'
+module consumer
+
+import kit/cast::{as_text}
+
+value = Program.args.empty? ? "ok" : 17
+puts as_text(value)
+IYI
+cast_ok=1
+for mode in normal release; do
+  flags=()
+  [ "$mode" = release ] && flags=(--release)
+  if ! (cd "$CAST" && "$IYI" build "${flags[@]}" --emit-iyimod "mods-$mode" -o "producer-$mode" producer.iyi) >"$CAST/emit-$mode.log" 2>&1; then
+    echo "cast-map: $mode artifact production failed"
+    cast_ok=0
+  fi
+done
+mv "$CAST/kit" "$CAST/kit.source"
+for mode in normal release; do
+  flags=()
+  [ "$mode" = release ] && flags=(--release)
+  if ! (cd "$CAST" && "$IYI" build "${flags[@]}" --use-iyimod "mods-$mode" -o "consumer-$mode" consumer.iyi) >"$CAST/use-$mode.log" 2>&1; then
+    echo "cast-map: $mode artifact consumer failed to link"
+    tail -12 "$CAST/use-$mode.log"
+    cast_ok=0
+    continue
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$CAST/consumer-$mode" >"$CAST/sign-$mode.log" 2>&1; then
+    echo "cast-map: $mode artifact consumer signature invalid"
+    cast_ok=0
+    continue
+  fi
+  if ! (cd "$CAST" && "./consumer-$mode") >"$CAST/ok-$mode.log" 2>&1 || [ "$(cat "$CAST/ok-$mode.log")" != "ok" ]; then
+    echo "cast-map: $mode successful cast differed"
+    cast_ok=0
+  fi
+  if (cd "$CAST" && "./consumer-$mode" bad) >"$CAST/fail-$mode.log" 2>&1; then
+    echo "cast-map: $mode failing cast exited successfully"
+    cast_ok=0
+  elif ! grep -q 'Cast from Int32 to String failed' "$CAST/fail-$mode.log"; then
+    echo "cast-map: $mode failing cast did not name the consumer's types"
+    cast_ok=0
+  fi
+done
+if [ "$cast_ok" = 1 ]; then
+  echo "cast-map: source-free normal and release consumers name cast types"
+else
+  status=1
+fi
+
 # Shapes of module whose artifact read back as something other than its
 # source, each built from source while writing the artifact and then from the
 # artifact alone. Each was measured failing on the build that read it:
