@@ -3576,7 +3576,9 @@ pub class MainVisitor < TypeNodeHost
   # return type. Its recorded refusals remain attached to the cached definition.
   def remember_def_instance(key : String?, definition : Def, return_type : Type?) : Nil
     if k = key
-      @speculation.recursive_cache_writes << k unless @def_instances.has_key?(k)
+      unless @speculation.recursive_frames.empty? || @def_instances.has_key?(k)
+        @speculation.recursive_cache_writes << k
+      end
       @def_instances[k] = DefInstance.new(definition, return_type)
     end
     nil
@@ -4104,6 +4106,9 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     @speculation.recursive_frames.pop
+    if @speculation.recursive_frames.empty?
+      @speculation.recursive_cache_writes.truncate(0, 0)
+    end
 
     if block && (ctx_vars = @current_block_context_vars)
       ctx_vars.each do |k, new_v|
@@ -4691,7 +4696,7 @@ pub class MainVisitor < TypeNodeHost
     end
     @call_receivers.delete(node)
     @needs_type_filters = saved_call_ntf
-    if @speculation.recursive_frames.any?(&.cyclic)
+    if @speculation.depth > 0 && @speculation.recursive_frames.any?(&.cyclic)
       node.args.each do |arg|
         if type_of?(arg).nil?
           @type_filters = nil
