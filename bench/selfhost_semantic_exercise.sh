@@ -435,6 +435,21 @@ check_declaration_order_diverge() {
   cmp -s "$WORK/order-oracle.ast" "$WORK/order-mutant.ast"
 }
 
+check_super_order_diverge() {
+  if ! "$IYI" build -o "$WORK/mut-super" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1; then
+    echo "mutation failed to build, not a behavioral catch"
+    return 0
+  fi
+  local fixture="$REPO/bench/fixtures/sem_expr_super_forward_overload.iyi"
+  "$WORK/dump_crystal" "$fixture" --expr > "$WORK/super-oracle.ast" 2>/dev/null || return 0
+  "$WORK/exercise" "$fixture" --expr > "$WORK/super-baseline.ast" 2>/dev/null || return 0
+  cmp -s "$WORK/super-oracle.ast" "$WORK/super-baseline.ast" || return 0
+  "$WORK/mut-super" "$fixture" --expr > "$WORK/super-mutant.ast" 2>/dev/null || return 0
+  grep -Fq 'target_def: choose: String' "$WORK/super-oracle.ast" || return 0
+  grep -Fq 'target_def: choose: Int32' "$WORK/super-mutant.ast" || return 0
+  cmp -s "$WORK/super-oracle.ast" "$WORK/super-mutant.ast"
+}
+
 check_ivar_dump_diverge() {
   "$IYI" build -o "$WORK/mut-declarations" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" >/dev/null 2>&1 || return 1
   "$WORK/mut-declarations" "$REPO/bench/fixtures/sem_bodies_ivar_read.iyi" > "$WORK/mut-ivar.ast" 2>/dev/null || return 1
@@ -577,10 +592,13 @@ prove_mutation "declaration overload order ignores strictness" "$SEM" \
   -- check_declaration_order_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "overload resolution most specific filter is bypassed" "$SEM_MAIN" \
-  "most_specific = filter_most_specific_overloads(exact_matches, args, rec_type)" \
-  "most_specific = exact_matches" \
-  -- check_expr_outputs_diverge || status=1
+prove_mutation "super lookup re-ranks declaration-ordered overloads" "$SEM_MAIN" \
+  '      selected = exact_matches.first' \
+  '      selected = exact_matches.first
+      exact_matches.each do |candidate|
+        selected = candidate if arm_more_specific?(candidate, selected, args, rec_type, call_node)
+      end' \
+  -- check_super_order_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "union receiver multiple dispatch bypasses return type merge" "$SEM_MAIN" \

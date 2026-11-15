@@ -2920,79 +2920,12 @@ pub class MainVisitor < TypeNodeHost
     min_max_args_sizes(d)[0]
   end
 
-  def def_more_specific?(d1 : Def, d2 : Def, args : Array(ASTNode), owner : Type) : Bool
-    # Hosted restrictions.cr:393-414 orders non-splat overloads ahead of splats.
-    return false if d1.splat_index && !d2.splat_index
-    return true if d2.splat_index && !d1.splat_index
-    if a = d1.splat_index
-      if b = d2.splat_index
-        return a.as(Int32) > b.as(Int32) if a != b
-      end
-    end
-    arg_types = [] of Type
-    args.each { |arg| arg_types << type_of(arg) }
-    bound1 = FreeBindings.of_def(d1, arg_types, type_node_system(@program))
-    bound2 = FreeBindings.of_def(d2, arg_types, type_node_system(@program))
-    has_strict = false
-    i = 0
-    while i < args.size && i < d1.args.size && i < d2.args.size
-      break if d1.splat_index == i || d2.splat_index == i
-      p1 = d1.args[i]
-      p2 = d2.args[i]
-      t1 = if r1 = p1.restriction
-             comparison_restriction(r1, owner, bound1)
-           else
-             @program.object_type
-           end
-      t2 = if r2 = p2.restriction
-             comparison_restriction(r2, owner, bound2)
-           else
-             @program.object_type
-           end
-
-      unless t1.subtype_of?(t2)
-        return false
-      end
-      if t1 != t2
-        has_strict = true
-      end
-      i = i + 1
-    end
-    has_strict
-  end
-
   def comparison_restriction(node : ASTNode, owner : Type, bound : Hash(String, Type)?) : Type
     if bound
       found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)
       return found.as(Type) unless found.is_a?(LookupError)
     end
     @program.object_type
-  end
-
-  def filter_most_specific_overloads(candidates : Array(Def), args : Array(ASTNode), owner : Type) : Array(Def)
-    if candidates.size <= 1
-      return candidates
-    end
-
-    most_specific = [] of Def
-    candidates.each do |cand|
-      subsumed = false
-      candidates.each do |other|
-        if cand != other && def_more_specific?(other, cand, args, owner)
-          subsumed = true
-          break
-        end
-      end
-      unless subsumed
-        most_specific << cand
-      end
-    end
-
-    if most_specific.empty?
-      candidates
-    else
-      most_specific
-    end
   end
 
   def number_literal_matches_type?(literal : NumberLiteral, target_type : Type) : Bool
@@ -3537,8 +3470,9 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if exact_matches.size > 0
-      most_specific = filter_most_specific_overloads(exact_matches, args, rec_type)
-      selected = most_specific.first
+      # Hosted lookup stops at the first exact match in declaration order.
+      # Re-ranking here changes a forward-declared overload after the fact.
+      selected = exact_matches.first
       @matched_call_args.delete(call_node)
       return selected
     end
