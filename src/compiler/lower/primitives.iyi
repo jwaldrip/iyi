@@ -1279,6 +1279,26 @@ pub def raise_overflow(low : Lowerer) : Nil
   low.builder.unreachable
 end
 
+# Hosted type.to_s includes an unbound generic's parameters and its splat.
+def cast_type_name(type : Type) : String
+  if type.is_a?(MetaclassType)
+    return cast_type_name(type.as(MetaclassType).instance_type) + ".class"
+  end
+  if type.is_a?(GenericClassType)
+    generic = type.as(GenericClassType)
+    names = [] of String
+    i = 0
+    while i < generic.type_vars.size
+      name = generic.type_vars[i]
+      name = "*" + name if generic.splat_index == i
+      names << name
+      i = i + 1
+    end
+    return generic.full_name + "(" + names.join(", ") + ")"
+  end
+  type.full_name
+end
+
 # Hosted codegen.cr:2095-2127 builds this table on the first checked cast. The
 # runtime id indexes the same strings used for a value's dynamic class name.
 def cast_class_name(low : Lowerer, type_id : Value) : Value
@@ -1304,7 +1324,7 @@ def cast_class_name(low : Lowerer, type_id : Value) : Value
     while i < types.size
       type = types[i]
       id = low.type_ids.type_id(type)
-      values[id] = build_string_constant(low, type.full_name, "str")
+      values[id] = build_string_constant(low, cast_type_name(type), "str")
       i = i + 1
     end
     created.initializer = low.builder.const_array(ptr, values)
@@ -1334,7 +1354,7 @@ pub def raise_cast_failed(low : Lowerer, type_id : Value, target : Type, node : 
     fn = low.module.add_function(name, fn_type, CallConv::C)
   end
   from_name = cast_class_name(low, type_id)
-  to_name = build_string_constant(low, target.full_name, "str")
+  to_name = build_string_constant(low, cast_type_name(target), "str")
   location : Value = low.builder.const_null(low.module.types.ptr(0))
   if loc = node.location
     location = build_string_constant(low, loc.to_s, "str")

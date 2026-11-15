@@ -56,7 +56,7 @@ passed=0
 e2e=""
 diverged=0
 waiting=0
-for fixture in "$REPO"/bench/fixtures/lowcast_*.iyi "$REPO"/bench/fixtures/lowdowncast_nilable_as.iyi; do
+for fixture in "$REPO"/bench/fixtures/lowcast_*.iyi "$REPO"/bench/fixtures/lowdowncast_nilable_as.iyi "$REPO"/bench/fixtures/lowdowncast_checked_oracle.iyi; do
   name="$(basename "$fixture" .iyi)"
   if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
     echo "  $name: the hosted compiler did not emit its module (see $WORK/$name.oracle.log)"
@@ -170,6 +170,17 @@ new_cast_check() {
   "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_$cast_fixture.iyi" "$WORK/lowcast_$cast_fixture.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
 }
+
+checked_downcast_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$WORK/mut" lower "$REPO/bench/fixtures/lowdowncast_checked_oracle.iyi" "$WORK/lowdowncast_checked_oracle.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/mut.out" || return 1
+  "$WORK/mut" emit "$REPO/bench/fixtures/lowdowncast_checked_oracle.iyi" "$WORK/lowdowncast_checked_oracle.oracle.ll" > "$WORK/checked-port.ir" 2> "$WORK/mut.err" || return 1
+  python3 "$REPO/bench/compare_downcast_metadata.py" "$WORK/lowdowncast_checked_oracle.ll" "$WORK/checked-port.ir"
+}
+checked_downcast_check || { echo "  baseline: checked cast metadata differs"; status=1; }
+prove_mutation "checked cast swaps target and location" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  low.builder.call(raise_fn.fn_type, raise_fn, [from_name, to_name, location] of Value, "")' '  low.builder.call(raise_fn.fn_type, raise_fn, [from_name, location, to_name] of Value, "")' -- checked_downcast_check || status=1
 
 nilable_downcast_check() {
   "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
