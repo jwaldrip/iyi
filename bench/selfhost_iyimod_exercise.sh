@@ -296,10 +296,10 @@ check_refusal "damaged section payload" "$REFUSAL_DIR/corrupt_payload.iyimod" "H
 check_refusal "truncated section payload" "$REFUSAL_DIR/truncated_payload.iyimod" "bytes follow the table"
 check_refusal "table count" "$REFUSAL_DIR/table_count.iyimod" "its table names 2147483647 sections and 0 bytes follow it, which is room for 0"
 check_refusal "section length sum" "$REFUSAL_DIR/table_lengths.iyimod" "its table says its sections are 8589934560 bytes together and 4 bytes follow the table"
-check_refusal "count exceeds section" "$REFUSAL_DIR/count_room.iyimod" "a section counts 2147483647 of something that takes 4 bytes or more each, and has 6 bytes left"
-check_refusal "string exceeds section" "$REFUSAL_DIR/string_room.iyimod" "a section counts 4294967280 of something that takes 1 byte or more each, and has 26 bytes left"
-check_refusal "nested cumulative claims" "$REFUSAL_DIR/nested_claims.iyimod" "a section's counts claim 769769 bytes between them, and it is 385004 bytes long"
-check_refusal "type nesting" "$REFUSAL_DIR/nested_depth.iyimod" "a section declares types more than 200 deep inside one another, which is deeper than a .iyimod holds"
+check_refusal "count exceeds section" "$REFUSAL_DIR/count_room.iyimod" "$REFUSAL_DIR/count_room.iyimod is not a readable .iyimod: a section counts 2147483647 of something that takes 4 bytes or more each, and has 6 bytes left. It is damaged, or was written by something that is not this compiler; rebuild it with \`--emit-iyimod\`"
+check_refusal "string exceeds section" "$REFUSAL_DIR/string_room.iyimod" "$REFUSAL_DIR/string_room.iyimod is not a readable .iyimod: a section counts 4294967280 of something that takes 1 byte or more each, and has 26 bytes left. It is damaged, or was written by something that is not this compiler; rebuild it with \`--emit-iyimod\`"
+check_refusal "nested cumulative claims" "$REFUSAL_DIR/nested_claims.iyimod" "$REFUSAL_DIR/nested_claims.iyimod is not a readable .iyimod: a section's counts claim 769769 bytes between them, and it is 385004 bytes long. It is damaged, or was written by something that is not this compiler; rebuild it with \`--emit-iyimod\`"
+check_refusal "type nesting" "$REFUSAL_DIR/nested_depth.iyimod" "$REFUSAL_DIR/nested_depth.iyimod is not a readable .iyimod: a section declares types more than 200 deep inside one another, which is deeper than a .iyimod holds. It is damaged, or was written by something that is not this compiler; rebuild it with \`--emit-iyimod\`"
 deep_writer_out=$("$WORK/exercise" write-deep "$WORK/too-deep.iyimod" 2>&1 || true)
 if ! printf '%s\n' "$deep_writer_out" | grep -qF "T202 is declared more than 200 types deep, which is deeper than a .iyimod holds"; then
   echo "  WRITER REFUSAL MISMATCH: $deep_writer_out"
@@ -356,7 +356,7 @@ prove_mutation "section count bound" "$IYIMOD" \
   'if claim > left' 'if false' \
   -- check_hardened_refusal count_room "a section counts 2147483647" || status=1
 prove_mutation "string length bound" "$IYIMOD" \
-  'len = read_count(1)' 'len = read_u32_le.to_i64.to_i32' \
+  'len = read_count(1)' 'len = read_count(2)' \
   -- check_hardened_refusal string_room "a section counts 4294967280" || status=1
 prove_mutation "cumulative claim bound" "$IYIMOD" \
   'if @claimed > @size.to_u64' 'if false' \
