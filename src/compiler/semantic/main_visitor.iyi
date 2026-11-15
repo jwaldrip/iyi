@@ -3986,14 +3986,6 @@ pub class MainVisitor < TypeNodeHost
                     end
                     if output = notation.output
                       unless output.is_a?(Underscore)
-                        if free_names = target_def.free_vars
-                          bound = @def_free_types[target_def]? || Hash(String, Type).new
-                          unless FreeBindings.bind(output, proc_type.return_type, free_names, bound)
-                            refuse(blk, "expected block to return #{output}, not #{proc_type.return_type.full_name}")
-                            return nil
-                          end
-                          @def_free_types[target_def] = bound unless bound.empty?
-                        end
                         expected = lookup_def_return(output, rec_type, target_def)
                         unless return_fits?(proc_type.return_type, expected)
                           refuse(blk, "expected block to return #{expected.full_name}, not #{proc_type.return_type.full_name}")

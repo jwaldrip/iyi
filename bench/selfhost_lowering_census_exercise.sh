@@ -5,7 +5,9 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 "$REPO/bin/iyi" build -o "$WORK/stage1" "$REPO/src/compiler/tools/compile_native.iyi" >"$WORK/build.log" 2>&1 || { cat "$WORK/build.log"; exit 1; }
-codesign -v --strict "$WORK/stage1" || exit 1
+if [ "$(uname -s)" = Darwin ]; then
+  codesign -v --strict "$WORK/stage1" || exit 1
+fi
 fixture="$REPO/bench/fixtures/preempt_pool.iyi"
 "$WORK/stage1" "$fixture" -o "$WORK/strict" --pipeline typed --probe-phase >"$WORK/strict.log" 2>&1 && exit 1
 [ ! -e "$WORK/strict" ] || exit 1
