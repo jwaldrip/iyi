@@ -22,7 +22,7 @@ module BenchSelfhostSemanticExercise
     parser = Parser.new(src, filename)
     node = parser.parse
     prog = SemanticProgram.new
-    tl = TopLevelVisitor.new(prog)
+    tl = TopLevelVisitor.new(prog, filename)
     node.accept(tl)
     tl.finish
     declare_guessed_instance_vars(prog)
