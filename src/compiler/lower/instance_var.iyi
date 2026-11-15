@@ -196,9 +196,8 @@ pub def codegen_pointerof_instance_var(low : Lowerer, node : Compiler::Syntax::A
   low.last = instance_var_pointer(low, owner.as(Type), node.name, self_var.as(LowerVar).pointer)
 end
 
-# The store to an instance variable of the self being lowered (the hosted `codegen_assign` for an
-# `InstanceVar` target): a value of the variable's own type is stored as it is, a nil stores nothing,
-# and another type goes through `assign`. The value is already evaluated.
+# The hosted `codegen_assign` for an instance variable goes through `assign`
+# for matching types too, so a heap pointer store gets its write barrier.
 pub def store_instance_var(low : Lowerer, name : String, value : Value, value_type : Type) : Nil
   owner = low.current_context.type
   if owner.nil?
@@ -210,12 +209,5 @@ pub def store_instance_var(low : Lowerer, name : String, value : Value, value_ty
   end
   ivar_t = instance_var_type(owner.as(Type), name)
   ptr = instance_var_pointer(low, owner.as(Type), name, self_var.as(LowerVar).pointer)
-  if ivar_t.full_name != value_type.full_name
-    assign(low, ptr, ivar_t, value_type, value)
-    return
-  end
-  if !value_type.is_a?(NilType)
-    stored = value.type.pointer? ? to_rhs(low, value, value_type) : value
-    store_aligned(low, stored, ptr)
-  end
+  assign(low, ptr, ivar_t, value_type, value)
 end

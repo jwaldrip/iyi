@@ -615,33 +615,10 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
     raise "BUG: pointer assignment argument has no analysed type" if argument_type.nil?
     actual = argument_type.as(Type)
     target = TypeIndirection.remove_indirection(elem)
-    if target.full_name != TypeIndirection.remove_indirection(actual).full_name
-      assign(low, values[0], target, actual, values[1])
-      low.last = values[1]
-      return
-    end
-    if elem_kind == "int" || elem_kind == "char" || elem_kind == "float"
-      store_aligned(low, values[1], values[0])
-      low.last = values[1]
-      return
-    end
-    # Hosted assign/store_value (primitives.cr 927, codegen.cr 3323-3328): Bool is not passed
-    # by value, so to_rhs is the i1 itself. Store it and return it.
-    if elem_kind == "bool"
-      bool_stored = values[1]
-      store_aligned(low, bool_stored, values[0])
-      low.last = bool_stored
-      return
-    end
-    # Hosted to_rhs for a type that is not passed by value is the value itself
-    # (a class, a nilable reference, a pointer).
-    if !passed_by_value?(elem)
-      ref_stored = values[1]
-      store_aligned(low, ref_stored, values[0])
-      low.last = ref_stored
-      return
-    end
-    store_pointer_value(low, values[0], values[1], elem)
+    # Hosted pointer_set always uses assign (primitives.cr 927-935), including
+    # same-type references and aggregates. This brackets heap pointer stores
+    # with the concurrent collector's write barrier.
+    assign(low, values[0], target, actual, values[1])
     low.last = values[1]
     return
   end
