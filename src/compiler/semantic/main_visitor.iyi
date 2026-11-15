@@ -4100,7 +4100,6 @@ pub class MainVisitor < TypeNodeHost
     end
     if named = node.named_args
       named.each do |na|
-        na.value.accept(self)
         args << LibCallArgument.new(na.value, type_of?(na.value), na.name)
       end
     end
@@ -4119,7 +4118,6 @@ pub class MainVisitor < TypeNodeHost
     end
     if named = node.named_args
       named.each do |na|
-        na.value.accept(self)
         args << LibCallArgument.new(na.value, type_of?(na.value), na.name)
       end
     end
@@ -4398,6 +4396,11 @@ pub class MainVisitor < TypeNodeHost
           node.args.each do |arg|
             arg.accept(self)
           end
+          if named = node.named_args
+            named.each do |arg|
+              arg.value.accept(self)
+            end
+          end
         end
         @needs_type_filters = saved_call_ntf
         @type_filters = nil
@@ -4409,6 +4412,11 @@ pub class MainVisitor < TypeNodeHost
     node.args.each do |arg|
       arg.accept(self)
     end
+    if named = node.named_args
+      named.each do |arg|
+        arg.value.accept(self)
+      end
+    end
     @call_receivers.delete(node)
     @needs_type_filters = saved_call_ntf
     if node.obj.nil? && node.name == "super"
@@ -4416,11 +4424,6 @@ pub class MainVisitor < TypeNodeHost
     end
     if rec_type.is_a?(LibType)
       return visit_lib_call(node, rec_type.as(LibType))
-    end
-    if named = node.named_args
-      named.each do |arg|
-        arg.value.accept(self)
-      end
     end
 
     trait_receiver = false
