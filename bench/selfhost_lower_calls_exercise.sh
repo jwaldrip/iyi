@@ -1079,8 +1079,10 @@ recursion_owner_check() {
 # The clean comparison must succeed before its failure can count as a catch.
 recursion_owner_check || status=1
 prove_mutation "a recursive call targets a fresh clone" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  '      instantiated_def = hit.definition' \
-  '      instantiated_def = target_def.clone' -- recursion_owner_check || status=1
+  '      instantiated_def = hit.definition
+      @call_target_defs[node] = instantiated_def' \
+  '      instantiated_def = target_def.clone
+      @call_target_defs[node] = instantiated_def' -- recursion_owner_check || status=1
 
 generic_frame_owner_check() {
   if ! "$IYI" build -o "$WORK/frame_owner" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/frame_owner.build.log" 2>&1; then
