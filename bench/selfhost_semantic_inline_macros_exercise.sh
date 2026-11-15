@@ -247,7 +247,7 @@ awk -F'\t' '$1 == "BELOW FLOOR" || $1 == "RAISE THE FLOOR" || $1 == "NO FLOOR" {
 fails=$(cat "$WORK/nfails.txt")
 awk '!/^[0-9]+$/' "$WORK/fails.txt"
 echo "  $fails file(s) below or missing their floor"
-if [ "$fails" -gt 0 ] && [ "$RAISE" != 1 ]; then
+if [ "$fails" -gt 0 ]; then
   status=1
 fi
 
@@ -317,6 +317,12 @@ echo "== 7. Mutation proofs: patches to the port's inline expansion the fixtures
 MUT_INL="$REPO/src/compiler/semantic/inline_macros.iyi"
 MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
 MUTATIONS_RUN=0
+
+prove_mutation "number literals lose non-default kind suffixes" "$REPO/src/compiler/syntax/ast.iyi" \
+  "    if @kind != NumberKind::I32" \
+  "    if false" \
+  -- check_inline_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "an empty expansion is kept and a non-empty one dropped" "$MUT_INL" \
   "return nil if text.bytesize == 0" \
