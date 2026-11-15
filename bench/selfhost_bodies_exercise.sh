@@ -871,7 +871,7 @@ untyped_call_arguments_safe() {
   "$WORK/untyped_call_tool" "$REPO/bench/fixtures/sem_bodies_untyped_call_argument.iyi" \
     -o "$WORK/untyped_call" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/untyped_call.log" 2>&1 || true
   grep -Fq '[phase] bodies: pass' "$WORK/untyped_call.log" || return 1
-  grep -Eq '^table: sem_bodies_untyped_call_argument refusal 2 owner=.* reason=an argument was not typed: fresh ' "$WORK/untyped_call.log"
+  grep -Eq '^table: sem_bodies_untyped_call_argument refusal 4 owner=.* reason=an argument was not typed: fresh ' "$WORK/untyped_call.log"
 }
 if ! untyped_call_arguments_safe; then
   echo "  UNTYPED CALL: positional and named arguments must be refused without a bodies panic"
