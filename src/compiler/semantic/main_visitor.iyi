@@ -2912,29 +2912,69 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     found = lookup_arm_levels(levels, owner, name, args, call_node, walk, signature)
-    return found if found.error || !found.empty? || !NumericAutocast.any?(args, arg_types)
+    return found if found.error || !found.empty?
+    named_nodes = [] of ASTNode
+    named_arg_types = [] of Type
+    if named = call_node.named_args
+      named.each do |arg|
+        named_nodes << arg.value
+        named_arg_types << type_of(arg.value)
+      end
+    end
+    unless NumericAutocast.any?(args, arg_types) || NumericAutocast.any?(named_nodes, named_arg_types)
+      return found
+    end
     signature.autocast_nodes = args
+    signature.named_autocast_nodes = named_nodes
     widened = lookup_arm_levels(levels, owner, name, args, call_node, walk, signature)
     signature.autocast_nodes = nil
+    signature.named_autocast_nodes = nil
     if widened.matches.size > 1
-      value = "0"
-      args.each do |arg|
-        if arg.is_a?(NumberLiteral)
-          value = arg.as(NumberLiteral).value
-          break
-        end
-      end
-      names = [] of String
-      widened.matches.each do |match|
-        unless match.declared.empty?
-          text = match.declared[0].to_s
-          names << text unless names.includes?(text)
-        end
-      end
-      return Matches.new([] of Match, false, NumericAutocast.ambiguity(value, names))
+      return Matches.new([] of Match, false, arm_autocast_ambiguity(widened.matches, args, named_nodes))
     end
     return Matches.new(widened.matches, true) if widened.error.nil? && widened.matches.size == 1
     widened
+  end
+
+  def arm_autocast_ambiguity(matches : Array(Match), args : Array(ASTNode), named_nodes : Array(ASTNode)) : String
+    i = 0
+    while i < args.size
+      names = [] of String
+      matches.each do |match|
+        if i < match.declared.size
+          text = match.declared[i].to_s
+          names << text unless names.includes?(text)
+        end
+      end
+      if names.size > 1 && NumericAutocast.supports?(args[i], type_of(args[i]))
+        value = args[i].is_a?(NumberLiteral) ? args[i].as(NumberLiteral).value : "0"
+        return NumericAutocast.ambiguity(value, names)
+      end
+      i += 1
+    end
+    i = 0
+    while i < named_nodes.size
+      names = [] of String
+      matches.each do |match|
+        if i < match.named_arg_types.size
+          text = match.named_arg_types[i].type.to_s
+          names << text unless names.includes?(text)
+        end
+      end
+      if names.size > 1 && NumericAutocast.supports?(named_nodes[i], type_of(named_nodes[i]))
+        value = named_nodes[i].is_a?(NumberLiteral) ? named_nodes[i].as(NumberLiteral).value : "0"
+        return NumericAutocast.ambiguity(value, names)
+      end
+      i += 1
+    end
+    names = [] of String
+    matches.each do |match|
+      unless match.declared.empty?
+        text = match.declared[0].to_s
+        names << text unless names.includes?(text)
+      end
+    end
+    NumericAutocast.ambiguity("0", names)
   end
 
   def arm_comparison_type(definition : Def, restriction : ASTNode, owner : Type, bound : Hash(String, Type)?) : Type
@@ -2952,7 +2992,7 @@ pub class MainVisitor < TypeNodeHost
     result
   end
 
-  def arm_more_specific?(first : Def, second : Def, args : Array(ASTNode), owner : Type) : Bool
+  def arm_more_specific?(first : Def, second : Def, args : Array(ASTNode), owner : Type, call_node : Call) : Bool
     return false if first.splat_index && !second.splat_index
     return true if second.splat_index && !first.splat_index
     if a = first.splat_index
@@ -2980,7 +3020,27 @@ pub class MainVisitor < TypeNodeHost
       strict = true if t1 != t2
       i += 1
     end
+    if named = call_node.named_args
+      named.each do |argument|
+        t1 = arm_named_comparison_type(first, argument.name, owner, bound1)
+        t2 = arm_named_comparison_type(second, argument.name, owner, bound2)
+        return false unless t1.subtype_of?(t2)
+        strict = true if t1 != t2
+      end
+    end
     strict
+  end
+
+  def arm_named_comparison_type(definition : Def, name : String, owner : Type, bound : Hash(String, Type)?) : Type
+    definition.args.each do |parameter|
+      if parameter.external_name == name
+        if restriction = parameter.restriction
+          return arm_comparison_type(definition, restriction, owner, bound)
+        end
+        return @program.object_type
+      end
+    end
+    @program.object_type
   end
 
   def lookup_arm_levels(levels : Array(Type), owner : Type, name : String, args : Array(ASTNode), call_node : Call, walk : ArmWalk, signature : CallSignature) : Matches
@@ -2999,7 +3059,7 @@ pub class MainVisitor < TypeNodeHost
           next if args.size < min_args_count(definition) || args.size > definition.args.size
         end
         at = 0
-        while at < ordered.size && !arm_more_specific?(definition, ordered[at], args, owner)
+        while at < ordered.size && !arm_more_specific?(definition, ordered[at], args, owner, call_node)
           at += 1
         end
         ordered.insert(at, definition)

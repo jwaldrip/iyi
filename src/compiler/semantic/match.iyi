@@ -27,6 +27,7 @@ pub class CallSignature
   # Set for the hosted second matching pass: the call's argument nodes, so a
   # number literal can be told from a typed integer of the same type.
   property autocast_nodes : Array(ASTNode)?
+  property named_autocast_nodes : Array(ASTNode)? = nil
   property infer_class_vars : Bool = false
 end
 
@@ -182,6 +183,22 @@ pub class CallMatch
       maybe_bound = FreeBindings.of_def(definition, signature.arg_types, ts, class_vars)
       return MatchAttempt.none if maybe_bound.nil?
       bound = maybe_bound.as(Hash(String, Type))
+      if named = signature.named_args
+        unbound = [] of String
+        named_i = 0
+        while named_i < named.size
+          named_arg = named[named_i]
+          index = named_index(definition, named_arg.name)
+          if index >= 0
+            if restriction = definition.args[index].restriction
+              unbound.clear
+              match_free.each { |name| unbound << name unless bound.has_key?(name) }
+              return MatchAttempt.none unless FreeBindings.bind(restriction, named_arg.type, unbound, bound)
+            end
+          end
+          named_i += 1
+        end
+      end
     end
 
     mandatory = [] of Bool
@@ -278,11 +295,14 @@ pub class CallMatch
     named_matched = [] of NamedArgumentType
     named_list = signature.named_args
     if named_list
-      named_list.each do |named_arg|
+      named_i = 0
+      while named_i < named_list.size
+        named_arg = named_list[named_i]
         index = named_index(definition, named_arg.name)
         if index < 0
           return MatchAttempt.none if !dsplat
           named_matched << NamedArgumentType.new(named_arg.name, named_arg.type)
+          named_i += 1
           next
         end
         return MatchAttempt.none if splat && index == splat.as(Int32)
@@ -297,11 +317,18 @@ pub class CallMatch
         if !allowed.nil?
           restricted = ts.restrict(value, allowed.as(Type))
           restricted = allowed.as(Type) if named_arg.type.is_a?(NoReturnType)
+          if restricted.nil?
+            nodes = signature.named_autocast_nodes
+            if nodes && named_i < nodes.size && NumericAutocast.accepts?(nodes[named_i], value, allowed.as(Type))
+              restricted = allowed.as(Type)
+            end
+          end
           return MatchAttempt.none if restricted.nil?
           value = restricted.as(Type)
         end
         exact = false if value != named_arg.type
         named_matched << NamedArgumentType.new(named_arg.name, value)
+        named_i += 1
       end
     end
 
