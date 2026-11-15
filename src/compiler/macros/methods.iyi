@@ -6,6 +6,7 @@ import compiler/syntax/parser::{Parser}
 import compiler/platform/flags::{PlatformFlags}
 import compiler/macros/ast::{MacroId, MetaMacroVar, TypeNode}
 import compiler/macros/answers::{MacroAnswers}
+import compiler/macros/type_facts::{MacroTypeFacts}
 
 pub class MacroMethods
   # A hosted method refusal (`undefined method 'size' ...`), read once by the
@@ -250,6 +251,25 @@ pub class MacroMethods
     false
   end
 
+  def self.splat_elements(elements : Array(ASTNode), args : Array(ASTNode)) : ASTNode?
+    return nil if args.size > 1
+    if args.size == 1 && !args[0].is_a?(StringLiteral)
+      refuse("argument to splat must be a StringLiteral, not #{node_class_name(args[0])}")
+      return nil
+    end
+    text = StringBuilder.new
+    i = 0
+    while i < elements.size
+      text << ", " if i > 0
+      elements[i].to_s(text)
+      i = i + 1
+    end
+    if !elements.empty? && args.size == 1
+      text << args[0].as(StringLiteral).value
+    end
+    MacroId.new(text.to_s)
+  end
+
   # Whether a node holds text as the macro text arguments take it: a string, a
   # symbol or an identifier.
   def self.text_like?(node : ASTNode) : Bool
@@ -373,6 +393,23 @@ pub class MacroMethods
       # Hosted methods.cr:2301-2311, 2618-2640: names are identifiers and
       # `constant` returns the constant's syntax, not its string value.
       if facts = tn.facts
+        if facts.ancestors_known && method == "ancestors" && args.empty?
+          ancestors = [] of ASTNode
+          facts.ancestors.each do |ancestor|
+            node = TypeNode.new(ancestor.name)
+            ancestor_facts = MacroTypeFacts.new
+            ancestor_facts.methods_known = true
+            ancestor.methods.each { |item| ancestor_facts.methods << item }
+            node.facts = ancestor_facts
+            ancestors << node
+          end
+          return ArrayLiteral.new(ancestors)
+        end
+        if facts.methods_known && method == "methods" && args.empty?
+          methods = [] of ASTNode
+          facts.methods.each { |item| methods << item }
+          return ArrayLiteral.new(methods)
+        end
         if facts.annotations_known && method == "annotation" && args.size == 1 && args[0].is_a?(TypeNode)
           annotation_name = args[0].as(TypeNode).name
           return facts.annotations[annotation_name]? || NilLiteral.new
@@ -559,6 +596,8 @@ pub class MacroMethods
     if rec.is_a?(ArrayLiteral)
       arr = rec.as(ArrayLiteral)
       case method
+      when "splat"
+        return splat_elements(arr.elements, args)
       when "size"
         return NumberLiteral.new(arr.elements.size.to_s, NumberKind::I32)
       when "empty?"
@@ -618,6 +657,8 @@ pub class MacroMethods
     if rec.is_a?(TupleLiteral)
       tup = rec.as(TupleLiteral)
       case method
+      when "splat"
+        return splat_elements(tup.elements, args)
       when "size"
         return NumberLiteral.new(tup.elements.size.to_s, NumberKind::I32)
       when "empty?"
