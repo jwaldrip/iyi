@@ -62,7 +62,7 @@ import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, 
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/semantic/top_level::{LibType}
-import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants, path_const}
+import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants, path_const, literal_of_type}
 import compiler/lower/class_var::{class_body_enter, class_body_leave, module_body_enter, codegen_class_var_read, codegen_class_var_assign, codegen_pointerof_class_var, codegen_type_declaration_class_var, in_class_body?, store_class_var}
 import compiler/lower/instance_var::{read_instance_var, self_argument}
 import compiler/lower/instance_var::{codegen_instance_var_read, codegen_pointerof_instance_var, store_instance_var}
@@ -1002,15 +1002,18 @@ pub def bool_bit(value : Bool) : Int64
   0_i64
 end
 
-# The hosted `visit(NumberLiteral)`: a constant of the type the analysis gave the literal. An integer is
-# a const_int; a literal with a fraction is a const_float of its float type (double or float), read from
-# the literal's text the way the hosted code reads it (`to_f64`).
+# The hosted `visit(NumberLiteral)`: a constant of the analysed type. Wide integers
+# retain both words; a fractional literal is read as a float from its text.
 pub def codegen_number(low : Lowerer, node : NumberLiteral) : Nil
   t = low.analysed.type_of?(node)
   raise "BUG: the analysed program has no type for a number literal (hosted codegen.cr: visit(NumberLiteral))" if t.nil?
   ir = low.typer.llvm_type(t.as(Type))
   if node.value.includes?(".")
     low.last = low.builder.const_float(ir, node.value.to_f)
+  elsif ir.int? && ir.bits == 128
+    wide = literal_of_type(low, node, t.as(Type), ir)
+    raise "BUG: a 128-bit number did not lower as a literal" if wide.nil?
+    low.last = wide.as(Value)
   elsif node.kind == NumberKind::U64
     low.last = low.builder.const_int(ir, uint64_bits(node.value.to_u64))
   else

@@ -96,7 +96,7 @@ passed=0
 # its hosted symbol and the naming mutation are checked independently below.
 KNOWN_DIVERGED="lower_string_nonascii lower_name_pointer_union"
 e2e=""
-required_wide="lowconst_wide_unsigned lowconst_wide_fold lowconst_wide_signed"
+required_wide="lowconst_wide_unsigned lowconst_wide_fold lowconst_wide_signed lower_wide_literal"
 wide_lowered=""
 wide_executed=""
 module_same=0
@@ -432,6 +432,8 @@ wide_constant_check() {
       echo "  $n: high-word mutant differs" >> "$WORK/wide-mut-diffs.log"
       cat "$WORK/const-wide-$n.out" >> "$WORK/wide-mut-diffs.log"
       different=1
+    else
+      echo "$n: high-word mutant was not detected" >> "$WORK/m.invalid"
     fi
   done
   [ "$different" -eq 0 ]
