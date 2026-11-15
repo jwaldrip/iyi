@@ -365,6 +365,15 @@ pub class Compiler
       return typed_refuse("verify", reached, "the IR verifier refused the module: " + errors[0].to_s)
     end
     reached = typed_pass("verify")
+    if @config.stub_refused
+      lines = [] of String
+      stubbed_defs.each do |name, reason|
+        line = "#{name}\t#{reason}"
+        lines << line
+        STDERR.puts "iyi-compile-native: DIAGNOSTIC STUB: #{line}"
+      end
+      File.write(@config.output_filename + ".stubs", lines.join("\n") + "\n")
+    end
     if @emit_ir
       File.write(@config.output_filename, print(mod))
       return CompileResult.new(@config.output_filename, "", resolved_modules)
@@ -383,15 +392,6 @@ pub class Compiler
     refusal = link_program(objects, parts[parts.size - 1], output, typed.links)
     unless refusal.nil?
       return typed_refuse("link", reached, refusal.as(String))
-    end
-    if @config.stub_refused
-      lines = [] of String
-      stubbed_defs.each do |name, reason|
-        line = "#{name}\t#{reason}"
-        lines << line
-        STDERR.puts "iyi-compile-native: DIAGNOSTIC STUB: #{line}"
-      end
-      File.write(output + ".stubs", lines.join("\n") + "\n")
     end
     typed_pass("link")
     if @config.probe_phase
