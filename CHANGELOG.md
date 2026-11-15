@@ -221,6 +221,8 @@
 
 ### Fixed
 
+- Lowering census probes share the initial type-ID numbering and keep their later assignments independent, avoiding a full type hierarchy walk for each def.
+
 - The typed pipeline caches named-argument instantiations by their original definition, receiver, and ordered argument names and types. Recursive named calls no longer retype each path through the same instantiations.
 
 - **The port's math fold no longer dies on x86-64 hardware.** `MathValue` and `MathExact` held an `Int128` and a

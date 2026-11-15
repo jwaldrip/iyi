@@ -603,6 +603,22 @@ lower_calls_check() {
   done
   return 0
 }
+cleanup_probe_ok() {
+  if ! "$IYI" build -o "$WORK/cleanup_probe" "$REPO/bench/selfhost_probe_cleanup.iyi" > "$WORK/cleanup_probe.build.log" 2>&1; then
+    echo "INVALID MUTANT: cleanup probe failed to build" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/cleanup_probe"; then return 0; fi
+  "$WORK/cleanup_probe" > "$WORK/cleanup_probe.out" 2>&1
+}
+if cleanup_probe_ok; then
+  prove_mutation "failed probe cleanup removes prior functions" "$REPO/src/compiler/lower/fun.iyi" \
+    '    added << fn unless prior.includes?(fn.name)' '    added << fn' -- cleanup_probe_ok || status=1
+else
+  echo "  FAIL: cleanup probe baseline failed"
+  status=1
+fi
 
 recursive_inferred_check() {
   if ! "$IYI" build -o "$WORK/recursive-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/recursive-mut.build.log" 2>&1; then

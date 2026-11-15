@@ -48,6 +48,31 @@ LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" \
   CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
     -o "$WORK/oracle" "$REPO/bench/selfhost_lower_types_oracle.cr" >/dev/null 2>&1 || { echo "oracle build failed"; exit 1; }
 "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_types_exercise.iyi" || { echo "port driver build failed"; exit 1; }
+type_id_fork_ok() {
+  if ! "$IYI" build -o "$WORK/fork_probe" "$REPO/bench/selfhost_type_id_fork_probe.iyi" > "$WORK/fork_probe.build.log" 2>&1; then
+    echo "INVALID MUTANT: type-id fork probe failed to build" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/fork_probe"; then
+    echo "INVALID MUTANT: type-id fork probe failed signature verification" >&2
+    return 0
+  fi
+  "$WORK/fork_probe" > "$WORK/fork_probe.out" 2>&1
+}
+if type_id_fork_ok; then
+  prove_mutation "type-id probe forks share the baseline map" "$TYPE_ID_FILE" \
+    'LowerTypeIds.new(@ids.dup, @id_to_metaclass.dup, @next_id, @names.dup, @types.dup)' \
+    'LowerTypeIds.new(@ids, @id_to_metaclass.dup, @next_id, @names.dup, @types.dup)' -- type_id_fork_ok || status=1
+else
+  echo "  FAIL: type-id fork baseline failed"
+  status=1
+fi
+if "$IYI" build --no-codegen "$REPO/bench/fixtures/lower_type_id_tuple_write.iyi" > "$WORK/tuple_write.log" 2>&1 ||
+   ! grep -Fq "undefined method '[]=' for Tuple(Int32, Int32)" "$WORK/tuple_write.log"; then
+  echo "  FAIL: tuple element assignment was not rejected"
+  status=1
+fi
 
 
 # The type ids (`lowtyid_*.iyi`) are compared by shape: the port's ids must equal the
