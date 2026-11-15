@@ -798,7 +798,7 @@ prove_mutation "enum dispatch receivers are refused" "$REPO/src/compiler/lower/c
 prove_mutation "global dispatch arms are repeated for virtual subtypes" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '      return base_matches.matches if global_only' '      return base_matches.matches if false' -- lower_calls_check || status=1
 prove_mutation "global dispatch arms are treated as runtime receivers" "$REPO/src/compiler/lower/call.iyi" \
-  '    checked_dispatch_receiver(low, node, arm.receiver, arm.definition) if receiver_dynamic && !arm.receiver.is_a?(VirtualType) && !arm.receiver.is_a?(SemanticProgram)' \
+  '    checked_dispatch_receiver(low, node, arm.receiver, arm.definition) if receiver_dynamic && !arm.receiver.is_a?(VirtualType) && !global_arm' \
   '    checked_dispatch_receiver(low, node, arm.receiver, arm.definition) if receiver_dynamic && !arm.receiver.is_a?(VirtualType)' -- lower_calls_check || status=1
 prove_mutation "dispatch drops the argument type test" "$REPO/src/compiler/lower/call.iyi" \
   '        matches = low.builder.bitwise_and(matches, match_type_id(low, arg_types[i], params[i], arg_tids[i]))' \

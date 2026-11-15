@@ -382,7 +382,8 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     arg_types << at
   end
   targets.each do |arm|
-    checked_dispatch_receiver(low, node, arm.receiver, arm.definition) if receiver_dynamic && !arm.receiver.is_a?(VirtualType) && !arm.receiver.is_a?(SemanticProgram)
+    global_arm = node.obj.nil? && arm.receiver.is_a?(SemanticProgram)
+    checked_dispatch_receiver(low, node, arm.receiver, arm.definition) if receiver_dynamic && !arm.receiver.is_a?(VirtualType) && !global_arm
     if arm.definition.abstract
       pending_visit_node("a dispatched abstract def #{arm.definition.name} on #{arm.receiver.full_name}")
     end
