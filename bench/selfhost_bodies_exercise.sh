@@ -422,6 +422,19 @@ prove_mutation "a call to a top-level fun with a body is refused" "$MAIN_VISITOR
 prove_mutation "a trait definition is typed in its own type" "$MAIN_VISITOR" \
   "def visit(node : TraitDef) : Bool" \
   "def visit_trait_def_off(node : TraitDef) : Bool" -- bodies_at_floor || status=1
+trait_dispatch_at_expected() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1; then
+    body_build_failed "$WORK/mut_build.log"
+    return $?
+  fi
+  "$ORACLE" "$REPO/bench/fixtures/sem_bodies_trait_dispatch.iyi" 2>/dev/null | sort > "$WORK/trait.oracle" || return 1
+  "$MUT_TD" "$REPO/bench/fixtures/sem_bodies_trait_dispatch.iyi" "$REPO/src" 2>/dev/null | sort > "$WORK/trait.port" || return 1
+  cmp -s "$WORK/trait.oracle" "$WORK/trait.port"
+}
+trait_dispatch_at_expected || status=1
+prove_mutation "trait implementers dispatch without argument dispatch" "$MAIN_VISITOR" \
+  "          if seen_owners.includes?(owner_name)" \
+  "          if true" -- trait_dispatch_at_expected || status=1
 prove_mutation "a proc literal is typed as a Proc" "$MAIN_VISITOR" \
   "def visit(node : ProcLiteral) : Bool" \
   "def visit_proc_literal_off(node : ProcLiteral) : Bool" -- bodies_at_floor || status=1

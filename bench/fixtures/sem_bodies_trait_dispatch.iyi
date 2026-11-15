@@ -1,0 +1,28 @@
+trait Greeting
+  abstract def greet : String
+end
+
+struct Person
+end
+
+struct Robot
+end
+
+impl Greeting for Person
+  def greet : String
+    "hello"
+  end
+end
+
+impl Greeting for Robot
+  def greet : String
+    "beep"
+  end
+end
+
+def describe(item : Greeting) : String
+  item.greet
+end
+
+items = [Person.new, Robot.new] of Greeting
+items.each { |item| puts describe(item) }

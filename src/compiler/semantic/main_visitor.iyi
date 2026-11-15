@@ -4606,8 +4606,16 @@ pub class MainVisitor < TypeNodeHost
     matches = arms.as(Array(Match))
     if matches.size > 1
       if trait_receiver
-        refuse_call(node, "not ported: an argument dispatch on a trait receiver (hosted semantic/call.cr)")
-        return false
+        # Distinct owners are receiver dispatch, not overloads of one receiver.
+        seen_owners = Set(String).new
+        matches.each do |match|
+          owner_name = match.owner.full_name
+          if seen_owners.includes?(owner_name)
+            refuse_call(node, "not ported: an argument dispatch on a trait receiver (hosted semantic/call.cr)")
+            return false
+          end
+          seen_owners.add(owner_name)
+        end
       end
       matches.each do |match|
         if free = match.definition.free_vars
