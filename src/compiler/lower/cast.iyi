@@ -224,6 +224,16 @@ def assign_unbarriered(low : Lowerer, pointer : Value, target : Type, value_type
     assign_mixed_union(low, pointer, target, value_type, value)
     return
   end
+  # Hosted cast.cr:250-277 converts aggregate fields recursively, preserving
+  # named tuple key order in the destination.
+  if target.is_a?(TupleInstanceType) && value_type.is_a?(TupleInstanceType)
+    assign_tuple(low, pointer, target.as(TupleInstanceType), value_type.as(TupleInstanceType), value)
+    return
+  end
+  if target.is_a?(NamedTupleInstanceType) && value_type.is_a?(NamedTupleInstanceType)
+    assign_named_tuple(low, pointer, target.as(NamedTupleInstanceType), value_type.as(NamedTupleInstanceType), value)
+    return
+  end
   # Hosted assign_distinct(ProcInstanceType, ProcInstanceType) (cast.cr:279-283): a non-void proc stored as a void proc.
   if target.is_a?(ProcInstanceType) && value_type.is_a?(ProcInstanceType)
     store_aligned(low, to_rhs(low, value, target), pointer)
@@ -240,6 +250,48 @@ def assign_unbarriered(low : Lowerer, pointer : Value, target : Type, value_type
     return
   end
   pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (hosted assign_distinct, not ported)")
+end
+
+def aggregate_field(low : Lowerer, type : Type, pointer : Value, index : Int32) : Value
+  zero = low.builder.const_int(low.module.types.int32, 0_i64)
+  field = low.builder.const_int(low.module.types.int32, index.to_i64)
+  low.builder.inbounds_gep(low.typer.llvm_type(type), pointer, [zero, field] of Value)
+end
+
+def aggregate_pointer(low : Lowerer, type : Type, value : Value) : Value
+  return value if value.type.pointer?
+  pointer = low.alloca(low.typer.llvm_type(type), "")
+  store_aligned(low, value, pointer)
+  pointer
+end
+
+def assign_tuple(low : Lowerer, pointer : Value, target : TupleInstanceType, source : TupleInstanceType, value : Value) : Nil
+  from = aggregate_pointer(low, source, value)
+  i = 0
+  while i < source.tuple_types.size
+    target_ptr = aggregate_field(low, target, pointer, i)
+    source_ptr = aggregate_field(low, source, from, i)
+    source_type = source.tuple_types[i]
+    assign(low, target_ptr, target.tuple_types[i], source_type, to_lhs(low, source_ptr, source_type))
+    i += 1
+  end
+end
+
+def assign_named_tuple(low : Lowerer, pointer : Value, target : NamedTupleInstanceType, source : NamedTupleInstanceType, value : Value) : Nil
+  from = aggregate_pointer(low, source, value)
+  i = 0
+  while i < source.entries.size
+    entry = source.entries[i]
+    j = 0
+    while j < target.entries.size && target.entries[j].name != entry.name
+      j += 1
+    end
+    raise "BUG: named tuple key missing" if j == target.entries.size
+    source_ptr = aggregate_field(low, source, from, i)
+    target_ptr = aggregate_field(low, target, pointer, j)
+    assign(low, target_ptr, target.entries[j].type, entry.type, to_lhs(low, source_ptr, entry.type))
+    i += 1
+  end
 end
 
 # Hosted make_nilable_fun (codegen.cr:2386-2388): a proc struct of two null pointers.
@@ -384,6 +436,10 @@ pub def upcast(low : Lowerer, value : Value, from : Type, to : Type) : Value
   end
   if t.is_a?(NilableProcType) && f.is_a?(ProcInstanceType)
     return value
+  end
+  # Hosted cast.cr:674-684 returns storage for converted tuple values.
+  if (t.is_a?(TupleInstanceType) && f.is_a?(TupleInstanceType)) || (t.is_a?(NamedTupleInstanceType) && f.is_a?(NamedTupleInstanceType))
+    return union_temp(low, t, f, value)
   end
   if t.is_a?(MixedUnionType)
     temp = union_temp(low, t, f, value)

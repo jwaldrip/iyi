@@ -170,6 +170,16 @@ new_cast_check() {
   "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_$cast_fixture.iyi" "$WORK/lowcast_$cast_fixture.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
 }
+cast_fixture=tuple_upcast
+new_cast_check || { echo "  baseline: tuple widening differs"; status=1; }
+prove_mutation "tuple widening is refused" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if target.is_a?(TupleInstanceType) && value_type.is_a?(TupleInstanceType)' '  if false' -- new_cast_check || status=1
+cast_fixture=named_tuple_upcast
+new_cast_check || { echo "  baseline: named tuple widening differs"; status=1; }
+prove_mutation "named tuple widening is refused" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if target.is_a?(NamedTupleInstanceType) && value_type.is_a?(NamedTupleInstanceType)' '  if false' -- new_cast_check || status=1
+prove_mutation "tuple upcast is refused" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if (t.is_a?(TupleInstanceType) && f.is_a?(TupleInstanceType)) || (t.is_a?(NamedTupleInstanceType) && f.is_a?(NamedTupleInstanceType))' '  if false' -- new_cast_check || status=1
 cast_fixture=virtual_store
 new_cast_check || { echo "  baseline: virtual assignment differs"; status=1; }
 prove_mutation "virtual target assignment is refused" "$REPO/src/compiler/lower/cast.iyi" \
