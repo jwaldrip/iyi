@@ -2920,14 +2920,6 @@ pub class MainVisitor < TypeNodeHost
     min_max_args_sizes(d)[0]
   end
 
-  def comparison_restriction(node : ASTNode, owner : Type, bound : Hash(String, Type)?) : Type
-    if bound
-      found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)
-      return found.as(Type) unless found.is_a?(LookupError)
-    end
-    @program.object_type
-  end
-
   def number_literal_matches_type?(literal : NumberLiteral, target_type : Type) : Bool
     t_name = target_type.full_name
     if t_name == "Number" || t_name == "Value" || t_name == "Object"
@@ -3185,72 +3177,6 @@ pub class MainVisitor < TypeNodeHost
     CallCover.all?(CallSignature.new(signature.name, types, named_types, signature.block), matches)
   end
 
-  def arm_comparison_type(definition : Def, restriction : ASTNode, owner : Type, bound : Hash(String, Type)?) : Type
-    old_imports = @program.current_imports
-    old_defs = @program.current_import_defs
-    old_type = @current_type
-    if defining = @program.def_owner(definition)
-      @current_type = defining
-    end
-    enter_file_scope(definition)
-    result = comparison_restriction(restriction, owner, bound)
-    @current_type = old_type
-    @program.current_imports = old_imports
-    @program.current_import_defs = old_defs
-    result
-  end
-
-  def arm_more_specific?(first : Def, second : Def, args : Array(ASTNode), owner : Type, call_node : Call) : Bool
-    return false if first.splat_index && !second.splat_index
-    return true if second.splat_index && !first.splat_index
-    if a = first.splat_index
-      if b = second.splat_index
-        return a.as(Int32) > b.as(Int32) if a != b
-      end
-    end
-    types = [] of Type
-    args.each { |arg| types << type_of(arg) }
-    bound1 = FreeBindings.of_def(first, types, type_node_system(@program))
-    bound2 = FreeBindings.of_def(second, types, type_node_system(@program))
-    strict = false
-    i = 0
-    while i < args.size && i < first.args.size && i < second.args.size
-      break if first.splat_index == i || second.splat_index == i
-      t1 : Type = @program.object_type
-      t2 : Type = @program.object_type
-      if r1 = first.args[i].restriction
-        t1 = arm_comparison_type(first, r1, owner, bound1)
-      end
-      if r2 = second.args[i].restriction
-        t2 = arm_comparison_type(second, r2, owner, bound2)
-      end
-      return false unless t1.subtype_of?(t2)
-      strict = true if t1 != t2
-      i += 1
-    end
-    if named = call_node.named_args
-      named.each do |argument|
-        t1 = arm_named_comparison_type(first, argument.name, owner, bound1)
-        t2 = arm_named_comparison_type(second, argument.name, owner, bound2)
-        return false unless t1.subtype_of?(t2)
-        strict = true if t1 != t2
-      end
-    end
-    strict
-  end
-
-  def arm_named_comparison_type(definition : Def, name : String, owner : Type, bound : Hash(String, Type)?) : Type
-    definition.args.each do |parameter|
-      if parameter.external_name == name
-        if restriction = parameter.restriction
-          return arm_comparison_type(definition, restriction, owner, bound)
-        end
-        return @program.object_type
-      end
-    end
-    @program.object_type
-  end
-
   def lookup_arm_levels(levels : Array(Type), owner : Type, name : String, args : Array(ASTNode), call_node : Call, walk : ArmWalk, signature : CallSignature) : Matches
     matches = [] of Match
     first_error : String? = nil
@@ -3260,21 +3186,14 @@ pub class MainVisitor < TypeNodeHost
       mod = declaring.as(ModuleType)
       defs = MethodLookup.own_defs(mod, name)
       next if defs.nil?
-      ordered = [] of Def
-      defs.as(Array(Def)).each do |definition|
+      ordered = defs.as(Array(Def))
+      level_start = matches.size
+      ordered.each do |definition|
         next if definition.abstract && !owner.is_a?(TraitType)
         next unless CallMatch.yields?(definition) == !call_node.block.nil?
         if call_node.named_args.nil? && definition.splat_index.nil?
           next if args.size < min_args_count(definition) || args.size > definition.args.size
         end
-        at = 0
-        while at < ordered.size && !arm_more_specific?(definition, ordered[at], args, owner, call_node)
-          at += 1
-        end
-        ordered.insert(at, definition)
-      end
-      level_start = matches.size
-      ordered.each do |definition|
         old_imports = @program.current_imports
         old_defs = @program.current_import_defs
         old_type = @current_type

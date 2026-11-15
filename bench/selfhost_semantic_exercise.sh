@@ -450,6 +450,21 @@ check_super_order_diverge() {
   cmp -s "$WORK/super-oracle.ast" "$WORK/super-mutant.ast"
 }
 
+check_ordinary_order_diverge() {
+  if ! "$IYI" build -o "$WORK/mut-ordinary" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1; then
+    echo "mutation failed to build, not a behavioral catch"
+    return 0
+  fi
+  local fixture="$REPO/bench/fixtures/sem_expr_ordinary_forward_overload.iyi"
+  "$WORK/dump_crystal" "$fixture" --expr > "$WORK/ordinary-oracle.ast" 2>/dev/null || return 0
+  "$WORK/exercise" "$fixture" --expr > "$WORK/ordinary-baseline.ast" 2>/dev/null || return 0
+  cmp -s "$WORK/ordinary-oracle.ast" "$WORK/ordinary-baseline.ast" || return 0
+  "$WORK/mut-ordinary" "$fixture" --expr > "$WORK/ordinary-mutant.ast" 2>/dev/null || return 0
+  grep -Fq 'target_def: ordinary_choose: String' "$WORK/ordinary-oracle.ast" || return 0
+  grep -Fq 'target_def: ordinary_choose: Int32' "$WORK/ordinary-mutant.ast" || return 0
+  cmp -s "$WORK/ordinary-oracle.ast" "$WORK/ordinary-mutant.ast"
+}
+
 check_ivar_dump_diverge() {
   "$IYI" build -o "$WORK/mut-declarations" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" >/dev/null 2>&1 || return 1
   "$WORK/mut-declarations" "$REPO/bench/fixtures/sem_bodies_ivar_read.iyi" > "$WORK/mut-ivar.ast" 2>/dev/null || return 1
@@ -596,9 +611,43 @@ prove_mutation "super lookup re-ranks declaration-ordered overloads" "$SEM_MAIN"
   '      selected = exact_matches.first' \
   '      selected = exact_matches.first
       exact_matches.each do |candidate|
-        selected = candidate if arm_more_specific?(candidate, selected, args, rec_type, call_node)
+        next if candidate.args.empty? || selected.args.empty?
+        candidate_restriction = candidate.args[0].restriction
+        selected_restriction = selected.args[0].restriction
+        if candidate_restriction && selected_restriction
+          candidate_type = restriction_type(candidate_restriction, rec_type)
+          selected_type = restriction_type(selected_restriction, rec_type)
+          if candidate_type && selected_type && candidate_type != selected_type && candidate_type.subtype_of?(selected_type)
+            selected = candidate
+          end
+        end
       end' \
   -- check_super_order_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "ordinary lookup re-ranks declaration-ordered overloads" "$SEM_MAIN" \
+  '      ordered = defs.as(Array(Def))' \
+  '      ordered = [] of Def
+      defs.as(Array(Def)).each do |candidate|
+        at = 0
+        while at < ordered.size
+          other = ordered[at]
+          unless candidate.args.empty? || other.args.empty?
+            candidate_restriction = candidate.args.last.restriction
+            other_restriction = other.args.last.restriction
+            if candidate_restriction && other_restriction
+              candidate_type = restriction_type(candidate_restriction, owner)
+              other_type = restriction_type(other_restriction, owner)
+              if candidate_type && other_type && candidate_type != other_type && candidate_type.subtype_of?(other_type)
+                break
+              end
+            end
+          end
+          at += 1
+        end
+        ordered.insert(at, candidate)
+      end' \
+  -- check_ordinary_order_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "union receiver multiple dispatch bypasses return type merge" "$SEM_MAIN" \
