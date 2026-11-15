@@ -832,6 +832,11 @@ prove_mutation "dispatch evaluates an argument in every arm" "$REPO/src/compiler
       passed = values[i]' -- lower_calls_check || status=1
 prove_mutation "named arguments lose written order" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '      named.each { |arg| arguments << arg.value }' '      named.reverse_each { |arg| arguments << arg.value }' -- lower_calls_check || status=1
+prove_mutation "generic bindings ignore matched argument types" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '          call_arg_type = matched[index] if index < matched.size' '          call_arg_type = matched[index] if false' -- lower_calls_check || status=1
+prove_mutation "numeric arguments ignore their matched type" "$REPO/src/compiler/lower/call.iyi" \
+  '      converted = lib_number_value(low, arg_node.as(NumberLiteral), target_type)' \
+  '      converted = downcast(low, passed, target_type, at, true)' -- lower_calls_check || status=1
 prove_mutation "typing mutates the written argument list" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '    CallExpansion.new(target, arguments)' '    node.args = arguments
     CallExpansion.new(target, arguments)' -- lower_calls_check || status=1
