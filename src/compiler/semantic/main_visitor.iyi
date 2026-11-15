@@ -3576,7 +3576,7 @@ pub class MainVisitor < TypeNodeHost
     if candidates.empty? && (obj_node = call_node.obj)
       # Hosted call.cr raise_matches_not_found: a name no def of the receiver or its ancestors carries is
       # `undefined method`, not `no overload matches` (the same text lookup_method_matching_impl gives).
-      obj_t = type_of(obj_node)
+      obj_t = type_of?(obj_node)
       if obj_t.is_a?(UnionType)
         refuse_call(call_node, "undefined method '#{name}' for #{rec_type.full_name} (compile-time type is #{obj_t.full_name})")
       else
@@ -3595,6 +3595,31 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def refuse_uncovered_with_defs(call_node : Call, rec_type : Type, name : String, args : Array(ASTNode), count_matches : Array(Def)) : Nil
+    # Hosted call_error.cr:993-1005 formats types after argument typing. A
+    # refused port child can lack one; retain the overload refusal and name the
+    # source expression instead of raising while constructing its diagnostic.
+    missing_type = false
+    args.each do |arg|
+      if type_of?(arg).nil?
+        missing_type = true
+        break
+      end
+    end
+    if missing_type
+      arg_types_strs = [] of String
+      args.each do |arg|
+        if arg_type = type_of?(arg)
+          arg_types_strs << arg_type.full_name
+        else
+          arg_types_strs << arg.to_s
+        end
+      end
+      method_disp = format_method_display_name(rec_type, name)
+      overload_lines = count_matches.map { |d| " - #{format_overload_signature(rec_type, d)}" }
+      plural = args.size > 1 ? "s" : ""
+      refuse_call(call_node, "no overload matches '#{method_disp}' with type#{plural} #{arg_types_strs.join(", ")}\n\nOverloads are:\n#{overload_lines.join("\n")}")
+      return nil
+    end
     all_same_mismatch = true
     mismatch_idx = -1
     count_matches.each do |d|
