@@ -316,7 +316,8 @@ prove_mutation "an implicit-self primitive uses a constant instead of self" "$RE
 prove_mutation "a reference pointer_set stores the pointer slot" "$REPO/src/compiler/lower/primitives.iyi" \
   "      ref_stored = values[1]" "      ref_stored = values[0]" -- lower_primitives_check || status=1
 prove_mutation "a by-value pointer_set copies the destination" "$REPO/src/compiler/lower/primitives.iyi" \
-  "    store_aligned(low, stored, dest)" "    store_aligned(low, load_aligned(low, ir, dest), dest)" -- lower_primitives_check || status=1
+  $'    end\n    assign(low, values[0], target, actual, values[1])\n    low.last = values[1]' \
+  $'    end\n    assign(low, values[0], target, actual, values[0])\n    low.last = values[1]' -- lower_primitives_check || status=1
 prove_mutation "checked addition returns its overflow bit" "$REPO/src/compiler/lower/primitives.iyi" \
   "  pair[0]" "  pair[1]" -- lower_primitives_check || status=1
 prove_mutation "an acquire atomic load is sequentially consistent" "$REPO/src/compiler/lower/primitives.iyi" \
