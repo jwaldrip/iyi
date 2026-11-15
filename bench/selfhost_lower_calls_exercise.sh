@@ -1061,13 +1061,26 @@ recursion_owner_check() {
     fi
     awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/recursion_mut.out" || return 1
   done
+  if ! "$IYI" build -o "$WORK/recursion_target_mut" "$REPO/bench/selfhost_recursion_target_probe.iyi" > "$WORK/recursion_target_mut.build.log" 2>&1; then
+    echo "INVALID MUTANT: recursion target probe failed to build" >&2
+    cat "$WORK/recursion_target_mut.build.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  if ! "$WORK/recursion_target_mut" "$REPO/bench/fixtures/lowcall_recursion_top.iyi" "$REPO/src" > "$WORK/recursion_target_mut.out" 2>"$WORK/recursion_target_mut.err"; then
+    echo "INVALID MUTANT: recursion target probe failed to run" >&2
+    cat "$WORK/recursion_target_mut.err" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  if grep -q '^cycle_a target=.* untyped-params' "$WORK/recursion_target_mut.out"; then return 1; fi
   return 0
 }
 # The clean comparison must succeed before its failure can count as a catch.
 recursion_owner_check || status=1
 prove_mutation "a recursive call targets a fresh clone" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  "remember_def_instance(cache_key, target_def, provisional)" \
-  "nil" -- recursion_owner_check || status=1
+  '      instantiated_def = hit.definition' \
+  '      instantiated_def = target_def.clone' -- recursion_owner_check || status=1
 
 generic_frame_owner_check() {
   if ! "$IYI" build -o "$WORK/frame_owner" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/frame_owner.build.log" 2>&1; then
