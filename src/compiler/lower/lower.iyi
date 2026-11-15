@@ -317,8 +317,8 @@ end
 
 # The hosted codegen emits the runtime overflow function before lowering checked arithmetic.
 # The declaration may come from any unit, not just the entry root.
-pub def emit_well_known_funs(low : Lowerer) : Nil
-  if pool_reached?(low)
+pub def emit_well_known_funs(low : Lowerer, census : Bool = false) : Nil
+  if pool_reached?(low) && !census
     refuse_reached_pool(low)
     return
   end
@@ -332,10 +332,23 @@ pub def emit_well_known_funs(low : Lowerer) : Nil
 end
 
 # The probe module runs the same pre-visit once, before its per-def loop (program.iyi lowering_table).
-pub def emit_probe_well_known(m : Module, typer : LowerTyper, analysed : MainVisitor) : Nil
+pub def emit_probe_well_known(m : Module, typer : LowerTyper, analysed : MainVisitor, census : Bool = false) : String?
   low = Lowerer.new(m, typer, analysed)
   low.body_visitor = CoreBody.new
-  emit_well_known_funs(low)
+  example : String? = nil
+  if census
+    analysed.typed_instances.each do |inst|
+      if pool_start?(low, inst.definition, inst.self_type)
+        example = "IyiWorkers.start"
+        if loc = inst.definition.location
+          example = "#{loc.filename}:#{loc.line_number} in IyiWorkers.start"
+        end
+        break
+      end
+    end
+  end
+  emit_well_known_funs(low, census)
+  example
 end
 
 def well_known_fun?(low : Lowerer, name : String) : Bool
