@@ -52,6 +52,7 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export IYI_PATH="$REPO/src"
 export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
 export IYI_CACHE_DIR="${IYI_CACHE_DIR:-/tmp/iyi-pr147-cache}"
 
@@ -90,6 +91,10 @@ probe_phase() {
 probe_reason() {
   grep -m1 -E 'SYNTAX ERROR|panic' "$(probe_log "$1")" | cut -c1-150
 }
+verify_binary() {
+  [ "$(uname -s)" != Darwin ] || codesign -v --strict "$1"
+}
+
 
 # Copies the hosted front end's dumper heredoc out of an existing gate script, unchanged.
 # The marker is matched by pattern, so no gate name is spelled out here.
@@ -193,6 +198,55 @@ echo "  Phase summary: $(( ${#changed[@]} - phase_failures ))/${#changed[@]} #14
 
 if [ "$probes_only" -eq 0 ]; then
   echo
+  echo "== 2b. Optional alias probes and strict alias use"
+  if ! "$IYI" build -o "$WORK/optional_alias" "$REPO/bench/selfhost_optional_alias_probe.iyi" > "$WORK/alias-build.log" 2>&1; then
+    cat "$WORK/alias-build.log"
+    echo "FAIL: optional alias probe did not build"
+    status=1
+  elif ! verify_binary "$WORK/optional_alias" || ! "$WORK/optional_alias" > "$WORK/alias-probe.log" 2>&1 || ! grep -Fxq 'OPTIONAL ALIAS PROBE OK' "$WORK/alias-probe.log"; then
+    cat "$WORK/alias-probe.log"
+    echo "FAIL: optional alias probe"
+    status=1
+  else
+    echo "  optional missing and cyclic aliases are misses; a valid generic alias chain resolves"
+  fi
+  cycle="$REPO/bench/fixtures/pr147_alias_cycle.iyi"
+  if "$IYI" build --no-codegen "$cycle" > "$WORK/hosted-cycle.log" 2>&1 ||
+     ! grep -Fq 'infinite recursive definition of alias' "$WORK/hosted-cycle.log"; then
+    echo "FAIL: hosted compiler did not reject the alias cycle"
+    status=1
+  else
+    echo "  hosted compiler rejects a cycle; the optional resolver reports a miss"
+  fi
+  if ! "$IYI" build -o "$WORK/typed_compile" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/typed-build.log" 2>&1 || ! verify_binary "$WORK/typed_compile"; then
+    cat "$WORK/typed-build.log"
+    echo "FAIL: typed compiler did not build"
+    status=1
+  else
+    strict="$REPO/bench/fixtures/pr147_alias_strict.iyi"
+    chain="$REPO/bench/fixtures/pr147_alias_chain.iyi"
+    if "$IYI" build --no-codegen "$strict" > "$WORK/hosted-strict.log" 2>&1; then
+      echo "FAIL: hosted compiler accepted the unresolved alias"
+      status=1
+    elif "$WORK/typed_compile" "$strict" -o "$WORK/strict" --pipeline typed --prelude --probe-phase > "$WORK/port-strict.log" 2>&1; then
+      echo "FAIL: typed compiler accepted the referenced unresolved alias"
+      status=1
+    elif ! grep -Fxq 'Error: undefined constant ::MissingLibrary::Thing' "$WORK/hosted-strict.log" ||
+         ! grep -Fxq 'Error: undefined constant ::MissingLibrary::Thing' "$WORK/port-strict.log"; then
+      echo "FAIL: hosted and typed unresolved alias errors differ"
+      status=1
+    elif ! "$IYI" build --no-codegen "$chain" > "$WORK/hosted-chain.log" 2>&1 ||
+         ! "$WORK/typed_compile" "$chain" -o "$WORK/chain" --pipeline typed --prelude --probe-phase > "$WORK/port-chain.log" 2>&1; then
+      echo "FAIL: a valid alias chain was refused"
+      status=1
+    else
+      echo "  strict referenced alias refuses with hosted error; valid chain builds"
+    fi
+  fi
+fi
+
+if [ "$probes_only" -eq 0 ]; then
+  echo
   echo "== 3. Lexer and parser differential against the Crystal front end"
   extract_oracle "$REPO/bench/selfhost_lexer_exercise.sh" > "$WORK/dump_lex.cr"
   extract_oracle "$REPO/bench/selfhost_parser_exercise.sh" > "$WORK/dump_ast.cr"
@@ -275,6 +329,12 @@ if [ "$probes_only" -eq 0 ]; then
     "$REPO/src/compiler/syntax/parser.iyi" \
     "        parse_var_or_call(location, true)" \
     "        parse_const(true, location)" && mutations_caught=$((mutations_caught + 1))
+  mutations_run=$((mutations_run + 1))
+
+  prove_mutation "reverted: optional generic aliases are resolved strictly" \
+    "$REPO/src/compiler/semantic/top_level.iyi" \
+    "resolved = remove_alias?(arg)" \
+    "resolved = remove_alias(arg)" && mutations_caught=$((mutations_caught + 1))
   mutations_run=$((mutations_run + 1))
 
   prove_mutation "guard: a no-op patch is refused" \
