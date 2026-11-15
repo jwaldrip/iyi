@@ -4592,13 +4592,10 @@ pub class MainVisitor < TypeNodeHost
       groups << found.matches unless found.empty?
     end
     # A receiverless call resolved entirely in the program has no dynamic
-    # receiver. The subtype searches rediscover the same global overloads.
+    # receiver. Subtype methods cannot override its lexical global binding.
     if node.obj.nil? && base_matches.cover_all?
       global_only = !base_matches.matches.empty?
       base_matches.matches.each { |match| global_only = false unless match.owner.is_a?(SemanticProgram) }
-      groups.each do |group|
-        group.each { |match| global_only = false unless match.owner.is_a?(SemanticProgram) }
-      end
       return base_matches.matches if global_only
     end
     result = [] of Match
