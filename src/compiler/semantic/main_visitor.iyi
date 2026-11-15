@@ -2497,13 +2497,15 @@ pub class MainVisitor < TypeNodeHost
 
   def visit(node : ClassDef) : Bool
     t = @program.lookup_type_path?(node.name, @current_type)
-    if t && t.is_a?(ClassType)
+    # Unit assembly uses ClassDef wrappers for module headers. Hosted
+    # semantic_visitor.cr:1811-1828 visits either resolved module body.
+    if t && t.is_a?(ModuleType)
       old_type = @current_type
-      @current_type = t.as(ClassType)
+      @current_type = t.as(ModuleType)
       node.body.accept(self)
       @current_type = old_type
 
-      cls = t.as(ClassType)
+      cls = t.as(ModuleType)
       cls.class_vars.each_value do |cvar|
         if cvar.initializer.nil? && !cvar.type.nilable?
           return refuse(node, "class variable '#{cvar.name}' of #{cls.full_name} is not nilable (it's #{cvar.type.full_name}) so it must have an initializer")

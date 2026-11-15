@@ -1,0 +1,7 @@
+import unit_cvar_array_module::{Inventory}
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(Inventory.items.size)
