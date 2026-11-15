@@ -330,7 +330,7 @@ pub class Compiler
       refused = [] of String
       refusal_table(typed, root_name, refused).each { |line| puts line }
       names = [] of String
-      lowering_table(typed, triple, root_name, names, refused).each { |line| puts line }
+      lowering_table(typed, triple, root_name, names, refused, nil, @config.probe_phase).each { |line| puts line }
       File.write(@config.output_filename + ".names", names.uniq.join("\n") + "\n")
       File.write(@config.output_filename + ".refusals", refused.join("\n") + "\n")
       STDOUT.flush
