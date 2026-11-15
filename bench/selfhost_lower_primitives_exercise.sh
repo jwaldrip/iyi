@@ -207,9 +207,7 @@ binary_union_check() {
 convert_refusal_check() {
   local driver="$1"
   for spec in "UInt128 Float32 checked checked UInt128 to Float32" \
-              "Float64 Float32 checked checked float narrowing" \
-              "Float64 Int32 checked float to integer" \
-              "Float64 Int32 unchecked float to integer"; do
+              "Float64 Float32 checked checked float narrowing"; do
     set -- $spec
     from=$1; to=$2; check=$3; shift 3
     if "$driver" convert_refusal "$from" "$to" "$check" > "$WORK/refuse.out" 2> "$WORK/refuse.err"; then
@@ -411,8 +409,14 @@ prove_mutation "checked UInt128 to Float32 must refuse" "$REPO/src/compiler/lowe
   '      pending_visit_node("checked UInt128 to Float32 (hosted codegen_out_of_range)")' '      return value' -- lower_primitives_check || status=1
 prove_mutation "checked float narrowing must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
   '        pending_visit_node("checked float narrowing #{from.full_name} to #{to.full_name} (hosted codegen_out_of_range)")' '        return value' -- lower_primitives_check || status=1
-prove_mutation "float to integer must refuse" "$REPO/src/compiler/lower/primitives.iyi" \
-  '    pending_visit_node("float to integer #{from.full_name} to #{to.full_name} (hosted codegen_convert)")' '    return value' -- lower_primitives_check || status=1
+prove_mutation "a saturating conversion to an unsigned integer is signed" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  id = signed ? IntrinsicId::FPToSISat : IntrinsicId::FPToUISat' '  id = IntrinsicId::FPToSISat' -- lower_primitives_check || status=1
+prove_mutation "a checked conversion to an unsigned integer truncates as signed" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    return signed ? low.builder.fp_to_si(value, to_ir) : low.builder.fp_to_ui(value, to_ir)' '    return low.builder.fp_to_si(value, to_ir)' -- lower_primitives_check || status=1
+prove_mutation "the other library lower float bound is ordered" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  below = low.builder.fcmp(RealPredicate::ULT, value, low.builder.const_float(float_ir, minimum))' '  below = low.builder.fcmp(RealPredicate::OLT, value, low.builder.const_float(float_ir, minimum))' -- lower_primitives_check || status=1
+prove_mutation "the other library upper float bound is rounded" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  maximum = past <= precision ? pow2_f64(past) - 1.0 : pow2_f64(past) - pow2_f64(past - precision)' '  maximum = pow2_f64(past) - 1.0' -- lower_primitives_check || status=1
 
 echo
 echo "== 5. Checked arithmetic in an isolated def from a required runtime"
@@ -443,6 +447,44 @@ else
 fi
 prove_mutation "the required overflow function has the wrong name" "$REPO/src/compiler/lower/primitives.iyi" \
   '    fn = low.module.add_function(name, fn_type, CallConv::C)' '    fn = low.module.add_function(name + "_wrong", fn_type, CallConv::C)' -- required_overflow_check || status=1
+
+echo
+echo "== 6. Checked float conversions under the iyi prelude, in isolated defs from a required runtime"
+float_names="f32_i8 f32_i16 f32_i32 f32_i64 f32_i128 f32_u8 f32_u16 f32_u32 f32_u64 f32_u128 f64_i8 f64_i16 f64_i32 f64_i64 f64_i128 f64_u8 f64_u16 f64_u32 f64_u64 f64_u128"
+if IYI_PATH="$required/prelude" "$IYI" build --emit llvm-ir --no-debug -o "$WORK/float-oracle" "$required/float_int.iyi" > "$WORK/float-oracle.log" 2>&1; then
+  awk "$CALL_TYPES" "$WORK/float-oracle.ll" > "$WORK/float-oracle.normal.ll"
+  "$WORK/port" oracle "$WORK/float-oracle.normal.ll" > "$WORK/float-host.txt" 2> "$WORK/float-host.err" || status=1
+else
+  echo "  float-conversion oracle failed:"
+  awk 'NR<=15' "$WORK/float-oracle.log"
+  status=1
+fi
+# The one define of a normalised module named NAME (quoted, `@"*NAME<`); fails unless exactly one matches.
+one_def() {
+  awk -v n="@\"*$1<" 'index($0, "define ") == 1 && index($0, n) { p = 1; c++ } p { print } p && /^}/ { p = 0 } END { exit c != 1 }' "$2"
+}
+float_iyi_check() {
+  "$IYI" build -o "$WORK/float-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/float-build.log" 2>&1 || return 1
+  (cd "$required" && "$WORK/float-port" probe-iyi runtime.iyi float_int.iyi "$WORK/float-oracle.normal.ll" $float_names) > "$WORK/float.ir" 2> "$WORK/float.err" || return 1
+  "$WORK/port" oracle "$WORK/float.ir" > "$WORK/float-port.txt" 2> "$WORK/float-port.err" || return 1
+  for name in $float_names; do
+    one_def "$name" "$WORK/float-host.txt" > "$WORK/float-host.fn" || return 1
+    one_def "$name" "$WORK/float-port.txt" > "$WORK/float-port.fn" || return 1
+    cmp -s "$WORK/float-host.fn" "$WORK/float-port.fn" || return 1
+  done
+}
+if float_iyi_check; then
+  echo "  iyi-prelude float conversions: 20 functions identical to the hosted module"
+else
+  echo "  iyi-prelude float conversions: refused or differ from the hosted module"
+  awk 'NR<=12' "$WORK/float.err" "$WORK/float-build.log"
+  status=1
+fi
+prove_mutation "a checked float conversion ignores the prelude in use" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  if low.analysed.program.iyi_prelude?' '  if false' -- float_iyi_check || status=1
+prove_mutation "the iyi prelude's upper float bound is excluded" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      above = low.builder.fcmp(RealPredicate::OGE, value, low.builder.const_float(float_ir, pow2_f64(past)))' \
+  '      above = low.builder.fcmp(RealPredicate::OGT, value, low.builder.const_float(float_ir, pow2_f64(past)))' -- float_iyi_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

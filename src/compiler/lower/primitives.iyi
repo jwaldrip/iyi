@@ -1483,7 +1483,7 @@ pub def codegen_primitive_convert(low : Lowerer, from : Type, to : Type, value :
     return value
   end
   if from_kind == "float" && to_kind == "int"
-    pending_visit_node("float to integer #{from.full_name} to #{to.full_name} (hosted codegen_convert)")
+    return codegen_convert_float_int(low, from, to, value, checked)
   end
   pending_visit_node("convert #{from.full_name} to #{to.full_name} (hosted codegen_convert, not ported)")
   value
@@ -1542,6 +1542,58 @@ pub def integer_bound(low : Lowerer, shape : IntShape, maximum : Bool) : Value
     return int_const(low, maximum ? (minimum ^ -1_i64) : minimum, shape)
   end
   int_const(low, maximum ? -1_i64 : 0_i64, shape)
+end
+
+# Hosted primitives.cr:815-839: checked truncation raises out of range;
+# unchecked conversion saturates and maps NaN to zero.
+pub def codegen_convert_float_int(low : Lowerer, from : Type, to : Type, value : Value, checked : Bool) : Value
+  to_ir = low.typer.llvm_type(to)
+  signed = is_signed?(to)
+  if checked
+    raise_overflow_cond(low, codegen_float_out_of_range(low, from, to, value))
+    return signed ? low.builder.fp_to_si(value, to_ir) : low.builder.fp_to_ui(value, to_ir)
+  end
+  id = signed ? IntrinsicId::FPToSISat : IntrinsicId::FPToUISat
+  low.builder.intrinsic(id, [to_ir, low.typer.llvm_type(from)] of IrType, [value] of Value)
+end
+
+# Hosted primitives.cr:329-418 chooses bounds for the prelude in use.
+pub def codegen_float_out_of_range(low : Lowerer, from : Type, to : Type, value : Value) : Value
+  float_ir = low.typer.llvm_type(from)
+  precision = primitive_bytes(from) == 4 ? 24 : 53
+  bits = primitive_bytes(to) * 8
+  signed = is_signed?(to)
+  past = signed ? bits - 1 : bits
+  if low.analysed.program.iyi_prelude?
+    if !signed
+      below = low.builder.fcmp(RealPredicate::ULE, value, low.builder.const_float(float_ir, -1.0))
+    elsif bits - 1 < precision
+      below = low.builder.fcmp(RealPredicate::ULE, value, low.builder.const_float(float_ir, 0.0 - pow2_f64(bits - 1) - 1.0))
+    else
+      below = low.builder.fcmp(RealPredicate::ULT, value, low.builder.const_float(float_ir, 0.0 - pow2_f64(bits - 1)))
+    end
+    if precision == 24 && past >= 128
+      above = low.builder.fcmp(RealPredicate::OGT, value, low.builder.const_float(float_ir, pow2_f64(128) - pow2_f64(104)))
+    else
+      above = low.builder.fcmp(RealPredicate::OGE, value, low.builder.const_float(float_ir, pow2_f64(past)))
+    end
+    return low.builder.build_or(below, above)
+  end
+  minimum = signed ? 0.0 - pow2_f64(bits - 1) : 0.0
+  maximum = past <= precision ? pow2_f64(past) - 1.0 : pow2_f64(past) - pow2_f64(past - precision)
+  below = low.builder.fcmp(RealPredicate::ULT, value, low.builder.const_float(float_ir, minimum))
+  above = low.builder.fcmp(RealPredicate::OGT, value, low.builder.const_float(float_ir, maximum))
+  low.builder.build_or(below, above)
+end
+
+def pow2_f64(k : Int32) : Float64
+  value = 1.0
+  i = 0
+  while i < k
+    value = value * 2.0
+    i = i + 1
+  end
+  value
 end
 
 # The hosted `codegen_primitive_allocate` for the `allocate` primitive that the generated `new`

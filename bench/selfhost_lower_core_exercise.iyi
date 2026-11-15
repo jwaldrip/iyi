@@ -416,12 +416,13 @@ end
 
 # Analyse the required unit separately from the entry, then lower the checked def
 # alone into a fresh module, as the per-function census does.
-def run_probe_required(runtime : String, entry : String, oracle : String) : Nil
+def run_probe_required(runtime : String, entry : String, oracle : String, names : Array(String), iyi_prelude : Bool) : Nil
   normalizer = NormalizerProgram.new
   normalizer.iyi_prelude = false
   required_root = normalizer.normalize(Parser.new(File.read(runtime), runtime).parse)
   entry_root = normalizer.normalize(Parser.new(File.read(entry), entry).parse)
   prog = SemanticProgram.new
+  prog.iyi_prelude = iyi_prelude
   ts = TypeSystem.new(prog)
   tl = TopLevelVisitor.new(prog)
   required_root.accept(tl)
@@ -436,8 +437,10 @@ def run_probe_required(runtime : String, entry : String, oracle : String) : Nil
   analysis = Analysis.new(entry_root, mv, true)
   m = ir_module(triple_of(File.read(oracle)))
   typer = LowerTyper.new(m.types, m.layout, true)
-  error = probe_message(analysis, typer, m, "checked_sum")
-  raise error.as(String) unless error.nil?
+  names.each do |name|
+    error = probe_message(analysis, typer, m, name)
+    raise error.as(String) unless error.nil?
+  end
   puts print(m)
 end
 
@@ -463,7 +466,9 @@ def run : Nil
   elsif mode == "probe-reuse"
     run_probe_reuse(args[1])
   elsif mode == "probe-required"
-    run_probe_required(args[1], args[2], args[3])
+    run_probe_required(args[1], args[2], args[3], ["checked_sum"], false)
+  elsif mode == "probe-iyi"
+    run_probe_required(args[1], args[2], args[3], args[4, args.size - 4], true)
   else
     raise "unknown mode #{mode}"
   end
