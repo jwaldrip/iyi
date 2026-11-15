@@ -13,10 +13,12 @@ import compiler/semantic/top_level::{NoReturnType, Type, VoidType}
 # expansions that lowering uses while keeping nested scopes separate.
 pub class LocalOrder < Visitor
   getter vars : Array(Var)
+  getter types : Hash(String, Type)
   getter declared : Bool
 
   def initialize(@analysed : MainVisitor)
     @vars = [] of Var
+    @types = Hash(String, Type).new
     @names = Set(String).new
     @declared = false
     @macro_depth = 0
@@ -25,6 +27,13 @@ pub class LocalOrder < Visitor
   def record(node : ASTNode) : Nil
     if node.is_a?(Var)
       var = node.as(Var)
+      if type = @analysed.type_of?(var)
+        if previous = @types[var.name]?
+          @types[var.name] = @analysed.program.type_merge(previous, type)
+        else
+          @types[var.name] = type
+        end
+      end
       unless var.name == "self" || @names.includes?(var.name)
         @names.add(var.name)
         @vars << var
