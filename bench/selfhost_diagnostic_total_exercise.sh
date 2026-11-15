@@ -5,7 +5,9 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 export IYI_PATH="$repo/src"
 "$repo/bin/iyi" build -o "$work/probe" "$repo/bench/diagnostic_untyped_probe.iyi" > "$work/build.log" 2>&1
-codesign -v --strict "$work/probe"
+if [ "$(uname -s)" = Darwin ]; then
+  codesign -v --strict "$work/probe"
+fi
 "$work/probe" > "$work/actual"
 awk '/^expected argument/ { exit } { print }' "$work/actual" > "$work/untyped"
 printf '%s\n' "no overload matches 'consume' with type fresh" '' 'Overloads are:' ' - consume(value : String)' > "$work/expected"

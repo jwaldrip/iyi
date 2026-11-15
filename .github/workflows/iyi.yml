@@ -2727,10 +2727,10 @@ jobs:
           # does not provision (their gates run in the self-host jobs), and
           # the build daemon's driver speaks POSIX sockets, whose Windows arm
           # is not ported yet.
-          # The six selfhost_*_probe.iyi after std_debug_cross.iyi each analyse
-          # a source file named on the command line (Program.args[0], then a
-          # library path): a self-host gate hands them one, and a bare `iyi
-          # run` has none, so their first index panics.
+          # The six selfhost_*_probe.iyi after std_debug_cross.iyi each require
+          # a source file named on the command line; some also require a
+          # library path. Their self-host gates supply arguments, but a bare
+          # `iyi run` has none, so their first index panics.
           $skip = @(
             "std_http_server.iyi", "arena_large_probe.iyi", "wasm32_exercise.iyi",
             "stdin_park.iyi", "std_debug_cross.iyi",
@@ -4034,6 +4034,7 @@ jobs:
       - name: The self-host gates
         env:
           SELFHOST_GATE_SHARD: ${{ matrix.shard }}/8
+          SELFHOST_GATE_TAIL: "1500"
         run: bash bench/selfhost_gates.sh
 
   selfhost-darwin:
@@ -4092,6 +4093,7 @@ jobs:
       - name: The self-host gates
         env:
           SELFHOST_GATE_SHARD: ${{ matrix.shard }}/5
+          SELFHOST_GATE_TAIL: "1500"
         run: LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config" bash bench/selfhost_gates.sh
 
   # The compiler's own back end: the IR, the aarch64 code generator, the
