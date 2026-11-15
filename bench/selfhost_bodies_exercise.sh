@@ -187,9 +187,14 @@ if [ "${splice_count:-}" != 1 ]; then
   status=1
 fi
 proc_scope_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_proc_scope.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
-echo "  sem_bodies_proc_scope.iyi typed instances: ${proc_scope_count:-none} (expected 6)"
-if [ "${proc_scope_count:-}" != 6 ]; then
+echo "  sem_bodies_proc_scope.iyi typed instances: ${proc_scope_count:-none} (expected 7)"
+if [ "${proc_scope_count:-}" != 7 ]; then
   echo "  PROC SCOPE: expected both helper calls to be typed"
+  status=1
+fi
+if ! "$IYI" build -o "$WORK/proc_scope_probe" "$REPO/bench/selfhost_proc_scope_probe.iyi" > "$WORK/proc_scope_probe.build.log" 2>&1 ||
+   ! "$WORK/proc_scope_probe" "$REPO/bench/fixtures/sem_bodies_proc_scope.iyi" "$REPO/src"; then
+  echo "  PROC SCOPE: the class and instance helper definitions must both be instantiated"
   status=1
 fi
 
@@ -277,7 +282,7 @@ bodies_at_floor() {
   fsc=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${fsc:-}" = 1 ] || return 1
   proc_count=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_proc_scope.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
-  [ "${proc_count:-}" = 6 ] || return 1
+  [ "${proc_count:-}" = 7 ] || return 1
   refused_count=$("$MUT_TD" --instances "$REPO/bench/fixtures/bodies_refused_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${refused_count:-}" = 1 ] || return 1
   return 0
@@ -378,9 +383,9 @@ prove_mutation "unit helper cycle uses its defining owner" "$MAIN_VISITOR" \
 prove_mutation "a recursive call targets a fresh clone" "$MAIN_VISITOR" \
   "remember_def_instance(cache_key, target_def, provisional)" \
   "nil" -- recursion_fresh_clone || status=1
-prove_mutation_all "program defs use their declared owner" "$MAIN_VISITOR" \
-  "instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)" \
-  "instance_owner = rec_type if declared_owner.is_a?(SemanticProgram)" -- owner_mutant_at_expected || status=1
+prove_mutation "program defs use their declared owner" "$MAIN_VISITOR" \
+  "        instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)" \
+  "        instance_owner = rec_type if declared_owner.is_a?(SemanticProgram)" -- owner_mutant_at_expected || status=1
 prove_mutation "class variable initializer uses its owner's metaclass" "$MAIN_VISITOR" \
   "      @scope = @current_type.metaclass" \
   "      @scope = @current_type" -- bodies_at_floor || status=1
@@ -421,7 +426,7 @@ prove_mutation "a proc literal is typed as a Proc" "$MAIN_VISITOR" \
   "def visit(node : ProcLiteral) : Bool" \
   "def visit_proc_literal_off(node : ProcLiteral) : Bool" -- bodies_at_floor || status=1
 prove_mutation "a call body is not typed in the scope of its owner" "$MAIN_VISITOR" \
-  "    enter_owner_scope(body_receiver)" \
+  "    enter_owner_scope(lookup_owner)" \
   "    nil" -- bodies_at_floor || status=1
 prove_mutation "a block whose declared output is _ is checked against a type" "$MAIN_VISITOR" \
   "unless out_node.is_a?(Underscore)" \
@@ -480,9 +485,17 @@ prove_mutation "enum members have the enum type" "$MAIN_VISITOR" \
 prove_mutation "a generic union member retains its arguments" "$MAIN_VISITOR" \
   "    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
   "    found = @program.lookup_type_node?(restriction, @current_type) || LookupError.new(\"not found\")" -- bodies_at_floor || status=1
+type_lookup_at_expected() {
+  if ! "$IYI" build -o "$WORK/type_lookup_probe" "$REPO/bench/selfhost_type_lookup_probe.iyi" > "$WORK/type_lookup_probe.build.log" 2>&1; then
+    body_build_failed "$WORK/type_lookup_probe.build.log"
+    return $?
+  fi
+  "$WORK/type_lookup_probe"
+}
+type_lookup_at_expected || status=1
 prove_mutation "written class types are virtualized" "$MAIN_VISITOR" \
   "      return TypeQueries.virtual_type(quiet)" \
-  "      return quiet" -- bodies_at_floor || status=1
+  "      return quiet" -- type_lookup_at_expected || status=1
 prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" \
   "    rec_type : Type
     if obj = node.obj
@@ -525,9 +538,6 @@ prove_mutation "unit definitions resolve in their lexical scope" "$MAIN_VISITOR"
 prove_mutation "splat arguments bind a tuple" "$REPO/src/compiler/semantic/default_arguments.iyi" \
   "body << Assign.new(Var.new(splat.name), TupleLiteral.new(elements))" \
   "body << Assign.new(Var.new(splat.name), TupleLiteral.new([] of ASTNode))" -- bodies_at_floor || status=1
-prove_mutation "imported restrictions use the defining unit" "$MAIN_VISITOR" \
-  "        @current_type = owner if owner.iyi_unit" \
-  "        nil" -- bodies_at_floor || status=1
 prove_mutation "Assign typed as its target" "$MAIN_VISITOR" \
   "        set_type(node, val_type)
       elsif target_type.is_a?(GenericClassInstanceType)" \
@@ -858,10 +868,80 @@ static_array_return_at_floor() {
 }
 prove_mutation "a static array return annotation is typed as the bare StaticArray(T, N)" "$REPO/src/compiler/semantic/top_level.iyi" \
   "hook.resolve_node?(node, current_type)" \
-  "hook.resolve_node?(g.name, current_type)" -- static_array_return_at_floor || status=1
+  "hook.resolve_node?(g.name, current_type)" -- type_lookup_at_expected || status=1
 prove_mutation "a static array prints its element's virtual type" "$REPO/src/compiler/types/types.iyi" \
   '"StaticArray(#{@element_type.devirtualize.arg_full_name}, #{@size_int})"' \
   '"StaticArray(#{@element_type.full_name}, #{@size_int})"' -- static_array_return_at_floor || status=1
+bare_splat_bounds() {
+  if ! "$IYI" build -o "$WORK/bare_splat_bounds" "$REPO/bench/selfhost_bare_splat_arity_probe.iyi" > "$WORK/bare_splat_build.log" 2>&1; then
+    body_build_failed "$WORK/bare_splat_build.log"
+    return $?
+  fi
+  "$WORK/bare_splat_bounds"
+}
+bare_splat_bounds || status=1
+prove_mutation "the first default sets the minimum" "$MAIN_VISITOR" \
+  "        default_index = i" "        default_index = -1" -- bare_splat_bounds || status=1
+prove_mutation "a bare splat limits positional arguments" "$MAIN_VISITOR" \
+  "        max_size = splat_index" "        max_size = d.args.size" -- bare_splat_bounds || status=1
+prove_mutation "a default before a splat lowers the minimum" "$MAIN_VISITOR" \
+  "        min_size = default_index" "        min_size = splat_index" -- bare_splat_bounds || status=1
+prove_mutation "a restricted named splat needs an argument" "$MAIN_VISITOR" \
+  "            min_size = min_size + 1" "            min_size = splat_index" -- bare_splat_bounds || status=1
+prove_mutation "a named splat has an unbounded maximum" "$MAIN_VISITOR" \
+  "        max_size = 2147483647" "        max_size = d.args.size" -- bare_splat_bounds || status=1
+prove_mutation "a tuple restriction permits an empty splat" "$MAIN_VISITOR" \
+  "if !restriction.is_a?(Splat) && !(default_index >= 0 && default_index < splat_index)" \
+  "if !(default_index >= 0 && default_index < splat_index)" -- bare_splat_bounds || status=1
+prove_mutation "a named argument survives splat expansion" "$REPO/src/compiler/semantic/default_arguments.iyi" \
+  "        matching = rec_def.args[param_index(rec_def, named.name)]
+        new_args << Arg.new(matching.name, nil, copy_node(matching.restriction), named.name)" \
+  "        matching = rec_def.args[param_index(rec_def, named.name)]
+        nil" -- bare_splat_bounds || status=1
+prove_mutation "a splat expansion retains its call-site name" "$REPO/src/compiler/semantic/default_arguments.iyi" \
+  '        new_name = "#{new_name}:#{named.name}"' \
+  '        new_name = rec_def.name' -- bare_splat_bounds || status=1
+prove_mutation "a bare splat rejects excess positionals" "$REPO/src/compiler/semantic/default_arguments.iyi" \
+  "    if rec_def.args[index].name.empty? && given > index" \
+  "    if false" -- bare_splat_bounds || status=1
+prove_mutation "invalid or duplicate names are rejected" "$REPO/src/compiler/semantic/default_arguments.iyi" \
+  "        if named_index < before || named_index == index || seen.includes?(named.name)" \
+  "        if false" -- bare_splat_bounds || status=1
+prove_mutation "a supplied named parameter is not defaulted" "$REPO/src/compiler/semantic/default_arguments.iyi" \
+  "      if k != index && !named_given?(named_args, rec_def.args[k].external_name)" \
+  "      if k != index" -- bare_splat_bounds || status=1
+restriction_scope_at_floor() {
+  if ! "$IYI" build -o "$WORK/scope_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/scope_tool_build.log" 2>&1; then
+    body_build_failed "$WORK/scope_tool_build.log"
+    return $?
+  fi
+  if ! "$WORK/scope_tool" "$REPO/bench/fixtures/sem_bodies_restriction_scope.iyi" \
+      -o "$WORK/scope_native" --pipeline typed --prelude > "$WORK/scope_build.log" 2>&1; then
+    if [ "${_PM_ARMED:-0}" = 1 ]; then
+      if grep -Fq "no overload matches 'T6Scope::Visitor::Visitor#check' with type T6Scope::Types::Call" "$WORK/scope_build.log"; then
+        return 1
+      fi
+      echo "INVALID MUTANT: scope fixture failed for an unexpected reason" >&2
+      cat "$WORK/scope_build.log" >&2
+      return 0
+    fi
+    cat "$WORK/scope_build.log" >&2
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/scope_native" > "$WORK/scope_sign.log" 2>&1; then
+    echo "INVALID PROOF: scope fixture did not pass strict codesign" >&2
+    cat "$WORK/scope_sign.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  [ "$("$WORK/scope_native")" = 42 ]
+}
+restriction_scope_at_floor || status=1
+prove_mutation "a restriction resolves in its definition owner scope" "$MAIN_VISITOR" \
+  "      if owner = @program.def_owner(d)
+        @current_type = owner" \
+  "      if owner = @program.def_owner(d)
+        @current_type = owner if owner.iyi_unit" -- restriction_scope_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"

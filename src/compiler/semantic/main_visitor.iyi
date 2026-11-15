@@ -13,6 +13,7 @@ import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, Gene
 import compiler/semantic/top_level::{NoReturnType}
 import compiler/semantic/top_level::{LibFun, LibType}
 import compiler/semantic/top_level::{VoidType}
+import compiler/semantic/top_level::{normalize_path}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
@@ -29,7 +30,7 @@ import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature, CallMatch}
 import compiler/semantic/match::{Match, NumericAutocast}
-import compiler/semantic/method_lookup::{ArmWalk, Matches}
+import compiler/semantic/method_lookup::{ArmWalk, Matches, MethodLookup}
 import compiler/semantic/cover::{CallCover}
 import compiler/semantic/call::{CallRecalculation}
 import compiler/semantic/new::{define_new_methods}
@@ -2680,14 +2681,41 @@ pub class MainVisitor < TypeNodeHost
     "#{method_name}(#{args_strs.join(", ")})"
   end
 
-  def min_args_count(d : Def) : Int32
-    count = 0
-    d.args.each do |arg|
-      if arg.default_value.nil?
-        count = count + 1
+  # Hosted Def#min_max_args_sizes counts positional arguments only.
+  def min_max_args_sizes(d : Def) : Tuple(Int32, Int32)
+    max_size = d.args.size
+    default_index = -1
+    i = 0
+    while i < d.args.size
+      if !d.args[i].default_value.nil?
+        default_index = i
+        break
+      end
+      i = i + 1
+    end
+    min_size = default_index >= 0 ? default_index : max_size
+    if splat_index = d.splat_index
+      min_size = splat_index
+      if default_index >= 0 && default_index < splat_index
+        min_size = default_index
+      end
+      splat = d.args[splat_index]
+      if splat.name.empty?
+        max_size = splat_index
+      else
+        if restriction = splat.restriction
+          if !restriction.is_a?(Splat) && !(default_index >= 0 && default_index < splat_index)
+            min_size = min_size + 1
+          end
+        end
+        max_size = 2147483647
       end
     end
-    count
+    {min_size, max_size}
+  end
+
+  def min_args_count(d : Def) : Int32
+    min_max_args_sizes(d)[0]
   end
 
   def def_more_specific?(d1 : Def, d2 : Def, args : Array(ASTNode), owner : Type) : Bool
@@ -2846,8 +2874,8 @@ pub class MainVisitor < TypeNodeHost
     location = call_node.location
     site = location.nil? ? "<generated>:0" : "#{location.as(Location).filename}:#{location.as(Location).line_number}"
     first_diff = false
-    if shortcut && !found.matches.empty?
-      first_diff = shortcut.as(Def).object_id != found.matches[0].definition.object_id
+    unless found.matches.empty?
+      first_diff = shortcut.nil? || shortcut.as(Def).object_id != found.matches[0].definition.object_id
     end
     shortcut_name = shortcut.nil? ? "<none>" : format_overload_signature(rec_type, shortcut.as(Def))
     arm_names = [] of String
@@ -2869,6 +2897,7 @@ pub class MainVisitor < TypeNodeHost
     return nil if visited.includes?(mod.full_name)
     visited.add(mod.full_name)
     levels << mod
+    return nil unless MethodLookup.walks_parents?(mod, name)
     if walk == ArmWalk::Modules
       mod.parents.each do |parent|
         break unless parent.is_a?(NonGenericModuleType) || parent.is_a?(GenericModuleType) || parent.is_a?(GenericModuleInstanceType) || parent.is_a?(TraitType)
@@ -2913,7 +2942,7 @@ pub class MainVisitor < TypeNodeHost
     if call_node.obj.nil?
       has_candidates = false
       levels.each do |level|
-        if level.is_a?(ModuleType) && level.as(ModuleType).defs[name]?
+        if level.is_a?(ModuleType) && MethodLookup.own_defs(level.as(ModuleType), name)
           has_candidates = true
         end
       end
@@ -3005,7 +3034,7 @@ pub class MainVisitor < TypeNodeHost
     levels.each do |level|
       next unless level.is_a?(ModuleType)
       mod = level.as(ModuleType)
-      defs = mod.defs[name]?
+      defs = MethodLookup.own_defs(mod, name)
       next if defs.nil?
       ordered = [] of Def
       defs.as(Array(Def)).each do |definition|
@@ -3140,9 +3169,10 @@ pub class MainVisitor < TypeNodeHost
     # 1. Filter by argument count
     count_matches = [] of Def
     candidates.each do |d|
-      min_a = min_args_count(d)
-      max_a = d.args.size
-      if args.size >= min_a && args.size <= max_a
+      min_a, max_a = min_max_args_sizes(d)
+      # The variadic matcher above handles expanded named splats; the ordinary
+      # positional matcher below indexes d.args and cannot consume their tail.
+      if args.size >= min_a && args.size <= max_a && args.size <= d.args.size
         count_matches << d
       end
     end
@@ -3178,9 +3208,9 @@ pub class MainVisitor < TypeNodeHost
       old_import_defs = @program.current_import_defs
       old_candidate_type = @current_type
       if owner = @program.def_owner(d)
-        @current_type = owner if owner.iyi_unit
+        @current_type = owner
       end
-      enter_file_scope(d)
+      enter_file_scope(d, true)
       all_args_match = true
       i = 0
       while i < args.size
@@ -3315,9 +3345,9 @@ pub class MainVisitor < TypeNodeHost
     old_import_defs = @program.current_import_defs
     old_type = @current_type
     if owner = @program.def_owner(definition)
-      @current_type = owner if owner.iyi_unit
+      @current_type = owner
     end
-    enter_file_scope(definition)
+    enter_file_scope(definition, true)
     result = lookup_under(node, receiver)
     @current_type = old_type
     @program.current_imports = old_imports
@@ -3502,10 +3532,16 @@ pub class MainVisitor < TypeNodeHost
 
   # iyi: the names a node's file imported become the names in scope (SPEC.md R-2b). A node with
   # no location (a generated def) keeps the scope it is typed from.
-  def enter_file_scope(node : ASTNode) : Nil
+  def enter_file_scope(node : ASTNode, required : Bool = false) : Nil
     if loc = node.location
-      @program.current_imports = @program.file_imports[loc.filename]? || Hash(String, Type).new
-      @program.current_import_defs = @program.file_import_defs[loc.filename]? || Hash(String, Array(Def)).new
+      filename = normalize_path(loc.filename)
+      imports = @program.file_imports[loc.filename]? || @program.file_imports[filename]?
+      defs = @program.file_import_defs[loc.filename]? || @program.file_import_defs[filename]?
+      if required && (imports.nil? || defs.nil?)
+        raise("missing import table for #{loc.filename}")
+      end
+      @program.current_imports = imports || Hash(String, Type).new
+      @program.current_import_defs = defs || Hash(String, Array(Def)).new
     end
     nil
   end

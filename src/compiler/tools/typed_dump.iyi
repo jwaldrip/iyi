@@ -110,10 +110,14 @@ module TypedDump
     prog.total_mode = true
     prog.search_path = roots
     prog.entry_dir = TypedDump.directory_of(filename)
+    prog.file_imports[filename] = prog.current_imports
+    prog.file_import_defs[filename] = prog.current_import_defs
     tl = TopLevelVisitor.new(prog, filename)
     if iyi_defer
       registry_source = "def __iyi_defer_push(cleanup : Proc(Nil)) : Nil\n  nil\nend\ndef __iyi_defer_pop_run : Nil\n  nil\nend\n"
       registry = Parser.new(registry_source, "<iyi-defer-registry>").parse
+      prog.file_imports["<iyi-defer-registry>"] = prog.current_imports
+      prog.file_import_defs["<iyi-defer-registry>"] = prog.current_import_defs
       registry.accept(tl)
     end
     node.accept(tl)

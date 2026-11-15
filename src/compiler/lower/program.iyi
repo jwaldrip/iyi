@@ -87,6 +87,8 @@ pub def declare_unit(prog : SemanticProgram, file : String, node : ASTNode) : Ni
   saved_defs = prog.current_import_defs
   prog.current_imports = Hash(String, Type).new
   prog.current_import_defs = Hash(String, Array(Def)).new
+  prog.file_imports[file] = prog.current_imports
+  prog.file_import_defs[file] = prog.current_import_defs
   node.accept(inner)
   inner.finish
   prog.current_imports = saved
