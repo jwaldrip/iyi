@@ -12,8 +12,8 @@
 set -u
 status=0
 diverged=0
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+readonly REPO="$(cd "$(dirname "$0")/.." && pwd)"
+IYI="${IYI:-$REPO/bin/iyi}"
 CRYSTAL="${CRYSTAL:-crystal}"
 TYPES_DIR="$REPO/src/compiler/types"
 TYPES_MAIN="$REPO/src/compiler/types/types.iyi"
@@ -219,6 +219,23 @@ check_type_outputs_diverge() {
   "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_types_exercise.iyi" >/dev/null 2>&1 || return 1
   compare_all "$WORK/mut-exercise"
 }
+
+check_nilable_member_order() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_types_exercise.iyi" >/dev/null 2>&1 || return 1
+  "$WORK/mut-exercise" > "$WORK/mut-order.out" 2>&1 || return 1
+  grep -qF "ALL SELFHOST TYPES CHECKS PASSED SUCCESSFULLY!" "$WORK/mut-order.out"
+}
+check_nilable_member_order || { echo "  nilable member order baseline failed"; status=1; }
+prove_mutation "nilable reference puts Nil last" "$TYPES_MAIN" \
+  '    super(program, [program.nil_type, @not_nil_type] of Type)' \
+  '    super(program, [@not_nil_type, program.nil_type] of Type)' \
+  -- check_nilable_member_order || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "nilable proc puts Nil last" "$TYPES_MAIN" \
+  '    super(program, [program.nil_type, @proc_type] of Type)' \
+  '    super(program, [@proc_type, program.nil_type] of Type)' \
+  -- check_nilable_member_order || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "virtual root bypass in type merge" "$MERGE_FILE" \
   "if ancestor && virtual_root?(ancestor)" \

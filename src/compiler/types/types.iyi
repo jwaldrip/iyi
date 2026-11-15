@@ -630,7 +630,7 @@ pub class NilableType < UnionType
   getter not_nil_type : Type
 
   def initialize(program : SemanticProgram, @not_nil_type : Type)
-    super(program, [@not_nil_type, program.nil_type] of Type)
+    super(program, [program.nil_type, @not_nil_type] of Type)
   end
 
   def nilable? : Bool
@@ -666,7 +666,7 @@ pub class NilableProcType < UnionType
   getter proc_type : ProcInstanceType
 
   def initialize(program : SemanticProgram, @proc_type : ProcInstanceType)
-    super(program, [@proc_type, program.nil_type] of Type)
+    super(program, [program.nil_type, @proc_type] of Type)
   end
 
   def nilable? : Bool
