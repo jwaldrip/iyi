@@ -16,6 +16,7 @@ bench/fixtures/sem_bodies_capture_free_output.iyi 11
 bench/fixtures/sem_bodies_capture_none.iyi 23
 bench/fixtures/sem_bodies_class_method_constant.iyi 13
 bench/fixtures/sem_bodies_class_var_initializer.iyi 15
+bench/fixtures/sem_bodies_declared_block.iyi 15
 bench/fixtures/sem_bodies_defaults.iyi 3
 bench/fixtures/sem_bodies_defer.iyi 92
 bench/fixtures/sem_bodies_ensure.iyi 41
@@ -65,6 +66,11 @@ bench/fixtures/sem_bodies_recursion_mutual.iyi 8
 bench/fixtures/sem_bodies_recursion_state.iyi 11
 bench/fixtures/sem_bodies_recursive.iyi 3
 bench/fixtures/sem_bodies_recursive_helper.iyi 16
+bench/fixtures/sem_bodies_recursive_inferred.iyi 4
+bench/fixtures/sem_bodies_recursive_inferred_bare.iyi 3
+bench/fixtures/sem_bodies_recursive_inferred_block.iyi 4
+bench/fixtures/sem_bodies_recursive_inferred_cycle.iyi 7
+bench/fixtures/sem_bodies_recursive_inferred_no_base.iyi 2
 bench/fixtures/sem_bodies_restriction_scope.iyi 10
 bench/fixtures/sem_bodies_return_contract.iyi 36
 bench/fixtures/sem_bodies_self_return.iyi 10
@@ -72,10 +78,12 @@ bench/fixtures/sem_bodies_setter_value.iyi 27
 bench/fixtures/sem_bodies_splat_restriction.iyi 10
 bench/fixtures/sem_bodies_static_array_return.iyi 32
 bench/fixtures/sem_bodies_trait_def.iyi 6
+bench/fixtures/sem_bodies_trait_dispatch.iyi 12
 bench/fixtures/sem_bodies_trait_requirement.iyi 6
 bench/fixtures/sem_bodies_tuple_scalar.iyi 31
 bench/fixtures/sem_bodies_union.iyi 15
 bench/fixtures/sem_bodies_union_generic.iyi 15
+bench/fixtures/sem_bodies_union_overload_order.iyi 6
 bench/fixtures/sem_bodies_union_restriction.iyi 8
 bench/fixtures/sem_bodies_unit_scope.iyi 14
 bench/fixtures/sem_bodies_unit_scope_inferred.iyi 10
