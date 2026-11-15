@@ -216,6 +216,7 @@ end
 # The slice that owns a refusal, from the words it carries: the table's owner column (PIPELINE.md). A reason no
 # rule names is "unassigned", so it shows in the table rather than hiding under another owner.
 pub def typed_owner(reason : String) : String
+  return "lowering core" if reason.starts_with?("a reached pool: loop back-edge preemption")
   return "macros" if reason.includes?("macro control")
   return "calls" if reason.includes?("undefined method") || reason.includes?("cannot resolve the call") || reason.includes?("expected argument") || reason.includes?("no target def") || reason.includes?("wrong number of arguments for 'String.interpolation'")
   return "declarations" if reason.includes?("undefined constant") || reason.includes?("without a declared return type")
