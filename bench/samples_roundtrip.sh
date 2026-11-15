@@ -300,8 +300,8 @@ mkdir -p "$CAST/kit"
 cat > "$CAST/kit/cast.iyi" <<'IYI'
 module kit/cast
 
-pub def as_text(value : Int32 | String) : String
-  value.as(String)
+pub def as_text(value : String) : String
+  (value == "bad" ? 17 : value).as(String)
 end
 IYI
 cat > "$CAST/producer.iyi" <<'IYI'
@@ -309,16 +309,14 @@ module producer
 
 import kit/cast::{as_text}
 
-value = Program.args.empty? ? "ok" : 17
-puts as_text(value)
+puts as_text(Program.args.empty? ? "ok" : "bad")
 IYI
 cat > "$CAST/consumer.iyi" <<'IYI'
 module consumer
 
 import kit/cast::{as_text}
 
-value = Program.args.empty? ? "ok" : 17
-puts as_text(value)
+puts as_text(Program.args.empty? ? "ok" : "bad")
 IYI
 cast_ok=1
 for mode in normal release; do
