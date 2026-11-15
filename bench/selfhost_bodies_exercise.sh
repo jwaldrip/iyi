@@ -894,8 +894,10 @@ prove_mutation "a tuple restriction permits an empty splat" "$MAIN_VISITOR" \
   "if !restriction.is_a?(Splat) && !(default_index >= 0 && default_index < splat_index)" \
   "if !(default_index >= 0 && default_index < splat_index)" -- bare_splat_bounds || status=1
 prove_mutation "a named argument survives splat expansion" "$REPO/src/compiler/semantic/default_arguments.iyi" \
-  "        new_args << Arg.new(matching.name, nil, nil, named.name)" \
-  "        nil" -- bare_splat_bounds || status=1
+  "        matching = rec_def.args[param_index(rec_def, named.name)]
+        new_args << Arg.new(matching.name, nil, copy_node(matching.restriction), named.name)" \
+  "        matching = rec_def.args[param_index(rec_def, named.name)]
+        nil" -- bare_splat_bounds || status=1
 prove_mutation "a splat expansion retains its call-site name" "$REPO/src/compiler/semantic/default_arguments.iyi" \
   '        new_name = "#{new_name}:#{named.name}"' \
   '        new_name = rec_def.name' -- bare_splat_bounds || status=1

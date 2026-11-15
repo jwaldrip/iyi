@@ -44,3 +44,15 @@ raise "extra positional accepted" unless DefaultArguments.expand_for_call(bare_d
 raise "unknown named argument accepted" unless DefaultArguments.expand_for_call(bare_def, 1, [NamedArgument.new("unknown", BoolLiteral.new(true))]).is_a?(String)
 raise "duplicate named argument accepted" unless DefaultArguments.expand_for_call(bare_def, 1, [named[0], named[0]]).is_a?(String)
 raise "duplicate positional argument accepted" unless DefaultArguments.expand_for_call(bare_def, 1, [NamedArgument.new("required", BoolLiteral.new(true))]).is_a?(String)
+
+restriction = Path.new("Bool")
+flag = Arg.new("flag", BoolLiteral.new(false), restriction)
+restricted_bare = Def.new("restricted_bare", [required, bare, flag])
+restricted_bare.splat_index = 1
+expanded = DefaultArguments.expand_splat(restricted_bare, 1, [] of String, named).as(Def)
+copied = expanded.args[1].restriction
+raise "splat named restriction lost" unless copied && copied.to_s == restriction.to_s && !copied.same?(restriction)
+ordinary = Def.new("ordinary", [required, flag])
+wrapper = DefaultArguments.wrapper_def(ordinary, 0, [NamedArgument.new("flag", BoolLiteral.new(true)), NamedArgument.new("required", BoolLiteral.new(true))]).as(Def)
+copied = wrapper.args[0].restriction
+raise "wrapper named restriction lost" unless copied && copied.to_s == restriction.to_s && !copied.same?(restriction)

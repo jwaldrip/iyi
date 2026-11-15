@@ -1,6 +1,7 @@
 module compiler/semantic/default_arguments
 
 import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, Expressions, MagicConstant, NamedArgument, Primitive, TupleLiteral, Var}
+import compiler/semantic/match::{CallMatch}
 
 # The port of the argument side of the hosted Def#expand_default_arguments
 # (src/compiler/iyi/semantic/default_arguments.cr). The hosted expansion is a new
@@ -82,7 +83,7 @@ pub class DefaultArguments
       named_args.each do |named|
         new_name = "#{new_name}:#{named.name}"
         matching = rec_def.args[param_index(rec_def, named.name)]
-        new_args << Arg.new(matching.name, nil, nil, named.name)
+        new_args << Arg.new(matching.name, nil, copy_node(matching.restriction), named.name)
       end
     end
     body = [] of ASTNode
@@ -232,7 +233,7 @@ pub class DefaultArguments
     else
       return nil if DefaultArguments.all_magic_from?(rec_def, given)
     end
-    retain = !rec_def.block_arg.nil? || rec_def.macro_def
+    retain = CallMatch.yields?(rec_def) || rec_def.macro_def
     rec_def.args.each do |arg|
       retain = true if arg.default_value && arg.restriction
     end
@@ -250,7 +251,7 @@ pub class DefaultArguments
       named_args.each do |named|
         new_name = "#{new_name}:#{named.name}"
         matching = rec_def.args[DefaultArguments.param_index(rec_def, named.name)]
-        new_args << Arg.new(matching.name, nil, nil, named.name)
+        new_args << Arg.new(matching.name, nil, copy_node(matching.restriction), named.name)
       end
     end
 
@@ -280,7 +281,9 @@ pub class DefaultArguments
     if retain
       body_list << rec_def.body.clone
     else
-      body_list << Call.new(nil, rec_def.name, call_args)
+      forwarding = Call.new(nil, rec_def.name, call_args)
+      forwarding.expansion = true
+      body_list << forwarding
     end
 
     receiver = rec_def.receiver
@@ -295,7 +298,7 @@ pub class DefaultArguments
 
   # Mirrors wrapper_def's decision to forward rather than retain the original body.
   def self.forwards?(rec_def : Def, given : Int32) : Bool
-    return false if rec_def.splat_index || rec_def.double_splat || rec_def.block_arg || rec_def.macro_def
+    return false if rec_def.splat_index || rec_def.double_splat || CallMatch.yields?(rec_def) || rec_def.macro_def
     return false if given >= rec_def.args.size || !supported_count?(rec_def, given, nil)
     return false if all_magic_from?(rec_def, given)
     rec_def.args.each do |arg|

@@ -314,9 +314,15 @@ prove_mutation "a wrapper for a named argument drops the argument's name" "$DEFA
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a wrapper forwards to its own name, not the def's" "$DEFAULT_FILE" \
-  '      body_list << Call.new(nil, rec_def.name, call_args)' \
-  '      body_list << Call.new(nil, new_name, call_args)' \
+  '      forwarding = Call.new(nil, rec_def.name, call_args)' \
+  '      forwarding = Call.new(nil, new_name, call_args)' \
   -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a yielding def forwards its defaults" "$DEFAULT_FILE" \
+  '    retain = CallMatch.yields?(rec_def) || rec_def.macro_def' \
+  '    retain = rec_def.macro_def' \
+  -- check_calls_diverge bench/fixtures/semcall_default_wrapper.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a def with a restricted default is not kept whole" "$DEFAULT_FILE" \
