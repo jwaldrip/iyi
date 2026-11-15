@@ -318,6 +318,12 @@ MUT_INL="$REPO/src/compiler/semantic/inline_macros.iyi"
 MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
 MUTATIONS_RUN=0
 
+prove_mutation "number literals lose non-default kind suffixes" "$REPO/src/compiler/syntax/ast.iyi" \
+  "    if @kind != NumberKind::I32" \
+  "    if false" \
+  -- check_inline_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "an empty expansion is kept and a non-empty one dropped" "$MUT_INL" \
   "return nil if text.bytesize == 0" \
   "return nil if text.bytesize > 0" \
