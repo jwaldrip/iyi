@@ -835,8 +835,8 @@ pub class TypeQueries
     if type.is_a?(GenericClassInstanceType)
       return replace_generic_instance(type.as(GenericClassInstanceType), tv_map)
     end
-    if type.is_a?(GenericModuleInstanceType)
-      instance = type.as(GenericModuleInstanceType)
+    if type.is_a?(GenericModuleInstanceType) || type.is_a?(GenericTraitInstanceType)
+      instance = type.as(GenericInstanceType)
       args = replace_list(instance.type_args, tv_map)
       return type if same_types?(args, instance.type_args)
       if hook = type.program.merge_hook
