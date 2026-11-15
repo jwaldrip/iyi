@@ -1,9 +1,11 @@
-def recursive_inferred_count(n : Int32)
-  if n == 0
-    0
+def recursive_inferred_count(recurse : Bool, value : Bool)
+  if recurse
+    recursive_inferred_count(false, value)
+  elsif value
+    true
   else
-    recursive_inferred_count(n - 1) + 1
+    nil
   end
 end
 
-recursive_inferred_count(3)
+recursive_inferred_count(true, true)

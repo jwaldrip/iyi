@@ -546,6 +546,17 @@ lower_calls_check() {
   return 0
 }
 
+recursive_inferred_check() {
+  if ! "$IYI" build -o "$WORK/recursive-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/recursive-mut.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/recursive-mut" lower "$REPO/bench/fixtures/lowcall_recursive_inferred.iyi" "$WORK/lowcall_recursive_inferred.oracle.ll" > "$WORK/recursive-mut.out" 2>/dev/null || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/recursive-mut.out"
+}
+prove_mutation "an inferred recursive body is not retyped" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    if recursive_frame.cyclic' '    if false && recursive_frame.cyclic' -- recursive_inferred_check || status=1
+
 underscore_check() {
   if ! "$IYI" build -o "$WORK/underscore-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/underscore-mut.build.log" 2>&1; then
     touch "$WORK/general-mutation.invalid"

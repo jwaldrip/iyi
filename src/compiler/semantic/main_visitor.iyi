@@ -4038,6 +4038,7 @@ pub class MainVisitor < TypeNodeHost
       settled = false
       commit_pass = false
       passes = 0
+      committed = false
       recursive_frame.estimating = true
       while passes < 10
         passes += 1
@@ -4080,6 +4081,7 @@ pub class MainVisitor < TypeNodeHost
         @super_barrier = saved_super_barrier
         next_type = merge_jump_values(child_type(body.as(ASTNode)), @return_types)
         if commit_pass
+          committed = true
           body_type = next_type
           unless next_type && next_type.full_name == assumed.full_name
             recursive_error = "recursive return type of '#{target_def.name}' changed in the final pass"
@@ -4104,8 +4106,8 @@ pub class MainVisitor < TypeNodeHost
           estimate = merged
         end
       end
-      unless settled
-        @speculation.depth = @speculation.depth - 1
+      unless committed
+        @speculation.depth = @speculation.depth - 1 unless settled
         recursive_error = "recursive return type of '#{target_def.name}' did not settle"
       end
     end
@@ -4700,6 +4702,32 @@ pub class MainVisitor < TypeNodeHost
     end
     @call_receivers.delete(node)
     @needs_type_filters = saved_call_ntf
+    if node.obj.nil? && node.name == "super"
+      return visit_super(node)
+    end
+    if rec_type.is_a?(LibType)
+      return visit_lib_call(node, rec_type.as(LibType))
+    end
+
+    trait_receiver = false
+    unless node.obj.nil?
+      concrete = TypeIndirection.trait_value_type(rec_type)
+      unless concrete.object_id == rec_type.object_id
+        rec_type = concrete
+        trait_receiver = true
+      end
+    end
+
+
+    if node.obj.nil? && !node.expansion
+      if global_fun = global_fun_named(node.name)
+        own = [] of Def
+        seen = Set(String).new
+        collect_candidate_defs(rec_type, node.name, own, seen)
+        collect_scope_defs(rec_type, node.name, own, seen) if own.empty?
+        return visit_global_fun_call(node, global_fun) if own.empty?
+      end
+    end
     if @speculation.depth > 0 && @speculation.recursive_frames.any?(&.cyclic)
       node.args.each do |arg|
         if type_of?(arg).nil?
@@ -4726,32 +4754,6 @@ pub class MainVisitor < TypeNodeHost
         named.each do |arg|
           return untyped(node, "an argument was not typed: #{arg.value}") if child_type(arg.value).nil?
         end
-      end
-    end
-    if node.obj.nil? && node.name == "super"
-      return visit_super(node)
-    end
-    if rec_type.is_a?(LibType)
-      return visit_lib_call(node, rec_type.as(LibType))
-    end
-
-    trait_receiver = false
-    unless node.obj.nil?
-      concrete = TypeIndirection.trait_value_type(rec_type)
-      unless concrete.object_id == rec_type.object_id
-        rec_type = concrete
-        trait_receiver = true
-      end
-    end
-
-
-    if node.obj.nil? && !node.expansion
-      if global_fun = global_fun_named(node.name)
-        own = [] of Def
-        seen = Set(String).new
-        collect_candidate_defs(rec_type, node.name, own, seen)
-        collect_scope_defs(rec_type, node.name, own, seen) if own.empty?
-        return visit_global_fun_call(node, global_fun) if own.empty?
       end
     end
 
