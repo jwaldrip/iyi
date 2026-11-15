@@ -3475,6 +3475,17 @@ pub class MainVisitor < TypeNodeHost
     if candidates.empty? && call_node.obj.nil?
       collect_scope_defs(rec_type, name, candidates, visited)
     end
+    if candidates.empty? && (obj_node = call_node.obj)
+      # Hosted call.cr raise_matches_not_found: a name no def of the receiver or its ancestors carries is
+      # `undefined method`, not `no overload matches` (the same text lookup_method_matching_impl gives).
+      obj_t = type_of(obj_node)
+      if obj_t.is_a?(UnionType)
+        refuse_call(call_node, "undefined method '#{name}' for #{rec_type.full_name} (compile-time type is #{obj_t.full_name})")
+      else
+        refuse_call(call_node, "undefined method '#{name}' for #{rec_type.full_name}")
+      end
+      return nil
+    end
     count_matches = [] of Def
     candidates.each do |definition|
       if args.size >= min_args_count(definition) && args.size <= definition.args.size
