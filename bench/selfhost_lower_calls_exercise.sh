@@ -946,6 +946,9 @@ prove_mutation "an inherited dispatch arm loses its defining owner" "$REPO/src/c
   '        return owner if low.analysed.program.def_owner(target)' '        return owner if false' -- lower_calls_check || status=1
 prove_mutation "a recursive named call targets an untyped clone" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '@call_target_defs[call] = frame.definition' '@call_target_defs[call] = target_def' -- lower_calls_check || status=1
+prove_mutation "a named argument key drops its name" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        entries << "#{arg_name.bytesize}:#{arg_name}=#{text.bytesize}:#{text}"' \
+  '        entries << "#{text.bytesize}:#{text}"' -- lower_calls_check || status=1
 prove_mutation "a yielded block loses its writer's narrowed-out locals" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '@untyped_locals = writer_untyped.dup' '@untyped_locals = Hash(String, String).new' -- lower_calls_check || status=1
 prove_mutation "a repeated block loses its narrowed-out entry locals" "$REPO/src/compiler/semantic/main_visitor.iyi" \
