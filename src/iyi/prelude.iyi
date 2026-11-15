@@ -10818,9 +10818,7 @@ end
 # source type, target type and optional source location.
 fun __iyi_raise_cast_failed(from : Void*, to : Void*, location : Void*) : NoReturn
   message = "Cast from " + from.as(String) + " to " + to.as(String) + " failed"
-  if location
-    message = message + ", at " + location.as(String)
-  end
+  message = message + ", at " + location.as(String) if location
   raise message
 end
 
@@ -11079,23 +11077,6 @@ impl Error for Cancelled
   def message : String
     "cancelled"
   end
-end
-
-# A failed `.as` in `select` expansion is a compiler bug; this panic carries
-# the constant's name rather than an exception type.
-class TypeCastError
-  @message : String
-
-  def initialize(@message : String)
-  end
-
-  def message : String
-    @message
-  end
-end
-
-def raise(error : TypeCastError) : NoReturn
-  raise error.message
 end
 
 # Until a `break`.
