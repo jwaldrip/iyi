@@ -16,7 +16,7 @@ module bench/selfhost_lower_core_exercise
 # holding their text, and the stores into them), the `declare` of printf that the hosted
 # constant printing emits, the attribute groups, comments and the source header.
 
-import compiler/syntax/ast::{ASTNode, Break, Def, Next, Nop, Return}
+import compiler/syntax/ast::{ASTNode, Break, Def, Next, Nop, Return, Var}
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, normalize_path}
 import compiler/semantic/main_visitor::{MainVisitor, TypedInstance}
@@ -216,7 +216,8 @@ def run_lower(fixture : String, oracle_path : String) : Nil
   parsed = parse(oracle_text)
   raise parsed.as(IrParseError).to_s if parsed.is_a?(IrParseError)
   builds = build_names(oracle_text)
-  oracle = attach_attrs(normalised_lines(print(parsed.as(Module)), builds), oracle_attr_map(oracle_text))
+  oracle_lines = normalised_lines(print(parsed.as(Module)), builds)
+  oracle = attach_attrs(normalise_hidden_uniques(oracle_lines, builds), oracle_attr_map(oracle_text))
   triple = triple_of(oracle_text)
 
   analysis = analyse(File.read(fixture), fixture)
@@ -247,6 +248,25 @@ def check_context : Nil
   raise "CONTEXT FAILED: typed next target" unless jump_target(next_node, nil).as(ASTNode).object_id == lexical.object_id
   raise "CONTEXT FAILED: typed return target" unless jump_target(return_node, nil).as(ASTNode).object_id == definition.object_id
   analysis = analyse("nil\n", "context_check.iyi")
+  # A narrowed-out binding records its reason without producing a refusal.
+  # Check the distinct non-narrowing reason too, so this cannot pass by
+  # suppressing every refusal.
+  probe = MainVisitor.new(analysis.visitor.program)
+  probe.total = true
+  narrowed = Var.new("narrowed")
+  reason = probe.narrowed_out_reason("narrowed")
+  probe.untyped_locals["narrowed"] = reason
+  narrowed.accept(probe)
+  raise "CONTEXT FAILED: narrowed variable recorded a refusal" unless probe.refusals.empty?
+  raise "CONTEXT FAILED: narrowed variable lost its reason" unless probe.untyped_reasons[narrowed]? == reason
+  ordinary = Var.new("ordinary")
+  probe.untyped_locals["ordinary"] = "ordinary untyped value"
+  ordinary.accept(probe)
+  raise "CONTEXT FAILED: ordinary untyped variable lost its refusal" unless probe.refusals.size == 1
+  named = ["@\"'a'.2\" = private constant i32 1", "@\"'b'.3\" = private constant i32 2", "use @\"'a'.2\", @\"'b'.3\", @other.2"] of String
+  shifted = ["@\"'a'.1\" = private constant i32 1", "@\"'b'.2\" = private constant i32 2", "use @\"'a'.1\", @\"'b'.2\", @other.2"] of String
+  raise "CONTEXT FAILED: hidden global suffix offset" unless normalise_hidden_uniques(named, ["'build'.1"] of String) == shifted
+  raise "CONTEXT FAILED: suffixes changed without hidden collisions" unless normalise_hidden_uniques(named, ["'build'"] of String) == named
   m = ir_module("aarch64-apple-darwin27.0.0")
   typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
   low = Lowerer.new(m, typer, analysis.visitor)
@@ -295,6 +315,44 @@ def build_names(text : String) : Array(String)
     i += 1
   end
   names
+end
+
+# LLVM numbers renamed globals across the entire module. The hosted compiler
+# emits build-identity strings first, and two of those can collide after their
+# names are truncated. Their globals are intentionally removed from the
+# comparison, so subtract only their observed suffix count from later string
+# globals. The independent collide_name_check still checks exact port numbering.
+def normalise_hidden_uniques(lines : Array(String), builds : Array(String)) : Array(String)
+  offset = 0
+  builds.each do |name|
+    if marker = name.rindex("'.")
+      suffix = name[marker + 2..-1].to_i?
+      offset = suffix.as(Int32) if !suffix.nil? && suffix.as(Int32) > offset
+    end
+  end
+  return lines if offset == 0
+  old_names = [] of String
+  new_names = [] of String
+  lines.each do |line|
+    next unless line.starts_with?("@\"'")
+    close = line.index("\"", 2)
+    next if close.nil?
+    name = line[2, close.as(Int32) - 2]
+    marker = name.rindex("'.")
+    next if marker.nil?
+    suffix = name[marker.as(Int32) + 2..-1].to_i?
+    next if suffix.nil? || suffix.as(Int32) <= offset
+    old_names << "@\"#{name}\""
+    replacement = name[0, marker.as(Int32) + 2] + (suffix.as(Int32) - offset).to_s
+    new_names << "@\"#{replacement}\""
+  end
+  lines.map do |line|
+    result = line
+    old_names.each_with_index do |old_name, index|
+      result = result.split(old_name).join(new_names[index])
+    end
+    result
+  end
 end
 
 def build_constant?(stripped : String, builds : Array(String)) : Bool
