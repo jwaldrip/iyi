@@ -65,7 +65,7 @@ import compiler/semantic/top_level::{ClassType, EnumType, GenericClassType, LibT
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name, lower_primitive_call, lower_primitive_with_values, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
-import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType, GenericClassInstanceMetaclassType, IntegerType, FloatType}
+import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, VirtualMetaclassType, GenericClassInstanceType, GenericClassInstanceMetaclassType, IntegerType, FloatType}
 import compiler/syntax/token::{NumberKind}
 import compiler/semantic/lib_call::{LibCallTarget}
 import compiler/semantic/main_visitor::{DispatchTarget}
@@ -122,7 +122,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   if node.obj.nil? && node.super? && !primitive.nil?
     pending_visit_node("super to the primitive #{primitive} (hosted call.cr: codegen_primitive with the scope as owner)")
   end
-  if single_dispatch && !primitive.nil? && !single_dispatch.as(DispatchTarget).receiver.is_a?(VirtualType)
+  if single_dispatch && !primitive.nil? && !single_dispatch.as(DispatchTarget).receiver.is_a?(VirtualType) && !single_dispatch.as(DispatchTarget).receiver.is_a?(VirtualMetaclassType)
     pending_visit_node("a primitive dispatched on trait receiver #{single_dispatch.as(DispatchTarget).receiver.full_name} (hosted call.cr: trait dispatch)")
   end
   if primitive && low.analysed.call_arguments[node]?

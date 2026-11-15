@@ -624,6 +624,9 @@ def nonmixed_type_id_of_value(low : Lowerer, value : Value, rt : Type) : Value
     proc_id = type_id_value(low, rt.as(NilableProcType).proc_type)
     return low.builder.select(is_null, nil_id, proc_id)
   end
+  # A virtual metaclass value already is its dynamic metaclass id
+  # (hosted codegen/type_id.cr:61-63).
+  return value if rt.is_a?(VirtualMetaclassType)
   type_id_value(low, rt)
 end
 

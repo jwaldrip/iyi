@@ -48,7 +48,7 @@ import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
 import compiler/types/indirection::{TypeIndirection}
-import compiler/types/types::{GenericClassInstanceType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, TupleInstanceType, TypeQueries, VirtualType}
+import compiler/types/types::{GenericClassInstanceType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, TupleInstanceType, TypeQueries, VirtualType, VirtualMetaclassType}
 import compiler/lower/helpers::{store_aligned, load_aligned}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/lower/headed::{headed?, headed_candidate?}
@@ -180,8 +180,8 @@ pub def lower_primitive_with_values(low : Lowerer, node : Call, target : Def, na
   end
   if name == "object_crystal_type_id"
     # The hosted type-id primitive returns the static metaclass id or the value's runtime id.
-    if t1.is_a?(MetaclassType)
-      low.last = type_id_value(low, t1)
+    if t1.is_a?(MetaclassType) || t1.is_a?(VirtualMetaclassType)
+      low.last = recv
     else
       low.last = type_id_of_value(low, obj || node, values[0], t1)
     end
