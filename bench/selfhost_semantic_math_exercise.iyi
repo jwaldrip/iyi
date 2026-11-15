@@ -25,6 +25,28 @@ module BenchSemanticMathExercise
     else             nil
     end
   end
+
+  def self.expect_literal(text : String, kind : NumberKind, expected : String) : Nil
+    result = MathInterpreter.parse_literal(text, kind)
+    unless result.is_a?(MathValue) && result.as(MathValue).kind == kind && result.as(MathValue).decimal == expected
+      raise "literal #{text} did not produce #{expected} as #{kind.to_s}"
+    end
+  end
+
+  def self.expect_invalid(text : String, kind : NumberKind, message : String) : Nil
+    result = MathInterpreter.parse_literal(text, kind)
+    unless result.is_a?(MathError) && !result.as(MathError).refused && result.as(MathError).message == message
+      raise "literal #{text} did not produce #{message}"
+    end
+  end
+
+  def self.check_limits : Nil
+    expect_literal("340282366920938463463374607431768211455", NumberKind::U128, "340282366920938463463374607431768211455")
+    expect_literal("-170141183460469231731687303715884105728", NumberKind::I128, "-170141183460469231731687303715884105728")
+    expect_invalid("340282366920938463463374607431768211456", NumberKind::U128, "invalid UInt128: 340282366920938463463374607431768211456")
+    expect_invalid("170141183460469231731687303715884105728", NumberKind::I128, "invalid Int128: 170141183460469231731687303715884105728")
+    expect_invalid("-170141183460469231731687303715884105729", NumberKind::I128, "invalid Int128: -170141183460469231731687303715884105729")
+  end
 end
 
 # A bare run, with no fixture, folds one expression and checks it: the runner that executes every
@@ -32,9 +54,10 @@ end
 # used to stop at the missing argument.
 if Program.args.size == 0
   bare_result = MathInterpreter.new(nil).interpret(Parser.new("1 + 2", "bare").parse)
-  unless bare_result.is_a?(MathValue) && bare_result.as(MathValue).value.to_s == "3"
+  unless bare_result.is_a?(MathValue) && bare_result.as(MathValue).decimal == "3"
     raise "bare run: 1 + 2 did not fold to 3"
   end
+  BenchSemanticMathExercise.check_limits
   puts "ok (bare run: 1 + 2 folds to 3)"
 else
   filename = Program.args[0]
@@ -51,7 +74,7 @@ else
       result = MathInterpreter.new(target).interpret(node)
       if result.is_a?(MathValue)
         value = result.as(MathValue)
-        puts "#{i + 1}: value=#{value.value} kind=#{value.kind.to_s}"
+        puts "#{i + 1}: value=#{value.decimal} kind=#{value.kind.to_s}"
       else
         error = result.as(MathError)
         if error.refused

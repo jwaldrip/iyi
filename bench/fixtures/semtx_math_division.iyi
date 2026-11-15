@@ -1,5 +1,5 @@
-# Division and remainder: the same-signedness forms, the mixed-signedness
-# forms (the divisor is wrapped to the left kind), and their errors.
+# Division and remainder, including mixed signedness at the wider operand
+# width and truncation of the result to the dividend's kind.
 7 // 2
 -7 // 2
 7 // -2
@@ -33,3 +33,6 @@
 -170141183460469231731687303715884105728_i128 % -1_i128
 -170141183460469231731687303715884105728_i128 // 2_i128
 170141183460469231731687303715884105727_i128 // -1_i128
+1_i8 // 256_u16
+1_i8 % 256_u16
+7_u8 % -1_i128

@@ -4,29 +4,20 @@ module compiler/semantic/math_interpreter
 # or a StaticArray size. Port of src/compiler/iyi/semantic/math_interpreter.cr
 # (the hosted compiler), for iyi source only, so the hosted `iyi_rules?` branch
 # is the only one ported: `//` truncates, `%` takes the dividend's sign, and
-# shifts past the width answer zero (or the sign). Values are folded as signed
-# 128-bit integers, each with the kind the hosted compiler answers with.
+# shifts past the width answer zero (or the sign). Values are kind-tagged
+# 128-bit patterns, sign-extended for signed kinds and zero-extended otherwise.
 #
-# What the port refuses by name, rather than answering. Each is a MathError
-# with `refused` set, and its message begins with the reason:
-#   - a value at or above 2^127 of kind UInt128 (the port stores no more);
-#   - a path to a constant (the hosted lookup needs the program's types);
-#   - a call the hosted compiler hands to macro expansion (it needs the
-#     visitor): every call that is not one of the operators below, and any
-#     unary operator on an unsigned kind;
-#   - a divisor that changes sign when it is wrapped to the left kind and
-#     then becomes zero (the hosted division traps there).
+# The port refuses paths that need the program's types, calls that may expand
+# as macros, and unary negation of an unsigned kind.
 #
-# The kind rules, each measured against the hosted compiler:
-#   + - * answer exactly and must fit the left operand's kind ("Arithmetic
-#     overflow"); &+ &- &* & | ^ answer the exact value wrapped to the left
-#     kind; unary - must fit the kind; ~ wraps.
-#   // and % with operands of the same signedness divide the exact values;
-#     with mixed signedness the divisor is first wrapped to the left kind.
-#     `//` on the least value of a signed kind by -1 is "Overflow: Int8::MIN / -1".
-#   << and >> with a count at or past the width answer zero, or the sign for
-#     a negative value shifted right; a negative count shifts the other way,
-#     and a count below -2147483647 overflows the Int32 it is negated in.
+# Checked + - * must fit the left kind ("Arithmetic overflow"); wrapping
+# arithmetic and bitwise operators wrap to that kind. Mixed-signed division
+# reinterprets the divisor at the larger operand width with the left sign.
+# Signed MIN divided by a raw -1 reports "Overflow: Int8::MIN / -1". When
+# an unsigned divisor reinterprets as -1, hosted signed MIN division is
+# platform-dependent; this port retains its magnitude-based result.
+# A negative shift count reverses direction; negating a count below
+# -2147483647 overflows the Int32 used by the hosted shift helper.
 #
 # iyi has no catchable exceptions: a value out of range panics, so every
 # range is checked before the operation runs.
@@ -57,14 +48,29 @@ pub class MathValue
   @high : UInt64
   @low : UInt64
 
-  def initialize(value : Int128, @kind : NumberKind)
-    bits = MathInterpreter.bits_of(value)
+  def initialize(bits : UInt128, @kind : NumberKind)
     @high = math_high_word(bits)
     @low = math_low_word(bits)
   end
 
-  def value : Int128
-    MathInterpreter.value_of_bits(math_join_words(@high, @low))
+  def bits : UInt128
+    math_join_words(@high, @low)
+  end
+
+  def negative? : Bool
+    @kind.signed? && @high >= 9223372036854775808_u64
+  end
+
+  def zero? : Bool
+    @high == 0_u64 && @low == 0_u64
+  end
+
+  def magnitude : UInt128
+    negative? ? 0_u128 &- bits : bits
+  end
+
+  def decimal : String
+    negative? ? "-" + magnitude.to_s : bits.to_s
   end
 end
 
@@ -162,10 +168,9 @@ pub class MathInterpreter
       value
     when "-"
       return macro_refusal(name) unless value.kind.signed?
-      exact = exact_of(value.value)
-      classify(value.kind, MathExact.new(!exact.negative, exact.magnitude))
+      classify(value.kind, negate(exact_of(value)))
     when "~"
-      wrap(~value.value, value.kind)
+      wrap(~value.bits, value.kind)
     else
       macro_refusal(name)
     end
@@ -175,31 +180,31 @@ pub class MathInterpreter
     kind = left.kind
     case name
     when "+"
-      classify(kind, exact_add(exact_of(left.value), exact_of(right.value)))
+      classify(kind, exact_add(exact_of(left), exact_of(right)))
     when "-"
-      classify(kind, exact_add(exact_of(left.value), negate(exact_of(right.value))))
+      classify(kind, exact_add(exact_of(left), negate(exact_of(right))))
     when "*"
-      classify(kind, exact_mul(exact_of(left.value), exact_of(right.value)))
+      classify(kind, exact_mul(exact_of(left), exact_of(right)))
     when "&+"
-      wrap(left.value &+ right.value, kind)
+      wrap(left.bits &+ right.bits, kind)
     when "&-"
-      wrap(left.value &- right.value, kind)
+      wrap(left.bits &- right.bits, kind)
     when "&*"
-      wrap(left.value &* right.value, kind)
+      wrap(left.bits &* right.bits, kind)
     when "&"
-      wrap(left.value & right.value, kind)
+      wrap(left.bits & right.bits, kind)
     when "|"
-      wrap(left.value | right.value, kind)
+      wrap(left.bits | right.bits, kind)
     when "^"
-      wrap(left.value ^ right.value, kind)
+      wrap(left.bits ^ right.bits, kind)
     when "//"
       quotient(left, right)
     when "%"
       remainder(left, right)
     when "<<"
-      shift_left(left, right.value)
+      shift_left(left, right)
     when ">>"
-      shift_right(left, right.value)
+      shift_right(left, right)
     else
       macro_refusal(name)
     end
@@ -239,106 +244,110 @@ pub class MathInterpreter
     end
     return invalid if beyond
     return invalid unless literal_fits(kind, negative, magnitude)
-    if kind == NumberKind::U128 && magnitude >= two127
-      return MathError.new("value above the signed 128-bit range, which the port does not carry", true)
-    end
-    MathValue.new(signed_of(negative, magnitude), kind)
+    from_sign(negative, magnitude, kind)
   end
 
   def self.quotient(left : MathValue, right : MathValue) : MathResult
     kind = left.kind
-    return MathError.new("Division by 0") if right.value == 0_i128
-    if kind.signed? && left.value == min_of(kind) && right.value == -1_i128
+    return MathError.new("Division by 0") if right.zero?
+    if kind.signed? && left.negative? && left.magnitude == lower_magnitude(kind) && right.negative? && right.magnitude == 1_u128
       return MathError.new("Overflow: #{kind_name(kind)}::MIN / -1")
     end
-    divisor = right.value
-    if kind.signed? != right.kind.signed?
-      converted = wrap(right.value, kind)
-      return converted if converted.is_a?(MathError)
-      divisor = converted.as(MathValue).value
-      if divisor == 0_i128
-        return MathError.new("the divisor wraps to zero in #{kind_name(kind)}, which the port does not fold", true)
-      end
-    end
-    negative = (left.value < 0_i128) != (divisor < 0_i128)
-    magnitude = magnitude_of(left.value) // magnitude_of(divisor)
-    wrap(signed_of(negative, magnitude), kind)
+    divisor = division_divisor(left, right)
+    negative = left.negative? != divisor.negative?
+    magnitude = left.magnitude // divisor.magnitude
+    bits = negative ? 0_u128 &- magnitude : magnitude
+    wrap(bits, kind)
   end
 
   def self.remainder(left : MathValue, right : MathValue) : MathResult
     kind = left.kind
-    return MathError.new("Division by 0") if right.value == 0_i128
-    if kind.signed? && left.value == min_of(kind) && right.value == -1_i128
-      return MathValue.new(0_i128, kind)
+    return MathError.new("Division by 0") if right.zero?
+    if kind.signed? && left.negative? && left.magnitude == lower_magnitude(kind) && right.negative? && right.magnitude == 1_u128
+      return MathValue.new(0_u128, kind)
     end
-    divisor = right.value
-    if kind.signed? != right.kind.signed?
-      converted = wrap(right.value, kind)
-      return converted if converted.is_a?(MathError)
-      divisor = converted.as(MathValue).value
-      if divisor == 0_i128
-        return MathError.new("the divisor wraps to zero in #{kind_name(kind)}, which the port does not fold", true)
+    divisor = division_divisor(left, right)
+    magnitude = left.magnitude % divisor.magnitude
+    bits = left.negative? ? 0_u128 &- magnitude : magnitude
+    wrap(bits, kind)
+  end
+
+  # Mixed signs use the larger operand width and the dividend's signedness.
+  def self.division_divisor(left : MathValue, right : MathValue) : MathValue
+    return right if left.kind.signed? == right.kind.signed?
+    wrap(right.bits, division_kind(left.kind, right.kind))
+  end
+
+  def self.division_kind(left : NumberKind, right : NumberKind) : NumberKind
+    width = left.bit_width
+    width = right.bit_width if right.bit_width > width
+    if left.signed?
+      case width
+      when  8 then NumberKind::I8
+      when 16 then NumberKind::I16
+      when 32 then NumberKind::I32
+      when 64 then NumberKind::I64
+      else         NumberKind::I128
+      end
+    else
+      case width
+      when  8 then NumberKind::U8
+      when 16 then NumberKind::U16
+      when 32 then NumberKind::U32
+      when 64 then NumberKind::U64
+      else         NumberKind::U128
       end
     end
-    magnitude = magnitude_of(left.value) % magnitude_of(divisor)
-    wrap(signed_of(left.value < 0_i128, magnitude), kind)
   end
 
-  # A count at or past the width answers zero: `1 << 64` is 0 for an Int32.
-  # A negative count shifts the other way; its negation is computed in Int32,
-  # so a count below -2147483647 overflows there.
-  def self.shift_left(value : MathValue, count : Int128) : MathResult
-    if count < 0_i128
-      return MathError.new("Arithmetic overflow") if count < -2147483647_i128
-      return shift_right_by(value, 0_i128 - count)
+  # A negative count reverses direction and is negated in Int32 by the host.
+  def self.shift_left(value : MathValue, count : MathValue) : MathResult
+    if count.negative?
+      return MathError.new("Arithmetic overflow") if count.magnitude > 2147483647_u128
+      return shift_right_by(value, count.magnitude)
     end
-    shift_left_by(value, count)
+    shift_left_by(value, count.magnitude)
   end
 
-  def self.shift_right(value : MathValue, count : Int128) : MathResult
-    if count < 0_i128
-      return MathError.new("Arithmetic overflow") if count < -2147483647_i128
-      return shift_left_by(value, 0_i128 - count)
+  def self.shift_right(value : MathValue, count : MathValue) : MathResult
+    if count.negative?
+      return MathError.new("Arithmetic overflow") if count.magnitude > 2147483647_u128
+      return shift_left_by(value, count.magnitude)
     end
-    shift_right_by(value, count)
+    shift_right_by(value, count.magnitude)
   end
 
-  def self.shift_left_by(value : MathValue, count : Int128) : MathResult
-    return MathValue.new(0_i128, value.kind) if count >= value.kind.bit_width.to_i128
-    wrap(value.value << count.to_i32, value.kind)
+  def self.shift_left_by(value : MathValue, count : UInt128) : MathValue
+    return MathValue.new(0_u128, value.kind) if count >= value.kind.bit_width.to_u128
+    wrap(value.bits << count.to_i32, value.kind)
   end
 
-  def self.shift_right_by(value : MathValue, count : Int128) : MathResult
-    if count >= value.kind.bit_width.to_i128
-      return MathValue.new(value.value < 0_i128 ? -1_i128 : 0_i128, value.kind)
+  def self.shift_right_by(value : MathValue, count : UInt128) : MathValue
+    if count >= value.kind.bit_width.to_u128
+      return MathValue.new(value.negative? ? umax : 0_u128, value.kind)
     end
-    MathValue.new(value.value >> count.to_i32, value.kind)
+    bits = value.negative? ? ~((~value.bits) >> count.to_i32) : value.bits >> count.to_i32
+    wrap(bits, value.kind)
   end
 
-  # Wraps an Int128 bit pattern to the kind: the low bits, sign-extended for a
-  # signed kind. A UInt128 with the top bit set is above the range the port
-  # carries, so it is refused.
-  def self.wrap(value : Int128, kind : NumberKind) : MathResult
-    if kind == NumberKind::I128
-      return MathValue.new(value, kind)
-    end
-    if kind == NumberKind::U128
-      if value < 0_i128
-        return MathError.new("value above the signed 128-bit range, which the port does not carry", true)
-      end
-      return MathValue.new(value, kind)
-    end
+  # Keep the low bits and sign-extend only signed kinds.
+  def self.wrap(value : UInt128, kind : NumberKind) : MathValue
     low = value & mask_of(kind)
-    if kind.signed? && low > upper_magnitude(kind).to_i128
-      low = low - (mask_of(kind) + 1_i128)
+    if kind.signed? && low > upper_magnitude(kind)
+      low = low | ~mask_of(kind)
     end
     MathValue.new(low, kind)
   end
 
+  def self.from_sign(negative : Bool, magnitude : UInt128, kind : NumberKind) : MathValue
+    bits = negative ? 0_u128 &- magnitude : magnitude
+    MathValue.new(bits, kind)
+  end
+
   # Exact arithmetic on sign and magnitude, so no step can overflow the iyi
   # integer it runs in.
-  def self.exact_of(value : Int128) : MathExact
-    MathExact.new(value < 0_i128, magnitude_of(value))
+  def self.exact_of(value : MathValue) : MathExact
+    MathExact.new(value.negative?, value.magnitude)
   end
 
   def self.negate(value : MathExact) : MathExact
@@ -368,16 +377,13 @@ pub class MathInterpreter
   def self.classify(kind : NumberKind, exact : MathExact) : MathResult
     return MathError.new("Arithmetic overflow") if exact.beyond
     magnitude = exact.magnitude
-    return MathValue.new(0_i128, kind) if magnitude == 0_u128
+    return MathValue.new(0_u128, kind) if magnitude == 0_u128
     if exact.negative
       return MathError.new("Arithmetic overflow") unless kind.signed? && magnitude <= lower_magnitude(kind)
-      return MathValue.new(signed_of(true, magnitude), kind)
+      return from_sign(true, magnitude, kind)
     end
     return MathError.new("Arithmetic overflow") if magnitude > upper_magnitude(kind)
-    if magnitude >= two127
-      return MathError.new("value above the signed 128-bit range, which the port does not carry", true)
-    end
-    MathValue.new(magnitude.to_i128, kind)
+    from_sign(false, magnitude, kind)
   end
 
   def self.literal_fits(kind : NumberKind, negative : Bool, magnitude : UInt128) : Bool
@@ -417,17 +423,14 @@ pub class MathInterpreter
     end
   end
 
-  def self.min_of(kind : NumberKind) : Int128
-    signed_of(true, lower_magnitude(kind))
-  end
-
-  def self.mask_of(kind : NumberKind) : Int128
+  def self.mask_of(kind : NumberKind) : UInt128
     case kind
-    when NumberKind::I8, NumberKind::U8   then 255_i128
-    when NumberKind::I16, NumberKind::U16 then 65535_i128
-    when NumberKind::I32, NumberKind::U32 then 4294967295_i128
-    when NumberKind::I64, NumberKind::U64 then 18446744073709551615_i128
-    else                                       0_i128
+    when NumberKind::I8, NumberKind::U8     then 255_u128
+    when NumberKind::I16, NumberKind::U16   then 65535_u128
+    when NumberKind::I32, NumberKind::U32   then 4294967295_u128
+    when NumberKind::I64, NumberKind::U64   then 18446744073709551615_u128
+    when NumberKind::I128, NumberKind::U128 then umax
+    else                                         0_u128
     end
   end
 
@@ -445,35 +448,6 @@ pub class MathInterpreter
     when NumberKind::U128 then "UInt128"
     else                       kind.to_s
     end
-  end
-
-  def self.magnitude_of(value : Int128) : UInt128
-    if value < 0_i128
-      (0_i128 - (value + 1_i128)).to_u128 + 1_u128
-    else
-      value.to_u128
-    end
-  end
-
-  # The Int128 bit pattern of a sign and magnitude. The magnitude 2^127 is the
-  # least value whichever sign it has.
-  def self.signed_of(negative : Bool, magnitude : UInt128) : Int128
-    return -170141183460469231731687303715884105728_i128 if magnitude == two127
-    positive = magnitude.to_i128
-    negative ? 0_i128 - positive : positive
-  end
-
-  # The two's complement bit pattern of a value, and back: what MathValue stores as two words. Written with
-  # checked arithmetic only, so nothing here can overflow: a negative value's pattern is 2**128 less its
-  # magnitude.
-  def self.bits_of(value : Int128) : UInt128
-    return value.to_u128 if value >= 0_i128
-    umax - (magnitude_of(value) - 1_u128)
-  end
-
-  def self.value_of_bits(bits : UInt128) : Int128
-    return bits.to_i128 if bits < two127
-    signed_of(true, (umax - bits) + 1_u128)
   end
 
   def self.two127 : UInt128

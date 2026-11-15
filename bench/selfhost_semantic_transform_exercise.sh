@@ -142,6 +142,11 @@ LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" \
   CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
     -o "$WORK/math_oracle" "$MATH_ORACLE_SRC" > "$WORK/math_oracle.log" 2>&1 || { echo "  HOSTED MATH ORACLE DOES NOT BUILD"; cat "$WORK/math_oracle.log"; exit 1; }
 "$IYI" build -o "$WORK/math_port" "$MATH_DRIVER" > "$WORK/math_port.log" 2>&1 || { echo "  MATH PORT DRIVER DOES NOT BUILD"; cat "$WORK/math_port.log"; exit 1; }
+if "$WORK/math_port" > "$WORK/math_bare.log" 2>&1; then
+  echo "  bare math driver: literal limits and error messages passed"
+else
+  echo "  bare math driver: FAILED"; cat "$WORK/math_bare.log"; status=1
+fi
 # When the port's driver dies on a fixture (a signal leaves no message), name what it printed last and the
 # expressions that kill it alone, so the log of a host this was not written on says which fold it was.
 math_failed_alone() {
@@ -196,31 +201,65 @@ else
   status=1
 fi
 
-# A patch to the port's math interpreter that the gate must catch. The math
-# driver is rebuilt from the patched module and compared with the oracle on
-# every compared fixture; a build failure or a differing line counts as caught.
+# A mutation must build and reach a differing result, not merely crash.
+: > "$WORK/math-mutation-diffs.log"
 check_math_agrees() {
-  "$IYI" build -o "$WORK/math_mut_port" "$MATH_DRIVER" > /dev/null 2>&1 || return 1
-  for fixture in "$REPO"/bench/fixtures/semtx_math_*.iyi; do
+  if ! "$IYI" build -o "$WORK/math_mut_port" "$MATH_DRIVER" > "$WORK/math-mut-build.log" 2>&1; then
+    cat "$WORK/math-mut-build.log" >> "$WORK/math-mut.invalid"
+    return 1
+  fi
+  local bare_failed=0
+  "$WORK/math_mut_port" > "$WORK/math-mut-bare.log" 2>&1 || bare_failed=1
+  if [ "$#" -eq 0 ]; then
+    set -- "$REPO"/bench/fixtures/semtx_math_*.iyi
+  fi
+  for fixture in "$@"; do
     if [ "$(basename "$fixture")" = "semtx_math_refused.iyi" ]; then continue; fi
-    "$WORK/math_mut_port" "$fixture" > "$WORK/math_mut.txt" 2> /dev/null || return 1
-    "$WORK/math_oracle" "$fixture" > "$WORK/math_mut_oracle.txt" 2> /dev/null || return 1
-    cmp -s "$WORK/math_mut.txt" "$WORK/math_mut_oracle.txt" || return 1
+    if ! "$WORK/math_mut_port" "$fixture" > "$WORK/math_mut.txt" 2> "$WORK/math-mut-run.err"; then
+      echo "mutant failed to execute $fixture" >> "$WORK/math-mut.invalid"
+      cat "$WORK/math-mut-run.err" >> "$WORK/math-mut.invalid"
+      return 1
+    fi
+    if ! "$WORK/math_oracle" "$fixture" > "$WORK/math_mut_oracle.txt" 2> "$WORK/math-oracle-run.err"; then
+      echo "oracle failed to execute $fixture" >> "$WORK/math-mut.invalid"
+      cat "$WORK/math-oracle-run.err" >> "$WORK/math-mut.invalid"
+      return 1
+    fi
+    if ! cmp -s "$WORK/math_mut.txt" "$WORK/math_mut_oracle.txt"; then
+      echo "  mutant differs on $(basename "$fixture"):" >> "$WORK/math-mutation-diffs.log"
+      diff -u "$WORK/math_mut_oracle.txt" "$WORK/math_mut.txt" | head -20 >> "$WORK/math-mutation-diffs.log"
+      return 1
+    fi
   done
+  if [ "$bare_failed" -ne 0 ]; then
+    echo "mutant failed the bare limit checks without a fixture difference" >> "$WORK/math-mut.invalid"
+    cat "$WORK/math-mut-bare.log" >> "$WORK/math-mut.invalid"
+    return 1
+  fi
   return 0
 }
 MATH_MUTATIONS=0
 MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
 prove_mutation "a wrapped result keeps the bits above its kind" "$MATH" 'low = value & mask_of(kind)' 'low = value' -- check_math_agrees || status=1
 MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
-prove_mutation "a right shift past the width loses the sign of a negative value" "$MATH" 'MathValue.new(value.value < 0_i128 ? -1_i128 : 0_i128, value.kind)' 'MathValue.new(0_i128, value.kind)' -- check_math_agrees || status=1
+prove_mutation "a right shift past the width loses the sign of a negative value" "$MATH" 'MathValue.new(value.negative? ? umax : 0_u128, value.kind)' 'MathValue.new(0_u128, value.kind)' -- check_math_agrees || status=1
 MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
-prove_mutation "a result one above the kind's limit is accepted" "$MATH" 'return MathError.new("Arithmetic overflow") if magnitude > upper_magnitude(kind)' 'return MathError.new("Arithmetic overflow") if magnitude > upper_magnitude(kind) + 1_u128' -- check_math_agrees || status=1
+prove_mutation "a result one above the kind's limit is accepted" "$MATH" 'return MathError.new("Arithmetic overflow") if magnitude > upper_magnitude(kind)' 'return MathError.new("Arithmetic overflow") if magnitude > upper_magnitude(kind) && magnitude - upper_magnitude(kind) > 1_u128' -- check_math_agrees || status=1
 MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
-prove_mutation "a mixed-signedness divisor is not wrapped to the left kind" "$MATH" 'if kind.signed? != right.kind.signed?' 'if false' -- check_math_agrees || status=1
+prove_mutation "a mixed-signedness divisor is not reinterpreted" "$MATH" 'return right if left.kind.signed? == right.kind.signed?' 'return right' -- check_math_agrees || status=1
+MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
+prove_mutation "a mixed divisor is narrowed to the left width" "$MATH" 'width = right.bit_width if right.bit_width > width' 'width = left.bit_width if right.bit_width > width' -- check_math_agrees "$REPO/bench/fixtures/semtx_math_division_width.iyi" || status=1
+MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
+prove_mutation "the unsigned high bit is treated as a sign" "$MATH" '@kind.signed? && @high >= 9223372036854775808_u64' '@high >= 9223372036854775808_u64' -- check_math_agrees "$REPO/bench/fixtures/semtx_math_u128.iyi" || status=1
 MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
 prove_mutation "the MIN / -1 overflow carries the wrong message" "$MATH" '"Overflow: #{kind_name(kind)}::MIN / -1"' '"Overflow: #{kind_name(kind)}::MIN/-1"' -- check_math_agrees || status=1
 echo "  $MATH_MUTATIONS math mutation proofs run"
+cat "$WORK/math-mutation-diffs.log"
+if [ -e "$WORK/math-mut.invalid" ]; then
+  echo "  FAIL: math mutation did not build or execute correctly"
+  cat "$WORK/math-mut.invalid"
+  status=1
+fi
 
 echo
 echo "== 5. Literal expansion: range literals, the port's walk against the hosted walk"

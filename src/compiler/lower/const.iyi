@@ -1,22 +1,14 @@
 module compiler/lower/const
 
 # The port of `src/compiler/iyi/codegen/const.cr` (the hosted `CodeGenVisitor`'s constants), in file
-# order. Ported: a literal constant (Bool, Char, an integer of at most 64 bits) is inlined at every read,
-# and its assignment emits nothing (hosted `read_const`, `codegen_assign(Path)`); a non-literal constant
-# of an integer, float, reference or small by-value aggregate type gets a value global, its initialised flag, an initialiser function
-# `~NAME:const_init` that stores the value, and either a call to it at the assignment (a constant nothing read
-# before it, hosted `initialize_const` on the no-init-flag path) or `run_once` through the prelude's `__iyi_once`
-# (a constant read first). A read after the assignment is a load of its global; a read before it calls
-# `~NAME:const_read`, which initialises the constant once and returns its address (hosted `read_const_pointer`,
-# `create_read_const_function`).
+# order. Literal and foldable integer constants are inlined at every read, and their assignment emits nothing.
+# A non-literal constant of an integer, float, reference or small by-value aggregate type gets a value global,
+# its initialised flag, and an initialiser function `~NAME:const_init`. The initialiser runs at assignment or
+# through `run_once` when a constant is read first (hosted `initialize_const`, `read_const_pointer`).
+# String, symbol and float constants get globals at program start.
 #
-# Refused by name, with the hosted function each stands for, until ported:
-#   - a constant of a generic class or module (its hosted `llvm_name` spelling is not ported yet);
-#   - a value that may be a compile-time value: a path to another constant, or an operator call (hosted
-#     `compile_time_value` runs the MathInterpreter, which inlines it at each read instead of storing it);
-#   - a nil literal (hosted `initialize_simple_constants`): its global is not ported yet;
-#   - an indirectly passed aggregate, which needs the hosted copy_value path.
-# String, symbol and float constants get constant globals at program start; assignments emit nothing and reads load.
+# Still refused by name: generic-owner constants, compile-time values that cannot be folded here,
+# nil literals, and indirectly passed aggregates.
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
 import compiler/syntax/token::{NumberKind}
@@ -92,14 +84,19 @@ pub def literal_value(low : Lowerer, const : Compiler::Semantic::TopLevel::Const
   return nil unless integer || type.is_a?(IntegerType) || type.is_a?(EnumType)
   result = MathInterpreter.new.interpret(const.value)
   return nil unless result.is_a?(MathValue)
-  # Hosted codegen/types.cr:230-233 interprets integer and enum initializers.
-  # The IR constant carries the low 64-bit bit pattern.
-  return nil if type.as(Type).full_name == "Int128" || type.as(Type).full_name == "UInt128"
-  bits = result.as(MathValue).value
-  if bits > 9223372036854775807_i128
-    bits = bits - 18446744073709551616_i128
+  # Hosted codegen/types.cr interprets integer and enum initializers.
+  folded_integer_constant(low, type.as(Type), result.as(MathValue))
+end
+
+def folded_integer_constant(low : Lowerer, typ : Type, value : MathValue) : Value
+  ir = low.typer.llvm_type(typ)
+  bits = value.bits
+  lo = u64_as_i64((bits & 18446744073709551615_u128).to_u64)
+  if ir.bits == 128
+    hi = u64_as_i64((bits >> 64).to_u64)
+    return low.builder.const_wide(ir, hi, lo)
   end
-  low.builder.const_int(low.typer.llvm_type(type.as(Type)), bits.to_i64)
+  low.builder.const_int(ir, lo)
 end
 
 # Follow the typed constant binding, not the lowering context's current scope.
@@ -151,12 +148,9 @@ pub def literal_of_type(low : Lowerer, value : ASTNode, typ : Type) : Value?
     if typ.full_name == "Int128" || typ.full_name == "UInt128"
       result = MathInterpreter.new.interpret(value)
       unless result.is_a?(MathValue)
-        refuse_port("lower: a 128-bit integer literal exceeds the math interpreter's supported range (hosted const.cr: read_const)")
+        refuse_port("lower: invalid 128-bit integer literal (hosted const.cr: read_const)")
       end
-      bits = MathInterpreter.bits_of(result.as(MathValue).value)
-      lo = u64_as_i64((bits & 18446744073709551615_u128).to_u64)
-      hi = u64_as_i64((bits >> 64).to_u64)
-      return low.builder.const_wide(low.typer.llvm_type(typ), hi, lo)
+      return folded_integer_constant(low, typ, result.as(MathValue))
     end
     if typ.full_name == "UInt64"
       unsigned_value = text.to_u64
