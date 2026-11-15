@@ -878,8 +878,8 @@ if case_paths_check; then
   prove_mutation "a constant case condition is not rewritten to equality" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '          @expansions[node] = comparison' '          @expansions[node] = node.const' -- case_paths_check || status=1
   prove_mutation "a rewritten case condition is folded as a type test" "$REPO/src/compiler/lower/lower.iyi" \
-    '  if cond_node.is_a?(IsA) && low.analysed.expansions[cond_node]?.nil?' \
-    '  if cond_node.is_a?(IsA)' -- case_paths_check || status=1
+    '  if test_node.is_a?(IsA) && low.analysed.expansions[test_node]?.nil?' \
+    '  if test_node.is_a?(IsA)' -- case_paths_check || status=1
   prove_mutation "a rewritten case condition is not emitted" "$REPO/src/compiler/lower/lower.iyi" \
     '  if isa_expanded = low.analysed.expansions[node]?' '  if isa_expanded = (false ? low.analysed.expansions[node]? : nil)' -- case_paths_check || status=1
 else
