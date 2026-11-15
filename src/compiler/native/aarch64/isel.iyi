@@ -871,16 +871,7 @@ class Isel
       emit(m)
       bind_result(i, [d])
     elsif op == Op::FPToSI || op == Op::FPToUI
-      src = first_leaf(i.args[0])
-      d = gpr
-      m = mop(op == Op::FPToSI ? MOp::Fcvtzs : MOp::Fcvtzu)
-      m.fp = true
-      m.size = i.args[0].type.bits
-      m.imm = i.type.bits < 32 ? 32_i64 : i.type.bits.to_i64
-      m.defs << vop(d)
-      m.uses << vop(src)
-      emit(m)
-      bind_result(i, [canon(d, i.type)])
+      lower_fp_to_int(i, op == Op::FPToSI, false)
     elsif op == Op::SIToFP || op == Op::UIToFP
       src = first_leaf(i.args[0])
       if op == Op::UIToFP
@@ -1106,15 +1097,12 @@ class Isel
     t.int? && t.bits == 128
   end
 
-  # The operations on i128 this slice does not lower, refused by name: floating-point conversions, casts other than
-  # the extensions and the truncation, switches, and atomic accesses (a 128-bit atomic is not a pair of 64-bit ones).
+  # Operations on i128 not lowered here: integer-to-float conversions, casts
+  # other than extensions and truncation, switches, and atomic accesses.
   def wide_unsupported?(i : Inst) : Bool
     op = i.op
     if op == Op::SIToFP || op == Op::UIToFP
       return i128?(i.args[0].type)
-    end
-    if op == Op::FPToSI || op == Op::FPToUI
-      return i128?(i.type)
     end
     if op == Op::Trunc || op == Op::ZExt || op == Op::SExt || op == Op::PtrToInt || op == Op::IntToPtr || op == Op::BitCast || op == Op::AddrSpaceCast
       return true if i128?(i.type) && op != Op::ZExt && op != Op::SExt
@@ -2537,6 +2525,8 @@ class Isel
       bind_result(i, [fbinop(id == IntrinsicId::Minnum ? MOp::FMinNm : MOp::FMaxNm, first_leaf(i.args[0]), first_leaf(i.args[1]), i.type.bits)])
     elsif id == IntrinsicId::Copysign
       lower_copysign(i)
+    elsif id == IntrinsicId::FPToSISat || id == IntrinsicId::FPToUISat
+      lower_fp_to_int(i, id == IntrinsicId::FPToSISat, true)
     elsif !overflow_form(id).family
       fail("intrinsic #{intrinsic_stem(id)} is not lowered in this slice")
     else
@@ -2576,6 +2566,79 @@ class Isel
     kept = binop(MOp::And, x, const_gpr(magnitude))
     taken = binop(MOp::And, y, const_gpr(sign))
     bind_result(i, [move_bits_to_fp(binop(MOp::Orr, kept, taken), bits)])
+  end
+
+  # FCVTZ saturates at its register width and maps NaN to zero. For a
+  # saturating i8 or i16 conversion clamp the 64-bit result to that width.
+  def lower_fp_to_int(i : Inst, signed : Bool, saturating : Bool) : Nil
+    src = first_leaf(i.args[0])
+    if i128?(i.type)
+      bind_result(i, fp_to_wide(src, i.args[0].type.bits, signed))
+      return
+    end
+    bits = i.type.bits
+    clamp = saturating && bits < 32
+    d = gpr
+    m = mop(signed ? MOp::Fcvtzs : MOp::Fcvtzu)
+    m.fp = true
+    m.size = i.args[0].type.bits
+    m.imm = clamp ? 64_i64 : (bits < 32 ? 32_i64 : bits.to_i64)
+    m.defs << vop(d)
+    m.uses << vop(src)
+    emit(m)
+    d = clamp_narrow(d, bits, signed) if clamp
+    bind_result(i, [canon(d, i.type)])
+  end
+
+  def clamp_narrow(d : Int32, bits : Int32, signed : Bool) : Int32
+    if signed
+      hi = const_gpr(bits == 8 ? 127_i64 : 32767_i64)
+      compare(d, hi)
+      capped = csel_cond(d, hi, cond_lt)
+      lo = const_gpr(bits == 8 ? -128_i64 : -32768_i64)
+      compare(capped, lo)
+      return csel_cond(capped, lo, cond_gt)
+    end
+    hi = const_gpr(bits == 8 ? 255_i64 : 65535_i64)
+    compare(d, hi)
+    csel_cond(d, hi, cond_cc)
+  end
+
+  # The runtime returns the 128-bit value in x0:x1 (AAPCS64).
+  def fp_to_wide(src : Int32, src_bits : Int32, signed : Bool) : Array(Int32)
+    value = src
+    if src_bits == 32
+      value = @mf.new_vreg(RegClass::Fpr)
+      w = mop(MOp::FCvt)
+      w.fp = true
+      w.size = 64
+      w.defs << vop(value)
+      w.uses << vop(src)
+      emit(w)
+    end
+    @mf.frame.has_calls = true
+    arg = mop(MOp::FMov)
+    arg.fp = true
+    arg.defs << pop(@desc.fp_args[0])
+    arg.uses << vop(value)
+    emit(arg)
+    call = mop(MOp::Bl)
+    call.sym = symbol_index(signed ? "__iyi_native_fptosi_sat_i128" : "__iyi_native_fptoui_sat_i128")
+    call.reloc = RelocKind::A64Call26
+    call.call = true
+    call.clobbers = @desc.caller_saved
+    emit(call)
+    lo = gpr
+    m0 = mop(MOp::Mov)
+    m0.defs << vop(lo)
+    m0.uses << pop(0)
+    emit(m0)
+    hi = gpr
+    m1 = mop(MOp::Mov)
+    m1.defs << vop(hi)
+    m1.uses << pop(1)
+    emit(m1)
+    [lo, hi]
   end
 
   # The overflow family: the value and a flag. Narrow widths compute in 64 bits and compare the result with

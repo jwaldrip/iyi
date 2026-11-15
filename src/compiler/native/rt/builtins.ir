@@ -167,3 +167,87 @@ entry:
   %r = call i128 (i128, i128, i128) @iyi_native_udivmod(i128 %a, i128 %b, i128 1)
   ret i128 %r
 }
+
+; Saturating float-to-128 conversions: NaN to zero, out of range to bounds.
+define i128 @__iyi_native_fptosi_sat_i128(double %x) {
+entry:
+  %bits = bitcast double %x to i64
+  %biased = lshr i64 %bits, 52
+  %exp = and i64 %biased, 2047
+  %small = icmp ult i64 %exp, 1023
+  br i1 %small, label %zero, label %special
+special:
+  %frac = and i64 %bits, 4503599627370495
+  %top = icmp eq i64 %exp, 2047
+  %payload = icmp ne i64 %frac, 0
+  %nan = and i1 %top, %payload
+  br i1 %nan, label %zero, label %range
+range:
+  %neg = icmp slt i64 %bits, 0
+  %past = icmp uge i64 %exp, 1150
+  br i1 %past, label %bound, label %shift
+bound:
+  %b = select i1 %neg, i128 -170141183460469231731687303715884105728, i128 170141183460469231731687303715884105727
+  ret i128 %b
+shift:
+  %sig = or i64 %frac, 4503599627370496
+  %wide = zext i64 %sig to i128
+  %e = sub i64 %exp, 1075
+  %up = icmp sge i64 %e, 0
+  br i1 %up, label %left, label %right
+left:
+  %el = zext i64 %e to i128
+  %ml = shl i128 %wide, %el
+  br label %sign
+right:
+  %en = sub i64 0, %e
+  %er = zext i64 %en to i128
+  %mr = lshr i128 %wide, %er
+  br label %sign
+sign:
+  %m = phi i128 [ %ml, label %left ], [ %mr, label %right ]
+  %nm = sub i128 0, %m
+  %v = select i1 %neg, i128 %nm, i128 %m
+  ret i128 %v
+zero:
+  ret i128 0
+}
+
+define i128 @__iyi_native_fptoui_sat_i128(double %x) {
+entry:
+  %bits = bitcast double %x to i64
+  %biased = lshr i64 %bits, 52
+  %exp = and i64 %biased, 2047
+  %small = icmp ult i64 %exp, 1023
+  %neg = icmp slt i64 %bits, 0
+  %none = or i1 %small, %neg
+  br i1 %none, label %zero, label %special
+special:
+  %frac = and i64 %bits, 4503599627370495
+  %top = icmp eq i64 %exp, 2047
+  %payload = icmp ne i64 %frac, 0
+  %nan = and i1 %top, %payload
+  br i1 %nan, label %zero, label %range
+range:
+  %past = icmp uge i64 %exp, 1151
+  br i1 %past, label %bound, label %shift
+bound:
+  ret i128 -1
+shift:
+  %sig = or i64 %frac, 4503599627370496
+  %wide = zext i64 %sig to i128
+  %e = sub i64 %exp, 1075
+  %up = icmp sge i64 %e, 0
+  br i1 %up, label %left, label %right
+left:
+  %el = zext i64 %e to i128
+  %ml = shl i128 %wide, %el
+  ret i128 %ml
+right:
+  %en = sub i64 0, %e
+  %er = zext i64 %en to i128
+  %mr = lshr i128 %wide, %er
+  ret i128 %mr
+zero:
+  ret i128 0
+}

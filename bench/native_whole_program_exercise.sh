@@ -319,10 +319,10 @@ still_runs() {
   mkdir -p "$t"
   if [ "$which" = bridge ]; then
     cp "$tools/compile_native" "$t/compile_native"
-    "$iyi" build -o "$t/iyi-ir" "$BRIDGE_SRC" >"$t/build.bridge.log" 2>&1 || return 1
+    "$iyi" build -o "$t/iyi-ir" "$BRIDGE_SRC" >"$t/build.bridge.log" 2>&1 || { printf '%s\n' "${label:-bridge}" >> "$work/mutation-build-failed"; cat "$t/build.bridge.log" >> "$work/mutation-build-failed"; return 1; }
   else
     cp "$tools/iyi-ir" "$t/iyi-ir"
-    "$iyi" build -o "$t/compile_native" "$TOOL_SRC" >"$t/build.tool.log" 2>&1 || return 1
+    "$iyi" build -o "$t/compile_native" "$TOOL_SRC" >"$t/build.tool.log" 2>&1 || { printf '%s\n' "${label:-native}" >> "$work/mutation-build-failed"; cat "$t/build.tool.log" >> "$work/mutation-build-failed"; return 1; }
   fi
   dir="$work/p/$(dirname "$src" | tr '/' '_')_$(basename "$src" .iyi)"
   [ -f "$dir/hosted.ll" ] || return 1
@@ -330,7 +330,7 @@ still_runs() {
   [ "${result%%$'\t'*}" = "run-equal" ]
 }
 unmutated=1
-for src in samples/iyi/hello.iyi "$FIX/wide_result.iyi" "$FIX/wide_division.iyi" "$FIX/quoted_name.iyi" samples/iyi/cores.iyi; do
+for src in samples/iyi/hello.iyi "$FIX/wide_result.iyi" "$FIX/wide_division.iyi" "$FIX/float_to_int.iyi" "$FIX/quoted_name.iyi" samples/iyi/cores.iyi; do
   awk -v p="$src" '$1 == p && $2 == "run-equal" { found = 1 } END { exit !found }' "$measured" || unmutated=0
 done
 if [ "$unmutated" -ne 1 ]; then
@@ -364,6 +364,18 @@ else
   prove_mutation "a library named beside the IR is not loaded" src/compiler/tools/compile_native.iyi \
     'names << name unless name.empty? || name.starts_with?("#")' \
     'names << name if name.empty?' -- still_runs native samples/iyi/cores.iyi || status=1
+  prove_mutation "an i8 saturating conversion uses the i16 clamp" src/compiler/native/aarch64/isel.iyi \
+    '    d = clamp_narrow(d, bits, signed) if clamp' '    d = clamp_narrow(d, 16, signed) if clamp' -- still_runs native "$FIX/float_to_int.iyi" || status=1
+  prove_mutation "the unsigned 128-bit conversion calls the signed helper" src/compiler/native/aarch64/isel.iyi \
+    'call.sym = symbol_index(signed ? "__iyi_native_fptosi_sat_i128" : "__iyi_native_fptoui_sat_i128")' \
+    'call.sym = symbol_index("__iyi_native_fptosi_sat_i128")' -- still_runs native "$FIX/float_to_int.iyi" || status=1
+  prove_mutation "the signed 128-bit helper saturates one exponent late" src/compiler/native/rt/builtins_text.iyi \
+    '%past = icmp uge i64 %exp, 1150' '%past = icmp uge i64 %exp, 1151' -- still_runs native "$FIX/float_to_int.iyi" || status=1
+  if [ -e "$work/mutation-build-failed" ]; then
+    echo "NOT PROVEN: a mutation tool failed to build:"
+    cat "$work/mutation-build-failed"
+    fail "a mutation tool failed to build; its behavior is not proven"
+  fi
   [ "$status" -eq 0 ] || fail "a mutation was not caught"
 fi
 

@@ -30,7 +30,8 @@ import compiler/native/link/link::{link, LinkOptions, LinkedImage, LinkError}
 def runtime_helper?(name : String) : Bool
   name == "__iyi_native_memcpy" || name == "__iyi_native_memmove" || name == "__iyi_native_memset" ||
     name == "__iyi_native_udivti3" || name == "__iyi_native_umodti3" ||
-    name == "__iyi_native_divti3" || name == "__iyi_native_modti3"
+    name == "__iyi_native_divti3" || name == "__iyi_native_modti3" ||
+    name == "__iyi_native_fptosi_sat_i128" || name == "__iyi_native_fptoui_sat_i128"
 end
 
 # The helpers are entered in the symbol table before any function is selected, because selection asks for their
@@ -96,6 +97,7 @@ pub def symbol_table(mod : Module, obj : ObjectFile) : Hash(String, Int32)
   # Isel-generated calls need symbols before selection; the runtime object
   # supplies them and unused undefined entries are pruned after encoding.
   ["__iyi_native_memcpy", "__iyi_native_memmove", "__iyi_native_memset",
+   "__iyi_native_fptosi_sat_i128", "__iyi_native_fptoui_sat_i128",
    "__iyi_native_udivti3", "__iyi_native_umodti3", "__iyi_native_divti3", "__iyi_native_modti3"].each do |helper|
     next if table[helper]?
     table[helper] = obj.symbols.size
