@@ -2565,6 +2565,11 @@ pub class MainVisitor < TypeNodeHost
 
       if ctx = @current_block_context_vars
         ctx.keys.each do |k|
+          # Block arguments own their slots (hosted call.cr: undef_vars); only
+          # writes to captured names flow back to the caller.
+          shadowed = false
+          blk.args.each { |arg| shadowed = true if arg.name == k }
+          next if shadowed
           if new_v = @vars[k]?
             ctx[k] = new_v
           end
