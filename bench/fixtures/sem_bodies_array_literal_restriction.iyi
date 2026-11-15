@@ -7,6 +7,19 @@ end
 class LiteralOther < LiteralBase
 end
 
+trait LiteralValue
+end
+
+struct LiteralInst
+end
+
+impl LiteralValue for LiteralInst
+end
+
+def accepts_trait(xs : Array(LiteralValue)) : Int32
+  xs.size
+end
+
 def literal_leaf : LiteralLeaf
   LiteralLeaf.new
 end
@@ -35,3 +48,5 @@ puts accepts_base([] of LiteralLeaf)
 puts accepts_nested([[literal_leaf]])
 puts accepts_splat([literal_leaf])
 puts accepts_block([literal_leaf]) { |size| size }
+puts accepts_base(xs: [literal_leaf])
+puts accepts_trait([LiteralInst.new])
