@@ -19,23 +19,45 @@ end
 
 # Resolves module import paths against search paths and relative directories.
 pub class IyiPath
+  CONFIG_PATH = {{ env("IYI_CONFIG_PATH") || "$ORIGIN/../share/iyi/src:$ORIGIN/../src" }}
+
   property entries : Array(String)
 
-  def initialize(entries : Array(String)? = nil)
-    if e = entries
-      @entries = e
-    else
-      @entries = [] of String
-      env_path = Program.env("IYI_PATH") || Program.env("CRYSTAL_PATH")
-      if p = env_path
-        parts = p.split(':')
-        parts.each do |part|
-          cleaned = Loader.clean_path(part)
-          @entries << cleaned unless cleaned.empty?
-        end
-      else
-        @entries << "lib"
+  def initialize(entries : Array(String)? = nil, origin : String? = nil)
+    @entries = [] of String
+    if supplied = entries
+      @entries = supplied
+    elsif env_path = Program.env("IYI_PATH") || Program.env("CRYSTAL_PATH")
+      env_path.split(':').each do |part|
+        @entries << part unless part.empty?
       end
+    elsif origin
+      @entries = CONFIG_PATH.split(':')
+      @entries.unshift("lib") unless @entries.includes?("lib")
+    else
+      @entries << "lib"
+    end
+
+    if base = origin
+      expanded = [] of String
+      @entries.each do |part|
+        if part == "$ORIGIN"
+          expanded << Loader.clean_path(base)
+        elsif part.starts_with?("$ORIGIN/")
+          expanded << Loader.clean_path(Loader.join(base, part[8, part.size - 8]))
+        else
+          cleaned = Loader.clean_path(part)
+          expanded << cleaned unless cleaned.empty?
+        end
+      end
+      @entries = expanded
+    elsif entries.nil?
+      cleaned = [] of String
+      @entries.each do |part|
+        path = Loader.clean_path(part)
+        cleaned << path unless path.empty?
+      end
+      @entries = cleaned
     end
   end
 

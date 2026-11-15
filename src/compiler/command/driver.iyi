@@ -5,6 +5,7 @@ import compiler/platform/target::{Target}
 import std/dir::{Dir}
 import std/file::{File}
 import std/text
+import std/path::{Path}
 
 # What a command invocation exits with.
 pub enum Exit
@@ -173,18 +174,9 @@ pub class CommandDriver
   IYI_VERSION  = {{ read_file("#{__DIR__}/../../IYI_VERSION").chomp }}
   BASE_VERSION = {{ read_file("#{__DIR__}/../../VERSION").chomp }}
 
-  {% begin %}
-    {% if flag?(:win32) %}
-      {% llvm_ver = env("IYI_CONFIG_LLVM_VERSION") || env("LLVM_VERSION") || "22.1.8" %}
-      {% raw_triple = env("IYI_CONFIG_TARGET") || env("TARGET") || "x86_64-pc-windows-msvc" %}
-    {% else %}
-      {% llvm_config = env("LLVM_CONFIG") || "llvm-config" %}
-      {% llvm_ver = env("IYI_CONFIG_LLVM_VERSION") || env("LLVM_VERSION") || `#{llvm_config.id} --version 2> /dev/null || true`.strip.stringify %}
-      {% raw_triple = env("IYI_CONFIG_TARGET") || env("TARGET") || `#{llvm_config.id} --host-target 2> /dev/null || true`.strip.stringify %}
-    {% end %}
-    LLVM_VERSION = {{ llvm_ver }}
-    CONFIG_TARGET = {{ raw_triple }}
-  {% end %}
+  # This executable uses the native backend. Its default is that backend's
+  # target, unless the compiler was built with an explicit target.
+  CONFIG_TARGET = {{ env("IYI_CONFIG_TARGET") || "aarch64-apple-darwin" }}
 
   @@program_name = "iyi"
   @@version_description : String? = nil
@@ -209,9 +201,6 @@ pub class CommandDriver
     {{ flag?(:release) }}
   end
 
-  def self.llvm_version : String
-    LLVM_VERSION
-  end
 
   def self.default_target : String
     target = Target.parse?(CONFIG_TARGET)
@@ -227,9 +216,6 @@ pub class CommandDriver
     sb.print("#{CommandDriver.language_name} #{CommandDriver.version}")
     unless release_mode?
       sb.print("\n\nThe compiler was not built in release mode.")
-    end
-    unless LLVM_VERSION.empty?
-      sb.print("\n\nLLVM: #{LLVM_VERSION}")
     end
     target_str = default_target
     unless target_str.empty?
@@ -2172,6 +2158,23 @@ pub class CommandDriver
     @compiler_options = create_compiler("tool macro_code_coverage", no_codegen: true, path_filter: true, allowed_formats: ["codecov"] of String)
   end
 
+  # Match the hosted compiler's source and output identity check, including
+  # hard links and symlinks when the platform supplies file identity.
+  private def same_source?(source : String, output : String) : Bool
+    return true if File.expand_path(source) == File.expand_path(output)
+    source_info = File.info?(source)
+    output_info = File.info?(output)
+    return false unless source_info && output_info
+    source_info.same_file?(output_info)
+  end
+
+  private def relative_source(source : String) : String
+    absolute = File.expand_path(source)
+    prefix = Dir.current
+    prefix = prefix + "/" unless prefix.ends_with?("/")
+    absolute.starts_with?(prefix) ? absolute[prefix.size, absolute.size - prefix.size] : absolute
+  end
+
   private def create_compiler(
     command : String,
     no_codegen : Bool = false,
@@ -2497,6 +2500,48 @@ pub class CommandDriver
       exit(1)
       return opts
     end
+    if command == "build" || command == "run"
+      source_index = 0
+      filenames.each do |filename|
+        source_index = source_index + 1
+        next if has_stdin_filename && source_index == 1
+        if filename.empty?
+          abort "the file name is empty, so it names nothing", Exit::USAGE_ERROR
+          return opts
+        elsif File.directory?(filename)
+          abort "#{filename} is a directory, not a source file", Exit::USAGE_ERROR
+          return opts
+        elsif !File.file?(filename)
+          abort "no such file: #{filename}", Exit::USAGE_ERROR
+          return opts
+        end
+      end
+
+      output = opts.output_filename || "./"
+      derived = !opts.specified_output || output.ends_with?("/") || File.directory?(output)
+      extension = opts.cross_compile ? ".o" : ""
+      if derived
+        directory = opts.specified_output ? output : "./"
+        stem = Path.new(filenames[0]).stem
+        output = Path.new(File.join(directory, "#{stem}#{extension}")).normalize.to_s
+        if command == "build" && !opts.no_codegen && same_source?(filenames[0], output)
+          abort "compilation will overwrite source file '#{relative_source(filenames[0])}', either change its extension to '.cr' or specify an output file with '-o'", Exit::USAGE_ERROR
+          return opts
+        end
+      else
+        output = output + extension if Path.new(output).extension.empty?
+        if command == "build" && !opts.no_codegen
+          filenames.each do |filename|
+            if same_source?(filename, output)
+              abort "-o #{output} names #{relative_source(filename)}, the source it would build from, and linking there would replace it. Name the program something else", Exit::USAGE_ERROR
+              return opts
+            end
+          end
+        end
+      end
+      opts.output_filename = output
+    end
+
 
     unless allowed_formats.includes?(output_format)
       abort "You have input an invalid format: #{output_format}. Supported formats: #{allowed_formats.join(", ")}", Exit::USAGE_ERROR
@@ -2508,6 +2553,23 @@ pub class CommandDriver
       abort "maximum number of threads cannot be lower than 1", Exit::USAGE_ERROR
       return opts
     end
+    if command == "build" && !opts.no_codegen
+      output = opts.output_filename.as(String)
+      if File.directory?(output)
+        abort "can't use `#{output}` as output filename because it's a directory", Exit::USAGE_ERROR
+        return opts
+      end
+      directory = File.dirname(output)
+      unless Dir.exists?(directory)
+        abort "there is no #{directory} to write #{File.basename(output)} into", Exit::USAGE_ERROR
+        return opts
+      end
+      unless File.writable?(directory)
+        abort "#{directory} will not take #{File.basename(output)}: no permission to write there", Exit::USAGE_ERROR
+        return opts
+      end
+    end
+
 
     opts
   end

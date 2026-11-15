@@ -47,6 +47,9 @@ import compiler/native/obj/object::{ObjectFile}
 import compiler/native/link/link::{link, LinkOptions, LinkedImage, LinkError}
 import compiler/backend/native::{NativeBackend}
 import std/file
+import std/dir
+
+alias OutputPath = ::Std::Path::Path
 
 # The declared program: its one root expression, the semantic pass that declared its types, the body visitor
 # and the names of the libraries its `@[Link]` annotations ask for.
@@ -195,8 +198,16 @@ pub def link_program(objects : Array(ObjectFile), identifier : String, output : 
   result = link(objects, LinkOptions.new(identifier, "main", [] of String, true))
   return result.as(LinkError).message if result.is_a?(LinkError)
   image = result.as(LinkedImage)
-  File.write(output, String.new(image.executable))
-  File.chmod(output, 493)
+  # Create a fresh inode in the output directory. A previously executed inode
+  # cannot be rewritten safely on Darwin, and rename must stay on this volume.
+  temp_base = File.real_path(Dir.tempdir)
+  output_dir = File.real_path(File.dirname(File.expand_path(output)))
+  relative_dir = OutputPath.new(output_dir).relative_to(temp_base).to_s
+  temp = File.tempfile(File.join(relative_dir, ".iyi-link"))
+  defer File.delete(temp) if File.exists?(temp)
+  File.write(temp, String.new(image.executable))
+  File.chmod(temp, 493)
+  File.rename(temp, output)
   nil
 end
 

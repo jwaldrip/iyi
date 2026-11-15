@@ -3,21 +3,21 @@
 # wiring iyi components into Crystal's compiler in-process, which the heap
 # boundary makes impossible.
 #
-# This is the ported command driver (compiler/command/driver) dispatched over
-# Program.args: the same argv surface the shipped compiler serves, so every
-# command the driver ports (build, check, tool, mod, version, help, ...) is
-# dispatched for real, not one hardcoded path.
+# The command driver parses argv and the executor runs supported commands
+# through the native typed pipeline. Other commands refuse by name.
 
 @[Unsafe("The stage-one entry point binds libc exit(3) in lib LibC, the one C call it makes to end the process with the driver's status. The compiler does not check that C declaration.")]
 module compiler/stage1
 
 import compiler/command/driver::{CommandDriver, OutputBuffer, CommandResult}
+import compiler/command/execute::{CommandExecutor}
 
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
 def run_driver : Nil
+  IyiFiber.stack_bytes = CommandExecutor::PHASE_STACK_BYTES
   CommandDriver.program_name = "iyi"
   driver = CommandDriver.new(Program.args)
   result = driver.run
@@ -33,6 +33,9 @@ def run_driver : Nil
   if code
     LibC.exit(code)
   end
+  STDOUT.flush
+  STDERR.flush
+  LibC.exit(CommandExecutor.execute(result))
 end
 
 run_driver

@@ -33,6 +33,7 @@ import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
 import compiler/ir/verifier::{verify}
 import compiler/ir/printer::{print}
+import std/file
 alias PlatformTarget = ::Compiler::Platform::Target::Target
 
 # Configuration options for the compiler pipeline.
@@ -299,6 +300,17 @@ pub class Compiler
     end
     resolved_modules = parsed
     reached = typed_pass("parse")
+    # A target naming any resolved input would replace the source at link.
+    # Check identities before typing, including hard links and symlinks.
+    if output_info = File.info?(@config.output_filename)
+      resolved_modules.each do |mod_info|
+        if source_info = File.info?(mod_info.filename)
+          if output_info.same_file?(source_info)
+            return typed_refuse("output", reached, "output #{@config.output_filename} names source #{mod_info.filename}; choose another output")
+          end
+        end
+      end
+    end
     typed_start("declarations")
 
     declared = group do |g|

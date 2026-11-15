@@ -45,6 +45,14 @@ module BenchSelfhostCommandExercise
     vectors << ["build", "--mcmodel", "invalid"]
     vectors << ["build", "--warnings", "invalid"]
     vectors << ["build", "-f", "invalid"]
+    # Each reaches a source or output refusal before the hosted compiler runs.
+    vectors << ["build", "nonexistent_source_xyz.iyi"]
+    vectors << ["run", "nonexistent_source_xyz.iyi"]
+    vectors << ["build", ""]
+    vectors << ["build", "bench"]
+    vectors << ["build", "-f", "bogus", "nonexistent_source_xyz.iyi"]
+    vectors << ["build", "-o", "missing_dir_xyz/out", "samples/iyi/hello.iyi"]
+    vectors << ["build", "-o", "samples/iyi/hello.iyi", "samples/iyi/hello.iyi"]
 
     # Deps
     vectors << ["deps"]

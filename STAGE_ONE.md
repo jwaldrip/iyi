@@ -3,6 +3,12 @@
 What stage one requires, the dependency order of the components, what blocks each one today, and the observable proof of stage one.
 
 Every figure here was measured at commit 9a2a08173, with the command written beside it. A gate verdict is the exit code recorded in the baseline run at `/tmp/iyi-b-baseline/matrix.txt`. BOOTSTRAP.md has the port table and the linking facts, and this file does not repeat them.
+The inventory and measurements below remain the historical 9a2a08173
+baseline. The current command path and its gate are recorded in
+`src/compiler/PATH.md`; a hosted-built entry now calls the native typed
+pipeline for `build` and `run`, with unsupported options and verbs refused.
+The stage-two and stage-three fixed point remains a separate proof.
+
 
 ## 1. What stage one is
 
@@ -46,7 +52,11 @@ Line counts and gate names are in BOOTSTRAP.md. Each entry gives the gate verdic
 **Layer 7: artifact format** (`artifact/iyimod.iyi`). Artifact gate `exit=1`, mod wiring gate `exit=1`. Nothing blocks inspection and dumping, which is wired behind `iyi mod dump --selfhost`.
 
 **Layer 8: command driver, daemon and tools.**
-* Driver (`command/driver.iyi`), gate `exit=1`. Option parsing and dispatch only. The stage-one gate's comment records that, on 14 September 2026, the driver's build verb "returns without producing a binary". At this commit the entry point that carries the driver does not compile (section 5).
+* Driver (`command/driver.iyi`) parses commands; `command/execute.iyi` connects
+  `build` and `run` to the native typed pipeline. The baseline at 9a2a08173
+  had no connected build path. Run `bash bench/selfhost_stage_one_exercise.sh`
+  for the current hosted-built entry and `bash bench/selfhost_command_exercise.sh`
+  for parser parity.
 * Daemon (`command/daemon.iyi`), gate `exit=1`. The gate covers socket paths, identity and error text, as its own description states.
 * Formatter (`tools/formatter.iyi`), gate `exit=1`, and the format wiring gate `exit=1`. Coverage beyond the gate's own corpus is not measured here.
 * Bind (`tools/bind.iyi`), gate `exit=1`. The gate's log reports `== SELFHOST BIND CHECKS FAILED`.
@@ -122,7 +132,11 @@ Stage one is complete when all seven hold. Here is where each stands at 9a2a0817
 1. **The entry point exists.** `src/compiler/stage1.iyi` exists and is 37 lines (`wc -l`). Met as a file.
 2. **Crystal builds stage one.** Not met. `bin/iyi build -o .build/iyi-stage1 src/compiler/stage1.iyi` exits 1 (section 5). The gate's verdict: `exit=1`.
 3. **The executable validates.** Not met, because there is no executable. The gate checks `.build/iyi-stage1 version` against `src/IYI_VERSION` (`0.21.0` at this commit), and it checks help, tool usage and unknown-command refusal.
-4. **It compiles a program.** Not met, because there is no stage-one binary to run (section 5).
-5. **The output runs and matches.** Not met, because it depends on item 4.
+4. **It compiles a program.** The current gate asks the hosted-built stage-one
+   executable to build `samples/iyi/hello.iyi`, then checks the output path
+   and native linkage. The 9a2a08173 baseline did not reach this step.
+5. **The output runs and matches.** The same gate compares the generated
+   output with hosted stdout and status, and checks that `run` propagates
+   arguments and the child status. The 9a2a08173 baseline did not reach it.
 6. **The selfhost gates pass.** There are 23 selfhost gates (`ls bench/selfhost_*_exercise.sh | wc -l`). In the baseline matrix, 7 of 23 of them exit 0. The gates run against `bin/iyi` and the tools it builds, not against the stage-one binary, so this item measures the port and not stage one.
 7. **The dependency floor holds for stage one.** Not measured at this commit. `bench/dependency_floor.sh` was not run against `.build/iyi-stage1`, because that binary is not produced.
