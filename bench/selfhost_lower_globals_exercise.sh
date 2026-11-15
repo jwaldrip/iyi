@@ -321,8 +321,8 @@ prove_mutation "a float class-variable literal is not stored" "$REPO/src/compile
   "    return low.builder.const_float(low.typer.llvm_type(typ), text.to_f)" \
   "    return nil" -- lowglob_check || status=1
 prove_mutation "a class variable initializer stores null instead of its value" "$REPO/src/compiler/lower/class_var.iyi" \
-  "      global.initializer = low.builder.const_null(ir)"$'\n'"      store_aligned(low, val, global)" \
-  "      global.initializer = low.builder.const_null(ir)"$'\n'"      store_aligned(low, low.builder.const_null(ir), global)" -- lowglob_check || status=1
+  $'      global.initializer = low.builder.const_null(ir)\n      value_type = low.analysed.type_of?(node).as(Type)\n      assign(low, global, cvar.type, value_type, val)' \
+  $'      global.initializer = low.builder.const_null(ir)\n      value_type = low.analysed.type_of?(node).as(Type)\n      assign(low, global, cvar.type, value_type, low.builder.const_null(ir))' -- lowglob_check || status=1
 prove_mutation "the initialiser function is not passed to once" "$REPO/src/compiler/lower/const.iyi" \
   '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), fn.as(Value)] of Value, "")' \
   '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), flag.as(Value)] of Value, "")' -- lowglob_check || status=1
