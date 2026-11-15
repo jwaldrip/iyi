@@ -91,6 +91,11 @@ check_arms() {
   cmp -s "$WORK/named-order" "$WORK/expected" || return 1
   "$IYI" run "$REPO/bench/fixtures/sem_arms_named_order.iyi" > "$WORK/named-order-oracle" 2>&1 || return 1
   grep -Fxq string "$WORK/named-order-oracle" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_forward.iyi" "$REPO/src" named_choose parents signature > "$WORK/named-forward" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#named_choose:' 'signature=named_choose(, value : NamedValue)' > "$WORK/expected"
+  cmp -s "$WORK/named-forward" "$WORK/expected" || return 1
+  "$IYI" run "$REPO/bench/fixtures/sem_arms_named_forward.iyi" > "$WORK/named-forward-oracle" 2>&1 || return 1
+  grep -Fxq broad "$WORK/named-forward-oracle" || return 1
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_free.iyi" "$REPO/src" identity parents binding > "$WORK/named-free" || return 1
   printf '%s\n' 'arms=1 cover=true' 'main#identity:' 'binding=T:Int32' 'named=Int32' > "$WORK/expected"
   cmp -s "$WORK/named-free" "$WORK/expected" || return 1
@@ -146,9 +151,9 @@ grep -Fq 'targets=Std::Path::Path#join(String);Std::Path::Path#join(Std::Path::P
 status=0
 prove_mutation 'cover requires a matching arm for each combination' "$REPO/src/compiler/semantic/cover.iyi" \
   '        return true if accepted' '        return false if accepted' -- check_arms || status=1
-prove_mutation 'stricter overload is inserted before broader overload' "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  'while at < ordered.size && !arm_more_specific?(definition, ordered[at], args, owner, call_node)' \
-  'while at < ordered.size' -- check_arms || status=1
+prove_mutation 'stricter overload is inserted before broader overload' "$REPO/src/compiler/semantic/top_level.iyi" \
+  '            break if DeclarationOrder.before?(a_def, l[at], self, yields)' \
+  '            break if false && DeclarationOrder.before?(a_def, l[at], self, yields)' -- check_arms || status=1
 prove_mutation 'generic metaclass restrictions use the bound instance' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '          match_owner = instance if instance.is_a?(GenericInstanceType)' \
   '          match_owner = owner if instance.is_a?(GenericInstanceType)' -- check_arms || status=1
@@ -194,9 +199,13 @@ prove_mutation 'bare splats allow named-only trailing parameters' "$REPO/src/com
 prove_mutation 'bare splats reject excess positional arguments' "$REPO/src/compiler/semantic/match.iyi" \
   '    if splat && definition.args[splat.as(Int32)].name.empty? && given > prefix' \
   '    if false' -- check_arms || status=1
-prove_mutation 'named restrictions order overloads by specificity' "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  '        t1 = arm_named_comparison_type(first, argument.name, owner, bound1)' \
-  '        t1 = @program.object_type' -- check_arms || status=1
+prove_mutation 'named restrictions order overloads by specificity' "$REPO/src/compiler/semantic/top_level.iyi" \
+  '          if br = b.restriction
+            return false unless restriction_of?(ar, br, owner, first.free_vars, second.free_vars)
+          end' \
+  '          if br = b.restriction
+            nil
+          end' -- check_arms || status=1
 prove_mutation 'named restrictions bind previously unbound type variables' "$REPO/src/compiler/semantic/match.iyi" \
   '              return MatchAttempt.none unless FreeBindings.bind(restriction, named_arg.type, unbound, bound)' \
   '              nil' -- check_arms || status=1

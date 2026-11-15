@@ -5,6 +5,7 @@ import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, AssocTypeDecl, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, ExternalVar, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{Splat, Underscore, Yield}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 import compiler/macros/target_flags::{MacroTargetFlags}
@@ -479,7 +480,19 @@ pub abstract class ModuleType < NamedType
         end
         i = i + 1
       end
-      l << a_def unless replaced
+      unless replaced
+        if l.empty?
+          l << a_def
+        else
+          yields = DeclarationOrder.yields?(a_def)
+          at = 0
+          while at < l.size
+            break if DeclarationOrder.before?(a_def, l[at], self, yields)
+            at += 1
+          end
+          l.insert(at, a_def)
+        end
+      end
     end
   end
 
@@ -679,6 +692,254 @@ pub abstract class ModuleType < NamedType
 
   def metaclass? : ModuleType?
     @metaclass
+  end
+end
+
+# The metadata recorded by the hosted DefWithMetadata at declaration time.
+class DeclarationYieldFinder < Visitor
+  getter found : Bool = false
+
+  def visit(node : Yield) : Bool
+    @found = true
+    false
+  end
+
+  def visit(node : Def) : Bool
+    false
+  end
+end
+
+# Hosted types.cr:1129-1155 inserts each overload before the first one that
+# compare_strictness_old calls less strict. Compare at insertion, not dump time:
+# an unresolved type or a later include must not change an earlier decision.
+class DeclarationOrder
+  def self.before?(first : Def, second : Def, owner : ModuleType, first_yields : Bool) : Bool
+    return false unless first_yields == yields?(second)
+    stricter?(first, second, owner) && !stricter?(second, first, owner)
+  end
+
+  def self.yields?(definition : Def) : Bool
+    return true if definition.block_arg || definition.macro_yields
+    finder = DeclarationYieldFinder.new
+    definition.body.accept(finder)
+    finder.found
+  end
+
+  def self.min_size(definition : Def) : Int32
+    default = definition.args.size
+    definition.args.each_with_index do |arg, i|
+      default = i if arg.default_value && i < default
+    end
+    if splat = definition.splat_index
+      if !definition.args[splat].name.empty?
+        minimum = default
+        minimum -= 1 unless default < splat
+        return minimum
+      end
+      return default < splat ? default : splat
+    end
+    default
+  end
+
+  def self.max_size(definition : Def) : Int32
+    if splat = definition.splat_index
+      return splat if definition.args[splat].name.empty?
+      return 2147483647
+    end
+    definition.args.size
+  end
+
+  def self.named_args(definition : Def) : Array(Arg)?
+    splat = definition.splat_index
+    return nil if splat.nil? || splat.as(Int32) == definition.args.size - 1
+    names = [] of Arg
+    i = splat.as(Int32) + 1
+    while i < definition.args.size
+      arg = definition.args[i]
+      names << arg if arg.default_value.nil?
+      i += 1
+    end
+    names.sorted_by(&.external_name)
+  end
+
+  def self.stricter?(first : Def, second : Def, owner : ModuleType) : Bool
+    first_min = min_size(first)
+    second_min = min_size(second)
+    first_max = max_size(first)
+    second_max = max_size(second)
+    return true if first_min > second_max
+    return false if second_min > first_max
+    return false if first.double_splat && !second.double_splat
+    return true if second.double_splat && !first.double_splat
+    first_splat = first.splat_index
+    second_splat = second.splat_index
+    return false if first_splat && !second_splat
+    return true if second_splat && !first_splat
+
+    limit = if first_splat && second_splat
+              first_min < second_min ? first_min : second_min
+            else
+              first_max < second_max ? first_max : second_max
+            end
+    i = 0
+    while i < limit
+      first_restriction = first.args[i].restriction
+      second_restriction = second.args[i].restriction
+      return false if first_restriction.nil? && !second_restriction.nil?
+      if first_restriction && second_restriction
+        return false if first_splat == i
+        unless restriction_of?(first_restriction, second_restriction, owner, first.free_vars, second.free_vars)
+          return false
+        end
+      end
+      i += 1
+    end
+
+    if first_splat && second_splat
+      if first_splat == second_splat
+        first_restriction = first.args[first_splat].restriction
+        second_restriction = second.args[second_splat].restriction
+        if first_restriction && second_restriction
+          unless restriction_of?(first_restriction, second_restriction, owner, first.free_vars, second.free_vars)
+            return false
+          end
+        elsif first_restriction
+          return true
+        elsif second_restriction
+          return false
+        end
+      else
+        return first_splat > second_splat
+      end
+    end
+
+    first_named = named_args(first)
+    second_named = named_args(second)
+    if first_named && second_named
+      return false unless first_named.size == second_named.size
+      i = 0
+      while i < first_named.size
+        a = first_named[i]
+        b = second_named[i]
+        return false unless a.external_name == b.external_name
+        return false if a.restriction.nil? && !b.restriction.nil?
+        if ar = a.restriction
+          if br = b.restriction
+            return false unless restriction_of?(ar, br, owner, first.free_vars, second.free_vars)
+          end
+        end
+        i += 1
+      end
+      return true
+    end
+    return false if first_named || second_named
+    first_double = first.double_splat
+    second_double = second.double_splat
+    if first_double && second_double
+      ar = first_double.restriction
+      br = second_double.restriction
+      return false if ar.nil? && br
+      if ar && br
+        return false unless restriction_of?(ar, br, owner, first.free_vars, second.free_vars)
+      end
+    end
+    true
+  end
+
+  def self.free_flag(path : Path, names : Array(String)?) : Bool?
+    return nil if names.nil?
+    return nil unless path.names.size == 1 && !path.global
+    names.as(Array(String)).includes?(path.names[0])
+  end
+
+  def self.path_type(path : Path, owner : ModuleType) : Type?
+    found = owner.program.lookup_type_path?(path, owner)
+    return nil if found.nil?
+    owner.program.remove_alias?(found.as(Type))
+  end
+
+  def self.restriction_of?(first : ASTNode, second : ASTNode, owner : ModuleType, first_vars : Array(String)?, second_vars : Array(String)?) : Bool
+    return true if second.is_a?(Underscore)
+    if first.is_a?(Union)
+      first.as(Union).types.each do |member|
+        return false unless restriction_of?(member, second, owner, first_vars, second_vars)
+      end
+      return true
+    end
+    if first.is_a?(Path)
+      path = first.as(Path)
+      first_free = free_flag(path, first_vars)
+      if second.is_a?(Path)
+        other = second.as(Path)
+        second_free = free_flag(other, second_vars)
+        return true if first_free == second_free && path == other
+        return false if first_free
+        first_type = path_type(path, owner)
+        return false if first_type.nil?
+        return true if second_free
+        second_type = path_type(other, owner)
+        return true if second_type.nil?
+        return first_type.as(Type).subtype_of?(second_type.as(Type))
+      end
+      if second.is_a?(Union)
+        return false if first_free
+        second.as(Union).types.each do |member|
+          return true if restriction_of?(first, member, owner, first_vars, second_vars)
+        end
+        return false
+      end
+      if second.is_a?(Generic)
+        return false if first_free
+        first_type = path_type(path, owner)
+        generic_name = second.as(Generic).name
+        return false if first_type.nil? || !generic_name.is_a?(Path)
+        base = path_type(generic_name.as(Path), owner)
+        return false if base.nil? || first_type.as(Type) == base.as(Type)
+        return first_type.as(Type).subtype_of?(base.as(Type))
+      end
+      return false
+    end
+    if first.is_a?(Generic)
+      generic = first.as(Generic)
+      if second.is_a?(Generic)
+        other = second.as(Generic)
+        return true if generic == other && first_vars == second_vars
+        return false unless generic.name == other.name && generic.type_vars.size == other.type_vars.size
+        i = 0
+        while i < generic.type_vars.size
+          return false unless restriction_of?(generic.type_vars[i], other.type_vars[i], owner, first_vars, second_vars)
+          i += 1
+        end
+        return true
+      end
+      if second.is_a?(Path)
+        other = second.as(Path)
+        other_free = free_flag(other, second_vars)
+        unless other_free
+          base_node = generic.name
+          if base_node.is_a?(Path)
+            base = path_type(base_node.as(Path), owner)
+            other_type = path_type(other, owner)
+            if base && other_type && (base.is_a?(GenericClassType) || base.is_a?(GenericModuleType) || base.is_a?(GenericTraitType))
+              return base.as(Type).subtype_of?(other_type.as(Type))
+            end
+          end
+        end
+        return true
+      end
+      return false
+    end
+    if first.is_a?(Metaclass)
+      if second.is_a?(Metaclass)
+        return restriction_of?(first.as(Metaclass).name, second.as(Metaclass).name, owner, first_vars, second_vars)
+      end
+      if second.is_a?(Path)
+        other_type = path_type(second.as(Path), owner)
+        return true if other_type && owner.program.types["Class"].subtype_of?(other_type.as(Type))
+      end
+      return false
+    end
+    first == second
   end
 end
 
@@ -3986,8 +4247,15 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
 
   if t.is_a?(AliasType)
     al = t.as(AliasType)
-    al.process_value
-    disp = al.aliased_type_display || al.process_value.full_name
+    seen = [] of AliasType
+    target = al.process_value
+    while target.is_a?(AliasType)
+      raise("infinite recursive definition of alias #{al.full_name}") if seen.includes?(al)
+      seen << al
+      al = target.as(AliasType)
+      target = al.process_value
+    end
+    disp = al.aliased_type_display || target.to_s
     io << indent << "  aliased_type: " << disp << "\n"
   end
 

@@ -5,6 +5,7 @@ import compiler/semantic/top_level::{ClassType, GenericClassType, MetaclassType,
 import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, VirtualType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/semantic/match::{CallMatch, CallSignature, Match, NumericAutocast}
+import compiler/semantic/cover::{CallCover}
 
 pub enum ArmWalk
   Parents
@@ -152,9 +153,9 @@ pub class MethodLookup
     Matches.new(all, cover)
   end
 
-  # The matches among *type*'s own defs of the signature's name. Hosted order is
-  # the order the defs were declared. The first exact match ends the scan: the
-  # hosted scan skips every later def once it has an exact match.
+  # The matches among *type*'s own defs in hosted declaration order. The
+  # first exact match ends the ordinary scan; autocast still considers every
+  # candidate so that ambiguity can be reported.
   def self.lookup_without_parents(type : ModuleType, ts : TypeSystem, signature : CallSignature, owner : Type, path_lookup : ModuleType, matches_array : Array(Match)) : Matches
     defs = own_defs(type, signature.name)
     return Matches.new(matches_array, false) if defs.nil?
@@ -171,25 +172,30 @@ pub class MethodLookup
       match = attempt.match
       next if match.nil?
       found << match.as(Match)
+      if signature.autocast_nodes.nil? && match.as(Match).exact
+        found.each { |candidate| matches_array << candidate }
+        return Matches.new(matches_array, true)
+      end
     end
     if found.empty? && first_error && matches_array.empty?
       return Matches.new(matches_array, false, first_error)
     end
-    best = MethodLookup.most_specific(found)
-    if best
-      matches_array << best
-      return Matches.new(matches_array, best.exact)
+    if signature.autocast_nodes
+      best = MethodLookup.most_specific(found)
+      if best
+        matches_array << best
+        return Matches.new(matches_array, best.exact)
+      end
     end
     found.each do |m|
       matches_array << m
     end
-    Matches.new(matches_array, false)
+    Matches.new(matches_array, CallCover.all?(signature, matches_array))
   end
 
-  # The def a call takes among *found*, the matches of one type that accept the
-  # call: the most specific, whose declared restrictions are each a subtype of
-  # every other match's, as the hosted lookup chooses. Nil when none is the most
-  # specific (an ambiguous set).
+  # During autocast, find a candidate whose declared restrictions are each a
+  # subtype of every other match's. Nil leaves the candidates for ambiguity
+  # reporting.
   def self.most_specific(found : Array(Match)) : Match?
     i = 0
     while i < found.size

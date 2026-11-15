@@ -91,6 +91,21 @@ check_calls_diverge() {
   done
   return 0
 }
+
+check_forward_lookup_diverge() {
+  if ! "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_semantic_calls_exercise.iyi" >/dev/null 2>&1; then
+    echo "mutation failed to build, not a behavioral catch"
+    return 0
+  fi
+  local fixture="$REPO/bench/fixtures/semcall_forward_order.iyi"
+  "$WORK/oracle" "$fixture" > "$WORK/forward_o.out" 2>/dev/null || return 0
+  "$WORK/port" "$fixture" > "$WORK/forward_p.out" 2>/dev/null || return 0
+  cmp -s "$WORK/forward_o.out" "$WORK/forward_p.out" || return 0
+  "$WORK/port_m" "$fixture" > "$WORK/forward_m.out" 2>/dev/null || return 0
+  grep -Fq 'lookup_choose(LookupValue) -> String' "$WORK/forward_o.out" || return 0
+  grep -Fq 'lookup_choose(LookupSpecific) -> Int32' "$WORK/forward_m.out" || return 0
+  cmp -s "$WORK/forward_o.out" "$WORK/forward_m.out"
+}
 check_tuple_cache_mutation() {
   "$IYI" build -o "$WORK/tuple_cache_m" "$REPO/bench/selfhost_tuple_index_cache_exercise.iyi" >/dev/null 2>&1 || {
     echo "    mutation failed to build, not a behavioral catch"
@@ -117,6 +132,12 @@ prove_mutation "exact match does not end the lookup" "$LOOKUP_FILE" \
   "    return own if own.cover_all? || own.error" \
   "    return own if own.error" \
   -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a first exact call match does not stop lookup" "$METHOD_FILE" \
+  '      if signature.autocast_nodes.nil? && match.as(Match).exact' \
+  '      if false && signature.autocast_nodes.nil? && match.as(Match).exact' \
+  -- check_forward_lookup_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "arguments beyond the def's parameters are accepted" "$MATCH_FILE" \

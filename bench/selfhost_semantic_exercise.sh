@@ -346,6 +346,7 @@ echo "  Parity summary: $((fixture_count - diverged))/$fixture_count feature fix
 echo
 echo "== 3. Typed expression comparison against the front end being replaced"
 expr_fixture_count=0
+expr_diverged=0
 total_matched_expressions=0
 for fixture in "$REPO"/bench/fixtures/sem_expr_*.iyi; do
   fixture_name="bench/fixtures/$(basename "$fixture")"
@@ -353,7 +354,7 @@ for fixture in "$REPO"/bench/fixtures/sem_expr_*.iyi; do
   "$WORK/dump_crystal" "$fixture" --expr > "$WORK/crystal_expr.ast"
   if ! diff -q "$WORK/iyi_expr.ast" "$WORK/crystal_expr.ast" >/dev/null; then
     echo "  $fixture_name: TYPED EXPRESSIONS DIFFER"
-    diverged=$((diverged + 1))
+    expr_diverged=$((expr_diverged + 1))
     diff -u "$WORK/crystal_expr.ast" "$WORK/iyi_expr.ast" | head -20
     status=1
   else
@@ -363,7 +364,7 @@ for fixture in "$REPO"/bench/fixtures/sem_expr_*.iyi; do
   fi
   expr_fixture_count=$((expr_fixture_count + 1))
 done
-echo "  Parity summary: $((expr_fixture_count - diverged))/$expr_fixture_count typed expression fixtures match 100% ($total_matched_expressions typed nodes compared)"
+echo "  Parity summary: $((expr_fixture_count - expr_diverged))/$expr_fixture_count typed expression fixtures match 100% ($total_matched_expressions typed nodes compared)"
 
 echo
 echo "== 4. Semantic rejection and error checks"
@@ -407,6 +408,61 @@ check_decl_outputs_diverge() {
 check_expr_outputs_diverge() {
   "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1 || return 1
   compare_expr_all "$WORK/mut-exercise"
+}
+
+check_wrong_arity_diverge() {
+  if ! "$IYI" build -o "$WORK/mut-error" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1; then
+    echo "mutation failed to build, not a behavioral catch"
+    return 0
+  fi
+  local fixture="$REPO/bench/fixtures/sem_err_wrong_arg_count.iyi"
+  local expected actual
+  expected=$("$WORK/dump_crystal" "$fixture" --expr 2>&1 | grep "^ERROR:" | head -1 | sed 's/^ERROR: //')
+  "$WORK/mut-error" "$fixture" --expr > "$WORK/mut-error.out" 2>&1
+  actual=$(grep "iyi: panic:" "$WORK/mut-error.out" | head -1 | sed 's/.*iyi: panic: //')
+  [ -n "$expected" ] && [ -n "$actual" ] || return 0
+  [ "$actual" = "$expected" ]
+}
+
+check_declaration_order_diverge() {
+  if ! "$IYI" build -o "$WORK/mut-order" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" >/dev/null 2>&1; then
+    echo "mutation failed to build, not a behavioral catch"
+    return 0
+  fi
+  local fixture="$REPO/bench/fixtures/sem_declaration_order.iyi"
+  "$WORK/declarations_oracle" "$fixture" > "$WORK/order-oracle.ast" 2>/dev/null || return 0
+  "$WORK/mut-order" "$fixture" > "$WORK/order-mutant.ast" 2>/dev/null || return 0
+  cmp -s "$WORK/order-oracle.ast" "$WORK/order-mutant.ast"
+}
+
+check_super_order_diverge() {
+  if ! "$IYI" build -o "$WORK/mut-super" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1; then
+    echo "mutation failed to build, not a behavioral catch"
+    return 0
+  fi
+  local fixture="$REPO/bench/fixtures/sem_expr_super_forward_overload.iyi"
+  "$WORK/dump_crystal" "$fixture" --expr > "$WORK/super-oracle.ast" 2>/dev/null || return 0
+  "$WORK/exercise" "$fixture" --expr > "$WORK/super-baseline.ast" 2>/dev/null || return 0
+  cmp -s "$WORK/super-oracle.ast" "$WORK/super-baseline.ast" || return 0
+  "$WORK/mut-super" "$fixture" --expr > "$WORK/super-mutant.ast" 2>/dev/null || return 0
+  grep -Fq 'target_def: choose: String' "$WORK/super-oracle.ast" || return 0
+  grep -Fq 'target_def: choose: Int32' "$WORK/super-mutant.ast" || return 0
+  cmp -s "$WORK/super-oracle.ast" "$WORK/super-mutant.ast"
+}
+
+check_ordinary_order_diverge() {
+  if ! "$IYI" build -o "$WORK/mut-ordinary" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1; then
+    echo "mutation failed to build, not a behavioral catch"
+    return 0
+  fi
+  local fixture="$REPO/bench/fixtures/sem_expr_ordinary_forward_overload.iyi"
+  "$WORK/dump_crystal" "$fixture" --expr > "$WORK/ordinary-oracle.ast" 2>/dev/null || return 0
+  "$WORK/exercise" "$fixture" --expr > "$WORK/ordinary-baseline.ast" 2>/dev/null || return 0
+  cmp -s "$WORK/ordinary-oracle.ast" "$WORK/ordinary-baseline.ast" || return 0
+  "$WORK/mut-ordinary" "$fixture" --expr > "$WORK/ordinary-mutant.ast" 2>/dev/null || return 0
+  grep -Fq 'target_def: ordinary_choose: String' "$WORK/ordinary-oracle.ast" || return 0
+  grep -Fq 'target_def: ordinary_choose: Int32' "$WORK/ordinary-mutant.ast" || return 0
+  cmp -s "$WORK/ordinary-oracle.ast" "$WORK/ordinary-mutant.ast"
 }
 
 check_ivar_dump_diverge() {
@@ -539,10 +595,59 @@ prove_mutation "recursive struct check cycle detection is bypassed" "$SEM_REC" \
   -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "overload resolution most specific filter is bypassed" "$SEM_MAIN" \
-  "most_specific = filter_most_specific_overloads(exact_matches, args, rec_type)" \
-  "most_specific = exact_matches" \
-  -- check_expr_outputs_diverge || status=1
+prove_mutation "wrong arity is reported as a type mismatch" "$SEM_MAIN" \
+  '      if wrong = CallError.wrong_number_for(method_name, args.size, compatible, candidates.size)' \
+  '      if wrong = (args.size < 0 ? CallError.wrong_number_for(method_name, args.size, compatible, candidates.size) : nil)' \
+  -- check_wrong_arity_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "declaration overload order ignores strictness" "$SEM" \
+  '            break if DeclarationOrder.before?(a_def, l[at], self, yields)' \
+  '            break if false && DeclarationOrder.before?(a_def, l[at], self, yields)' \
+  -- check_declaration_order_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "super lookup re-ranks declaration-ordered overloads" "$SEM_MAIN" \
+  '      selected = exact_matches.first' \
+  '      selected = exact_matches.first
+      exact_matches.each do |candidate|
+        next if candidate.args.empty? || selected.args.empty?
+        candidate_restriction = candidate.args[0].restriction
+        selected_restriction = selected.args[0].restriction
+        if candidate_restriction && selected_restriction
+          candidate_type = restriction_type(candidate_restriction, rec_type)
+          selected_type = restriction_type(selected_restriction, rec_type)
+          if candidate_type && selected_type && candidate_type != selected_type && candidate_type.subtype_of?(selected_type)
+            selected = candidate
+          end
+        end
+      end' \
+  -- check_super_order_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "ordinary lookup re-ranks declaration-ordered overloads" "$SEM_MAIN" \
+  '      ordered = defs.as(Array(Def))' \
+  '      ordered = [] of Def
+      defs.as(Array(Def)).each do |candidate|
+        at = 0
+        while at < ordered.size
+          other = ordered[at]
+          unless candidate.args.empty? || other.args.empty?
+            candidate_restriction = candidate.args.last.restriction
+            other_restriction = other.args.last.restriction
+            if candidate_restriction && other_restriction
+              candidate_type = restriction_type(candidate_restriction, owner)
+              other_type = restriction_type(other_restriction, owner)
+              if candidate_type && other_type && candidate_type != other_type && candidate_type.subtype_of?(other_type)
+                break
+              end
+            end
+          end
+          at += 1
+        end
+        ordered.insert(at, candidate)
+      end' \
+  -- check_ordinary_order_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "union receiver multiple dispatch bypasses return type merge" "$SEM_MAIN" \

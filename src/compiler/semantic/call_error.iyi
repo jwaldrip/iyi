@@ -18,8 +18,8 @@ import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 # (check_arguments_type_mismatch), and "no overload matches '<name>' with type(s)
 # A, B" otherwise (no_overload_matches_message).
 #
-# Not ported: any message about named arguments (missing, extra, already
-# specified), which the driver marks as not ported rather than answering.
+# Named-argument mismatches remain outside this port, except for the hosted
+# single-def missing-name message when a positional arity failure reaches it.
 pub class CallError
   # The first line of the undefined-method error for *name* on *owner*. The
   # program's own calls name their owner "top-level"; a metaclass prints Foo.class.
@@ -74,6 +74,12 @@ pub class CallError
   # given *given* positional arguments, when every def in *defs* takes some other
   # number of arguments. Nil when some def takes this many, or when there are none.
   def self.wrong_number(owner : ModuleType, name : String, given : Int32, defs : Array(Def)) : String?
+    wrong_number_for(full_name(owner, name), given, defs)
+  end
+
+  # The visitor may diagnose a virtual or generic receiver rather than a
+  # ModuleType, so it supplies the displayed method name after lookup.
+  def self.wrong_number_for(method_name : String, given : Int32, defs : Array(Def), total_defs : Int32 = -1) : String?
     return nil if defs.empty?
     top = 0
     min_splat : Int32? = nil
@@ -89,6 +95,26 @@ pub class CallError
         end
       elsif d.args.size > top
         top = d.args.size
+      end
+    end
+    # The hosted formatter prefers missing names for a single def with
+    # parameters after a splat, even when the positional count is also wrong.
+    if defs.size == 1 && (total_defs < 0 || total_defs == 1)
+      d = defs[0]
+      if splat = d.splat_index
+        if splat < d.args.size - 1
+          missing = [] of String
+          d.args.each_with_index do |arg, index|
+            supplied = index < splat ? index < given : index == splat && given > splat
+            if !supplied && arg.default_value.nil? && !arg.external_name.empty?
+              missing << arg.external_name
+            end
+          end
+          unless missing.empty?
+            label = missing.size == 1 ? "missing argument" : "missing arguments"
+            return "#{label}: #{missing.join(", ")}"
+          end
+        end
       end
     end
     sizes = [] of Int32
@@ -111,7 +137,7 @@ pub class CallError
     end
     expected = expected_text(sizes)
     expected += "+" if min_splat
-    "wrong number of arguments for '#{full_name(owner, name)}' (given #{given}, expected #{expected})"
+    "wrong number of arguments for '#{method_name}' (given #{given}, expected #{expected})"
   end
 
   # The sizes as the hosted message writes them: a run of consecutive sizes as
