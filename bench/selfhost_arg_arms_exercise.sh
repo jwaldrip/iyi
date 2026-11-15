@@ -86,9 +86,40 @@ check_arms() {
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_splat_tail.iyi" "$REPO/src" pick > "$WORK/named-tail" || return 1
   printf '%s\n' 'arms=0 cover=false' 'error=parameters after a named splat are not ported' > "$WORK/expected"
   cmp -s "$WORK/named-tail" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_order.iyi" "$REPO/src" pick parents signature > "$WORK/named-order" || return 1
+  printf '%s\n' 'arms=2 cover=true' 'main#pick:' 'signature=pick(, value : String)' 'main#pick:' 'signature=pick(, value : Object)' > "$WORK/expected"
+  cmp -s "$WORK/named-order" "$WORK/expected" || return 1
+  "$IYI" run "$REPO/bench/fixtures/sem_arms_named_order.iyi" > "$WORK/named-order-oracle" 2>&1 || return 1
+  grep -Fxq string "$WORK/named-order-oracle" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_free.iyi" "$REPO/src" identity parents binding > "$WORK/named-free" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#identity:' 'binding=T:Int32' 'named=Int32' > "$WORK/expected"
+  cmp -s "$WORK/named-free" "$WORK/expected" || return 1
+  for kind in named mixed; do
+    "$WORK/probe" "$REPO/bench/fixtures/sem_arms_${kind}_free_conflict.iyi" "$REPO/src" pair > "$WORK/$kind-conflict" || return 1
+    printf '%s\n' 'arms=0 cover=false' > "$WORK/expected"
+    cmp -s "$WORK/$kind-conflict" "$WORK/expected" || return 1
+  done
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_free_numeric.iyi" "$REPO/src" pair parents binding > "$WORK/named-free-numeric" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#pair:' 'binding=T:Int64' 'named=Int64,Int64' > "$WORK/expected"
+  cmp -s "$WORK/named-free-numeric" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_free_out_of_range.iyi" "$REPO/src" pair > "$WORK/named-free-range" || return 1
+  printf '%s\n' 'arms=0 cover=false' > "$WORK/expected"
+  cmp -s "$WORK/named-free-range" "$WORK/expected" || return 1
+  "$IYI" run "$REPO/bench/fixtures/sem_arms_named_free_out_of_range.iyi" > "$WORK/named-free-range-oracle" 2>&1 && return 1
+  grep -Fq "expected argument 'second' to 'pair' to be Int32, not Int64" "$WORK/named-free-range-oracle" || return 1
+  for kind in ambiguous later; do
+    "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_numeric_${kind}.iyi" "$REPO/src" widen > "$WORK/named-numeric-$kind" || return 1
+    printf '%s\n' 'arms=0 cover=false' 'error=ambiguous call, implicit cast of 1 matches all of Int64, UInt64' > "$WORK/expected"
+    cmp -s "$WORK/named-numeric-$kind" "$WORK/expected" || return 1
+  done
 }
 
 check_arms || exit 1
+"$WORK/probe" "$REPO/bench/fixtures/sem_arms_proc_call.iyi" "$REPO/src" call prelude > "$WORK/proc" || exit 1
+printf '%s\n' 'arms=1 cover=true' 'Proc#call:' > "$WORK/expected"
+cmp -s "$WORK/proc" "$WORK/expected" || exit 1
+"$WORK/probe" "$REPO/bench/fixtures/lowcall_capture_none.iyi" "$REPO/src" call prelude-instances > "$WORK/captured-proc" || exit 1
+cmp -s "$WORK/captured-proc" "$WORK/expected" || exit 1
 "$IYI" build -o "$WORK/compiler" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/compiler-build.log" 2>&1 || exit 1
 if [ "$(uname -s)" = Darwin ]; then
   codesign -v --strict "$WORK/compiler" || exit 1
@@ -103,7 +134,7 @@ status=0
 prove_mutation 'cover requires a matching arm for each combination' "$REPO/src/compiler/semantic/cover.iyi" \
   '        return true if accepted' '        return false if accepted' -- check_arms || status=1
 prove_mutation 'stricter overload is inserted before broader overload' "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  'while at < ordered.size && !arm_more_specific?(definition, ordered[at], args, owner)' \
+  'while at < ordered.size && !arm_more_specific?(definition, ordered[at], args, owner, call_node)' \
   'while at < ordered.size' -- check_arms || status=1
 prove_mutation 'generic metaclass restrictions use the bound instance' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '          match_owner = instance if instance.is_a?(GenericInstanceType)' \
@@ -118,8 +149,8 @@ prove_mutation 'module-only walk does not search the superclass' "$REPO/src/comp
   '      return Matches.new(matches, CallCover.all?(signature, matches)) if walk == ArmWalk::Modules && matches.size > level_start' \
   '      return Matches.new(matches, CallCover.all?(signature, matches)) if false' -- check_arms || status=1
 prove_mutation 'unmatched numeric calls receive an autocast pass' "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  '    return found if found.error || !found.empty? || !NumericAutocast.any?(args, arg_types)' \
-  '    return found' -- check_arms || status=1
+  '    unless NumericAutocast.any?(args, arg_types) || NumericAutocast.any?(named_nodes, named_arg_types)' \
+  '    unless false' -- check_arms || status=1
 prove_mutation 'unresolved restrictions are reported only when no arm matches' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '    return Matches.new(matches, false, first_error) if matches.empty? && first_error' \
   '    return Matches.new(matches, false, first_error) if first_error' -- check_arms || status=1
@@ -141,4 +172,16 @@ prove_mutation 'bare splats allow named-only trailing parameters' "$REPO/src/com
 prove_mutation 'bare splats reject excess positional arguments' "$REPO/src/compiler/semantic/match.iyi" \
   '    if splat && definition.args[splat.as(Int32)].name.empty? && given > prefix' \
   '    if false' -- check_arms || status=1
+prove_mutation 'named restrictions order overloads by specificity' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        t1 = arm_named_comparison_type(first, argument.name, owner, bound1)' \
+  '        t1 = @program.object_type' -- check_arms || status=1
+prove_mutation 'named restrictions bind previously unbound type variables' "$REPO/src/compiler/semantic/match.iyi" \
+  '              return MatchAttempt.none unless FreeBindings.bind(restriction, named_arg.type, unbound, bound)' \
+  '              nil' -- check_arms || status=1
+prove_mutation 'named numeric nodes participate in the autocast pass' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    signature.named_autocast_nodes = named_nodes' \
+  '    signature.named_autocast_nodes = nil' -- check_arms || status=1
+prove_mutation 'named autocast selects the differing argument for ambiguity' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      if names.size > 1 && NumericAutocast.supports?(named_nodes[i], type_of(named_nodes[i]))' \
+  '      if false' -- check_arms || status=1
 exit "$status"
