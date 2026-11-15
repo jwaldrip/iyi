@@ -300,6 +300,11 @@ check_refusal "count exceeds section" "$REFUSAL_DIR/count_room.iyimod" "a sectio
 check_refusal "string exceeds section" "$REFUSAL_DIR/string_room.iyimod" "a section counts 4294967280 of something that takes 1 byte or more each, and has 26 bytes left"
 check_refusal "nested cumulative claims" "$REFUSAL_DIR/nested_claims.iyimod" "a section's counts claim 769769 bytes between them, and it is 385004 bytes long"
 check_refusal "type nesting" "$REFUSAL_DIR/nested_depth.iyimod" "a section declares types more than 200 deep inside one another, which is deeper than a .iyimod holds"
+deep_writer_out=$("$WORK/exercise" write-deep "$WORK/too-deep.iyimod" 2>&1 || true)
+if ! printf '%s\n' "$deep_writer_out" | grep -qF "T202 is declared more than 200 types deep, which is deeper than a .iyimod holds"; then
+  echo "  WRITER REFUSAL MISMATCH: $deep_writer_out"
+  status=1
+fi
 
 echo
 echo "== 8. Mutation proofs: each one must make the checks fail"
@@ -359,6 +364,16 @@ prove_mutation "cumulative claim bound" "$IYIMOD" \
 prove_mutation "type nesting bound" "$IYIMOD" \
   'if depth > 200 && count > 0' 'if false' \
   -- check_hardened_refusal nested_depth "a section declares types more than 200 deep" || status=1
+check_deep_writer_refusal() {
+  local verdict
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_iyimod_exercise.iyi" >/dev/null 2>&1 || return 1
+  verdict=$("$WORK/mut-exercise" write-deep "$WORK/too-deep-mut.iyimod" 2>&1 || true)
+  printf '%s\n' "$verdict" | grep -qF "T202 is declared more than 200 types deep"
+}
+prove_mutation "writer type nesting bound" "$IYIMOD" \
+  'if depth > 200 && !types.empty?' 'if false' \
+  -- check_deep_writer_refusal || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUTATIONS_RUN=$((MUTATIONS_RUN + 6))
 
 run_proof "altering magic bytes breaks container verification" \
