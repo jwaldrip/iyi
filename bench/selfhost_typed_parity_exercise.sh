@@ -44,6 +44,7 @@ WORK="$(mktemp -d)"
 MUTATED=""
 LC_ALL=C
 export LC_ALL
+export IYI_PATH="$REPO/src"
 export IYI_CACHE_DIR="$WORK/cache"
 trap 'if [ -n "$MUTATED" ]; then cp "$WORK/mutation.orig" "$MUTATED"; fi; rm -rf "$WORK"' EXIT INT TERM
 
@@ -65,6 +66,11 @@ echo "== 1. Building the Crystal oracle, the port's typed dump and the contract 
 CRYSTAL_PATH="$REPO/src" IYI_CONFIG_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
   -o "$ORACLE" "$REPO/bench/selfhost_typed_oracle.cr" > "$WORK/oracle_build.log" 2>&1 \
   || { cat "$WORK/oracle_build.log"; fatal "FAILED to build the Crystal oracle"; }
+if ! "$ORACLE" --prelude-only "$REPO/src/iyi/array.iyi" > "$WORK/prelude_probe.out" 2> "$WORK/prelude_probe.err" ||
+   [ ! -s "$WORK/prelude_probe.out" ]; then
+  cat "$WORK/prelude_probe.err"
+  fatal "FAILED to read typed prelude nodes from this checkout"
+fi
 "$IYI" build -o "$TYPED" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/typed_build.log" 2>&1 \
   || { cat "$WORK/typed_build.log"; fatal "FAILED to build src/compiler/tools/typed_dump.iyi"; }
 "$IYI" build -o "$WORK/typed_trait" "$REPO/src/compiler/semantic/typed.iyi" > "$WORK/trait_build.log" 2>&1 \
@@ -140,7 +146,14 @@ if [ -n "$FILES_LIST" ]; then
     case "$rel" in
       ""|"#"*) continue ;;
     esac
-    measure subset "$rel"
+    case "$rel" in
+      src/iyi/*) corpus=prelude ;;
+      src/std/*) corpus=std ;;
+      samples/*) corpus=samples ;;
+      src/compiler/*) corpus=compiler ;;
+      *) corpus=subset ;;
+    esac
+    measure "$corpus" "$rel"
   done < "$FILES_LIST"
 else
   echo "== 3. Measuring every file of the prelude, std, samples and the compiler's source"
