@@ -588,6 +588,14 @@ pub class MainVisitor < TypeNodeHost
   # generic written with those names (`Pointer(T)`) is instantiated, as the hosted
   # MatchContext does. Anything else is the lexical lookup from the current type.
   def lookup_under(node : ASTNode, owner : Type?) : Type
+    # Hosted type_lookup.cr:49,430-447 resolves Self against the receiver's
+    # instance type, including when the method itself runs on its metaclass.
+    if node.is_a?(Self)
+      if o = owner
+        return o.as(MetaclassType).instance_type if o.is_a?(MetaclassType)
+        return o.as(Type) unless o.is_a?(SemanticProgram)
+      end
+    end
     if cd = @current_def
       if bound = @def_free_types[cd]?
         found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)
@@ -597,11 +605,6 @@ pub class MainVisitor < TypeNodeHost
     if instance = receiver_instance(owner)
       found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)
       return found.as(Type) unless found.is_a?(LookupError)
-    end
-    if node.is_a?(Self)
-      if o = owner
-        return o.as(Type) unless o.is_a?(SemanticProgram)
-      end
     end
     if quiet = @program.lookup_type_node?(node, @current_type)
       return TypeQueries.virtual_type(quiet)
@@ -3713,6 +3716,41 @@ pub class MainVisitor < TypeNodeHost
               end
               if existing = blk.fun_literal
                 captured_block_type = child_type(existing)
+                # Hosted call.cr:1370-1372,1427-1440,1525-1541 checks
+                # a forwarded proc's parameters and binds its output.
+                if forwarded_call = call_node
+                  if forwarded_call.block_arg && captured_block_type.is_a?(ProcInstanceType)
+                    proc_type = captured_block_type.as(ProcInstanceType)
+                    if proc_type.arg_types.size != input_types.size
+                      refuse(blk, "wrong number of block argument's parameters (given #{proc_type.arg_types.size}, expected #{input_types.size})")
+                      return nil
+                    end
+                    input_types.each_with_index do |input, index|
+                      actual = proc_type.arg_types[index]
+                      unless actual.full_name == input.full_name
+                        refuse(blk, "expected block argument's parameter ##{index + 1} to be #{input.full_name}, not #{actual.full_name}")
+                        return nil
+                      end
+                    end
+                    if output = notation.output
+                      unless output.is_a?(Underscore)
+                        if free_names = target_def.free_vars
+                          bound = @def_free_types[target_def]? || Hash(String, Type).new
+                          unless FreeBindings.bind(output, proc_type.return_type, free_names, bound)
+                            refuse(blk, "expected block to return #{output}, not #{proc_type.return_type.full_name}")
+                            return nil
+                          end
+                          @def_free_types[target_def] = bound unless bound.empty?
+                        end
+                        expected = lookup_def_return(output, rec_type, target_def)
+                        unless return_fits?(proc_type.return_type, expected)
+                          refuse(blk, "expected block to return #{expected.full_name}, not #{proc_type.return_type.full_name}")
+                          return nil
+                        end
+                      end
+                    end
+                  end
+                end
               else
                 saved_vars = @vars
                 saved_type = @current_type
@@ -4575,8 +4613,35 @@ pub class MainVisitor < TypeNodeHost
         arg.value.accept(self)
       end
     end
-    @call_receivers.delete(node)
+    # Hosted call.cr:125-126,1055-1070 turns &proc into a block before
+    # overload lookup, retaining the proc as the block's captured literal.
+    if block_arg = node.block_arg
+      block_arg.accept(self)
+      block_type = child_type(block_arg)
+      if block_type.nil?
+        @needs_type_filters = saved_call_ntf
+        return untyped(node, "an argument was not typed: #{block_arg}")
+      end
+      unless block_type.is_a?(ProcInstanceType)
+        @needs_type_filters = saved_call_ntf
+        return refuse(node, "expected a function type, not #{block_type.as(Type).full_name}")
+      end
+      vars = [] of Var
+      args = [] of ASTNode
+      block_type.as(ProcInstanceType).arg_types.each_with_index do |_, i|
+        arg = Var.new("__arg#{i}").at(block_arg).as(Var)
+        vars << arg
+        args << arg.clone
+      end
+      body = Call.new(block_arg.clone, "call", args).at(block_arg)
+      forwarded = Block.new(vars, body).at(block_arg).as(Block)
+      set_type(forwarded, block_type.as(ProcInstanceType).return_type)
+      forwarded.fun_literal = block_arg
+      node.block = forwarded
+      @jump_block_calls[forwarded] = node
+    end
     @needs_type_filters = saved_call_ntf
+    @call_receivers.delete(node)
     # Total analysis must not pass an untyped child to overload matching or
     # its diagnostics, both of which require types for every argument.
     if @total

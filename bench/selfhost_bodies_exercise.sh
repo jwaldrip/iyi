@@ -349,6 +349,28 @@ prove_mutation "a constant assignment has type Nil" "$MAIN_VISITOR" \
       set_type(node, @program.nil_type)" \
   "      # Hosted main_visitor.cr:1084-1087: the assignment itself is Nil.
       set_type(node, val_type)" -- const_owner_at_expected || status=1
+class_self_return_at_expected() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
+  fixture="$REPO/bench/fixtures/sem_bodies_class_self_return.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+  diff -q "$WORK/mo.txt" "$WORK/mp.txt" >/dev/null
+}
+class_self_return_at_expected || status=1
+prove_mutation "class method Self resolves to its instance type" "$MAIN_VISITOR" \
+  "return o.as(MetaclassType).instance_type if o.is_a?(MetaclassType)" \
+  "return o.as(Type) if o.is_a?(MetaclassType)" -- class_self_return_at_expected || status=1
+forward_block_at_expected() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
+  fixture="$REPO/bench/fixtures/sem_bodies_forward_block.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+  diff -q "$WORK/mo.txt" "$WORK/mp.txt" >/dev/null
+}
+forward_block_at_expected || status=1
+prove_mutation "forwarded proc is presented as a call block" "$MAIN_VISITOR" \
+  "      node.block = forwarded" \
+  "      nil" -- forward_block_at_expected || status=1
 prove_mutation "an abstract requirement is typed as an empty implementation" "$MAIN_VISITOR" \
   '    if target_def.abstract' '    if false && target_def.abstract' -- abstract_probe_at_expected || status=1
 owner_mutant_at_expected() {
