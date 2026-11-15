@@ -1,0 +1,17 @@
+class Algorithm
+end
+
+class Bytes
+end
+
+class Extractor
+  def self.extract(algorithm : H.class, data : String | Bytes) : Int32 forall H
+    7
+  end
+end
+
+def test(flag : Bool, data : String | Bytes) : Int32
+  flag ? Extractor.extract(Algorithm, data) : Extractor.extract(Algorithm, data)
+end
+
+puts test(true, Bytes.new)

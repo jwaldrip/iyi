@@ -50,6 +50,8 @@ pub abstract class Type
   property locations : Array(Location)? = nil
   # Hosted Type includes Annotatable (types.cr:5-6, annotatable.cr:3-25).
   property annotations : Hash(AnnotationType, Array(Annotation))? = nil
+  property share_trusted : Bool = false
+  property share_owns : Bool = false
 
   def add_annotation(annotation_type : AnnotationType, value : Annotation) : Nil
     annotations = @annotations
@@ -2648,6 +2650,8 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : ClassDef) : Bool
+    annotations = @pending_annotations
+    @pending_annotations = [] of Annotation
     scope, name, existing = lookup_type_def(node, node.name)
 
     created_new_type = false
@@ -2666,6 +2670,7 @@ pub class TopLevelVisitor < Visitor
         end
         old_meta_scope = @current_type
         @program.type_bodies << TypeBody.new(meta, node.body, @program.current_imports)
+        process_class_annotations(meta, annotations)
         @current_type = meta
         node.body.accept(self)
         @current_type = old_meta_scope
@@ -2771,6 +2776,7 @@ pub class TopLevelVisitor < Visitor
     if created_new_type
       scope.add_type(name, type)
     end
+    process_class_annotations(type, annotations)
 
     old_type = @current_type
     @current_type = type
@@ -2778,6 +2784,35 @@ pub class TopLevelVisitor < Visitor
     node.body.accept(self)
     @current_type = old_type
     false
+  end
+
+  def process_class_annotations(type : Type, annotations : Array(Annotation)) : Nil
+    annotations.each do |ann|
+      annotation_type = @program.lookup_type_path(ann.path, @current_type)
+      unless annotation_type.is_a?(AnnotationType)
+        raise("#{ann.path} is not an annotation")
+      end
+      type.add_annotation(annotation_type.as(AnnotationType), ann)
+      if annotation_type.object_id == @program.types["Share"].object_id
+        type.share_trusted = true
+        unless ann.args.empty?
+          raise("Share annotation can't have positional arguments, only named arguments: 'owns'")
+        end
+        if named_args = ann.named_args
+          named_args.each do |named_arg|
+            unless named_arg.name == "owns"
+              raise("unknown Share named argument, valid arguments are: 'owns'")
+            end
+            value = named_arg.value
+            unless value.is_a?(BoolLiteral)
+              raise("Share's 'owns' is true or false")
+            end
+            type.share_owns = value.as(BoolLiteral).value
+          end
+        end
+      end
+    end
+    nil
   end
 
   # A module header (`module compiler/foundation/enums`) names the unit its file is.
@@ -3420,6 +3455,11 @@ pub class TopLevelVisitor < Visitor
         annotation_type = @program.lookup_type_path(ann.path, @current_type)
         node.no_inline = true if annotation_type == @program.types["NoInline"]
         node.always_inline = true if annotation_type == @program.types["AlwaysInline"]
+      end
+      if annotation_type = @program.lookup_type_path?(ann.path, @current_type)
+        if annotation_type.is_a?(AnnotationType) && annotation_type.object_id == @program.types["Share"].object_id
+          node.share_annotated = true
+        end
       end
     end
     @pending_annotations = [] of Annotation

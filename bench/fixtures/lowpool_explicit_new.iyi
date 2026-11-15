@@ -1,0 +1,5 @@
+result = group do |g|
+  task = g.spawn(unit: :new) { 7 }
+  task.value
+end
+puts result

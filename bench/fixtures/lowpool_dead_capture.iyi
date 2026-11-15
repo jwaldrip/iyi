@@ -1,0 +1,9 @@
+values = [1, 2, 3]
+result = group do |g|
+  task = g.spawn do
+    values.size if false
+    7
+  end
+  task.value
+end
+puts result
