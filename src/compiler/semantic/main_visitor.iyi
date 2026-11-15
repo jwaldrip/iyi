@@ -2859,7 +2859,7 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
-  def trace_arg_dispatch(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, shortcut : Def?) : Nil
+  def trace_arg_dispatch(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, found : Matches, shortcut : Def?) : Nil
     return nil unless ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
     interesting = false
     args.each do |arg|
@@ -2870,7 +2870,6 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     return nil unless interesting
-    found = lookup_call_arms(rec_type, rec_type, name, args, call_node, ArmWalk::Parents)
     location = call_node.location
     site = location.nil? ? "<generated>:0" : "#{location.as(Location).filename}:#{location.as(Location).line_number}"
     first_diff = false
@@ -3178,7 +3177,10 @@ pub class MainVisitor < TypeNodeHost
   # the error, total mode records it on the call and returns nil.
   def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, pinned : Array(Def)? = nil, infer_class_vars : Bool = false) : Def?
     result = lookup_method_matching_impl(rec_type, name, args, call_node, pinned, infer_class_vars)
-    trace_arg_dispatch(rec_type, name, args, call_node, result)
+    if ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
+      found = lookup_call_arms(rec_type, rec_type, name, args, call_node, ArmWalk::Parents)
+      trace_arg_dispatch(rec_type, name, args, call_node, found, result)
+    end
     result
   end
 
@@ -4654,6 +4656,7 @@ pub class MainVisitor < TypeNodeHost
   def virtual_dispatch_arms(node : Call, receiver : VirtualType, infer_class_vars : Bool) : Array(Match)?
     base = receiver.base_type
     base_matches = lookup_call_arms(base, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    trace_arg_dispatch(base, node.name, node.args, node, base_matches, nil)
     subtypes = TypeQueries.all_subclasses(base)
     if subtypes.empty?
       unless base_matches.cover_all?
@@ -4741,6 +4744,7 @@ pub class MainVisitor < TypeNodeHost
       return result
     end
     found = lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    trace_arg_dispatch(receiver, node.name, node.args, node, found, nil)
     unless found.cover_all?
       if message = found.error
         refuse_call(node, message)

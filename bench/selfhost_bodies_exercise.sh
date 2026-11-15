@@ -509,6 +509,11 @@ prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" 
           node.args.each do |arg|
             arg.accept(self)
           end
+          if named = node.named_args
+            named.each do |arg|
+              arg.value.accept(self)
+            end
+          end
         end
         @needs_type_filters = saved_call_ntf
         @type_filters = nil
@@ -534,6 +539,11 @@ prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" 
         if @total
           node.args.each do |arg|
             arg.accept(self)
+          end
+          if named = node.named_args
+            named.each do |arg|
+              arg.value.accept(self)
+            end
           end
         end
         @needs_type_filters = saved_call_ntf
