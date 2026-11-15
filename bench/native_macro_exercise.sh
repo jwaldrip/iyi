@@ -12,6 +12,7 @@
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export IYI_PATH="$REPO/src${IYI_PATH:+:$IYI_PATH}"
 IYI="$REPO/bin/iyi"
 PORT_SRC="$REPO/src/compiler/tools/compile.iyi"
 NATIVE_SRC="$REPO/src/compiler/tools/compile_native.iyi"
@@ -109,9 +110,88 @@ if [ -s "$linux_obj" ] && [ -s "$darwin_obj" ]; then
   fi
 fi
 
+typed_fixtures_ok=1
+echo "== Native typed macro fixtures"
+for name in macro_def_shadows_macro macro_typenode_ancestors macro_array_any macro_array_map macro_tuple_map_splat macro_range_map macro_lookup_arity macro_typeof_prelude; do
+  fixture="$REPO/bench/fixtures/$name.iyi"
+  if ! "$IYI" run "$fixture" >"$WORK/$name.hosted" 2>"$WORK/$name.hosted.err"; then
+    echo "FAIL: hosted $name"
+    typed_fixtures_ok=0
+    status=1
+    continue
+  fi
+  if ! "$WORK/bin/native" "$fixture" -o "$WORK/$name.native" --pipeline typed --prelude --probe-phase >"$WORK/$name.build" 2>&1; then
+    echo "FAIL: native build $name"
+    cat "$WORK/$name.build"
+    typed_fixtures_ok=0
+    status=1
+    continue
+  fi
+  if ! native_signature_ok "$WORK/$name.native" || ! "$WORK/$name.native" >"$WORK/$name.out" 2>"$WORK/$name.err"; then
+    echo "FAIL: native run $name"
+    typed_fixtures_ok=0
+    status=1
+    continue
+  fi
+  if ! cmp -s "$WORK/$name.hosted" "$WORK/$name.out"; then
+    echo "FAIL: output differs for $name"
+    typed_fixtures_ok=0
+    status=1
+  else
+    echo "  $name: native output matches hosted"
+  fi
+done
+
 echo "== 4. mutations: each must be caught by a check that fails on the mutated source"
 mut_run=0
 mut_caught=0
+
+check_typed_macro_fixture() {
+  local name="$1"
+  "$IYI" build -o "$WORK/bin/native_mut" "$NATIVE_SRC" >/dev/null 2>&1 || return 1
+  native_signature_ok "$WORK/bin/native_mut" || return 1
+  "$WORK/bin/native_mut" "$REPO/bench/fixtures/$name.iyi" -o "$WORK/native_mut_result" --pipeline typed --prelude --probe-phase >/dev/null 2>&1 || return 1
+  native_signature_ok "$WORK/native_mut_result" || return 1
+  "$WORK/native_mut_result" >"$WORK/native_mut.out" || return 1
+  cmp -s "$WORK/$name.hosted" "$WORK/native_mut.out"
+}
+if [ "$typed_fixtures_ok" -eq 1 ]; then
+
+mut_run=$((mut_run + 1))
+prove_mutation "a local def fails to stop macro lookup" "$REPO/src/compiler/semantic/top_level.iyi" \
+  'return true if @defs.has_key?(call.name)' 'return true if false' \
+  -- check_typed_macro_fixture macro_def_shadows_macro && mut_caught=$((mut_caught + 1)) || status=1
+
+mut_run=$((mut_run + 1))
+prove_mutation "macro overload ignores required argument count" "$REPO/src/compiler/semantic/top_level.iyi" \
+  '    return false if named.nil? && call.args.size < min' '    nil' \
+  -- check_typed_macro_fixture macro_lookup_arity && mut_caught=$((mut_caught + 1)) || status=1
+
+mut_run=$((mut_run + 1))
+prove_mutation "ancestor list loses its parents" "$REPO/src/compiler/semantic/macro_bindings.iyi" \
+  '    owner.parents.each do |parent|
+      add_ancestor(parent, facts)' '    owner.parents.each do |parent|
+      nil' \
+  -- check_typed_macro_fixture macro_typenode_ancestors && mut_caught=$((mut_caught + 1)) || status=1
+
+mut_run=$((mut_run + 1))
+prove_mutation "the enclosing type loses its methods" "$REPO/src/compiler/semantic/macro_bindings.iyi" \
+  '      collect_methods(owner.as(ModuleType), facts.methods)' '      nil' \
+  -- check_typed_macro_fixture macro_typenode_ancestors && mut_caught=$((mut_caught + 1)) || status=1
+
+mut_run=$((mut_run + 1))
+prove_mutation "ancestor methods are omitted" "$REPO/src/compiler/macros/methods.iyi" \
+  '            ancestor.methods.each { |item| ancestor_facts.methods << item }' '            nil' \
+  -- check_typed_macro_fixture macro_typenode_ancestors && mut_caught=$((mut_caught + 1)) || status=1
+
+mut_run=$((mut_run + 1))
+prove_mutation "typeof fails to restore local types" "$REPO/src/compiler/semantic/type_nodes.iyi" \
+  '    visitor.vars[name] = t' '    nil' \
+  -- check_typed_macro_fixture macro_typeof_prelude && mut_caught=$((mut_caught + 1)) || status=1
+else
+  echo "FAIL: typed macro mutation proofs skipped because their unmutated fixtures failed"
+  status=1
+fi
 
 # The check fails (is caught) when the mutated port's run differs from the hosted build.
 check_site_scope() {

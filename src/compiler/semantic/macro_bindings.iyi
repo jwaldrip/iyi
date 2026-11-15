@@ -1,9 +1,10 @@
 module compiler/semantic/macro_bindings
 
 import compiler/macros/interpreter::{MacroFreeBinding}
-import compiler/macros/type_facts::{MacroInstanceVarFact, MacroTypeFacts}
+import compiler/macros/type_facts::{MacroAncestorFact, MacroInstanceVarFact, MacroTypeFacts}
 import compiler/semantic/top_level::{AnnotationType, EnumType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, Type, UnionType}
 import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, TupleInstanceType, TypeQueries}
+import compiler/syntax/ast::{Def}
 
 # The type parameters an inline macro site sees in the def being typed, as the
 # macro engine names them (interpreter.iyi MacroFreeBinding). Hosted
@@ -45,12 +46,30 @@ pub class MacroBindings
       end
     end
     if owner.is_a?(ModuleType)
+      facts.ancestors_known = true
+      facts.methods_known = true
+      collect_methods(owner.as(ModuleType), facts.methods)
+      collect_ancestors(owner.as(ModuleType), facts)
       facts.instance_vars_known = true
       owner.as(ModuleType).all_instance_vars.each do |name, var|
         var_type = var.type?
         facts.instance_vars << MacroInstanceVarFact.new(name[1, name.bytesize - 1], var_type ? var_type.to_s : nil)
       end
     elsif owner.is_a?(GenericClassInstanceType)
+      generic = owner.as(GenericClassInstanceType)
+      facts.ancestors_known = true
+      facts.methods_known = true
+      if base = generic.generic_type
+        if base.is_a?(ModuleType)
+          collect_methods(base.as(ModuleType), facts.methods)
+        end
+      end
+      generic.included_modules.each do |parent|
+        add_ancestor(parent, facts)
+      end
+      if superclass = generic.superclass
+        add_ancestor(superclass, facts)
+      end
       facts.instance_vars_known = true
       owner.as(GenericClassInstanceType).all_instance_vars.each do |name, var|
         var_type = var.type?
@@ -58,6 +77,42 @@ pub class MacroBindings
       end
     end
     facts
+  end
+
+  def self.collect_methods(owner : ModuleType, methods : Array(Def)) : Nil
+    owner.defs.each_value do |overloads|
+      overloads.each do |method|
+        methods << method
+      end
+    end
+  end
+
+  def self.collect_ancestors(owner : ModuleType, facts : MacroTypeFacts) : Nil
+    owner.parents.each do |parent|
+      add_ancestor(parent, facts)
+    end
+  end
+
+  def self.add_ancestor(parent : Type, facts : MacroTypeFacts) : Nil
+    methods = [] of Def
+    if parent.is_a?(ModuleType)
+      collect_methods(parent.as(ModuleType), methods)
+    elsif parent.is_a?(GenericClassInstanceType)
+      generic = parent.as(GenericClassInstanceType)
+      if generic.generic_type.is_a?(ModuleType)
+        collect_methods(generic.generic_type.as(ModuleType), methods)
+      end
+    end
+    facts.ancestors << MacroAncestorFact.new(parent.full_name, methods)
+    if parent.is_a?(ModuleType)
+      collect_ancestors(parent.as(ModuleType), facts)
+    elsif parent.is_a?(GenericClassInstanceType)
+      generic = parent.as(GenericClassInstanceType)
+      generic.included_modules.each { |item| add_ancestor(item, facts) }
+      if superclass = generic.superclass
+        add_ancestor(superclass, facts)
+      end
+    end
   end
 
   # `scope` is the receiver of the def being typed (nil at the top level) and
