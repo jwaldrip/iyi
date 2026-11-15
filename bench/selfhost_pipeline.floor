@@ -86,6 +86,7 @@ bench/fixtures/lowcall_named_order.iyi run-equal
 bench/fixtures/lowcall_named_revisit_block.iyi run-equal
 bench/fixtures/lowcall_named_revisit_loop.iyi run-equal
 bench/fixtures/lowcall_named_yield_default.iyi run-equal
+bench/fixtures/lowcall_narrowed_block_capture.iyi run-equal
 bench/fixtures/lowcall_nested.iyi run-equal
 bench/fixtures/lowcall_nil.iyi run-equal
 bench/fixtures/lowcall_nil_method.iyi run-equal
