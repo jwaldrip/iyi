@@ -4,13 +4,17 @@ lib LibC
 end
 
 struct NumberBox
-  getter value : Int32
+  def value : Int32
+    @value
+  end
   def initialize(@value : Int32)
   end
 end
 
 class RefBox
-  getter value : Int32
+  def value : Int32
+    @value
+  end
   def initialize(@value : Int32)
   end
 end

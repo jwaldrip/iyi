@@ -4,7 +4,11 @@ lib LibC
 end
 
 class Counter
-  property value : Int32
+  @value : Int32
+
+  def value : Int32
+    @value
+  end
 
   def initialize
     @value = 0

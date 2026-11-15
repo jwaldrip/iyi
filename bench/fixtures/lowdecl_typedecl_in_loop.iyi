@@ -7,8 +7,7 @@ def evaluate : Int32
   i = 0
   result = 0
   while i < 2
-    case i
-    when 0
+    if i == 0
       item : Int32 | Nil = nil
       item = 13
       result = item
