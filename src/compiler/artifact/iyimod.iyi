@@ -592,11 +592,13 @@ pub class BinaryReader
   @buffer : Pointer(UInt8)
   @size : Int32
   @pos : Int32
+  @claimed : UInt64
 
   def initialize(str : String)
     @buffer = str.to_unsafe
     @size = str.bytesize
     @pos = 0
+    @claimed = 0_u64
   end
 
   def pos : Int32
@@ -652,9 +654,24 @@ pub class BinaryReader
     val
   end
 
+  # Match the hosted reader's per-section, cumulative allocation bounds.
+  def read_count(least : Int32) : Int32
+    count = read_u32_le.to_u64
+    left = remaining.to_u64
+    claim = count * least.to_u64
+    if claim > left
+      unit = least == 1 ? "byte" : "bytes"
+      raise Error.new("a section counts " + count.to_s + " of something that takes " + least.to_s + " " + unit + " or more each, and has " + left.to_s + " bytes left").to_s
+    end
+    @claimed = @claimed + claim
+    if @claimed > @size.to_u64
+      raise Error.new("a section's counts claim " + @claimed.to_s + " bytes between them, and it is " + @size.to_s + " bytes long").to_s
+    end
+    count.to_i64.to_i32
+  end
+
   def read_string : String
-    len = read_u32_le.to_i64.to_i32
-    raise Error.new("unexpected EOF").to_s if @pos + len > @size
+    len = read_count(1)
     s_ptr = @buffer + @pos
     @pos = @pos + len
     String.new(len) do |buf|
@@ -663,7 +680,7 @@ pub class BinaryReader
   end
 
   def read_strings : Array(String)
-    count = read_u32_le.to_i64.to_i32
+    count = read_count(4)
     res = [] of String
     i = 0
     while i < count
@@ -674,7 +691,7 @@ pub class BinaryReader
   end
 
   def read_pairs : Array({String, String})
-    count = read_u32_le.to_i64.to_i32
+    count = read_count(8)
     res = [] of {String, String}
     i = 0
     while i < count
@@ -687,7 +704,7 @@ pub class BinaryReader
   end
 
   def read_triples : Array({String, String, String})
-    count = read_u32_le.to_i64.to_i32
+    count = read_count(12)
     res = [] of {String, String, String}
     i = 0
     while i < count
@@ -845,19 +862,26 @@ pub class IyiMod
       raise Error.new(path + " is .iyimod format v" + format_version.to_u64.to_s + ", this compiler writes v" + FORMAT_VERSION.to_u64.to_s).to_s
     end
 
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_u32_le.to_u64
+    room = r.remaining.to_u64
+    if count * 16_u64 > room
+      raise Error.new(path + " is truncated: its table names " + count.to_s + " sections and " + room.to_s + " bytes follow it, which is room for " + (room // 16_u64).to_s).to_s
+    end
     entries = [] of SectionEntry
-    i = 0
+    claimed = 0_u64
+    i = 0_u64
     while i < count
-      if r.remaining < 16
-        raise Error.new(path + " is truncated: it ends in the middle of a .iyimod").to_s
-      end
       kind = r.read_u16_le
       r.skip(2) # padding
       length = r.read_u32_le
       sum = r.read_u64_le
+      claimed = claimed + length.to_u64
       entries << SectionEntry.new(kind, length, sum)
-      i = i + 1
+      i = i + 1_u64
+    end
+    room = r.remaining.to_u64
+    if claimed > room
+      raise Error.new(path + " is truncated: its table says its sections are " + claimed.to_s + " bytes together and " + room.to_s + " bytes follow the table").to_s
     end
     entries
   end
@@ -1198,7 +1222,7 @@ pub class IyiMod
 
   def self.decode_imports(payload : String) : ImportsDecoded
     r = BinaryReader.new(payload)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(13)
     edges = [] of ImportEdge
     i = 0
     while i < count
@@ -1253,7 +1277,7 @@ pub class IyiMod
 
   def self.decode_spawns(payload : String) : Array(SpawnRecord)
     r = BinaryReader.new(payload)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(21)
     res = [] of SpawnRecord
     i = 0
     while i < count
@@ -1291,7 +1315,7 @@ pub class IyiMod
 
   def self.decode_reaches(payload : String) : Array(ReachRecord)
     r = BinaryReader.new(payload)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(32)
     res = [] of ReachRecord
     i = 0
     while i < count
@@ -1334,7 +1358,7 @@ pub class IyiMod
   end
 
   def self.read_positions(r : BinaryReader, filenames : Array(String)) : Array(SourcePosition)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(16)
     res = [] of SourcePosition
     i = 0
     while i < count
@@ -1373,7 +1397,7 @@ pub class IyiMod
     r = BinaryReader.new(payload)
     filenames = r.read_strings
     bodies = {} of String => Array(SourcePosition)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(8)
     i = 0
     while i < count
       key = r.read_string
@@ -1405,7 +1429,7 @@ pub class IyiMod
 
   def self.decode_mono_bodies(payload : String) : Hash(String, String)
     r = BinaryReader.new(payload)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(8)
     bodies = {} of String => String
     i = 0
     while i < count
@@ -1479,7 +1503,7 @@ pub class IyiMod
 
   def self.decode_layouts(payload : String) : Array({String, TypeLayout})
     r = BinaryReader.new(payload)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(24)
     res = [] of {String, TypeLayout}
     i = 0
     while i < count
@@ -1487,14 +1511,14 @@ pub class IyiMod
       type_id = r.read_i32_le
       alloc_size = r.read_u32_le
       scan_cap = r.read_u32_le
-      scan_count = r.read_u32_le.to_i64.to_i32
+      scan_count = r.read_count(4)
       scan_offsets = [] of UInt32
       j = 0
       while j < scan_count
         scan_offsets << r.read_u32_le
         j = j + 1
       end
-      noscan_count = r.read_u32_le.to_i64.to_i32
+      noscan_count = r.read_count(4)
       noscan_offsets = [] of UInt32
       j = 0
       while j < noscan_count
@@ -1524,7 +1548,7 @@ pub class IyiMod
 
   def self.decode_regexes(payload : String) : Array(RegexConst)
     r = BinaryReader.new(payload)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(12)
     res = [] of RegexConst
     i = 0
     while i < count
@@ -1553,7 +1577,7 @@ pub class IyiMod
 
   def self.decode_class_vars(payload : String) : Array(ClassVarRef)
     r = BinaryReader.new(payload)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(5)
     res = [] of ClassVarRef
     i = 0
     while i < count
@@ -1641,7 +1665,7 @@ pub class IyiMod
 
   def self.decode_object_code(payload : String) : Array(ObjectUnit)
     r = BinaryReader.new(payload)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(8)
     res = [] of ObjectUnit
     i = 0
     while i < count
@@ -1683,7 +1707,7 @@ pub class IyiMod
     funcs = read_signatures(r)
     types = read_type_declarations(r)
 
-    impl_count = r.read_u32_le.to_i64.to_i32
+    impl_count = r.read_count(28)
     impls = [] of ImplRecord
     i = 0
     while i < impl_count
@@ -1725,7 +1749,7 @@ pub class IyiMod
   end
 
   def self.read_signatures(r : BinaryReader) : Array(Signature)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(45)
     res = [] of Signature
     i = 0
     while i < count
@@ -1761,7 +1785,7 @@ pub class IyiMod
   end
 
   def self.read_class_vars(r : BinaryReader) : Array(ClassVarDecl)
-    count = r.read_u32_le.to_i64.to_i32
+    count = r.read_count(16)
     res = [] of ClassVarDecl
     i = 0
     while i < count
@@ -1775,7 +1799,10 @@ pub class IyiMod
     res
   end
 
-  def self.write_type_declarations(w : IOBuffer, types : Array(TypeDecl), docs : Bool = true) : Nil
+  def self.write_type_declarations(w : IOBuffer, types : Array(TypeDecl), docs : Bool = true, depth : Int32 = 0) : Nil
+    if depth > 200 && !types.empty?
+      raise Error.new(types[0].name + " is declared more than 200 types deep, which is deeper than a .iyimod holds").to_s
+    end
     w.write_u32_le(types.size.to_u64.to_u32)
     i = 0
     while i < types.size
@@ -1799,13 +1826,16 @@ pub class IyiMod
       w.write_byte(decl.extends_self ? 1_u8 : 0_u8)
       w.write_strings(decl.usings)
       write_signatures(w, decl.methods, docs)
-      write_type_declarations(w, decl.types, docs)
+      write_type_declarations(w, decl.types, docs, depth + 1)
       i = i + 1
     end
   end
 
-  def self.read_type_declarations(r : BinaryReader) : Array(TypeDecl)
-    count = r.read_u32_le.to_i64.to_i32
+  def self.read_type_declarations(r : BinaryReader, depth : Int32 = 0) : Array(TypeDecl)
+    count = r.read_count(77)
+    if depth > 200 && count > 0
+      raise Error.new("a section declares types more than 200 deep inside one another, which is deeper than a .iyimod holds").to_s
+    end
     res = [] of TypeDecl
     i = 0
     while i < count
@@ -1828,7 +1858,7 @@ pub class IyiMod
       extends_self = r.read_u8 == 1_u8
       usings = r.read_strings
       methods = read_signatures(r)
-      nested_types = read_type_declarations(r)
+      nested_types = read_type_declarations(r, depth + 1)
       res << TypeDecl.new(
         name, kind, params, assoc, supertraits, fields, methods, vis,
         nested_types, value, macros, members, class_vars, superclass,

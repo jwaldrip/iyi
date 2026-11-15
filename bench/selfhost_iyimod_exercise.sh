@@ -266,7 +266,7 @@ check_refusal "truncated header" "$REFUSAL_DIR/short.iyimod" "too short to be a 
 check_refusal "invalid magic bytes" "$REFUSAL_DIR/bad_magic.iyimod" "is not a .iyimod"
 check_refusal "mismatched format version" "$REFUSAL_DIR/bad_version.iyimod" "format v99, this compiler writes v62"
 check_refusal "damaged section payload" "$REFUSAL_DIR/corrupt_payload.iyimod" "Header section is damaged, its checksum does not match"
-check_refusal "truncated section payload" "$REFUSAL_DIR/truncated_payload.iyimod" "ends inside a section"
+check_refusal "truncated section payload" "$REFUSAL_DIR/truncated_payload.iyimod" "bytes follow the table"
 
 echo
 echo "== 8. Mutation proofs: each one must make the checks fail"
@@ -302,12 +302,12 @@ run_proof() {
 }
 
 run_proof "altering magic bytes breaks container verification" \
-  'MAGIC               = "IYIMOD\0\0"' \
-  'MAGIC               = "BADMOD\0\0"'
+  'MAGIC          = "IYIMOD\0\0"' \
+  'MAGIC          = "BADMOD\0\0"'
 
 run_proof "altering format version allows or writes wrong version" \
-  'FORMAT_VERSION      = 62_u32' \
-  'FORMAT_VERSION      = 63_u32'
+  'FORMAT_VERSION = 62_u32' \
+  'FORMAT_VERSION = 63_u32'
 
 run_proof "bypassing section checksum verification accepts damaged payload" \
   'return if checksum(payload) == sum' \
