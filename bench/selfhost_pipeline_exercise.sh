@@ -91,7 +91,13 @@ for fixture in $fixtures; do
   ts=$?
   reached="$(probe_phase "$WORK/$name.probe")"
   if [ "$ts" -eq 0 ] && [ "$reached" = "link" ]; then
-    if ! "$IYI" build --prelude empty -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1; then
+    prelude=empty
+    hosted_path="$REPO/src"
+    if [ "$name" = lowglob_cvar_lazy ]; then
+      prelude=iyi/prelude
+      hosted_path="$REPO/bench/fixtures/lowglob_abi:$hosted_path"
+    fi
+    if ! IYI_PATH="$hosted_path" "$IYI" build --prelude "$prelude" -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1; then
       echo "  $name: FAILED, the hosted compiler does not build the fixture"
       failed=$((failed + 1)); measured[$rel]="link"; continue
     fi
@@ -444,7 +450,7 @@ else
   status=1
 fi
 prove_mutation "the lowering table probes a Primitive-annotated def" "$PROGRAM_SRC" \
-  "next unless primitive_name(d.body).nil?" "next if false" -- primitive_table_check || status=1
+  $'next unless primitive_name(d.body).nil?\n    next if noncapturing_yield?(d)' $'next if false\n    next if noncapturing_yield?(d)' -- primitive_table_check || status=1
 prove_mutation "a prelude-free program's top-level code is named __iyi_main" "$LOWER_SRC" \
   'return "__crystal_main"' 'return "__iyi_main"' -- entry_check || status=1
 # The prelude branch of main_function_name has no proof yet: the prelude does not reach IR in the typed pipeline (strict
@@ -519,7 +525,7 @@ else
   status=1
 fi
 prove_mutation "post-splice runtime code is dropped" "$COMPILER_SRC" \
-  'runtime.each { |node| top_level << node }' 'runtime.each { |node| }' -- pipeline_loader_if_check || status=1
+  'module_tops[mod_info.filename].each { |node| top_level << node }' 'module_tops[mod_info.filename].each { |node| }' -- pipeline_loader_if_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
