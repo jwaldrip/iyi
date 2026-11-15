@@ -1,0 +1,15 @@
+def recursive_inferred_once(&)
+  yield
+end
+
+def recursive_inferred_block(n : Int32)
+  if n == 0
+    0
+  else
+    value = 0
+    recursive_inferred_once { value = recursive_inferred_block(n - 1) }
+    value + 1
+  end
+end
+
+recursive_inferred_block(3)

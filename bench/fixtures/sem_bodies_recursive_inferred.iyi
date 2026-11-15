@@ -1,0 +1,9 @@
+def recursive_inferred_count(n : Int32)
+  if n == 0
+    0
+  else
+    recursive_inferred_count(n - 1) + 1
+  end
+end
+
+recursive_inferred_count(3)
