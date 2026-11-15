@@ -1,0 +1,37 @@
+def recursive_inferred_even(n : Int32)
+  if n == 0
+    0
+  else
+    recursive_inferred_odd(n - 1)
+  end
+end
+
+def recursive_inferred_odd(n : Int32)
+  if n == 0
+    1
+  else
+    recursive_inferred_even(n - 1)
+  end
+end
+
+def recursive_inferred_loop(n : Int32)
+  while n > 0
+    recursive_inferred_loop(n - 1)
+    break
+  end
+  n
+end
+
+def recursive_inferred_nullable(n : Int32)
+  if n == 0
+    nil
+  elsif n == 1
+    "value"
+  else
+    recursive_inferred_nullable(n - 1)
+  end
+end
+
+recursive_inferred_even(4)
+recursive_inferred_loop(3)
+recursive_inferred_nullable(2)
