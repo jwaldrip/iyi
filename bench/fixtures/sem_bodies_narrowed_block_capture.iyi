@@ -1,4 +1,4 @@
-abstract class BlockShape
+class BlockShape
 end
 
 class BlockKindA < BlockShape
