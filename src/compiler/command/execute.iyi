@@ -7,7 +7,7 @@ import compiler/backend/native::{NativeBackend}
 import compiler/platform/target::{Target}
 import std/process::{Process, ProcessResult, ProcessError}
 import std/file
-import std/dir
+import std/dir::{Dir}
 
 # Executes parsed commands separately from the parity-tested command driver.
 pub class CommandExecutor
