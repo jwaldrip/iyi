@@ -24,10 +24,10 @@ pub class LocalOrder < Visitor
     @macro_depth = 0
   end
 
-  def record(node : ASTNode) : Nil
+  def record(node : ASTNode, written_type : Type? = nil) : Nil
     if node.is_a?(Var)
       var = node.as(Var)
-      if type = @analysed.type_of?(var)
+      if type = written_type || @analysed.type_of?(var)
         if previous = @types[var.name]?
           @types[var.name] = @analysed.program.type_merge(previous, type)
         else
@@ -64,7 +64,14 @@ pub class LocalOrder < Visitor
 
     if node.is_a?(TypeDeclaration)
       @declared = true if @macro_depth == 0
-      record(node.as(TypeDeclaration).var)
+      declaration = node.as(TypeDeclaration)
+      # Hosted codegen.cr:2562-2583 allocates the MetaVar's write-union,
+      # not its freeze_type. An initializer contributes its actual type.
+      written_type : Type? = nil
+      if value = declaration.value
+        written_type = @analysed.type_of?(value)
+      end
+      record(declaration.var, written_type)
     elsif node.is_a?(UninitializedVar)
       record(node.as(UninitializedVar).var)
     elsif node.is_a?(Out)

@@ -24,7 +24,7 @@
 set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+IYI="${IYI_COMPILER:-$REPO/bin/iyi}"
 . "$REPO/bench/lib/mutation.sh"
 . "$REPO/bench/lib/lower_oracle.sh"
 WORK="$(mktemp -d)"
@@ -368,7 +368,7 @@ prove_mutation "metaclass macro scope uses its instance type" "$REPO/src/compile
 
 echo
 echo "== 3a. Generic constructor inference and refusal boundaries"
-for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
+for name in lowcallinfer_generic_new lowcallinfer_explicit_struct lowcallwait_generic_handwritten_new; do
   fixture="$REPO/bench/fixtures/$name.iyi"
   if ! "$IYI" build --prelude empty --no-debug -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1 ||
      ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1; then
@@ -393,11 +393,10 @@ done
 generic_wait_reason() {
   case "$1" in
     lowcallwait_generic_handwritten_make) printf "%s" "expected argument #1 to 'Maker.make' to be T, not Int32" ;;
-    lowcallwait_generic_handwritten_new) printf "%s" "expected argument #1 to 'Maker.new' to be T, not Int32" ;;
     lowcallwait_generic_default_new) printf "%s" "expected argument #1 to 'Opt.new' to be T, not Int32" ;;
   esac
 }
-for name in lowcallwait_uninferred_generic_new lowcallwait_generic_handwritten_make lowcallwait_generic_handwritten_new lowcallwait_generic_default_new; do
+for name in lowcallwait_uninferred_generic_new lowcallwait_generic_handwritten_make lowcallwait_generic_default_new; do
   fixture="$REPO/bench/fixtures/$name.iyi"
   rm -f "$WORK/$name.native"
   if IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1 || [ -e "$WORK/$name.native" ]; then
@@ -481,7 +480,7 @@ generic_constructor_check() {
     echo "INVALID MUTANT: constructor compiler did not build"
     return 0
   fi
-  for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
+  for name in lowcallinfer_generic_new lowcallinfer_explicit_struct lowcallwait_generic_handwritten_new; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rm -f "$WORK/constructor.check.exe"
     IYI_PATH="$REPO/src" "$WORK/constructor.check.tool" "$fixture" -o "$WORK/constructor.check.exe" --pipeline typed > "$WORK/constructor.check.log" 2>&1 || return 1
@@ -492,7 +491,7 @@ generic_constructor_check() {
     timeout 30 "$WORK/constructor.check.exe" > "$WORK/constructor.check.out" 2>&1; result=$?
     [ "$result" -eq 7 ] && cmp -s "$WORK/constructor.check.out" "$WORK/$name.hosted.out" || return 1
   done
-  for name in lowcallwait_generic_handwritten_make lowcallwait_generic_handwritten_new lowcallwait_generic_default_new; do
+  for name in lowcallwait_generic_handwritten_make lowcallwait_generic_default_new; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rm -f "$WORK/constructor.check.exe"
     if IYI_PATH="$REPO/src" "$WORK/constructor.check.tool" "$fixture" -o "$WORK/constructor.check.exe" --pipeline typed > "$WORK/constructor.check.log" 2>&1; then
@@ -517,8 +516,8 @@ constructor_prove() {
 rm -f "$WORK/constructor.invalid"
 if generic_constructor_check && [ ! -e "$WORK/constructor.invalid" ]; then
   echo "  constructor mutation baseline passed"
-  constructor_prove "handwritten methods infer class variables" "$REPO/src/compiler/semantic/match.iyi" \
-    '    return nil unless program.generated_new?(definition)' '    nil' || status=1
+  constructor_prove "non-constructor methods infer class variables" "$REPO/src/compiler/semantic/match.iyi" \
+    '    return nil unless definition.name == "new"' '    nil' || status=1
   constructor_prove "omitted arguments infer class variables" "$REPO/src/compiler/semantic/match.iyi" \
     '    return nil unless given == definition.args.size' '    nil' || status=1
   constructor_prove "lowering ignores the inferred receiver" "$REPO/src/compiler/lower/call.iyi" \
@@ -632,14 +631,14 @@ block_decl_check() {
     touch "$WORK/general-mutation.invalid"
     return 1
   fi
-  "$WORK/block-decl-mut" lower "$REPO/bench/fixtures/lowdecl_typedecl_block.iyi" "$WORK/lowdecl_typedecl_block.oracle.ll" > "$WORK/block-decl-mut.out" 2>/dev/null || return 1
-  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-decl-mut.out"
+  for name in lowdecl_typedecl_block lowdecl_typedecl_block_widen lowdecl_typedecl_block_nested lowdecl_typedecl_block_later_nil; do
+    "$WORK/block-decl-mut" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/block-decl-mut.out" 2>/dev/null || return 1
+    awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-decl-mut.out" || return 1
+  done
 }
-prove_mutation "a block declaration allocates its initializer type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  '        set_type(v, decl_type)
-        merge_var_union(v.name, decl_type) unless stored.is_a?(NoReturnType)' \
-  '        set_type(v, stored)
-        merge_var_union(v.name, stored) unless stored.is_a?(NoReturnType)' -- block_decl_check || status=1
+prove_mutation "a block declaration allocates its declared type rather than its initializer" "$REPO/src/compiler/lower/locals.iyi" \
+  '      record(declaration.var, written_type)' \
+  '      record(declaration.var)' -- block_decl_check || status=1
 
 block_storage_check() {
   if ! "$IYI" build -o "$WORK/block-storage-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-storage-mut.build.log" 2>&1; then
@@ -685,8 +684,10 @@ uncovered_mutation_check() {
 if uncovered_check "$WORK/port"; then
   prove_mutation "uncovered argument combinations are accepted" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '    found = lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    trace_arg_dispatch(receiver, node.name, node.args, node, found, nil)
     unless found.cover_all?' \
     '    found = lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    trace_arg_dispatch(receiver, node.name, node.args, node, found, nil)
     unless true' -- uncovered_mutation_check || status=1
 else
   echo "  FAIL: uncovered union baseline did not refuse"
