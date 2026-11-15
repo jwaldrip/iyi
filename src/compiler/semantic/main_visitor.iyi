@@ -159,8 +159,9 @@ pub class BlockOwner
   getter scope : Type?
   getter writer_type : ModuleType?
   getter var_owners : Hash(String, LocalStorage)?
+  getter untyped_locals : Hash(String, String)?
 
-  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil, @writer_type : ModuleType? = nil, @var_owners : Hash(String, LocalStorage)? = nil)
+  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil, @writer_type : ModuleType? = nil, @var_owners : Hash(String, LocalStorage)? = nil, @untyped_locals : Hash(String, String)? = nil)
   end
 end
 
@@ -2515,7 +2516,12 @@ pub class MainVisitor < TypeNodeHost
       callee_yield_nodes = @current_yield_nodes
       callee_type = @current_type
       callee_var_owners = @var_owners
+      callee_untyped_locals = @untyped_locals
       if owner = @block_owners[blk]?
+        if writer_untyped = owner.untyped_locals
+          @untyped_locals = writer_untyped.dup
+          blk.args.each { |arg| @untyped_locals.delete(arg.name) }
+        end
         if routed = owner.var_owners
           @var_owners = routed.dup
           # Block parameters shadow the caller even when their names coincide.
@@ -2582,6 +2588,7 @@ pub class MainVisitor < TypeNodeHost
       @super_barrier = saved_super_barrier
       @current_type = callee_type
       @var_owners = callee_var_owners
+      @untyped_locals = callee_untyped_locals
       @jump_block = saved_jump_block
       @jump_whiles = saved_jump_whiles
       @handler_direct_exit = old_handler_direct_exit
@@ -4020,13 +4027,14 @@ pub class MainVisitor < TypeNodeHost
     @return_types = [] of Type?
 
     if block
+      # A yielded block also sees the names narrowed out in its writer's flow.
       @current_block_context_vars = @vars.dup
       @current_yield_nodes = [] of Yield
       if blk = block
         writer_owners = old_var_owners.dup
         writer_storage = LocalStorage.new(old_var_unions, old_nil_candidates, old_nil_resets)
         @vars.each_key { |name| writer_owners[name] = writer_storage unless writer_owners.has_key?(name) }
-        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope, writer_type, writer_owners)
+        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope, writer_type, writer_owners, old_untyped_locals)
       end
     end
 
