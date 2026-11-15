@@ -314,6 +314,20 @@ abstract_probe_at_expected() {
   diff -u "$abstract_expected" "$WORK/abstract_mutant.actual"
 }
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
+block_parameter_shadow_at_expected() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/shadow.build.log" 2>&1 || {
+    body_build_failed "$WORK/shadow.build.log"
+    return $?
+  }
+  local fixture="$REPO/bench/fixtures/sem_bodies_block_parameter_shadow.iyi"
+  "$ORACLE" "$fixture" > "$WORK/shadow.oracle" 2>/dev/null || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" > "$WORK/shadow.port" 2>/dev/null || return 1
+  grep -qx '10:1 Var Bool' "$WORK/shadow.port" || return 1
+  diff -q "$WORK/shadow.oracle" "$WORK/shadow.port" >/dev/null
+}
+block_parameter_shadow_at_expected || status=1
+prove_mutation "block parameter overwrites the caller's flow type" "$MAIN_VISITOR" \
+  '          next if shadowed' '          nil' -- block_parameter_shadow_at_expected || status=1
 alias_members_at_expected() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/alias_mut_build.log" 2>&1 || {
     body_build_failed "$WORK/alias_mut_build.log"

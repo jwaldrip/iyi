@@ -8,6 +8,7 @@ bench/fixtures/sem_bodies_block_free_output.iyi 11
 bench/fixtures/sem_bodies_block_nil_output.iyi 9
 bench/fixtures/sem_bodies_block_nil_value.iyi 8
 bench/fixtures/sem_bodies_block_output.iyi 9
+bench/fixtures/sem_bodies_block_parameter_shadow.iyi 15
 bench/fixtures/sem_bodies_block_writer_type.iyi 12
 bench/fixtures/sem_bodies_capture_free_output.iyi 11
 bench/fixtures/sem_bodies_capture_none.iyi 23
