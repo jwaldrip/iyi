@@ -215,7 +215,7 @@ check_refusal "truncated header" "$REFUSAL_DIR/short.iyimod" "too short to be a 
 check_refusal "invalid magic bytes" "$REFUSAL_DIR/bad_magic.iyimod" "is not a .iyimod"
 check_refusal "mismatched format version" "$REFUSAL_DIR/bad_version.iyimod" "format v99, this compiler writes v62"
 check_refusal "damaged section payload" "$REFUSAL_DIR/corrupt_payload.iyimod" "Header section is damaged, its checksum does not match"
-check_refusal "truncated section payload" "$REFUSAL_DIR/truncated_payload.iyimod" "ends inside a section"
+check_refusal "truncated section payload" "$REFUSAL_DIR/truncated_payload.iyimod" "bytes follow the table"
 
 echo
 echo "== 7. Mutation proofs: each one must make the checks fail"
