@@ -29,7 +29,7 @@ import compiler/lower/helpers::{build_string_constant, int1, llvm_nil, load_alig
 import compiler/lower/pending::{refuse_port}
 import compiler/lower/globals::{ConstState}
 import compiler/lower/symbols::{symbol_index}
-import compiler/lower/cast::{to_lhs, type_id_value}
+import compiler/lower/cast::{assign, to_lhs, type_id_value}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/types/types::{TupleInstanceType}
 import compiler/types/types::{IntegerType}
@@ -399,10 +399,10 @@ pub def make_const_init_function(low : Lowerer, const : Compiler::Semantic::TopL
     t = low.analysed.type_of?(const.value).as(Type)
     if passed_by_value?(t)
       global.initializer = low.builder.const_zero(ir)
-      store_aligned(low, val.type.pointer? ? load_aligned(low, ir, val) : val, global)
+      assign(low, global, t, t, val)
     else
       global.initializer = low.builder.const_null(ir)
-      store_aligned(low, val, global)
+      assign(low, global, t, t, val)
     end
   end
   low.builder.ret_void

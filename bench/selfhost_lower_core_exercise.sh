@@ -1338,6 +1338,9 @@ for invalid in "$WORK/m.invalid" "$WORK/nil-flow.invalid" "$WORK/union-read.inva
   fi
 done
 
+echo "== Concurrent GC write barriers"
+bash "$REPO/bench/selfhost_lower_gc_barrier_exercise.sh" || status=1
+
 echo
 echo
 if [ "$status" -eq 0 ]; then
