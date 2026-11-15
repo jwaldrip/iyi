@@ -353,4 +353,4 @@ pub def intrinsic_candidates(id : IntrinsicId, types : TypeTable) : Array(Array(
     result << [types.ptr(0)]
   end
   result
-en
+end
