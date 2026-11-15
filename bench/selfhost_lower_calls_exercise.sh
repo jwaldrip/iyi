@@ -305,6 +305,65 @@ else
     echo "  block map: real-prelude native matches hosted output a-b"
   fi
 fi
+# A class value displays its instance name, including when reached through a
+# virtual metaclass (hosted macros/interpreter.cr:735-737).
+meta_name_fixture="$REPO/bench/fixtures/runtime_metaclass_name.iyi"
+if ! "$IYI" build --no-debug -o "$WORK/meta_name.hosted" "$meta_name_fixture" > "$WORK/meta_name.hosted.log" 2>&1 ||
+   ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$meta_name_fixture" -o "$WORK/meta_name.native" --pipeline typed --prelude > "$WORK/meta_name.native.log" 2>&1; then
+  echo "  metaclass name: hosted or native build failed"
+  status=1
+elif [ "$(uname -s)" = Darwin ] && { ! codesign -v --strict "$WORK/meta_name.hosted" || ! codesign -v --strict "$WORK/meta_name.native"; }; then
+  echo "  metaclass name: signature verification failed"
+  status=1
+else
+  "$WORK/meta_name.hosted" > "$WORK/meta_name.hosted.out" 2>&1; hs=$?
+  "$WORK/meta_name.native" > "$WORK/meta_name.native.out" 2>&1; ns=$?
+  if [ "$hs" -ne 0 ] || [ "$ns" -ne "$hs" ] || ! cmp -s "$WORK/meta_name.hosted.out" "$WORK/meta_name.native.out"; then
+    echo "  metaclass name: hosted status $hs, native status $ns, or output differs"
+    status=1
+  else
+    echo "  metaclass name: hosted and native agree"
+  fi
+fi
+# Compare the named macro-bearing method. The two IR printers differ only in
+# signature attributes, label comments, and phi label spelling here.
+meta_name_body() {
+  awk '
+    /^define .*IRLabel::name_text<Bool>:String/ { active=1; found=1; next }
+    active && /^}/ { exit }
+    active { sub(/[[:space:]]*;.*/, ""); gsub(/, label %/, ", %"); if ($0 != "") print }
+    END { if (!found) exit 1 }
+  ' "$1"
+}
+if ! "$IYI" build --single-module --emit llvm-ir --no-debug -o "$WORK/meta_name_ir" "$meta_name_fixture" > "$WORK/meta_name.ir-hosted.log" 2>&1 ||
+   ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$meta_name_fixture" -o "$WORK/meta_name.ir-port" --pipeline typed --prelude --emit ir > "$WORK/meta_name.ir-port.log" 2>&1 ||
+   ! meta_name_body "$WORK/meta_name_ir.ll" > "$WORK/meta_name.hosted.body" ||
+   ! meta_name_body "$WORK/meta_name.ir-port" > "$WORK/meta_name.port.body" ||
+   ! diff -u "$WORK/meta_name.hosted.body" "$WORK/meta_name.port.body"; then
+  echo "  metaclass name: method IR differs from hosted"
+  status=1
+else
+  echo "  metaclass name: macro-bearing method IR matches hosted"
+fi
+meta_name_mutation_check() {
+  if ! "$IYI" build -o "$WORK/meta_name.mutant" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/meta_name.mutant.build.log" 2>&1; then
+    echo "  INVALID MUTANT: compiler did not build" >&2
+    return 0
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/meta_name.mutant"; then
+    return 0
+  fi
+  if ! IYI_PATH="$REPO/src" "$WORK/meta_name.mutant" "$meta_name_fixture" -o "$WORK/meta_name.mutant.native" --pipeline typed --prelude > "$WORK/meta_name.mutant.log" 2>&1; then
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/meta_name.mutant.native"; then
+    return 0
+  fi
+  "$WORK/meta_name.mutant.native" > "$WORK/meta_name.mutant.out" 2>&1
+}
+prove_mutation "metaclass macro scope uses its instance type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  "      return TypeQueries.instance_type(scope).devirtualize.full_name" \
+  "      return scope.full_name" -- meta_name_mutation_check || status=1
 
 
 echo
