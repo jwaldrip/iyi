@@ -321,6 +321,10 @@ pub def assign_union_in_union(low : Lowerer, pointer : Value, target : MixedUnio
     member = false
     target.union_types.each do |ut|
       member = true if ut.full_name == vt.full_name
+      # Non-tuple reference subtypes retain their concrete tag and payload.
+      if TypeQueries.reference_like?(vt) && vt.implements?(ut)
+        member = true
+      end
     end
     unless member
       pending_visit_node("assign #{value_type.full_name} to #{target.full_name}: #{vt.full_name} is not a member (hosted assign_distinct, cast of compatible members)")
@@ -346,6 +350,13 @@ pub def assign_mixed_union(low : Lowerer, pointer : Value, target : MixedUnionTy
   member = false
   target.union_types.each do |ut|
     member = true if ut.full_name == value_type.full_name
+  end
+  # Hosted cast.cr:197-209 stores ordinary values directly, retaining their
+  # concrete runtime type id even when a union member is a virtual base.
+  if !member && TypeQueries.reference_like?(value_type)
+    target.union_types.each do |ut|
+      member = true if value_type.implements?(ut)
+    end
   end
   unless member
     pending_visit_node("assign #{value_type.full_name} to #{target.full_name}: not a member (hosted cast.cr, compatible type)")
