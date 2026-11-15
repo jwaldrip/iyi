@@ -1,0 +1,13 @@
+class ImmutableValue
+  getter number : Int32
+
+  def initialize(@number : Int32)
+  end
+end
+
+value = ImmutableValue.new(7)
+result = group do |g|
+  task = g.spawn { value.number }
+  task.value
+end
+puts result

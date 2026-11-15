@@ -1,0 +1,6 @@
+pair = {1, [2, 3]}
+result = group do |g|
+  task = g.spawn { pair[1].size }
+  task.value
+end
+puts result

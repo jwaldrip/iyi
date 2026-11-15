@@ -1,0 +1,8 @@
+@[Unsafe("tests raw pointer capture in spawn placement")]
+value = 7
+pointer = pointerof(value)
+result = group do |g|
+  task = g.spawn { pointer.value }
+  task.value
+end
+puts result
