@@ -1,0 +1,20 @@
+@[Unsafe("reports the discarded expression's side effect")]
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+class Counter
+  property value : Int32
+
+  def initialize
+    @value = 0
+  end
+
+  def increment : Int32
+    @value = @value &+ 1
+  end
+end
+
+counter = Counter.new
+_ = counter.increment
+LibC.exit(counter.value)

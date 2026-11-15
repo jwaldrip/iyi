@@ -19,6 +19,7 @@ module compiler/lower/lower
 import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, Cast, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NilableCast, NumberLiteral, Or, Path, PointerOf, Primitive, ProcLiteral, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, UninitializedVar, Var, While, IsA, Yield}
 import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, HashLiteral, RangeLiteral, MultiAssign, Select, StringInterpolation}
 import compiler/syntax/ast::{NamedTupleLiteral, EnumDef}
+import compiler/syntax/ast::{Underscore}
 import compiler/syntax/ast::{ImplDef, TraitDef}
 import compiler/types/types::{NamedTupleInstanceType}
 import compiler/syntax/ast::{TupleLiteral, Splat, Generic}
@@ -1027,6 +1028,12 @@ end
 # which is made the first time the variable is assigned. The value of the assignment is the value
 # assigned.
 pub def codegen_assign(low : Lowerer, node : Assign) : Nil
+  # Hosted codegen.cr:1511-1513 evaluates a discarded assignment's value
+  # without allocating a variable; multi-assignment expansion can emit this.
+  if node.target.is_a?(Underscore)
+    codegen_node(low, node.value)
+    return
+  end
   if node.target.is_a?(InstanceVar)
     codegen_instance_var_assign(low, node)
     return

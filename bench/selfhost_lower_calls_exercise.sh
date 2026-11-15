@@ -80,7 +80,7 @@ passed=0
 waiting=0
 e2e=""
 diverged=0
-for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi; do
+for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi "$REPO"/bench/fixtures/lowdecl_*.iyi; do
   name="$(basename "$fixture" .iyi)"
   if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
     echo "  $name: the hosted compiler did not emit its module (see $WORK/$name.oracle.log)"
@@ -545,6 +545,17 @@ lower_calls_check() {
   done
   return 0
 }
+
+underscore_check() {
+  if ! "$IYI" build -o "$WORK/underscore-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/underscore-mut.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/underscore-mut" lower "$REPO/bench/fixtures/lowdecl_multi_assign_underscore.iyi" "$WORK/lowdecl_multi_assign_underscore.oracle.ll" > "$WORK/underscore-mut.out" 2>/dev/null || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/underscore-mut.out"
+}
+prove_mutation "underscore assignment is refused" "$REPO/src/compiler/lower/lower.iyi" \
+  '  if node.target.is_a?(Underscore)' '  if false && node.target.is_a?(Underscore)' -- underscore_check || status=1
 
 uncovered_mutation_check() {
   if ! "$IYI" build -o "$WORK/uncovered-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/uncovered-mut.build.log" 2>&1; then

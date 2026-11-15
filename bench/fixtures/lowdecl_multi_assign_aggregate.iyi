@@ -1,0 +1,24 @@
+@[Unsafe("reports tuple destructuring")]
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+struct NumberBox
+  getter value : Int32
+  def initialize(@value : Int32)
+  end
+end
+
+class RefBox
+  getter value : Int32
+  def initialize(@value : Int32)
+  end
+end
+
+def boxes
+  {NumberBox.new(7), RefBox.new(9)}
+end
+
+a, _ = boxes
+_, b = boxes
+LibC.exit(a.value &+ b.value)
