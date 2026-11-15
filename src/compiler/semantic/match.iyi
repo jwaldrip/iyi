@@ -104,7 +104,7 @@ end
 # double splat with a restriction.
 pub class CallMatch
   def self.inferable_generic(program : SemanticProgram, owner : Type, defining : ModuleType?, definition : Def, given : Int32) : GenericClassType?
-    return nil unless program.generated_new?(definition)
+    return nil unless definition.name == "new"
     return nil if defining.nil? || defining.as(ModuleType).object_id != owner.object_id
     return nil unless owner.is_a?(MetaclassType)
     instance = owner.as(MetaclassType).instance_type
@@ -112,7 +112,7 @@ pub class CallMatch
     generic = instance.as(GenericClassType)
     return nil unless generic.splat_index.nil?
     return nil unless given == definition.args.size
-    return nil unless definition.splat_index.nil? && definition.double_splat.nil? && definition.block_arg.nil?
+    return nil unless definition.splat_index.nil? && definition.double_splat.nil?
     generic
   end
 

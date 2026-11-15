@@ -1,0 +1,2 @@
+values = Array.new(4) { |i| i }
+puts values[2]
