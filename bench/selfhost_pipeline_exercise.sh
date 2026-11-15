@@ -40,6 +40,23 @@ COMPILER_SRC="$REPO/src/compiler/compiler.iyi"
 LOADER_SRC="$REPO/src/compiler/loader.iyi"
 ROOTS="samples/iyi/hello.iyi src/compiler/tools/parse.iyi src/compiler/tools/compile_native.iyi"
 
+# The compile_native closure reached 31,025 defs and exceeded 64 GB on 2026-11-15.
+# Keep it on hosts with headroom; smaller CI runners still exercise hello and parse.
+ROOT_MIN_GB="${SELFHOST_PIPELINE_ROOT_MIN_GB:-96}"
+if [ -n "${SELFHOST_PIPELINE_HOST_GB:-}" ]; then
+  HOST_GB="$SELFHOST_PIPELINE_HOST_GB"
+elif [ "$(uname -s)" = Darwin ]; then
+  HOST_GB="$(sysctl -n hw.memsize | awk '{printf "%.0f", int($1 / 1073741824)}')"
+else
+  HOST_GB="$(awk '/^MemTotal:/ {printf "%.0f", int($2 / 1048576); found=1} END {if (!found) exit 1}' /proc/meminfo)"
+fi
+case "$HOST_GB:$ROOT_MIN_GB" in
+  *[!0-9:]*|:*|*:) echo "FAIL: cannot determine valid host or required memory in GB" >&2; exit 1 ;;
+esac
+SKIP_COMPILE_NATIVE=0
+[ "$HOST_GB" -lt "$ROOT_MIN_GB" ] && SKIP_COMPILE_NATIVE=1
+COMPILE_NATIVE_ROOT="src/compiler/tools/compile_native.iyi"
+
 rank() {
   case "$1" in
     none) echo 0 ;; parse) echo 1 ;; declarations) echo 2 ;; bodies) echo 3 ;; lower) echo 4 ;;
@@ -130,6 +147,10 @@ echo "  fixtures: $run_equal run-equal of $total, $refused refused with no outpu
 echo
 echo "== 3. The prelude programs and the compiler's own tools: the phase each reaches"
 for root in $ROOTS; do
+  if [ "$SKIP_COMPILE_NATIVE" -eq 1 ] && [ "$root" = "$COMPILE_NATIVE_ROOT" ]; then
+    echo "  SKIPPED by host: $root needs $ROOT_MIN_GB GB, this host has $HOST_GB GB"
+    continue
+  fi
   rel="$root"
   name="$(basename "$root" .iyi)"
   IYI_PATH="$REPO/src" "$WORK/tool" "$REPO/$root" -o "$WORK/$name.root" --pipeline typed --prelude --probe-phase > "$WORK/$name.root.probe" 2> "$WORK/$name.root.err"
@@ -175,12 +196,16 @@ if [ "${SELFHOST_PIPELINE_RAISE:-0}" = "1" ]; then
     if [ -n "$prev" ] && [ "$(rank "$prev")" -gt "$(rank "$keep")" ]; then keep="$prev"; fi
     echo "$k $keep" >> "$FLOOR.new"
   done
+  if [ "$SKIP_COMPILE_NATIVE" -eq 1 ]; then
+    awk -v root="$COMPILE_NATIVE_ROOT" '$1 == root {print}' "$FLOOR" >> "$FLOOR.new"
+  fi
   mv "$FLOOR.new" "$FLOOR"
   echo "  floor written: $(printf '%s\n' "${!measured[@]}" | wc -l | awk '{print $1}') rows"
 fi
 floor_bad=0
 while read -r key phase; do
   case "$key" in ""|\#*) continue ;; esac
+  if [ "$SKIP_COMPILE_NATIVE" -eq 1 ] && [ "$key" = "$COMPILE_NATIVE_ROOT" ]; then continue; fi
   want=$(rank "$phase")
   got_phase="${measured[$key]:-missing}"
   got=$(rank "$got_phase")
@@ -216,6 +241,10 @@ table_value() {
 : > "$WORK/table.lines"
 table_ok=1
 for root in $ROOTS; do
+  if [ "$SKIP_COMPILE_NATIVE" -eq 1 ] && [ "$root" = "$COMPILE_NATIVE_ROOT" ]; then
+    echo "  SKIPPED by host: $root needs $ROOT_MIN_GB GB, this host has $HOST_GB GB"
+    continue
+  fi
   name="$(basename "$root" .iyi)"
   IYI_PATH="$REPO/src" "$WORK/tool" "$REPO/$root" -o "$WORK/$name.table" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/$name.table.probe" 2> /dev/null
   for sidecar in names refusals; do [ ! -f "$WORK/$name.table.$sidecar" ] || cp "$WORK/$name.table.$sidecar" "$ARTIFACT_DIR/"; done
@@ -238,7 +267,9 @@ for root in $ROOTS; do
   fi
 done
 if [ "$table_ok" -eq 1 ]; then
-  if ! awk '/<!-- table:begin/ { b++ } END { exit b != 1 }' "$PIPE_MD"; then
+  if [ "$SKIP_COMPILE_NATIVE" -eq 1 ]; then
+    echo "  SKIPPED PIPELINE.md comparison and update: its table requires the full root run"
+  elif ! awk '/<!-- table:begin/ { b++ } END { exit b != 1 }' "$PIPE_MD"; then
     echo "  FAIL: src/compiler/PIPELINE.md has no single table block (markers missing)"
     status=1
   else
@@ -267,6 +298,10 @@ if [ "$table_ok" -eq 1 ]; then
     : > "$TFLOOR.new"
     echo "# selfhost pipeline table floor: <root> <defs reached by the body typer> <defs typed with no refusal> <defs lowered with no refusal>. A count may only rise. Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh." >> "$TFLOOR.new"
     for root in $ROOTS; do
+      if [ "$SKIP_COMPILE_NATIVE" -eq 1 ] && [ "$root" = "$COMPILE_NATIVE_ROOT" ]; then
+        awk '$1 == "compile_native" {print}' "$TFLOOR" >> "$TFLOOR.new"
+        continue
+      fi
       name="$(basename "$root" .iyi)"
       r="$(table_value "$name" defs-reached)"
       c="$(table_value "$name" defs-typed-clean)"
@@ -285,6 +320,7 @@ if [ "$table_ok" -eq 1 ]; then
   tbad=0
   while read -r name fr fc fl; do
     case "$name" in ""|\#*) continue ;; esac
+    if [ "$SKIP_COMPILE_NATIVE" -eq 1 ] && [ "$name" = compile_native ]; then continue; fi
     gr="$(table_value "$name" defs-reached)"
     gc="$(table_value "$name" defs-typed-clean)"
     gl="$(table_value "$name" defs-lowered-clean)"
