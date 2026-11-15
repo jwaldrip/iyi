@@ -48,6 +48,7 @@ import compiler/native/link/link::{link, LinkOptions, LinkedImage, LinkError}
 import compiler/backend/native::{NativeBackend}
 import std/file
 import std/dir
+import std/path
 
 alias OutputPath = ::Std::Path::Path
 
