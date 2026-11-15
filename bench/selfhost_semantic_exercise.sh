@@ -346,6 +346,7 @@ echo "  Parity summary: $((fixture_count - diverged))/$fixture_count feature fix
 echo
 echo "== 3. Typed expression comparison against the front end being replaced"
 expr_fixture_count=0
+expr_diverged=0
 total_matched_expressions=0
 for fixture in "$REPO"/bench/fixtures/sem_expr_*.iyi; do
   fixture_name="bench/fixtures/$(basename "$fixture")"
@@ -353,7 +354,7 @@ for fixture in "$REPO"/bench/fixtures/sem_expr_*.iyi; do
   "$WORK/dump_crystal" "$fixture" --expr > "$WORK/crystal_expr.ast"
   if ! diff -q "$WORK/iyi_expr.ast" "$WORK/crystal_expr.ast" >/dev/null; then
     echo "  $fixture_name: TYPED EXPRESSIONS DIFFER"
-    diverged=$((diverged + 1))
+    expr_diverged=$((expr_diverged + 1))
     diff -u "$WORK/crystal_expr.ast" "$WORK/iyi_expr.ast" | head -20
     status=1
   else
@@ -363,7 +364,7 @@ for fixture in "$REPO"/bench/fixtures/sem_expr_*.iyi; do
   fi
   expr_fixture_count=$((expr_fixture_count + 1))
 done
-echo "  Parity summary: $((expr_fixture_count - diverged))/$expr_fixture_count typed expression fixtures match 100% ($total_matched_expressions typed nodes compared)"
+echo "  Parity summary: $((expr_fixture_count - expr_diverged))/$expr_fixture_count typed expression fixtures match 100% ($total_matched_expressions typed nodes compared)"
 
 echo
 echo "== 4. Semantic rejection and error checks"
@@ -407,6 +408,20 @@ check_decl_outputs_diverge() {
 check_expr_outputs_diverge() {
   "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1 || return 1
   compare_expr_all "$WORK/mut-exercise"
+}
+
+check_wrong_arity_diverge() {
+  if ! "$IYI" build -o "$WORK/mut-error" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1; then
+    echo "mutation failed to build, not a behavioral catch"
+    return 0
+  fi
+  local fixture="$REPO/bench/fixtures/sem_err_wrong_arg_count.iyi"
+  local expected actual
+  expected=$("$WORK/dump_crystal" "$fixture" --expr 2>&1 | grep "^ERROR:" | head -1 | sed 's/^ERROR: //')
+  "$WORK/mut-error" "$fixture" --expr > "$WORK/mut-error.out" 2>&1
+  actual=$(grep "iyi: panic:" "$WORK/mut-error.out" | head -1 | sed 's/.*iyi: panic: //')
+  [ -n "$expected" ] && [ -n "$actual" ] || return 0
+  [ "$actual" = "$expected" ]
 }
 
 check_ivar_dump_diverge() {
@@ -537,6 +552,12 @@ prove_mutation "recursive struct check cycle detection is bypassed" "$SEM_REC" \
   "if target.full_name == current.full_name" \
   "if false && target.full_name == current.full_name" \
   -- check_expr_outputs_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "wrong arity is reported as a type mismatch" "$SEM_MAIN" \
+  '      if wrong = CallError.wrong_number_for(method_name, args.size, compatible, candidates.size)' \
+  '      if wrong = (args.size < 0 ? CallError.wrong_number_for(method_name, args.size, compatible, candidates.size) : nil)' \
+  -- check_wrong_arity_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "overload resolution most specific filter is bypassed" "$SEM_MAIN" \

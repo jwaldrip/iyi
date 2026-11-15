@@ -3864,6 +3864,14 @@ pub def dump_def(d : Def, io : String::Builder, indent : String) : Nil
   end
 end
 
+# Compare complete declaration records rather than the lookup order of
+# overloads, which need not be the same in the two semantic implementations.
+def def_dump_key(d : Def) : String
+  buffer = String::Builder.new
+  dump_def(d, buffer, "")
+  buffer.to_s
+end
+
 pub def dump_lib_fun(f : LibFun, io : String::Builder, indent : String) : Nil
   io << indent << "Def: " << f.name << "\n"
   io << indent << "  visibility: public\n"
@@ -3959,8 +3967,15 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
 
   if t.is_a?(AliasType)
     al = t.as(AliasType)
-    al.process_value
-    disp = al.aliased_type_display || al.process_value.full_name
+    seen = [] of AliasType
+    target = al.process_value
+    while target.is_a?(AliasType)
+      raise("infinite recursive definition of alias #{al.full_name}") if seen.includes?(al)
+      seen << al
+      al = target.as(AliasType)
+      target = al.process_value
+    end
+    disp = al.aliased_type_display || target.to_s
     io << indent << "  aliased_type: " << disp << "\n"
   end
 
@@ -3984,7 +3999,7 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
         end
       end
     end
-    all_defs = all_defs.sorted_by { |d| "#{d.receiver ? "self." : ""}#{d.name}" }
+    all_defs = all_defs.sorted_by { |d| def_dump_key(d) }
     all_defs = all_defs.select { |d| def_declared?(d, entry) }
     all_defs.each do |d|
       dump_def(d, io, "#{indent}  ")
@@ -4035,7 +4050,7 @@ pub def dump_program_declarations(program : SemanticProgram, entry : String? = n
   program.defs.each_value do |list|
     list.each { |d| top_defs << d }
   end
-  top_defs = top_defs.sorted_by(&.name)
+  top_defs = top_defs.sorted_by { |d| def_dump_key(d) }
   top_defs = top_defs.select { |d| def_declared?(d, entry) }
   global_funs = program.global_funs.select { |f| lib_fun_declared?(f, entry) }.sorted_by { |f| f.name }
   di = 0

@@ -69,6 +69,13 @@ def dump_def(d : Iyi::Def, io : IO, indent : String)
   end
 end
 
+# Overload order is a lookup implementation detail. Canonicalize complete
+# records, retaining every overload and property without ordering the methods
+# that the compiler actually uses for dispatch.
+def def_dump_key(d : Iyi::Def) : String
+  String.build { |io| dump_def(d, io, "") }
+end
+
 def dump_type(t : Iyi::Type, io : IO, indent : String, entry : String?)
   full_name = t.is_a?(Iyi::NamedType) ? t.full_name : t.to_s
   if declared_in?(t.locations, entry)
@@ -87,14 +94,14 @@ end
 # are dumped by `dump_type`, whether or not this type is the entry's.
 def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String, entry : String?)
   kind = case t
-         when Iyi::EnumType   then "enum"
-         when Iyi::TraitType  then "trait"
-         when Iyi::ClassType  then t.struct? ? "struct" : "class"
-         when Iyi::LibType    then "lib"
-         when Iyi::ModuleType then "module"
-         when Iyi::AliasType  then "alias"
-         when Iyi::Const      then "constant"
-         else                      "type"
+         when Iyi::EnumType                         then "enum"
+         when Iyi::TraitType, Iyi::GenericTraitType then "trait"
+         when Iyi::ClassType                        then t.struct? ? "struct" : "class"
+         when Iyi::LibType                          then "lib"
+         when Iyi::ModuleType                       then "module"
+         when Iyi::AliasType                        then "alias"
+         when Iyi::Const                            then "constant"
+         else                                            "type"
          end
   io << indent << "Type: " << full_name << " (" << kind << ")\n"
   vis_str = (t.is_a?(Iyi::NamedType) && t.private?) ? "private" : "public"
@@ -123,13 +130,11 @@ def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String
     io << indent << "  parents: [" << t.parents.map(&.to_s).sort.join(", ") << "]\n"
   end
 
-  if t.is_a?(Iyi::TraitType)
-    if t.is_a?(Iyi::TraitSupertraits) && (st = t.supertraits) && !st.empty?
-      io << indent << "  supertraits: [" << st.map(&.to_s).sort.join(", ") << "]\n"
-    end
-    if t.is_a?(Iyi::GenericTraitType) && !t.assoc_types.empty?
-      io << indent << "  assoc_types: [" << t.assoc_types.sort.join(", ") << "]\n"
-    end
+  if t.is_a?(Iyi::TraitSupertraits) && (st = t.supertraits) && !st.empty?
+    io << indent << "  supertraits: [" << st.map(&.to_s).sort.join(", ") << "]\n"
+  end
+  if t.is_a?(Iyi::GenericTraitType) && !t.assoc_types.empty?
+    io << indent << "  assoc_types: [" << t.assoc_types.sort.join(", ") << "]\n"
   end
 
   if t.is_a?(Iyi::EnumType)
@@ -163,7 +168,7 @@ def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String
       end
     end
     all_defs = all_defs.select { |d| def_declared?(d, entry) }
-    all_defs.sort_by! { |d| "#{d.receiver ? "self." : ""}#{d.name}" }
+    all_defs.sort_by! { |d| def_dump_key(d) }
     all_defs.each do |d|
       dump_def(d, io, "#{indent}  ")
     end
@@ -181,7 +186,7 @@ def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entr
     top_defs = [] of Iyi::Def
     pdefs.each_value { |list| list.each { |item| top_defs << item.def } }
     top_defs = top_defs.select { |d| def_declared?(d, entry) }
-    top_defs.sort_by!(&.name)
+    top_defs.sort_by! { |d| def_dump_key(d) }
     top_defs.each do |d|
       dump_def(d, io, "")
     end

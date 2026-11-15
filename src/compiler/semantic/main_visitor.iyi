@@ -34,6 +34,7 @@ import compiler/semantic/match::{Match, NumericAutocast}
 import compiler/semantic/method_lookup::{ArmWalk, Matches, MethodLookup}
 import compiler/semantic/cover::{CallCover}
 import compiler/semantic/call::{CallRecalculation}
+import compiler/semantic/call_error::{CallError}
 import compiler/semantic/new::{define_new_methods}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 
@@ -3569,9 +3570,26 @@ pub class MainVisitor < TypeNodeHost
   def refuse_uncovered(call_node : Call, rec_type : Type, name : String, args : Array(ASTNode)) : Nil
     candidates = [] of Def
     visited = Set(String).new
+    diagnostic_type = rec_type
     collect_candidate_defs(rec_type, name, candidates, visited)
     if candidates.empty? && call_node.obj.nil?
       collect_scope_defs(rec_type, name, candidates, visited)
+      if owner = (candidates.empty? ? nil : @program.def_owner(candidates.first))
+        diagnostic_type = owner
+      end
+    end
+    # Preserve the unfiltered overloads for arity diagnostics. An empty
+    # count_matches means the arguments have the wrong count, not that their
+    # types failed to match. The hosted error excludes overloads with a
+    # different block arity before listing the expected sizes.
+    named = call_node.named_args
+    if named.nil? || named.empty?
+      compatible = candidates.select { |d| CallMatch.yields?(d) == !call_node.block.nil? }
+      method_name = format_method_display_name(diagnostic_type, name)
+      if wrong = CallError.wrong_number_for(method_name, args.size, compatible, candidates.size)
+        refuse_call(call_node, wrong)
+        return nil
+      end
     end
     if candidates.empty? && (obj_node = call_node.obj)
       # Hosted call.cr raise_matches_not_found: a name no def of the receiver or its ancestors carries is
@@ -3623,6 +3641,10 @@ pub class MainVisitor < TypeNodeHost
     all_same_mismatch = true
     mismatch_idx = -1
     count_matches.each do |d|
+      # Hosted compute_call_error_reason leaves splat restrictions out of
+      # argument-type diagnostics and falls back to no-overload when none of
+      # the non-splat overloads supplies a mismatch.
+      next if d.splat_index
       first_mismatch = -1
       i = 0
       while i < args.size
@@ -3651,6 +3673,7 @@ pub class MainVisitor < TypeNodeHost
     if all_same_mismatch && mismatch_idx != -1
       expected_types_list = [] of String
       count_matches.each do |d|
+        next if d.splat_index
         param = d.args[mismatch_idx]
         if r = param.restriction
           exp_t = lookup_restriction_in_file(r, rec_type, d)
