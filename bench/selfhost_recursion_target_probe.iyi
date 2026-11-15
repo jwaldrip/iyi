@@ -24,6 +24,7 @@ node = Normalizer.new(NormalizerProgram.new(false)).normalize(parser.parse)
 program = SemanticProgram.new
 program.total_mode = true
 program.search_path = [Program.args[1]]
+program.search_path << Program.args[3] if Program.args.size > 3
 top = TopLevelVisitor.new(program, path)
 node.accept(top)
 top.finish
@@ -47,6 +48,15 @@ walk.calls.each do |call|
     end
     state = missing ? "untyped-params" : "typed-params"
     puts "#{call.name} target=#{target.node_id} #{state} #{names.join(",")}"
+    if Program.args.size > 2 && Program.args[2] == "unit-keys" && call.name == "hv"
+      if owner = program.def_owner(target)
+        if owner.iyi_unit
+          lexical = visitor.def_instance_key(target, owner, call)
+          caller = visitor.def_instance_key(target, program, call)
+          puts "unit-key-equal=#{!lexical.nil? && lexical == caller}"
+        end
+      end
+    end
   else
     puts "#{call.name} target=none"
   end

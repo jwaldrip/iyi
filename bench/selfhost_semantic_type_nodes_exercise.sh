@@ -210,10 +210,9 @@ prove_mutation "enum members are not walked before the enum is typed" "$TYPE_NOD
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a fun's declared types are read before the type system resolves them" "$TYPE_NODES" \
-  "  type_node_system(visitor.program)
-  fun_record = visitor.program.lib_fun_of(node)" \
-  "  fun_record = visitor.program.lib_fun_of(node)" \
+prove_mutation "a fun's declared types are not re-resolved by the type system" "$TOP_LEVEL" \
+  '              resolved_args.each { |arg_type| f.arg_types << arg_type }' \
+  '              node.args.each { |arg| f.arg_types << object_type }' \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

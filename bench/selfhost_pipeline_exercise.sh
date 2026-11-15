@@ -7,7 +7,8 @@
 #   - the tool runs with --probe-phase and reaches a phase: parse, declarations, bodies, lower,
 #     verify, native, link. A refusal names its phase on stdout and exits 1 with no output file.
 #   - a fixture that reaches link is run; its stdout and exit status must equal the hosted
-#     compiler's executable for the same fixture (built with --prelude empty). That is run-equal.
+#     executable (built with --prelude empty, except lowglob_cvar_lazy which uses the
+#     lowglob_abi prelude). That is run-equal.
 #   - a fixture that reaches link and differs is a failure. A refused fixture must exit nonzero
 #     and write no output.
 # The floor (bench/selfhost_pipeline.floor) records the phase each fixture reaches. A phase may
@@ -91,7 +92,13 @@ for fixture in $fixtures; do
   ts=$?
   reached="$(probe_phase "$WORK/$name.probe")"
   if [ "$ts" -eq 0 ] && [ "$reached" = "link" ]; then
-    if ! "$IYI" build --prelude empty -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1; then
+    prelude=empty
+    hosted_path="$REPO/src"
+    if [ "$name" = lowglob_cvar_lazy ]; then
+      prelude=iyi/prelude
+      hosted_path="$REPO/bench/fixtures/lowglob_abi:$hosted_path"
+    fi
+    if ! IYI_PATH="$hosted_path" "$IYI" build --prelude "$prelude" -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1; then
       echo "  $name: FAILED, the hosted compiler does not build the fixture"
       failed=$((failed + 1)); measured[$rel]="link"; continue
     fi
@@ -444,7 +451,7 @@ else
   status=1
 fi
 prove_mutation "the lowering table probes a Primitive-annotated def" "$PROGRAM_SRC" \
-  "next unless primitive_name(d.body).nil?" "next if false" -- primitive_table_check || status=1
+  $'next unless primitive_name(d.body).nil?\n    next if noncapturing_yield?(d)' $'next if false\n    next if noncapturing_yield?(d)' -- primitive_table_check || status=1
 prove_mutation "a prelude-free program's top-level code is named __iyi_main" "$LOWER_SRC" \
   'return "__crystal_main"' 'return "__iyi_main"' -- entry_check || status=1
 # The prelude branch of main_function_name has no proof yet: the prelude does not reach IR in the typed pipeline (strict
@@ -519,7 +526,7 @@ else
   status=1
 fi
 prove_mutation "post-splice runtime code is dropped" "$COMPILER_SRC" \
-  'runtime.each { |node| top_level << node }' 'runtime.each { |node| }' -- pipeline_loader_if_check || status=1
+  'top_level.concat(runtime_by_unit[mod_info.filename])' 'top_level.concat([] of ASTNode)' -- pipeline_loader_if_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

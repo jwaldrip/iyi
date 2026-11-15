@@ -32,7 +32,7 @@
 set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+IYI="${IYI_COMPILER:-$REPO/bin/iyi}"
 . "$REPO/bench/lib/mutation.sh"
 WORK="$(mktemp -d)"
 
@@ -100,7 +100,7 @@ module_same=0
 module_differ=0
 diverged=0
 waiting=0
-for fixture in "$REPO"/bench/fixtures/lower_*.iyi "$REPO"/bench/fixtures/lowdecl_nested_case_block.iyi; do
+for fixture in "$REPO"/bench/fixtures/lower_*.iyi "$REPO"/bench/fixtures/lowdecl_nested_case_block.iyi "$REPO"/bench/fixtures/lowconst_*.iyi; do
   name="$(basename "$fixture" .iyi)"
   # lower_headed_late is proved in section 2c against the arena prelude. The empty-prelude
   # loop names its proc Proc(Base, Base); the port, having made the virtual type, names Base+.
@@ -240,6 +240,33 @@ else
   status=1
 fi
 
+if "$IYI" build --prelude empty --no-debug -o "$WORK/float-fraction-host" "$REPO/bench/fixtures/wait_lowconst_float_fraction.iyi" > "$WORK/float-fraction-host.log" 2>&1 &&
+   ! "$WORK/port" emit "$REPO/bench/fixtures/wait_lowconst_float_fraction.iyi" "$WORK/lowconst_float_nan.oracle.ll" > "$WORK/float-fraction.out" 2> "$WORK/float-fraction.err" &&
+   grep -Fq 'constant FRACTION is an operator call' "$WORK/float-fraction.err"; then
+  echo "  nonzero float division: hosted accepts, port refuses by name"
+else
+  echo "  FAIL: nonzero float division did not reach its named refusal"
+  status=1
+fi
+
+if "$IYI" build --prelude empty --no-debug -o "$WORK/path-float-host" "$REPO/bench/fixtures/wait_lowconst_path_float.iyi" > "$WORK/path-float-host.log" 2>&1 &&
+   ! "$WORK/port" emit "$REPO/bench/fixtures/wait_lowconst_path_float.iyi" "$WORK/lowconst_path.oracle.ll" > "$WORK/path-float.out" 2> "$WORK/path-float.err" &&
+   grep -Fq 'constant ALIAS is a path to another constant' "$WORK/path-float.err"; then
+  echo "  float constant alias: hosted accepts, port refuses by name"
+else
+  echo "  FAIL: float constant alias did not reach its named refusal"
+  status=1
+fi
+
+if "$IYI" build --prelude empty --no-debug -o "$WORK/wide-unsigned-host" "$REPO/bench/fixtures/wait_lowconst_wide_unsigned.iyi" > "$WORK/wide-unsigned-host.log" 2>&1 &&
+   ! "$WORK/port" emit "$REPO/bench/fixtures/wait_lowconst_wide_unsigned.iyi" "$WORK/lowconst_wide.oracle.ll" > "$WORK/wide-unsigned.out" 2> "$WORK/wide-unsigned.err" &&
+   grep -Fq '128-bit integer literal exceeds the math interpreter' "$WORK/wide-unsigned.err"; then
+  echo "  high UInt128: hosted accepts, port refuses by name"
+else
+  echo "  FAIL: high UInt128 did not reach its named refusal"
+  status=1
+fi
+
 class_self_check() {
   "$IYI" build -o "$WORK/port-class-self" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/class-self.build.log" 2>&1 || return 1
   "$WORK/port-class-self" lower "$REPO/bench/fixtures/lower_class_self.iyi" "$WORK/lower_class_self.oracle.ll" > "$WORK/class-self.out" 2> "$WORK/class-self.err" || return 1
@@ -329,6 +356,62 @@ lower_core_check() {
   done
   return 0
 }
+
+folded_const_check() {
+  if ! "$IYI" build -o "$WORK/const-fold-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-fold-mut.log" 2>&1; then
+    touch "$WORK/m.invalid"
+    return 1
+  fi
+  "$WORK/const-fold-mut" lower "$REPO/bench/fixtures/lowconst_fold_int.iyi" "$WORK/lowconst_fold_int.oracle.ll" > "$WORK/const-fold-mut.out" 2>&1 || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-fold-mut.out"
+}
+prove_mutation "integer constant expressions are not folded" "$REPO/src/compiler/lower/const.iyi" \
+  '  result = MathInterpreter.new.interpret(const.value)' '  return nil
+  result = MathInterpreter.new.interpret(const.value)' -- folded_const_check || status=1
+
+float_zero_division_check() {
+  if ! "$IYI" build -o "$WORK/const-float-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-float-mut.log" 2>&1; then
+    touch "$WORK/m.invalid"
+    return 1
+  fi
+  "$WORK/const-float-mut" lower "$REPO/bench/fixtures/lowconst_float_nan.iyi" "$WORK/lowconst_float_nan.oracle.ll" > "$WORK/const-float-mut.out" 2>&1 || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-float-mut.out"
+}
+prove_mutation "float zero division is not folded in its initializer" "$REPO/src/compiler/lower/const.iyi" \
+  '  v = float_zero_division(low, const)' '  v = nil' -- float_zero_division_check || status=1
+
+constant_path_check() {
+  if ! "$IYI" build -o "$WORK/const-path-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-path-mut.log" 2>&1; then
+    touch "$WORK/m.invalid"
+    return 1
+  fi
+  "$WORK/const-path-mut" lower "$REPO/bench/fixtures/lowconst_path.iyi" "$WORK/lowconst_path.oracle.ll" > "$WORK/const-path-mut.out" 2>&1 || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-path-mut.out"
+}
+prove_mutation "a constant alias is not folded" "$REPO/src/compiler/lower/const.iyi" \
+  '    return literal_path_value(low, const)' '    return nil' -- constant_path_check || status=1
+
+wide_constant_check() {
+  if ! "$IYI" build -o "$WORK/const-wide-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-wide-mut.log" 2>&1; then
+    touch "$WORK/m.invalid"
+    return 1
+  fi
+  "$WORK/const-wide-mut" lower "$REPO/bench/fixtures/lowconst_wide.iyi" "$WORK/lowconst_wide.oracle.ll" > "$WORK/const-wide-mut.out" 2>&1 || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-wide-mut.out"
+}
+prove_mutation "a wide constant loses its high word" "$REPO/src/compiler/lower/const.iyi" \
+  '      hi = u64_as_i64((bits >> 64).to_u64)' '      hi = 0_i64' -- wide_constant_check || status=1
+
+shift_constant_check() {
+  if ! "$IYI" build -o "$WORK/const-shift-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-shift-mut.log" 2>&1; then
+    touch "$WORK/m.invalid"
+    return 1
+  fi
+  "$WORK/const-shift-mut" lower "$REPO/bench/fixtures/lowconst_shift.iyi" "$WORK/lowconst_shift.oracle.ll" > "$WORK/const-shift-mut.out" 2>&1 || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-shift-mut.out"
+}
+prove_mutation "constant shifts leave the left operand unchanged" "$REPO/src/compiler/semantic/math_interpreter.iyi" \
+  '      shift_left(left, right.value)' '      left' -- shift_constant_check || status=1
 
 nested_case_block_check() {
   "$IYI" build -o "$WORK/nested-case-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/nested-case.build.log" 2>&1 || return 1

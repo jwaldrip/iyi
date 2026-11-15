@@ -1,7 +1,7 @@
-import compiler/semantic/top_level::{GenericClassType, GenericModuleType, SemanticProgram, Type, TypeParameterType}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, GenericTraitType, SemanticProgram, Type, TypeParameterType}
 import compiler/types/instances::{TypeInstances}
 import compiler/types/type_system::{TypeSystem}
-import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType}
+import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, GenericTraitInstanceType}
 
 program = SemanticProgram.new
 ts = TypeSystem.new(program)
@@ -14,4 +14,16 @@ instance = ts.instantiate_type(container, [program.int32_type] of Type)
 resolved = instance.as(GenericClassInstanceType).parents
 raise "wrong parent count" unless resolved.size == 1
 actual = resolved[0].as(GenericModuleInstanceType)
+instance_class = instance.as(GenericClassInstanceType)
+raise "generic parent not included" unless instance_class.included_modules.size == 1
+included = instance_class.included_modules[0].as(GenericModuleInstanceType)
+raise "included argument not substituted" unless included.type_args[0] == program.int32_type
 raise "parent argument not substituted" unless actual.type_args[0] == program.int32_type
+
+trait_type = GenericTraitType.new(program, program, "ItemSource", ["Item"])
+trait_parent = ts.instantiate_type(trait_type, [parameter] of Type)
+holder = GenericClassType.new(program, program, "Holder", ["T"])
+holder.include(trait_parent)
+holder_instance = ts.instantiate_type(holder, [program.int32_type] of Type).as(GenericClassInstanceType)
+bound_trait = holder_instance.included_modules[0].as(GenericTraitInstanceType)
+raise "trait argument not substituted" unless bound_trait.type_vars["Item"] == program.int32_type

@@ -283,6 +283,11 @@ pub def emit_fun_def(low : Lowerer, node : FunDef, rec : LibFun, ret : Type) : N
   raise "BUG: fun #{name} has no body (hosted visit(FunDef))" if body.nil?
   target = Def.new(node.name, node.args, body.as(ASTNode))
   fn = codegen_fun(low, name, target, nil, rec.arg_types, fun_def_type(low, rec, ret), low.typer.llvm_return_type(ret), ret)
+  # Hosted fun.cr:842-855 propagates External annotations to the IR function.
+  fn.attrs << Attribute.new("naked", 0_u64, nil, nil) if rec.naked
+  fn.attrs << Attribute.new("noinline", 0_u64, nil, nil) if rec.no_inline
+  fn.attrs << Attribute.new("alwaysinline", 0_u64, nil, nil) if rec.always_inline
+  fn.attrs << Attribute.new("returns_twice", 0_u64, nil, nil) if rec.returns_twice
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
   end

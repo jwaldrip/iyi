@@ -3940,9 +3940,6 @@ pub class ImplDef < ASTNode
       ta.each { |a| a.accept(visitor) }
     end
     @target.accept(visitor)
-    if at = @assoc_types
-      at.each { |a| a.accept(visitor) }
-    end
     @body.accept(visitor)
   end
 

@@ -20,8 +20,8 @@ module compiler/lower/const
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
 import compiler/syntax/token::{NumberKind}
-import compiler/ir/values::{Value}
-import compiler/ir/inst::{Inst, Op, CallConv, CallAux}
+import compiler/ir/values::{Value, u64_as_i64}
+import compiler/ir/inst::{Inst, Op, Block, CallConv, CallAux}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/types::{IrType}
 import compiler/lower/context::{BodyVisit, Lowerer}
@@ -32,7 +32,9 @@ import compiler/lower/symbols::{symbol_index}
 import compiler/lower/cast::{to_lhs, type_id_value}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/types/types::{TupleInstanceType}
-import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
+import compiler/types/types::{IntegerType}
+import compiler/semantic/math_interpreter::{MathInterpreter, MathValue}
+import compiler/semantic/top_level::{EnumType, ModuleType, SemanticProgram, Type}
 
 # The type of self in the function being lowered, or the program at the top level:
 # class_var_scope uses this when no class body is open. Constants use path_const.
@@ -72,10 +74,48 @@ end
 # gave the constant's value; nil when the value is not a literal of a kind the port inlines (the hosted
 # `compile_time_value` is nil there, and the constant is initialised at run time).
 pub def literal_value(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : Value?
+  if const.value.is_a?(Path)
+    return literal_path_value(low, const)
+  end
   if float_const?(const)
     return nil
   end
-  literal_node_value(low, const.value)
+  value = literal_node_value(low, const.value)
+  return value unless value.nil?
+  type = low.analysed.type_of?(const.value)
+  if type.nil?
+    return nil
+  end
+  name = type.as(Type).full_name
+  integer = name == "Int8" || name == "Int16" || name == "Int32" || name == "Int64" || name == "Int128" ||
+            name == "UInt8" || name == "UInt16" || name == "UInt32" || name == "UInt64" || name == "UInt128"
+  return nil unless integer || type.is_a?(IntegerType) || type.is_a?(EnumType)
+  result = MathInterpreter.new.interpret(const.value)
+  return nil unless result.is_a?(MathValue)
+  # Hosted codegen/types.cr:230-233 interprets integer and enum initializers.
+  # The IR constant carries the low 64-bit bit pattern.
+  return nil if type.as(Type).full_name == "Int128" || type.as(Type).full_name == "UInt128"
+  bits = result.as(MathValue).value
+  if bits > 9223372036854775807_i128
+    bits = bits - 18446744073709551616_i128
+  end
+  low.builder.const_int(low.typer.llvm_type(type.as(Type)), bits.to_i64)
+end
+
+# Follow the typed constant binding, not the lowering context's current scope.
+# Cycles are left to the ordinary named refusal rather than recursing forever.
+def literal_path_value(low : Lowerer, original : Compiler::Semantic::TopLevel::Const) : Value?
+  seen = [] of UInt64
+  current = original
+  while current.value.is_a?(Path)
+    id = current.object_id
+    return nil if seen.includes?(id)
+    seen << id
+    target = low.analysed.target_const?(current.value.as(Path))
+    return nil if target.nil?
+    current = target.as(Compiler::Semantic::TopLevel::Const)
+  end
+  literal_value(low, current)
 end
 
 # The value of a literal node (a Bool, Char or integer literal) as an IR constant of the type the analysis gave it;
@@ -109,7 +149,14 @@ pub def literal_of_type(low : Lowerer, value : ASTNode, typ : Type) : Value?
       return low.builder.const_float(low.typer.llvm_type(typ), text.to_f)
     end
     if typ.full_name == "Int128" || typ.full_name == "UInt128"
-      refuse_port("lower: a 128-bit integer literal is not ported yet: the literal path that emits int128 (hosted const.cr: read_const)")
+      result = MathInterpreter.new.interpret(value)
+      unless result.is_a?(MathValue)
+        refuse_port("lower: a 128-bit integer literal exceeds the math interpreter's supported range (hosted const.cr: read_const)")
+      end
+      bits = MathInterpreter.bits_of(result.as(MathValue).value)
+      lo = u64_as_i64((bits & 18446744073709551615_u128).to_u64)
+      hi = u64_as_i64((bits >> 64).to_u64)
+      return low.builder.const_wide(low.typer.llvm_type(typ), hi, lo)
     end
     if typ.full_name == "UInt64"
       unsigned_value = text.to_u64
@@ -182,6 +229,43 @@ pub def check_not_compile_time(const : Compiler::Semantic::TopLevel::Const) : Ni
       refuse_port("lower: constant #{const.full_name} is an operator call: the hosted MathInterpreter may inline it (hosted const.cr: compile_time_value)")
     end
   end
+end
+
+# LLVM folds literal floating-point division by zero in the initializer
+# (hosted const.cr:197-214). Retain the global, flag, and initializer call.
+pub def float_zero_division(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : Value?
+  node = const.value
+  return nil unless node.is_a?(Call)
+  call = node.as(Call)
+  return nil unless call.name == "/" && call.args.size == 1
+  left = call.obj
+  right = call.args[0]
+  return nil unless left.is_a?(NumberLiteral) && right.is_a?(NumberLiteral)
+  a = left.as(NumberLiteral)
+  b = right.as(NumberLiteral)
+  return nil unless (a.kind == NumberKind::F32 || a.kind == NumberKind::F64) && b.kind == a.kind
+  return nil unless b.value.to_f == 0.0
+  negative = a.value.starts_with?("-") != b.value.starts_with?("-")
+  bits : Int64 = 0_i64
+  if a.kind == NumberKind::F32
+    bits = if a.value.to_f == 0.0
+             2143289344_i64
+           elsif negative
+             4286578688_i64
+           else
+             2139095040_i64
+           end
+  else
+    bits = if a.value.to_f == 0.0
+             9221120237041090560_i64
+           elsif negative
+             -4503599627370496_i64
+           else
+             9218868437227405312_i64
+           end
+  end
+  ir = low.module.types.float(a.kind == NumberKind::F32 ? 32 : 64)
+  Inst.new(Op::ConstFloat, ir, [] of Value, bits, nil, [] of Block, [] of Int64)
 end
 
 # Refuses a simple literal the port does not inline: its hosted global comes from `initialize_simple_constants`.
@@ -298,8 +382,11 @@ pub def make_const_init_function(low : Lowerer, const : Compiler::Semantic::TopL
   fn.call_convention = CallConv::Iyi
   fn.linkage = Linkage::Internal
   low.needs_value = true
-  low.body_visitor.as(BodyVisit).visit_body(low, const.value)
-  v = low.last
+  v = float_zero_division(low, const)
+  if v.nil?
+    low.body_visitor.as(BodyVisit).visit_body(low, const.value)
+    v = low.last
+  end
   if v.nil?
     refuse_port("lower: constant #{const.full_name} has no value to store (hosted const.cr: create_initialize_const_function)")
   end
@@ -352,7 +439,7 @@ pub def initialize_const(low : Lowerer, const : Compiler::Semantic::TopLevel::Co
   st.no_init_flag = !st.read
   ir = const_ir_type(low, const)
   check_const_type(low, const, ir)
-  check_not_compile_time(const)
+  check_not_compile_time(const) if float_zero_division(low, const).nil?
   global = declare_const_global(low, name, ir, st)
   flag = declare_const_flag(low, name, st)
   if st.initializer

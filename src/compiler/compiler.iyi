@@ -313,12 +313,23 @@ pub class Compiler
       typed.visitor.total = true
       typed.prog.total_mode = true
     end
+    # The live stream is durable even if a keep-going probe is interrupted
+    # before its final refusal table and sidecar can be assembled.
+    stream : IyiIO? = nil
+    if @config.probe_phase && @config.keep_going
+      stream = File.open(@config.output_filename + ".refusals", "w")
+      typed.visitor.refusal_stream = stream
+    end
     reached = typed_pass("declarations")
     typed_start("bodies")
 
     bodies = group do |g|
       task = g.spawn { type_bodies(typed) }
       task.value
+    end
+    if live = stream
+      typed.visitor.refusal_stream = nil
+      live.close
     end
     if bodies.is_a?(Panicked)
       typed_refusal_site(typed, bodies.message)

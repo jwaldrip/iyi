@@ -1,6 +1,6 @@
 # body-typing fixture floors: <repo-relative fixture> <matched oracle nodes>.
 # A count may only rise. Raise with: BODIES_RAISE=1 bash bench/selfhost_bodies_exercise.sh
-bench/fixtures/sem_bodies_alias_members.iyi 19
+bench/fixtures/sem_bodies_alias_members.iyi 25
 bench/fixtures/sem_bodies_array_literal_restriction.iyi 8
 bench/fixtures/sem_bodies_array_new.iyi 8
 bench/fixtures/sem_bodies_bare_splat.iyi 18
@@ -18,7 +18,7 @@ bench/fixtures/sem_bodies_capture_none.iyi 23
 bench/fixtures/sem_bodies_class_method_constant.iyi 14
 bench/fixtures/sem_bodies_class_self_return.iyi 8
 bench/fixtures/sem_bodies_class_var_initializer.iyi 15
-bench/fixtures/sem_bodies_const_owner.iyi 12
+bench/fixtures/sem_bodies_const_owner.iyi 16
 bench/fixtures/sem_bodies_dead_return_tail.iyi 3
 bench/fixtures/sem_bodies_declared_block.iyi 15
 bench/fixtures/sem_bodies_defaults.iyi 3
@@ -77,6 +77,7 @@ bench/fixtures/sem_bodies_recursive_inferred_bare.iyi 3
 bench/fixtures/sem_bodies_recursive_inferred_block.iyi 4
 bench/fixtures/sem_bodies_recursive_inferred_cycle.iyi 7
 bench/fixtures/sem_bodies_recursive_inferred_no_base.iyi 2
+bench/fixtures/sem_bodies_recursive_named_default.iyi 3
 bench/fixtures/sem_bodies_restriction_scope.iyi 10
 bench/fixtures/sem_bodies_return_contract.iyi 36
 bench/fixtures/sem_bodies_self_return.iyi 10
