@@ -47,6 +47,12 @@ check_arms() {
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_numeric.iyi" "$REPO/src" widen > "$WORK/numeric" || return 1
   printf '%s\n' 'arms=1 cover=true' 'main#widen:Int64' > "$WORK/expected"
   cmp -s "$WORK/numeric" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_tuple_index.iyi" "$REPO/src" '[]' > "$WORK/tuple" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#[]:Int32' > "$WORK/expected"
+  cmp -s "$WORK/tuple" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_tuple_invalid.iyi" "$REPO/src" '[]' > "$WORK/tuple-invalid" || return 1
+  printf '%s\n' 'arms=0 cover=false' 'error=index out of bounds for Tuple(Int32, String) (5 not in -2..1)' > "$WORK/expected"
+  cmp -s "$WORK/tuple-invalid" "$WORK/expected" || return 1
 }
 
 check_arms || exit 1
@@ -81,4 +87,10 @@ prove_mutation 'module-only walk does not search the superclass' "$REPO/src/comp
 prove_mutation 'unmatched numeric calls receive an autocast pass' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '    return found if found.error || !found.empty? || !NumericAutocast.any?(args, arg_types)' \
   '    return found' -- check_arms || status=1
+prove_mutation 'tuple indexers keep their synthesized target' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    if indexer.is_a?(Def)' \
+  '    if false && indexer.is_a?(Def)' -- check_arms || status=1
+prove_mutation 'tuple index errors remain errors' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    if indexer.is_a?(String)' \
+  '    if false && indexer.is_a?(String)' -- check_arms || status=1
 exit "$status"
