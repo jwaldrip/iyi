@@ -802,8 +802,24 @@ prove_mutation "a nil receiver is not accepted" "$REPO/src/compiler/lower/call.i
   '  return owner if owner.is_a?(NilType)' '  pending_visit_node("nil receiver") if owner.is_a?(NilType)' -- lower_calls_check || status=1
 prove_mutation "an aggregate dispatch argument remains a pointer" "$REPO/src/compiler/lower/call.iyi" \
   '      passed = to_rhs(low, passed, params[i]) if passed_by_value?(params[i]) && passed.type.pointer?' '      passed = values[i]' -- lower_calls_check || status=1
-prove_mutation "a nil block call collects its body value" "$REPO/src/compiler/lower/phi.iyi" \
-  '    if @needs_value && !@node_type.is_a?(NilType) && !@node_type.is_a?(VoidType)' '    if @needs_value' -- lower_calls_check || status=1
+nil_phi_check() {
+  if ! "$IYI" build -o "$WORK/nil_phi" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/nil_phi.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/nil_phi"; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/nil_phi" nil-phi > "$WORK/nil_phi.out" 2>&1
+}
+if nil_phi_check; then
+  prove_mutation "a nil block call collects its body value" "$REPO/src/compiler/lower/phi.iyi" \
+    '    if @needs_value && !@node_type.is_a?(NilType) && !@node_type.is_a?(VoidType)' '    if @needs_value' -- nil_phi_check || status=1
+else
+  echo "  FAIL: nil phi baseline did not pass"
+  status=1
+fi
 prove_mutation "an aggregate dispatch result uses a value phi" "$REPO/src/compiler/lower/call.iyi" \
   '  phi_type = passed_by_value?(ret) ? low.module.types.ptr(0) : low.typer.llvm_type(ret) if phi_wants' '  phi_type = low.typer.llvm_type(ret) if phi_wants' -- lower_calls_check || status=1
 prove_mutation "a typed block declaration is refused" "$REPO/src/compiler/lower/call.iyi" \

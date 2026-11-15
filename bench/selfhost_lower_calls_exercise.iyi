@@ -9,9 +9,13 @@ module bench/selfhost_lower_calls_exercise
 #   port lower <fixture.iyi> <oracle.ll>    lowers the fixture and compares it with the oracle
 #   port emit <fixture.iyi> <oracle.ll>     the port's module as text, for the native tool
 
-import bench/lib/lower_gate::{analyse, run_emit, run_lower, run_oracle}
+import bench/lib/lower_gate::{analyse, ir_module, run_emit, run_lower, run_oracle}
 import compiler/lower/fun::{darwin_triple?, def_context_type}
 import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType}
+import compiler/ir/types::{IrType}
+import compiler/lower/context::{Lowerer}
+import compiler/lower/phi::{LowerPhi}
+import compiler/lower/typer::{LowerTyper}
 
 def run : Nil
   args = Program.args
@@ -27,6 +31,20 @@ def run : Nil
     raise "macOS target lacks frame pointers" unless darwin_triple?("aarch64-apple-macosx28.0")
     raise "Linux target has Darwin frame pointers" if darwin_triple?("aarch64-unknown-linux-gnu")
     puts "TRIPLE OK"
+  elsif mode == "nil-phi"
+    analysis = analyse("nil\n", "nil_phi_check.iyi", true)
+    m = ir_module("aarch64-apple-darwin27.0.0")
+    typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
+    low = Lowerer.new(m, typer, analysis.visitor)
+    low.begin_main_function("nil_phi_probe", m.types.func([] of IrType, m.types.void), false)
+    value = low.builder.const_int(m.types.int32, 12)
+    nil_phi = LowerPhi.new(true, m.types.int32, analysis.visitor.program.nil_type)
+    nil_phi.add(low, value, true)
+    raise "nil phi collected a value" unless nil_phi.values.empty?
+    int_phi = LowerPhi.new(true, m.types.int32, analysis.visitor.program.int32_type)
+    int_phi.add(low, value, true)
+    raise "integer phi dropped its value" unless int_phi.values.size == 1
+    puts "NIL PHI OK"
   elsif mode == "generic-frame"
     fixture = args[1]
     analysis = analyse(File.read(fixture), fixture, true)
