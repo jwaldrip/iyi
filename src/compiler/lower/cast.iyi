@@ -543,6 +543,8 @@ end
 # The pointer to an expression's storage when a union is read by pointer: if the expression is a
 # stored variable, its alloca; if the value is already a pointer, itself; otherwise a fresh alloca.
 pub def pointer_of_value(low : Lowerer, node : ASTNode, value : Value, t : Type) : Value
+  # A narrowed union can already point to a different representation.
+  return value if value.type == low.module.types.ptr(0)
   if node.is_a?(Var)
     if lv = low.current_context.vars[node.as(Var).name]?
       unless lv.already_loaded
@@ -550,7 +552,6 @@ pub def pointer_of_value(low : Lowerer, node : ASTNode, value : Value, t : Type)
       end
     end
   end
-  return value if value.type == low.module.types.ptr(0)
   temp = low.alloca(low.typer.llvm_type(t), "")
   store_aligned(low, value, temp)
   temp
