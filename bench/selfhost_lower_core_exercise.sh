@@ -96,6 +96,9 @@ passed=0
 # its hosted symbol and the naming mutation are checked independently below.
 KNOWN_DIVERGED="lower_string_nonascii lower_name_pointer_union"
 e2e=""
+required_wide="lowconst_wide_unsigned lowconst_wide_fold lowconst_wide_signed lower_wide_literal"
+wide_lowered=""
+wide_executed=""
 module_same=0
 module_differ=0
 diverged=0
@@ -145,12 +148,23 @@ for fixture in "$REPO"/bench/fixtures/lower_*.iyi "$REPO"/bench/fixtures/lowdecl
     echo "    $name: PASSED, $identical of $total functions identical (module-level counted below)"
     passed=$((passed + 1))
     e2e="$e2e $name"
+    if [ "$module_ok" = 1 ]; then
+      case " $required_wide " in
+        *" $name "*) wide_lowered="$wide_lowered $name" ;;
+      esac
+    fi
   else
     case " $KNOWN_DIVERGED " in
       *" $name "*) echo "    $name: WAITING, known divergence: $identical of $total identical (see NEEDS.md)"; waiting=$((waiting + 1)) ;;
       *) echo "    $name: DIVERGED, $identical of $total identical"; diverged=$((diverged + 1)) ;;
     esac
   fi
+done
+for name in $required_wide; do
+  case " $wide_lowered " in
+    *" $name "*) echo "  $name: required full module matches" ;;
+    *) echo "  $name: FAIL, required full module did not match"; status=1 ;;
+  esac
 done
 echo "  fixtures: $passed passed, $diverged diverged, $waiting waiting (named above)"
 if [ "$diverged" -gt 0 ]; then
@@ -193,6 +207,11 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
     if [ "$ns" = "$hs" ] && cmp -s "$WORK/$name.native.out" "$WORK/$name.hosted.out"; then
       echo "  $name: native executable runs to the hosted result (status $hs, stdout identical)"
       e2e_pass=$((e2e_pass + 1))
+      if [ "$hs" = 7 ]; then
+        case " $required_wide " in
+          *" $name "*) wide_executed="$wide_executed $name" ;;
+        esac
+      fi
     else
       echo "  $name: native status $ns, hosted $hs; stdout differs or status differs"
       e2e_fail=$((e2e_fail + 1))
@@ -206,6 +225,12 @@ echo "  end to end: $e2e_pass fixture(s) run to the hosted result, $e2e_fail fai
 if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
   status=1
 fi
+for name in $required_wide; do
+  case " $wide_executed " in
+    *" $name "*) echo "  $name: required native and hosted status 7 matched" ;;
+    *) echo "  $name: FAIL, required native execution did not match status 7"; status=1 ;;
+  esac
+done
 
 # An external variable's address is a global pointer, not a getter call. Keep
 # an ordinary lib function call as a negative case.
@@ -255,15 +280,6 @@ if "$IYI" build --prelude empty --no-debug -o "$WORK/path-float-host" "$REPO/ben
   echo "  float constant alias: hosted accepts, port refuses by name"
 else
   echo "  FAIL: float constant alias did not reach its named refusal"
-  status=1
-fi
-
-if "$IYI" build --prelude empty --no-debug -o "$WORK/wide-unsigned-host" "$REPO/bench/fixtures/wait_lowconst_wide_unsigned.iyi" > "$WORK/wide-unsigned-host.log" 2>&1 &&
-   ! "$WORK/port" emit "$REPO/bench/fixtures/wait_lowconst_wide_unsigned.iyi" "$WORK/lowconst_wide.oracle.ll" > "$WORK/wide-unsigned.out" 2> "$WORK/wide-unsigned.err" &&
-   grep -Fq '128-bit integer literal exceeds the math interpreter' "$WORK/wide-unsigned.err"; then
-  echo "  high UInt128: hosted accepts, port refuses by name"
-else
-  echo "  FAIL: high UInt128 did not reach its named refusal"
   status=1
 fi
 
@@ -397,25 +413,53 @@ prove_mutation "a constant alias is not folded" "$REPO/src/compiler/lower/const.
 
 wide_constant_check() {
   if ! "$IYI" build -o "$WORK/const-wide-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-wide-mut.log" 2>&1; then
-    touch "$WORK/m.invalid"
+    cat "$WORK/const-wide-mut.log" >> "$WORK/m.invalid"
     return 1
   fi
-  "$WORK/const-wide-mut" lower "$REPO/bench/fixtures/lowconst_wide.iyi" "$WORK/lowconst_wide.oracle.ll" > "$WORK/const-wide-mut.out" 2>&1 || return 1
-  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-wide-mut.out"
+  local n different=0
+  : > "$WORK/wide-mut-diffs.log"
+  for n in lowconst_wide $required_wide; do
+    if ! "$WORK/const-wide-mut" lower "$REPO/bench/fixtures/$n.iyi" "$WORK/$n.oracle.ll" > "$WORK/const-wide-$n.out" 2>&1; then
+      echo "$n: mutant did not execute" >> "$WORK/m.invalid"
+      cat "$WORK/const-wide-$n.out" >> "$WORK/m.invalid"
+      return 1
+    fi
+    if ! grep -q '^SUMMARY ' "$WORK/const-wide-$n.out"; then
+      echo "$n: mutant produced no summary" >> "$WORK/m.invalid"
+      return 1
+    fi
+    if ! awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && b[2] > 0 && c[2] == 1) }' "$WORK/const-wide-$n.out"; then
+      echo "  $n: high-word mutant differs" >> "$WORK/wide-mut-diffs.log"
+      cat "$WORK/const-wide-$n.out" >> "$WORK/wide-mut-diffs.log"
+      different=1
+    else
+      echo "$n: high-word mutant was not detected" >> "$WORK/m.invalid"
+    fi
+  done
+  [ "$different" -eq 0 ]
 }
 prove_mutation "a wide constant loses its high word" "$REPO/src/compiler/lower/const.iyi" \
-  '      hi = u64_as_i64((bits >> 64).to_u64)' '      hi = 0_i64' -- wide_constant_check || status=1
+  '    hi = u64_as_i64((bits >> 64).to_u64)' '    hi = 0_i64' -- wide_constant_check || status=1
+cat "$WORK/wide-mut-diffs.log"
 
 shift_constant_check() {
   if ! "$IYI" build -o "$WORK/const-shift-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-shift-mut.log" 2>&1; then
-    touch "$WORK/m.invalid"
+    cat "$WORK/const-shift-mut.log" >> "$WORK/m.invalid"
     return 1
   fi
-  "$WORK/const-shift-mut" lower "$REPO/bench/fixtures/lowconst_shift.iyi" "$WORK/lowconst_shift.oracle.ll" > "$WORK/const-shift-mut.out" 2>&1 || return 1
-  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-shift-mut.out"
+  if ! "$WORK/const-shift-mut" lower "$REPO/bench/fixtures/lowconst_shift.iyi" "$WORK/lowconst_shift.oracle.ll" > "$WORK/const-shift-mut.out" 2>&1; then
+    cat "$WORK/const-shift-mut.out" >> "$WORK/m.invalid"
+    return 1
+  fi
+  if ! grep -q '^SUMMARY ' "$WORK/const-shift-mut.out"; then
+    echo "shift mutant produced no summary" >> "$WORK/m.invalid"
+    return 1
+  fi
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && b[2] > 0 && c[2] == 1) }' "$WORK/const-shift-mut.out"
 }
 prove_mutation "constant shifts leave the left operand unchanged" "$REPO/src/compiler/semantic/math_interpreter.iyi" \
-  '      shift_left(left, right.value)' '      left' -- shift_constant_check || status=1
+  '      shift_left(left, right)' '      left' -- shift_constant_check || status=1
+cat "$WORK/const-shift-mut.out"
 
 nested_case_block_check() {
   "$IYI" build -o "$WORK/nested-case-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/nested-case.build.log" 2>&1 || return 1
