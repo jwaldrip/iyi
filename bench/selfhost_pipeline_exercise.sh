@@ -271,9 +271,12 @@ for root in $ROOTS; do
     table_ok=0
   fi
 done
+if [ "$SKIP_COMPILE_NATIVE" -eq 1 ]; then
+  echo "  SKIPPED PIPELINE.md comparison and update: its table requires the full root run"
+fi
 if [ "$table_ok" -eq 1 ]; then
   if [ "$SKIP_COMPILE_NATIVE" -eq 1 ]; then
-    echo "  SKIPPED PIPELINE.md comparison and update: its table requires the full root run"
+    :
   elif ! awk '/<!-- table:begin/ { b++ } END { exit b != 1 }' "$PIPE_MD"; then
     echo "  FAIL: src/compiler/PIPELINE.md has no single table block (markers missing)"
     status=1
