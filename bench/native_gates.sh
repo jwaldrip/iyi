@@ -75,6 +75,7 @@ run_gate native_asm any bench/native_asm_exercise.sh aarch64
 run_gate native_codegen darwin-arm64 bench/native_codegen_exercise.sh
 run_gate native_ir_diff darwin-arm64 bench/native_ir_diff.sh
 run_gate native_llvm_roundtrip any bench/native_llvm_roundtrip_exercise.sh
+run_gate native_parser_diff darwin-arm64 bench/native_parser_diff.sh
 run_gate native_x86_64 any bench/native_x86_64_exercise.sh
 run_gate native_wasm any bench/native_wasm_exercise.sh
 run_gate native_elf any bench/native_elf_exercise.sh

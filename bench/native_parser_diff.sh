@@ -6,7 +6,7 @@
 # Set NATIVE_PARSER_STAGE1 to a native compiler to add the typed pipeline;
 # a typed build refusal is recorded as SKIP rather than mistaken for a pass.
 # Reports and the differing input's outputs are kept in NATIVE_PARSER_DIFF_DIR.
-set -u
+set -u -o pipefail
 cd "$(dirname "$0")/.." || exit 1
 [ "$(uname -s):$(uname -m)" = Darwin:arm64 ] || { printf 'requires darwin-arm64\n' >&2; exit 1; }
 export PATH="/opt/homebrew/opt/llvm/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
@@ -51,38 +51,14 @@ for pair in 'parser:src/compiler/tools/parse.iyi' 'exercise:bench/selfhost_parse
   else
     printf 'SKIP %s typed: NATIVE_PARSER_STAGE1 not set\n' "$name" | tee -a "$work/report.txt"
   fi
-  find src samples/iyi bench/fixtures -type f -name '*.iyi' -print | LC_ALL=C sort >"$dir/corpus.txt"
-  [ "$name" = exercise ] && printf '\n' >>"$dir/corpus.txt"
-  n=0; equal=0; different=0
-  while IFS= read -r file; do
-    n=$((n+1)); case_dir="$dir/case-$n"; mkdir -p "$case_dir"
-    printf '%s\n' "$file" >"$case_dir/input.txt"
-    args=(); [ -n "$file" ] && args=("$file")
-    for impl in hosted bridge; do
-      if [ "$impl" = bridge ] && ! codesign -v --strict "$dir/bridge" >"$dir/bridge-sign.log" 2>&1; then
-        printf 'FAIL %s bridge signature (%s)\n' "$name" "$dir" | tee -a "$work/report.txt"; exit 1
-      fi
-      perl -e 'alarm 30; exec @ARGV or exit 127' -- "$dir/$impl" "${args[@]}" >"$case_dir/$impl.out" 2>"$case_dir/$impl.err" </dev/null
-      printf '%s\n' "$?" >"$case_dir/$impl.status"
-    done
-    if [ "$( <"$case_dir/hosted.status")" != 142 ] && [ "$( <"$case_dir/bridge.status")" != 142 ] && cmp -s "$case_dir/hosted.status" "$case_dir/bridge.status" && cmp -s "$case_dir/hosted.out" "$case_dir/bridge.out" && cmp -s "$case_dir/hosted.err" "$case_dir/bridge.err"; then
-      equal=$((equal+1))
-    else
-      different=$((different+1)); fail=1
-      printf 'DIFFER %s %s (%s)\n' "$name" "${file:-<no-argument>}" "$case_dir" | tee -a "$work/report.txt"
+  if ! PARSE_CORPUS_DIFF_DIR="$dir/bridge-differences" bash bench/lib/parse_corpus_diff.sh "$dir/hosted" "$dir/bridge" | tee -a "$work/report.txt"; then
+    fail=1
+  fi
+  if [ "$typed" -eq 1 ]; then
+    if ! PARSE_CORPUS_DIFF_DIR="$dir/typed-differences" bash bench/lib/parse_corpus_diff.sh "$dir/hosted" "$dir/typed" | tee -a "$work/report.txt"; then
+      fail=1
     fi
-    if [ "$typed" -eq 1 ]; then
-      if ! codesign -v --strict "$dir/typed" >"$dir/typed-sign.log" 2>&1; then
-        printf 'FAIL %s typed signature (%s)\n' "$name" "$dir" | tee -a "$work/report.txt"; exit 1
-      fi
-      perl -e 'alarm 30; exec @ARGV or exit 127' -- "$dir/typed" "${args[@]}" >"$case_dir/typed.out" 2>"$case_dir/typed.err" </dev/null
-      printf '%s\n' "$?" >"$case_dir/typed.status"
-      if [ "$( <"$case_dir/typed.status")" = 142 ] || ! cmp -s "$case_dir/hosted.status" "$case_dir/typed.status" || ! cmp -s "$case_dir/hosted.out" "$case_dir/typed.out" || ! cmp -s "$case_dir/hosted.err" "$case_dir/typed.err"; then
-        fail=1; printf 'DIFFER typed %s %s (%s)\n' "$name" "${file:-<no-argument>}" "$case_dir" | tee -a "$work/report.txt"
-      fi
-    fi
-  done <"$dir/corpus.txt"
-  printf '%s: %s equal, %s different, %s total\n' "$name" "$equal" "$different" "$n" | tee -a "$work/report.txt"
+  fi
 done
 printf 'report: %s/report.txt\n' "$work"
 exit "$fail"

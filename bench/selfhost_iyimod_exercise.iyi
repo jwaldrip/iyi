@@ -207,6 +207,18 @@ elsif Program.args[0] == "declarations" && Program.args.size > 1
 elsif Program.args[0] == "json" && Program.args.size > 1
   art = IyiMod.read(Program.args[1], true)
   puts IyiMod.to_json(art)
+elsif Program.args[0] == "write-deep" && Program.args.size > 1
+  types = [] of TypeDecl
+  i = 0
+  while i < 202
+    decl = TypeDecl.new("T" + (202 - i).to_s, "struct")
+    decl.types = types
+    types = [decl]
+    i = i + 1
+  end
+  art = Artifact.new("deep", "", "", "", [] of String)
+  art.exports = Exports.new([] of Signature, types)
+  IyiMod.write(art, Program.args[1])
 elsif Program.args[0] == "write" && Program.args.size > 2
   art = IyiMod.read(Program.args[1], true)
   IyiMod.write(art, Program.args[2])

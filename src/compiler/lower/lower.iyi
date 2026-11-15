@@ -19,6 +19,7 @@ module compiler/lower/lower
 import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, Cast, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NilableCast, NumberLiteral, Or, Path, PointerOf, Primitive, ProcLiteral, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, UninitializedVar, Var, While, IsA, Yield}
 import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, HashLiteral, RangeLiteral, MultiAssign, Select, StringInterpolation}
 import compiler/syntax/ast::{NamedTupleLiteral, EnumDef}
+import compiler/syntax/ast::{Underscore}
 import compiler/syntax/ast::{ImplDef, TraitDef}
 import compiler/types/types::{NamedTupleInstanceType}
 import compiler/syntax/ast::{TupleLiteral, Splat, Generic}
@@ -51,6 +52,7 @@ import compiler/lower/ensure::{lower_exception_handler, execute_ensures_until, s
 import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun, clear_fun_emission_done}
 import compiler/ir/verifier::{verify_function}
 import compiler/lower/primitives::{iyi_gc_arena?}
+import compiler/lower/primitives::{raise_cast_failed}
 import compiler/lower/gc_table::{define_gc_layouts}
 import compiler/lower/proc::{lower_proc_literal}
 import compiler/lower/closure::{allocate_closure}
@@ -1027,6 +1029,12 @@ end
 # which is made the first time the variable is assigned. The value of the assignment is the value
 # assigned.
 pub def codegen_assign(low : Lowerer, node : Assign) : Nil
+  # Hosted codegen.cr:1511-1513 evaluates a discarded assignment's value
+  # without allocating a variable; multi-assignment expansion can emit this.
+  if node.target.is_a?(Underscore)
+    codegen_node(low, node.value)
+    return
+  end
   if node.target.is_a?(InstanceVar)
     codegen_instance_var_assign(low, node)
     return
@@ -1610,8 +1618,8 @@ def eval_cast_operand(low : Lowerer, obj : ASTNode, obj_type : Type) : Value?
   low.last
 end
 
-# The hosted `visit(Cast)` (codegen.cr:1945-1986): pointer casts, nil casts, upcast to a union or
-# virtual target, and same-type casts. Downcasts requiring runtime `raise_cast_failed` refuse by name.
+# The hosted `visit(Cast)` (codegen.cr:1945-1986): pointer casts, upcasts,
+# and checked downcasts using the runtime type id.
 pub def codegen_cast(low : Lowerer, node : Cast) : Nil
   obj_t = low.analysed.type_of?(node.obj)
   raise "BUG: Cast operand has no analysed type (hosted codegen.cr: visit(Cast))" if obj_t.nil?
@@ -1661,7 +1669,20 @@ pub def codegen_cast(low : Lowerer, node : Cast) : Nil
     return
   end
   if obj_type.full_name != resulting_type.full_name
-    pending_visit_node("downcast Cast #{obj_type.full_name} to #{resulting_type.full_name} (hosted codegen.cr: visit(Cast) raise_cast_failed)")
+    tid = type_id_of_value(low, node.obj, last_value, obj_type)
+    cmp = match_type_id(low, obj_type, resulting_type, tid)
+    blocks = low.new_blocks(["matches", "doesnt_match"])
+    matches_block = blocks[0]
+    doesnt_match_block = blocks[1]
+    low.builder.cond_br(cmp, matches_block, doesnt_match_block)
+    low.builder.position_at_end(doesnt_match_block)
+    raise_cast_failed(low, tid, to_type, node)
+    low.builder.position_at_end(matches_block)
+    down_value = last_value
+    if obj_type.is_a?(MixedUnionType)
+      down_value = pointer_of_value(low, node.obj, last_value, obj_type)
+    end
+    low.last = downcast(low, down_value, resulting_type, obj_type, true)
     return
   end
   low.last = last_value
@@ -1723,7 +1744,11 @@ pub def codegen_nilable_cast(low : Lowerer, node : NilableCast) : Nil
     end
 
     low.builder.position_at_end(matches_block)
-    down_val = downcast(low, pointer_of_value(low, node.obj, last_value, obj_type), non_nilable_type, obj_type, true)
+    down_source = last_value
+    if obj_type.is_a?(MixedUnionType)
+      down_source = pointer_of_value(low, node.obj, last_value, obj_type)
+    end
+    down_val = downcast(low, down_source, non_nilable_type, obj_type, true)
     if union_join
       phi.add(low, union_temp(low, resulting_type, non_nilable_type, down_val), true)
     else

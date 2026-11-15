@@ -1517,8 +1517,10 @@ pub class MainVisitor < TypeNodeHost
         v = node.var.as(Var)
         stored = proc_compatible ? decl_type : val_type
         @vars[v.name] = stored
-        set_type(v, stored)
-        merge_var_union(v.name, stored) unless stored.is_a?(NoReturnType)
+        # Hosted main_visitor.cr:436-456 freezes the local's declared type;
+        # the initializer still determines its current flow type.
+        set_type(v, decl_type)
+        merge_var_union(v.name, decl_type) unless stored.is_a?(NoReturnType)
       elsif node.var.is_a?(InstanceVar)
         ivar_node = node.var.as(InstanceVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
@@ -2890,7 +2892,7 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
-  def trace_arg_dispatch(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, shortcut : Def?) : Nil
+  def trace_arg_dispatch(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, found : Matches, shortcut : Def?) : Nil
     return nil unless ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
     interesting = false
     args.each do |arg|
@@ -2901,7 +2903,6 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     return nil unless interesting
-    found = lookup_call_arms(rec_type, rec_type, name, args, call_node, ArmWalk::Parents)
     location = call_node.location
     site = location.nil? ? "<generated>:0" : "#{location.as(Location).filename}:#{location.as(Location).line_number}"
     first_diff = false
@@ -3156,7 +3157,7 @@ pub class MainVisitor < TypeNodeHost
       next if defs.nil?
       ordered = [] of Def
       defs.as(Array(Def)).each do |definition|
-        next if definition.abstract
+        next if definition.abstract && !owner.is_a?(TraitType)
         next unless CallMatch.yields?(definition) == !call_node.block.nil?
         if call_node.named_args.nil? && definition.splat_index.nil?
           next if args.size < min_args_count(definition) || args.size > definition.args.size
@@ -3209,7 +3210,10 @@ pub class MainVisitor < TypeNodeHost
   # the error, total mode records it on the call and returns nil.
   def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, pinned : Array(Def)? = nil, infer_class_vars : Bool = false) : Def?
     result = lookup_method_matching_impl(rec_type, name, args, call_node, pinned, infer_class_vars)
-    trace_arg_dispatch(rec_type, name, args, call_node, result)
+    if ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
+      found = lookup_call_arms(rec_type, rec_type, name, args, call_node, ArmWalk::Parents)
+      trace_arg_dispatch(rec_type, name, args, call_node, found, result)
+    end
     result
   end
 
@@ -4712,6 +4716,18 @@ pub class MainVisitor < TypeNodeHost
         end
       end
     end
+    # Total analysis must not pass an untyped child to overload matching or
+    # its diagnostics, both of which require types for every argument.
+    if @total
+      node.args.each do |arg|
+        return untyped(node, "an argument was not typed: #{arg}") if child_type(arg).nil?
+      end
+      if named = node.named_args
+        named.each do |arg|
+          return untyped(node, "an argument was not typed: #{arg.value}") if child_type(arg.value).nil?
+        end
+      end
+    end
     if node.obj.nil? && node.name == "super"
       return visit_super(node)
     end
@@ -4764,8 +4780,16 @@ pub class MainVisitor < TypeNodeHost
     matches = arms.as(Array(Match))
     if matches.size > 1
       if trait_receiver
-        refuse_call(node, "not ported: an argument dispatch on a trait receiver (hosted semantic/call.cr)")
-        return false
+        # Distinct owners are receiver dispatch, not overloads of one receiver.
+        seen_owners = Set(String).new
+        matches.each do |match|
+          owner_name = match.owner.full_name
+          if seen_owners.includes?(owner_name)
+            refuse_call(node, "not ported: an argument dispatch on a trait receiver (hosted semantic/call.cr)")
+            return false
+          end
+          seen_owners.add(owner_name)
+        end
       end
       matches.each do |match|
         if free = match.definition.free_vars
@@ -4814,6 +4838,7 @@ pub class MainVisitor < TypeNodeHost
   def virtual_dispatch_arms(node : Call, receiver : VirtualType, infer_class_vars : Bool) : Array(Match)?
     base = receiver.base_type
     base_matches = lookup_call_arms(base, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    trace_arg_dispatch(base, node.name, node.args, node, base_matches, nil)
     subtypes = TypeQueries.all_subclasses(base)
     if subtypes.empty?
       unless base_matches.cover_all?
@@ -4901,6 +4926,7 @@ pub class MainVisitor < TypeNodeHost
       return result
     end
     found = lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    trace_arg_dispatch(receiver, node.name, node.args, node, found, nil)
     unless found.cover_all?
       if message = found.error
         refuse_call(node, message)

@@ -1,0 +1,6 @@
+def cast_pointer(value : Float64*) : Int64*
+  value.as(Int64*)
+end
+
+value = 1.0
+cast_pointer(pointerof(value))

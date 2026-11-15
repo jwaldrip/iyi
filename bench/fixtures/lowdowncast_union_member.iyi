@@ -1,0 +1,13 @@
+def choose(n : Int32) : Int32 | Bool
+  if n == 0
+    42
+  else
+    false
+  end
+end
+
+def cast_union(value : Int32 | Bool) : Int32
+  value.as(Int32)
+end
+
+cast_union(choose(0))

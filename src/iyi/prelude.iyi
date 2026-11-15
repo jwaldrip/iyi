@@ -10814,6 +10814,16 @@ fun __iyi_raise_overflow : NoReturn
   raise "arithmetic overflow"
 end
 
+# Checked casts call this ABI hook with String pointers for the dynamic
+# source type, target type and optional source location.
+fun __iyi_raise_cast_failed(from : Void*, to : Void*, location : Void*) : NoReturn
+  message = "Cast from " + from.as(String) + " to " + to.as(String) + " failed"
+  if location
+    message = message + ", at " + location.as(String)
+  end
+  raise message
+end
+
 struct Pointer(T)
   def [](offset : Int32) : T
     (self + offset.to_i64).value

@@ -422,6 +422,20 @@ prove_mutation "a call to a top-level fun with a body is refused" "$MAIN_VISITOR
 prove_mutation "a trait definition is typed in its own type" "$MAIN_VISITOR" \
   "def visit(node : TraitDef) : Bool" \
   "def visit_trait_def_off(node : TraitDef) : Bool" -- bodies_at_floor || status=1
+trait_dispatch_at_expected() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1; then
+    body_build_failed "$WORK/mut_build.log"
+    return $?
+  fi
+  "$ORACLE" "$REPO/bench/fixtures/sem_bodies_trait_dispatch.iyi" 2>/dev/null | sort > "$WORK/trait.oracle" || return 1
+  "$MUT_TD" "$REPO/bench/fixtures/sem_bodies_trait_dispatch.iyi" "$REPO/src" 2>/dev/null | sort > "$WORK/trait.port" || return 1
+  grep -Fxq '31:10 Call String' "$WORK/trait.oracle" &&
+    grep -Fxq '31:10 Call String' "$WORK/trait.port"
+}
+trait_dispatch_at_expected || status=1
+prove_mutation "trait implementers dispatch without argument dispatch" "$MAIN_VISITOR" \
+  "          if seen_owners.includes?(owner_name)" \
+  "          if true" -- trait_dispatch_at_expected || status=1
 prove_mutation "a proc literal is typed as a Proc" "$MAIN_VISITOR" \
   "def visit(node : ProcLiteral) : Bool" \
   "def visit_proc_literal_off(node : ProcLiteral) : Bool" -- bodies_at_floor || status=1
@@ -449,17 +463,17 @@ prove_mutation "early exit in then branch narrows the rest of the body" "$MAIN_V
 prove_mutation_all "a refused body with declared return is cached" "$MAIN_VISITOR" \
   "remember_def_instance(cache_key, target_def," \
   "nil # " -- bodies_at_floor || status=1
-prove_mutation "a generic pointer restriction is not bound from the receiver" "$MAIN_VISITOR" \
-  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
-  "found = LookupError.new(\"unbound\")" -- bodies_at_floor || status=1
-prove_mutation "a splat call is not resolved by the calls lookup" "$MAIN_VISITOR" \
-  "    return nil if target.error
-    target.definition" \
-  "    return nil if target.error
-    nil" -- bodies_at_floor || status=1
-prove_mutation "a union restriction is not instantiated from its members" "$MAIN_VISITOR" \
-  "      return union_restriction_type(restriction.as(Union), rec_type)" \
-  "      return nil" -- bodies_at_floor || status=1
+prove_mutation "a generic pointer restriction is not bound from the receiver" "$REPO/src/compiler/semantic/restrictions.iyi" \
+  "            arg = ArgRestriction.lookup_bound(ts, scope, arg_node, owner)" \
+  "            arg = ArgRestriction.lookup_bound(ts, scope, arg_node, owner)
+            arg = LookupError.new(\"unbound\") if arg.is_a?(Type)" -- bodies_at_floor || status=1
+prove_mutation "a splat call is not resolved by the calls lookup" "$REPO/src/compiler/semantic/match.iyi" \
+  "    splat = definition.splat_index" \
+  "    splat = definition.splat_index
+    return MatchAttempt.none unless splat.nil?" -- bodies_at_floor || status=1
+prove_mutation "a union restriction is not instantiated from its members" "$REPO/src/compiler/semantic/restrictions.iyi" \
+  "      return ArgRestriction.lookup_union(ts, scope, node.as(Union), owner)" \
+  "      return LookupError.new(\"unbound union\")" -- bodies_at_floor || status=1
 prove_mutation "pointer_set types the assigned value" "$MAIN_VISITOR" \
   "set_type(node, pst)" \
   "set_type(node, @program.nil_type)" -- bodies_at_floor || status=1
@@ -482,9 +496,11 @@ prove_mutation "typeof inside type arguments yields the instance type" "$REPO/sr
 prove_mutation "enum members have the enum type" "$MAIN_VISITOR" \
   "        set_type(node, enum_type)" \
   "        set_type(node, @program.int32_type)" -- bodies_at_floor || status=1
-prove_mutation "a generic union member retains its arguments" "$MAIN_VISITOR" \
-  "    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
-  "    found = @program.lookup_type_node?(restriction, @current_type) || LookupError.new(\"not found\")" -- bodies_at_floor || status=1
+prove_mutation "a generic union member retains its arguments" "$REPO/src/compiler/semantic/restrictions.iyi" \
+  "      member = ArgRestriction.lookup_bound(ts, scope, node.types[i], owner)" \
+  "      member_node = node.types[i]
+      member_node = member_node.as(Generic).name if member_node.is_a?(Generic)
+      member = ArgRestriction.lookup_bound(ts, scope, member_node, owner)" -- bodies_at_floor || status=1
 type_lookup_at_expected() {
   if ! "$IYI" build -o "$WORK/type_lookup_probe" "$REPO/bench/selfhost_type_lookup_probe.iyi" > "$WORK/type_lookup_probe.build.log" 2>&1; then
     body_build_failed "$WORK/type_lookup_probe.build.log"
@@ -508,6 +524,11 @@ prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" 
         if @total
           node.args.each do |arg|
             arg.accept(self)
+          end
+          if named = node.named_args
+            named.each do |arg|
+              arg.value.accept(self)
+            end
           end
         end
         @needs_type_filters = saved_call_ntf
@@ -534,6 +555,11 @@ prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" 
         if @total
           node.args.each do |arg|
             arg.accept(self)
+          end
+          if named = node.named_args
+            named.each do |arg|
+              arg.value.accept(self)
+            end
           end
         end
         @needs_type_filters = saved_call_ntf
@@ -862,6 +888,27 @@ if ! atomic_free_at_floor; then
   echo "  ATOMIC: one of the instantiated atomic bodies was refused or not reached"
   status=1
 fi
+untyped_call_arguments_safe() {
+  if ! "$IYI" build -o "$WORK/untyped_call_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/untyped_call_build.log" 2>&1; then
+    body_build_failed "$WORK/untyped_call_build.log"
+    return $?
+  fi
+  codesign -v --strict "$WORK/untyped_call_tool" || return 1
+  "$WORK/untyped_call_tool" "$REPO/bench/fixtures/sem_bodies_untyped_call_argument.iyi" \
+    -o "$WORK/untyped_call" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/untyped_call.log" 2>&1 || true
+  grep -Fq '[phase] bodies: pass' "$WORK/untyped_call.log" || return 1
+  grep -Eq '^table: sem_bodies_untyped_call_argument refusal 4 owner=.* reason=an argument was not typed: fresh ' "$WORK/untyped_call.log"
+}
+if ! untyped_call_arguments_safe; then
+  echo "  UNTYPED CALL: positional and named arguments must be refused without a bodies panic"
+  status=1
+fi
+prove_mutation "an untyped positional argument stops before call matching" "$MAIN_VISITOR" \
+  'return untyped(node, "an argument was not typed: #{arg}") if child_type(arg).nil?' \
+  'nil' -- untyped_call_arguments_safe || status=1
+prove_mutation "an untyped named argument stops before call matching" "$MAIN_VISITOR" \
+  'return untyped(node, "an argument was not typed: #{arg.value}") if child_type(arg.value).nil?' \
+  'nil' -- untyped_call_arguments_safe || status=1
 prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
   "@def_free_types[target_def] = free_types unless free_types.empty?" \
   "        nil" -- atomic_free_at_floor || status=1

@@ -230,6 +230,33 @@ open(f"{out}/corrupt_payload.iyimod", "wb").write(corrupt_payload)
 
 # 5. Truncated payload
 open(f"{out}/truncated_payload.iyimod", "wb").write(base[:-5])
+
+# Spec IV.2a: valid checksums do not make hostile counts trustworthy.
+import hashlib, struct
+u32 = lambda n: struct.pack("<I", n)
+def artifact(sections):
+    table = b"".join(struct.pack("<HHIQ", kind, 0, len(data),
+        int.from_bytes(hashlib.md5(data).digest()[:8], "big")) for kind, data in sections)
+    return base[:12] + u32(len(sections)) + table + b"".join(data for _, data in sections)
+def header(flags=0):
+    return b"".join(u32(len(s)) + s for s in (b"app/greeter", b"/src/app/greeter.iyi", b"1.0", b"triple")) + u32(flags) + bytes(6)
+def nested(depth, closed, repeat):
+    total = 4 + depth * 77 + (16 if closed else 0)
+    result = bytearray(4)
+    for _ in range(depth):
+        left = total - len(result) - 4
+        result += u32(left // 77 if repeat else 1) + bytes(73)
+    if closed:
+        result += bytes(16)
+    return bytes(result)
+def save(name, data):
+    open(f"{out}/{name}.iyimod", "wb").write(data)
+save("table_count", base[:12] + u32(0x7fffffff))
+save("table_lengths", base[:12] + u32(2) + (struct.pack("<HHIQ", 1, 0, 0xfffffff0, 0) * 2) + b"four")
+save("count_room", artifact([(1, header(0x7fffffff))]))
+save("string_room", artifact([(1, u32(0xfffffff0) + b"x" * 26)]))
+save("nested_claims", artifact([(1, header()), (4, nested(5000, False, True))]))
+save("nested_depth", artifact([(1, header()), (4, nested(202, True, False))]))
 PY
 
 check_refusal() {
@@ -266,7 +293,18 @@ check_refusal "truncated header" "$REFUSAL_DIR/short.iyimod" "too short to be a 
 check_refusal "invalid magic bytes" "$REFUSAL_DIR/bad_magic.iyimod" "is not a .iyimod"
 check_refusal "mismatched format version" "$REFUSAL_DIR/bad_version.iyimod" "format v99, this compiler writes v62"
 check_refusal "damaged section payload" "$REFUSAL_DIR/corrupt_payload.iyimod" "Header section is damaged, its checksum does not match"
-check_refusal "truncated section payload" "$REFUSAL_DIR/truncated_payload.iyimod" "ends inside a section"
+check_refusal "truncated section payload" "$REFUSAL_DIR/truncated_payload.iyimod" "bytes follow the table"
+check_refusal "table count" "$REFUSAL_DIR/table_count.iyimod" "its table names 2147483647 sections and 0 bytes follow it, which is room for 0"
+check_refusal "section length sum" "$REFUSAL_DIR/table_lengths.iyimod" "its table says its sections are 8589934560 bytes together and 4 bytes follow the table"
+check_refusal "count exceeds section" "$REFUSAL_DIR/count_room.iyimod" "$REFUSAL_DIR/count_room.iyimod is not a readable .iyimod: a section counts 2147483647 of something that takes 4 bytes or more each, and has 6 bytes left. It is damaged, or was written by something that is not this compiler; rebuild it with \`--emit-iyimod\`"
+check_refusal "string exceeds section" "$REFUSAL_DIR/string_room.iyimod" "$REFUSAL_DIR/string_room.iyimod is not a readable .iyimod: a section counts 4294967280 of something that takes 1 byte or more each, and has 26 bytes left. It is damaged, or was written by something that is not this compiler; rebuild it with \`--emit-iyimod\`"
+check_refusal "nested cumulative claims" "$REFUSAL_DIR/nested_claims.iyimod" "$REFUSAL_DIR/nested_claims.iyimod is not a readable .iyimod: a section's counts claim 769769 bytes between them, and it is 385004 bytes long. It is damaged, or was written by something that is not this compiler; rebuild it with \`--emit-iyimod\`"
+check_refusal "type nesting" "$REFUSAL_DIR/nested_depth.iyimod" "$REFUSAL_DIR/nested_depth.iyimod is not a readable .iyimod: a section declares types more than 200 deep inside one another, which is deeper than a .iyimod holds. It is damaged, or was written by something that is not this compiler; rebuild it with \`--emit-iyimod\`"
+deep_writer_out=$("$WORK/exercise" write-deep "$WORK/too-deep.iyimod" 2>&1 || true)
+if ! printf '%s\n' "$deep_writer_out" | grep -qF "T202 is declared more than 200 types deep, which is deeper than a .iyimod holds"; then
+  echo "  WRITER REFUSAL MISMATCH: $deep_writer_out"
+  status=1
+fi
 
 echo
 echo "== 8. Mutation proofs: each one must make the checks fail"
@@ -300,6 +338,43 @@ run_proof() {
   prove_mutation "$1" "$IYIMOD" "$2" "$3" -- check_iyimod_still_matches || status=1
   MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 }
+
+# A refusal is a specific sentence, not merely a crash or a nonzero exit.
+check_hardened_refusal() {
+  local fixture="$1" expected="$2" verdict
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_iyimod_exercise.iyi" >/dev/null 2>&1 || return 1
+  verdict=$("$WORK/mut-exercise" read "$REFUSAL_DIR/$fixture.iyimod" 2>&1 || true)
+  printf '%s\n' "$verdict" | grep -qF "$expected"
+}
+prove_mutation "table count bound" "$IYIMOD" \
+  'if count * 16_u64 > room' 'if false' \
+  -- check_hardened_refusal table_count "its table names 2147483647 sections" || status=1
+prove_mutation "table length sum bound" "$IYIMOD" \
+  'if claimed > room' 'if false' \
+  -- check_hardened_refusal table_lengths "its table says its sections are 8589934560 bytes together" || status=1
+prove_mutation "section count bound" "$IYIMOD" \
+  'if claim > left' 'if false' \
+  -- check_hardened_refusal count_room "a section counts 2147483647" || status=1
+prove_mutation "string length bound" "$IYIMOD" \
+  'len = read_count(1)' 'len = read_count(2)' \
+  -- check_hardened_refusal string_room "a section counts 4294967280" || status=1
+prove_mutation "cumulative claim bound" "$IYIMOD" \
+  'if @claimed > @size.to_u64' 'if false' \
+  -- check_hardened_refusal nested_claims "a section's counts claim 769769 bytes" || status=1
+prove_mutation "type nesting bound" "$IYIMOD" \
+  'if depth > 200 && count > 0' 'if false' \
+  -- check_hardened_refusal nested_depth "a section declares types more than 200 deep" || status=1
+check_deep_writer_refusal() {
+  local verdict
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_iyimod_exercise.iyi" >/dev/null 2>&1 || return 1
+  verdict=$("$WORK/mut-exercise" write-deep "$WORK/too-deep-mut.iyimod" 2>&1 || true)
+  printf '%s\n' "$verdict" | grep -qF "T202 is declared more than 200 types deep"
+}
+prove_mutation "writer type nesting bound" "$IYIMOD" \
+  'if depth > 200 && !types.empty?' 'if false' \
+  -- check_deep_writer_refusal || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+MUTATIONS_RUN=$((MUTATIONS_RUN + 6))
 
 run_proof "altering magic bytes breaks container verification" \
   'MAGIC               = "IYIMOD\0\0"' \

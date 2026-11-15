@@ -932,7 +932,9 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
   collector.vars.each do |var|
     name = var.name
     next if captured.includes?(name)
-    t = low.analysed.type_of?(var)
+    # Hosted codegen.cr:2562 allocates block.vars at their merged storage type,
+    # not the flow type of the first assignment encountered in the block.
+    t = collector.types[name]?
     raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
     unless vars[name]?
       alloca_local(low, vars, name, t.as(Type))
@@ -958,7 +960,7 @@ pub def allocate_def_vars(low : Lowerer, def_node : Def, arg_types : Array(Type)
   collector.vars.each do |var|
     name = var.name
     next if captured.includes?(name)
-    t = low.analysed.type_of?(var)
+    t = collector.types[name]?
     raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
     unless vars[name]?
       alloca_local(low, vars, name, t.as(Type))

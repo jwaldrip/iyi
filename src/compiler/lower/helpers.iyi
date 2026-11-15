@@ -100,13 +100,13 @@ end
 # and the program's pointer is `getelementptr inbounds` of that global at 0, 1, eight bytes past the
 # header. Otherwise the global is Crystal's `{ i32 type_id, i32 bytesize, i32 length, [N+1 x i8] }`
 # and the pointer is the global itself. Equal texts share one pointer.
-pub def build_string_constant(low : Lowerer, str : String) : Value
+pub def build_string_constant(low : Lowerer, str : String, global_name : String? = nil) : Value
   if found = low.strings[str]?
     return found
   end
-  name_text = str
-  if str.bytesize > 18
-    name_text = first_chars(str, 19) + "..."
+  name_text = global_name || str
+  if name_text.bytesize > 18
+    name_text = first_chars(name_text, 19) + "..."
   end
   name = unique_global_name(low, "'" + name_text.split('@').join(".") + "'")
   types = low.module.types

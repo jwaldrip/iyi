@@ -1,0 +1,23 @@
+@[Unsafe("reports block branch values")]
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+class First
+end
+class Second
+end
+
+def invoke(flag : Bool)
+  yield flag
+end
+
+value = invoke(true) do |flag|
+  if flag
+    item = First.new
+  else
+    item = Second.new
+  end
+  item.is_a?(First) ? 7 : 9
+end
+LibC.exit(value)
