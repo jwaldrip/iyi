@@ -85,6 +85,7 @@ bench/fixtures/lowcall_named_magic.iyi run-equal
 bench/fixtures/lowcall_named_order.iyi run-equal
 bench/fixtures/lowcall_named_revisit_block.iyi run-equal
 bench/fixtures/lowcall_named_revisit_loop.iyi run-equal
+bench/fixtures/lowcall_named_shared_wrapper.iyi run-equal
 bench/fixtures/lowcall_named_yield_default.iyi run-equal
 bench/fixtures/lowcall_narrowed_block_capture.iyi run-equal
 bench/fixtures/lowcall_nested.iyi run-equal
@@ -99,6 +100,8 @@ bench/fixtures/lowcall_recursive_inferred.iyi run-equal
 bench/fixtures/lowcall_recursive_inferred_block.iyi run-equal
 bench/fixtures/lowcall_recursive_inferred_loop.iyi run-equal
 bench/fixtures/lowcall_recursive_named_default.iyi run-equal
+bench/fixtures/lowcall_recursive_named_inferred.iyi run-equal
+bench/fixtures/lowcall_recursive_named_mixed.iyi run-equal
 bench/fixtures/lowcall_recv_arg.iyi run-equal
 bench/fixtures/lowcall_recv_block.iyi run-equal
 bench/fixtures/lowcall_recv_self.iyi run-equal
@@ -128,6 +131,10 @@ bench/fixtures/lower_class_self.iyi run-equal
 bench/fixtures/lower_closure_block_shadow.iyi declarations
 bench/fixtures/lower_closure_counter.iyi declarations
 bench/fixtures/lower_closure_nested_block.iyi declarations
+bench/fixtures/lower_closure_self_class.iyi declarations
+bench/fixtures/lower_closure_self_nested.iyi declarations
+bench/fixtures/lower_closure_self_struct.iyi declarations
+bench/fixtures/lower_closure_self_unit_call.iyi declarations
 bench/fixtures/lower_closure_top_level.iyi declarations
 bench/fixtures/lower_cond_int.iyi run-equal
 bench/fixtures/lower_cond_mixed.iyi run-equal
@@ -179,6 +186,7 @@ bench/fixtures/lower_name_owner.iyi run-equal
 bench/fixtures/lower_name_pointer_union.iyi declarations
 bench/fixtures/lower_name_return.iyi run-equal
 bench/fixtures/lower_named_tuple.iyi run-equal
+bench/fixtures/lower_negated_is_a.iyi run-equal
 bench/fixtures/lower_next.iyi run-equal
 bench/fixtures/lower_nil.iyi run-equal
 bench/fixtures/lower_nil_if_read.iyi run-equal
@@ -198,7 +206,7 @@ bench/fixtures/lower_pointerof_proc_arg.iyi declarations
 bench/fixtures/lower_preempt_off.iyi run-equal
 bench/fixtures/lower_probe_reuse.iyi bodies
 bench/fixtures/lower_proc_class_scope.iyi run-equal
-bench/fixtures/lower_proc_implicit_self.iyi bodies
+bench/fixtures/lower_proc_implicit_self.iyi run-equal
 bench/fixtures/lower_proc_literal.iyi run-equal
 bench/fixtures/lower_return.iyi run-equal
 bench/fixtures/lower_return_bare.iyi run-equal
@@ -217,6 +225,7 @@ bench/fixtures/lower_struct_join_copy.iyi run-equal
 bench/fixtures/lower_struct_unused.iyi run-equal
 bench/fixtures/lower_symbol.iyi run-equal
 bench/fixtures/lower_trait.iyi run-equal
+bench/fixtures/lower_trait_assoc.iyi run-equal
 bench/fixtures/lower_trait_dispatch.iyi run-equal
 bench/fixtures/lower_trait_dispatch_class.iyi run-equal
 bench/fixtures/lower_trait_dispatch_order.iyi run-equal
@@ -224,6 +233,7 @@ bench/fixtures/lower_trait_single.iyi run-equal
 bench/fixtures/lower_tuple.iyi run-equal
 bench/fixtures/lower_tuple_literal.iyi run-equal
 bench/fixtures/lower_tuple_local.iyi run-equal
+bench/fixtures/lower_tuple_storage.iyi run-equal
 bench/fixtures/lower_typedecl.iyi run-equal
 bench/fixtures/lower_typedecl_nil.iyi run-equal
 bench/fixtures/lower_typeof.iyi bodies
@@ -244,6 +254,7 @@ bench/fixtures/lower_visibility.iyi run-equal
 bench/fixtures/lower_visibility_macro.iyi run-equal
 bench/fixtures/lower_while.iyi run-equal
 bench/fixtures/lower_while_true.iyi run-equal
+bench/fixtures/lower_wide_literal.iyi run-equal
 bench/fixtures/lowglob_const_arg.iyi run-equal
 bench/fixtures/lowglob_const_bool.iyi run-equal
 bench/fixtures/lowglob_const_call.iyi run-equal
@@ -260,7 +271,9 @@ bench/fixtures/lowglob_cvar_assign.iyi run-equal
 bench/fixtures/lowglob_cvar_call.iyi run-equal
 bench/fixtures/lowglob_cvar_decl.iyi run-equal
 bench/fixtures/lowglob_cvar_float.iyi run-equal
+bench/fixtures/lowglob_cvar_generic_struct.iyi run-equal
 bench/fixtures/lowglob_cvar_lazy.iyi run-equal
+bench/fixtures/lowglob_cvar_lazy_aggregate.iyi run-equal
 bench/fixtures/lowglob_cvar_literal.iyi run-equal
 bench/fixtures/lowglob_cvar_module.iyi run-equal
 bench/fixtures/lowglob_cvar_namespace.iyi run-equal
@@ -278,6 +291,7 @@ bench/fixtures/lowglob_cvar_symbol.iyi run-equal
 bench/fixtures/lowglob_cvar_tls.iyi bodies
 bench/fixtures/lowglob_cvar_tls_typed.iyi run-equal
 bench/fixtures/lowglob_cvar_tls_uint64.iyi run-equal
+bench/fixtures/lowglob_cvar_tuple.iyi run-equal
 bench/fixtures/lowglob_nested_body_scope.iyi run-equal
 bench/fixtures/lowglob_type_path.iyi run-equal
 bench/fixtures/lowprim_add.iyi run-equal
@@ -305,6 +319,9 @@ bench/fixtures/lowprim_float_arith.iyi declarations
 bench/fixtures/lowprim_float_cmp.iyi declarations
 bench/fixtures/lowprim_float_mixed.iyi declarations
 bench/fixtures/lowprim_float_narrow.iyi declarations
+bench/fixtures/lowprim_float_to_int_checked.iyi run-equal
+bench/fixtures/lowprim_float_to_int_overflow.iyi declarations
+bench/fixtures/lowprim_float_to_int_sat.iyi declarations
 bench/fixtures/lowprim_int_to_float.iyi declarations
 bench/fixtures/lowprim_isa_nilref.iyi run-equal
 bench/fixtures/lowprim_malloc_program_atomic.iyi declarations
@@ -327,6 +344,7 @@ bench/fixtures/lowprim_runtime_type_id.iyi declarations
 bench/fixtures/lowprim_tuple_call.iyi run-equal
 bench/fixtures/lowprim_tuple_index.iyi run-equal
 bench/fixtures/lowprim_tuple_metaclass.iyi run-equal
+bench/fixtures/lowprim_virtual_class_identity.iyi declarations
 samples/iyi/hello.iyi run-equal
 src/compiler/tools/compile_native.iyi declarations
 src/compiler/tools/parse.iyi run-equal
