@@ -39,10 +39,6 @@ check_barriers() {
 }
 if check_barriers; then
   echo "GC barrier: hosted/native/port-LLVM match, $hosted_count write-barrier sites each"
-  [ "$(sed -n '1p' "$WORK/barrier-counts")" = 8 ] && [ "$(sed -n '2p' "$WORK/barrier-counts")" = 8 ]
-}
-if check_barriers; then
-  echo 'GC barrier: hosted/native match, 8 write-barrier sites each'
 else
   echo 'FAIL: GC barrier runtime or IR parity'
   status=1
