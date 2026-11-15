@@ -1,0 +1,13 @@
+class Counter
+  property count : Int32
+
+  def initialize(@count : Int32)
+  end
+end
+
+counter = Counter.new(7)
+result = group do |g|
+  task = g.spawn { counter.count }
+  task.value
+end
+puts result

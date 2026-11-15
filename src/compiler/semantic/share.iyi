@@ -1,0 +1,177 @@
+module compiler/semantic/share
+
+import compiler/syntax/ast::{Def}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, MetaTypeVar, MetaclassType, ModuleType, NilType, NonGenericClassType, Type, TypeDefType, UnionType}
+import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, PointerInstanceType, PrimitiveType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, TypeQueries, VirtualMetaclassType, VirtualType}
+
+# A nil answer means no witness was found, not that the type is Share. This is
+# the structural subset of the hosted Share check: mutation body and macro scans,
+# artifact provenance and the remaining hosted rules are not implemented here.
+pub def share_witness(type : Type) : String?
+  ShareWitness.new.witness(type)
+end
+
+# Typing an inherited def can give self the owner's virtual type. A witness on
+# its base is safe for self only if no possible dynamic subclass is trusted.
+pub def share_witness_for_self(type : Type) : String?
+  if type.is_a?(VirtualType)
+    base = type.as(VirtualType).base_type
+    return nil if share_trusted_type?(base)
+    TypeQueries.all_subclasses(base).each do |subclass|
+      return nil if share_trusted_type?(subclass)
+    end
+    return ShareWitness.new.structural(base)
+  end
+  share_witness(type)
+end
+
+def share_trusted_type?(type : Type) : Bool
+  if type.is_a?(GenericClassInstanceType)
+    return type.as(GenericClassInstanceType).generic_type.share_trusted
+  end
+  type.share_trusted
+end
+
+class ShareWitness
+  @visited : Set(UInt64)
+
+  def initialize
+    @visited = Set(UInt64).new
+  end
+
+  def witness(type : Type) : String?
+    id = type.object_id
+    return nil if @visited.includes?(id)
+    @visited.add(id)
+
+    if type.is_a?(NilType) || type.is_a?(PrimitiveType) || type.is_a?(MetaclassType) || type.is_a?(VirtualMetaclassType)
+      return nil
+    elsif type.is_a?(AliasType)
+      return witness(type.as(AliasType).process_value)
+    elsif type.is_a?(TypeDefType)
+      return witness(type.as(TypeDefType).typedef)
+    elsif type.is_a?(PointerInstanceType)
+      return "#{type} is raw memory, which no marker can vouch for"
+    elsif type.is_a?(StaticArrayInstanceType)
+      return "#{type} is a fixed buffer whose elements are written in place"
+    elsif type.is_a?(ProcInstanceType)
+      return "#{type} is a closure, and what it captured is not written in its type"
+    elsif type.is_a?(TupleInstanceType)
+      type.as(TupleInstanceType).tuple_types.each do |member|
+        if why = witness(member)
+          return "#{type} holds #{member}: #{why}"
+        end
+      end
+    elsif type.is_a?(NamedTupleInstanceType)
+      type.as(NamedTupleInstanceType).entries.each do |entry|
+        if why = witness(entry.type)
+          return "#{type} holds #{entry.name} : #{entry.type}: #{why}"
+        end
+      end
+    elsif type.is_a?(UnionType)
+      type.as(UnionType).union_types.each do |member|
+        if why = witness(member)
+          return "#{type} may be #{member}: #{why}"
+        end
+      end
+    elsif type.is_a?(VirtualType)
+      base = type.as(VirtualType).base_type
+      if why = witness(base)
+        return why
+      end
+      TypeQueries.all_subclasses(base).each do |subclass|
+        if why = witness(subclass)
+          return "#{type} may be #{subclass}: #{why}"
+        end
+      end
+    elsif type.is_a?(GenericClassInstanceType)
+      instance = type.as(GenericClassInstanceType)
+      generic = instance.generic_type
+      if generic.share_trusted
+        return nil if generic.share_owns
+        instance.type_vars.each do |name, argument|
+          if why = witness(argument)
+            return "#{type}'s #{name} is #{argument}: #{why}"
+          end
+        end
+      else
+        return structural(type)
+      end
+    elsif type.is_a?(GenericClassType)
+      return nil
+    elsif type.is_a?(NonGenericClassType)
+      return nil if type.share_trusted || type.object_id == type.program.string_type.object_id
+      return structural(type)
+    end
+    nil
+  end
+
+  def structural(type : Type) : String?
+    fields : Hash(String, MetaTypeVar)
+    if type.is_a?(GenericClassInstanceType)
+      fields = type.as(GenericClassInstanceType).all_instance_vars
+    elsif type.is_a?(NonGenericClassType)
+      fields = type.as(NonGenericClassType).all_instance_vars
+    else
+      return nil
+    end
+
+    setters = Set(String).new
+    collect_setters(type, setters, Set(UInt64).new)
+    fields.each do |name, var|
+      if setters.includes?(name)
+        return "#{type}'s field #{name} is given a setter `#{name.lchop('@')}=`"
+      end
+      if var_type = var.type?
+        if why = witness(var_type)
+          return "#{type}'s field #{name} : #{var_type} is not shareable: #{why}"
+        end
+      end
+    end
+    nil
+  end
+
+  def collect_setters(type : Type, fields : Set(String), visited : Set(UInt64)) : Nil
+    id = type.object_id
+    return if visited.includes?(id)
+    visited.add(id)
+
+    if type.is_a?(GenericInstanceType)
+      instance = type.as(GenericInstanceType)
+      generic = instance.generic_type
+      if generic.is_a?(ModuleType)
+        add_setters(generic.as(ModuleType).defs, fields)
+      end
+      if instance.is_a?(GenericClassInstanceType)
+        class_instance = instance.as(GenericClassInstanceType)
+        if superclass = class_instance.superclass
+          collect_setters(superclass, fields, visited)
+        end
+        class_instance.included_modules.each do |parent|
+          collect_setters(parent, fields, visited)
+        end
+      end
+      instance.parents.each { |parent| collect_setters(parent, fields, visited) }
+    elsif type.is_a?(ModuleType)
+      owner = type.as(ModuleType)
+      add_setters(owner.defs, fields)
+      if owner.is_a?(ClassType)
+        if superclass = owner.as(ClassType).superclass
+          collect_setters(superclass, fields, visited)
+        end
+      end
+      owner.parents.each { |parent| collect_setters(parent, fields, visited) }
+    end
+    nil
+  end
+
+  def add_setters(defs : Hash(String, Array(Def)), fields : Set(String)) : Nil
+    defs.each do |name, list|
+      next if list.empty?
+      next unless name.ends_with?("=")
+      next if name == "==" || name == "!=" || name == "[]=" || name == "<=" || name == ">="
+      fields.add("@#{name.rchop('=')}")
+    end
+    nil
+  end
+end

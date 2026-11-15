@@ -1,0 +1,6 @@
+values = [1, 2, 3]
+result = group do |g|
+  task = g.spawn { values.size }
+  task.value
+end
+puts result

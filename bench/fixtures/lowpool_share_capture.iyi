@@ -1,0 +1,6 @@
+name = "shareable"
+result = group do |g|
+  task = g.spawn { name.size }
+  task.value
+end
+puts result
