@@ -56,7 +56,7 @@ passed=0
 e2e=""
 diverged=0
 waiting=0
-for fixture in "$REPO"/bench/fixtures/lowcast_*.iyi; do
+for fixture in "$REPO"/bench/fixtures/lowcast_*.iyi "$REPO"/bench/fixtures/lowdowncast_nilable_as.iyi; do
   name="$(basename "$fixture" .iyi)"
   if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
     echo "  $name: the hosted compiler did not emit its module (see $WORK/$name.oracle.log)"
@@ -170,6 +170,15 @@ new_cast_check() {
   "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_$cast_fixture.iyi" "$WORK/lowcast_$cast_fixture.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
 }
+
+nilable_downcast_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$WORK/mut" lower "$REPO/bench/fixtures/lowdowncast_nilable_as.iyi" "$WORK/lowdowncast_nilable_as.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
+}
+nilable_downcast_check || { echo "  baseline: nilable reference downcast differs"; status=1; }
+prove_mutation "nilable reference downcast reads the local slot instead of its value" "$REPO/src/compiler/lower/lower.iyi" \
+  '    down_source = last_value' '    down_source = pointer_of_value(low, node.obj, last_value, obj_type)' -- nilable_downcast_check || status=1
 cast_fixture=virtual_store
 new_cast_check || { echo "  baseline: virtual assignment differs"; status=1; }
 prove_mutation "virtual target assignment is refused" "$REPO/src/compiler/lower/cast.iyi" \

@@ -1294,18 +1294,24 @@ def cast_class_name(low : Lowerer, type_id : Value) : Value
     values = [] of Value
     i = 0
     while i < count
-      if class_name = low.type_ids.name_of_id(i)
-        values << build_string_constant(low, class_name)
-      else
-        values << low.builder.const_null(ptr)
-      end
+      values << low.builder.const_null(ptr)
+      i = i + 1
+    end
+    # The hosted hash is walked in insertion order, not id order; that order
+    # also decides the names LLVM gives the string globals.
+    types = low.type_ids.numbered_types
+    i = 0
+    while i < types.size
+      type = types[i]
+      id = low.type_ids.type_id(type)
+      values[id] = build_string_constant(low, type.full_name, "str")
       i = i + 1
     end
     created.initializer = low.builder.const_array(ptr, values)
     table = created
   end
   index = low.builder.const_int(low.module.types.int32, 0_i64)
-  address = low.builder.gep(table.as(Global).value_type, table.as(Global), [index, type_id] of Value)
+  address = low.builder.inbounds_gep(table.as(Global).value_type, table.as(Global), [index, type_id] of Value)
   load_aligned(low, ptr, address)
 end
 
@@ -1328,10 +1334,10 @@ pub def raise_cast_failed(low : Lowerer, type_id : Value, target : Type, node : 
     fn = low.module.add_function(name, fn_type, CallConv::C)
   end
   from_name = cast_class_name(low, type_id)
-  to_name = build_string_constant(low, target.full_name)
+  to_name = build_string_constant(low, target.full_name, "str")
   location : Value = low.builder.const_null(low.module.types.ptr(0))
   if loc = node.location
-    location = build_string_constant(low, loc.to_s)
+    location = build_string_constant(low, loc.to_s, "str")
   end
   raise_fn = fn.as(Function)
   # iyi has no rescue state; like raise_overflow, emit call after oracle unwind normalization.

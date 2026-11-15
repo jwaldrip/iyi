@@ -16,7 +16,8 @@ def choose(n : Int32) : Node
 end
 
 def cast_node(node : Node) : First?
-  node.as?(First)
+  stored = node
+  stored.as?(First)
 end
 if cast_node(choose(0)).nil?
   1
