@@ -142,6 +142,17 @@ pub abstract class GenericInstanceType < Type
   def initialize(program : SemanticProgram, @generic_type : Type, @type_vars : Hash(String, Type), @type_args : Array(Type) = [] of Type)
     super(program, @generic_type.namespace, @generic_type.name)
   end
+  # Hosted types.cr:2369-2372 resolves each generic parent in this instance.
+  def parents : Array(Type)
+    result = [] of Type
+    if generic = @generic_type.as?(ModuleType)
+      generic.parents.each do |parent|
+        result << TypeQueries.replace_type_parameters(parent, @type_vars)
+      end
+    end
+    result
+  end
+
 
   def generic_instance? : Bool
     true
@@ -823,6 +834,14 @@ pub class TypeQueries
     end
     if type.is_a?(GenericClassInstanceType)
       return replace_generic_instance(type.as(GenericClassInstanceType), tv_map)
+    end
+    if type.is_a?(GenericModuleInstanceType)
+      instance = type.as(GenericModuleInstanceType)
+      args = replace_list(instance.type_args, tv_map)
+      return type if same_types?(args, instance.type_args)
+      if hook = type.program.merge_hook
+        return hook.instantiate_type(instance.generic_type, args)
+      end
     end
     type
   end

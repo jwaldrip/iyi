@@ -1,0 +1,17 @@
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, SemanticProgram, Type, TypeParameterType}
+import compiler/types/instances::{TypeInstances}
+import compiler/types/type_system::{TypeSystem}
+import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType}
+
+program = SemanticProgram.new
+ts = TypeSystem.new(program)
+container = GenericClassType.new(program, program, "Container", ["T"])
+parent = GenericModuleType.new(program, program, "Parent", ["E"])
+parameter = TypeParameterType.new(program, "T")
+parent_t = ts.instantiate_type(parent, [parameter] of Type)
+container.include(parent_t)
+instance = ts.instantiate_type(container, [program.int32_type] of Type)
+resolved = instance.as(GenericClassInstanceType).parents
+raise "wrong parent count" unless resolved.size == 1
+actual = resolved[0].as(GenericModuleInstanceType)
+raise "parent argument not substituted" unless actual.type_args[0] == program.int32_type
