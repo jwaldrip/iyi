@@ -18,7 +18,7 @@ set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 export IYI_PATH="$REPO/src"
-IYI="$REPO/bin/iyi"
+IYI="${IYI_COMPILER:-$REPO/bin/iyi}"
 CRYSTAL="${CRYSTAL:-crystal}"
 TYPER_FILE="$REPO/src/compiler/lower/typer.iyi"
 TYPE_ID_FILE="$REPO/src/compiler/lower/type_id.iyi"
