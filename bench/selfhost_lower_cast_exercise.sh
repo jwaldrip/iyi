@@ -37,7 +37,7 @@ cast_prove_mutation() {
   rm -f "$WORK/cast-mutant-build-failed"
   _prove_mutation_run "$mode" "$@" > "$WORK/cast-mutation.out" 2>&1 || rc=$?
   if [ -f "$WORK/cast-mutant-build-failed" ]; then
-    echo "    NOT PROVEN: $label did not build"
+    echo "    NOT PROVEN: $label did not produce a valid mutant result"
     return 1
   fi
   cat "$WORK/cast-mutation.out"
@@ -280,14 +280,23 @@ prove_mutation "nilable reference downcast reads the local slot instead of its v
 alias_union_native_check() {
   cast_build -o "$WORK/alias-stage1" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/alias-build.log" 2>&1 || return 1
   codesign -v --strict "$WORK/alias-stage1" || return 1
-  "$WORK/alias-stage1" "$REPO/bench/fixtures/lowcast_struct_union_nil.iyi" -o "$WORK/alias-native" --pipeline typed --prelude > "$WORK/alias-native.log" 2>&1 || return 1
+  IYI_PATH="$REPO/src" "$WORK/alias-stage1" "$REPO/bench/fixtures/lowcast_struct_union_nil.iyi" -o "$WORK/alias-native" --pipeline typed --prelude > "$WORK/alias-native.log" 2>&1 || { : > "$WORK/cast-mutant-build-failed"; return 1; }
   codesign -v --strict "$WORK/alias-native" || return 1
   "$WORK/alias-native"
   [ "$?" -eq 10 ]
 }
+representation_mutation_check() {
+  cast_build -o "$WORK/representation-mutant" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/representation-mutant.build.log" 2>&1 || return 1
+  "$WORK/representation-mutant" union_representations > "$WORK/representation-mutant.out" 2> "$WORK/representation-mutant.err"
+  local result=$?
+  if [ "$result" -ne 0 ] && ! grep -Fq 'assign Int32 to (Bool | Int32)' "$WORK/representation-mutant.err"; then
+    : > "$WORK/cast-mutant-build-failed"
+  fi
+  return "$result"
+}
 alias_union_native_check || { echo "  baseline: native aliased struct union differs"; status=1; }
-prove_mutation "aliased struct union loses mixed representation" "$REPO/src/compiler/lower/cast.iyi" \
-  '  if type.is_a?(UnionType) && !type.is_a?(MixedUnionType) && !type.is_a?(NilableProcType) && !reference_union?(type.as(UnionType))' '  if false' -- alias_union_native_check || status=1
+prove_mutation "plain union loses mixed specialization" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if type.is_a?(UnionType) && !type.is_a?(MixedUnionType) && !type.is_a?(NilableProcType) && !reference_union?(type.as(UnionType))' '  if false' -- representation_mutation_check || status=1
 cast_fixture=compatible_virtual
 new_cast_check || { echo "  baseline: compatible virtual union differs"; status=1; }
 prove_mutation "compatible virtual union member is refused" "$REPO/src/compiler/lower/cast.iyi" \

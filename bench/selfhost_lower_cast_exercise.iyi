@@ -60,11 +60,14 @@ def check_union_representations : Nil
 
   m = ir_module("arm64-apple-macosx")
   low = Lowerer.new(m, LowerTyper.new(m.types, m.layout, analysis.iyi), analysis.visitor)
+  low.type_ids.assign_all(prog.object_type)
   unions = [plain.as(Type), mixed.as(Type)] of Type
   names = ["plain", "specialized"]
   unions.each_with_index do |union, i|
     fn = low.begin_main_function(names[i], m.types.func([] of IrType, m.types.void), true)
     value = low.builder.const_zero(low.typer.llvm_type(union))
+    slot = low.alloca(low.typer.llvm_type(union), "")
+    assign(low, slot, union, int_type, low.builder.const_int(m.types.int32, 12_i64))
     tid = type_id_of_value(low, analysis.root, value, union)
     raise "#{names[i]} union used a static type id" unless tid.is_a?(Inst) && tid.as(Inst).op == Op::Load && tid.as(Inst).args[0].is_a?(Inst) && tid.as(Inst).args[0].as(Inst).op == Op::Gep
     downcast(low, value, int_type, union, true)
