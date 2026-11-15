@@ -1,21 +1,9 @@
 module compiler/lower/proc
 
-# The port of the hosted proc literal: `visit(ProcLiteral)` (src/compiler/iyi/codegen/codegen.cr:1042-1092),
-# `fun_literal_name` (codegen.cr:1094-1130) and `make_fun` (codegen.cr:2378-2384), for a literal that captures no
-# local, no `self` and no instance variable. Its body is a fun of its own, internal with the Iyi convention, and
-# the proc value is the pair of that fun's address and a null context.
-#
-# Ported: the name (`~proc` and the proc type's text, `^`, the file relative to the working directory, `:` and
-# the line; a second literal of one name is `~proc2...`, counted per module), the fun (codegen_fun, with the
-# literal's parameters and return), and the value (an alloca, the function and the null context stored into its
-# two fields, the struct loaded: hosted make_fun).
-# A capture-free literal in a non-generic class or module method keeps that lexical owner, without a self
-# argument or a context pointer. Receiverless instance calls still need a closure and are refused.
-#
-# Refused by name, at the literal that reaches them: a literal that reads a local the body does not declare
-# (a closure: hosted closured_vars and malloc_closure), a literal that reads `self` or an instance variable, a
-# literal with a block or a nested literal or def inside it, a literal that returns NoReturn, and a literal whose
-# non-Nil body type differs from its return type (hosted upcast of the return, not ported).
+# The hosted proc literal names a function and carries a context pointer when
+# the literal captures enclosing locals. Capture-free literals use null.
+# Captures of self, instance variables, blocks and nested literals remain
+# explicitly refused until their context handling is ported.
 
 import compiler/foundation/location::{Location}
 import compiler/ir/types::{IrType}
@@ -27,6 +15,7 @@ import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
 import compiler/syntax/ast::{ASTNode, Assign, Call, ClassDef, Def, InstanceVar, ModuleDef, ProcLiteral, Self, Var}
 import compiler/syntax/visitor::{Visitor}
+import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/top_level::{NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, SemanticProgram, Type}
 import compiler/types/types::{ProcInstanceType}
 
@@ -64,7 +53,7 @@ end
 # is `~proc` and the type's text, `^`, the place's file and `:` and its line. The second literal of one name in
 # the module is `~proc2...`, the third `~proc3...`, as the hosted proc counts give them.
 pub def proc_literal_name(low : Lowerer, node : ProcLiteral, proc_type : Type) : String
-  place = node.location
+  place = low.current_context.macro_origin || node.location
   if place.nil?
     refuse_port("a proc literal with no location (hosted fun_literal_name, the name ~fun_literal)")
   end
@@ -92,7 +81,7 @@ pub class ProcScan < Visitor
   getter receiverless_calls : Array(Call)
   getter refused : String?
 
-  def initialize
+  def initialize(@analysed : MainVisitor)
     @referenced = [] of String
     @assigned = [] of String
     @receiverless_calls = [] of Call
@@ -100,6 +89,16 @@ pub class ProcScan < Visitor
   end
 
   def visit_any(node : ASTNode) : Bool
+    if expanded = @analysed.expansions[node]?
+      expanded.accept(self)
+      return false
+    end
+    if node.is_a?(Call)
+      if expanded = node.as(Call).expanded
+        expanded.accept(self)
+        return false
+      end
+    end
     if node.is_a?(Compiler::Syntax::Ast::Block)
       @refused = "a block inside a proc literal (hosted closure over the block context, lower/block.iyi)" if @refused.nil?
       return false
@@ -120,6 +119,10 @@ pub class ProcScan < Visitor
       @receiverless_calls << node
     end
     if node.is_a?(Var)
+      if node.as(Var).name == "self"
+        @refused = "self read by a proc literal (hosted closure over self)" if @refused.nil?
+        return false
+      end
       @referenced << node.as(Var).name
     end
     if node.is_a?(Assign)
@@ -146,9 +149,8 @@ pub def make_fun(low : Lowerer, proc_type : Type, fun_ptr : Value, ctx_ptr : Val
   load_aligned(low, struct_type, closure_ptr).as(Value)
 end
 
-# The hosted `visit(ProcLiteral)` for a literal that captures nothing: the body is emitted as a fun of its own
-# (codegen_fun, the Iyi convention, internal), and the literal's value is `make_fun` of that fun and a null
-# context. The literal's value is the struct the proc type lowers to.
+# The literal function takes the heap context before its ordinary parameters
+# when semantic closure facts say it captures an enclosing local.
 pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   t = low.analysed.type_of?(node.as(ASTNode))
   raise "BUG: the analysed program has no type for a proc literal (hosted codegen.cr: visit(ProcLiteral))" if t.nil?
@@ -158,25 +160,29 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   end
   proc = proc_type.as(ProcInstanceType)
 
-  # The hosted closured check (codegen.cr: def.closure?): every read is of a local the body declares, and the
-  # body reads no block, nested literal, self or instance variable.
-  scan = ProcScan.new
+  # Keep the unsupported self and nested-scope forms explicitly refused.
+  scan = ProcScan.new(low.analysed)
   node.def.body.accept(scan)
   refused = scan.refused
   if refused
     refuse_port("proc literal: #{refused}")
   end
-  declared = [] of String
-  node.def.args.each do |arg|
-    declared << arg.name
-  end
-  scan.assigned.each do |name|
-    declared << name
-  end
-  scan.referenced.each do |name|
-    unless declared.includes?(name)
-      refuse_port("proc literal reads #{name}, a local of the enclosing code: a closure (hosted closured_vars, not ported)")
+  source = low.current_context
+  facts = source.closure_facts
+  frame = facts.nil? ? nil : facts.frame?(node.def)
+  closure = !frame.nil? && frame.closure
+  if frame.nil?
+    declared = [] of String
+    node.def.args.each { |arg| declared << arg.name }
+    scan.assigned.each { |name| declared << name }
+    scan.referenced.each do |name|
+      unless declared.includes?(name)
+        refuse_port("proc literal reads #{name}, a local of the enclosing code without closure facts")
+      end
     end
+  end
+  if closure && source.closure_ptr.nil?
+    refuse_port("proc literal captures locals but its enclosing closure context is missing")
   end
 
   class_owner : Type? = nil
@@ -201,15 +207,16 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
 
   name = proc_literal_name(low, node, proc_type)
   params = [] of IrType
+  params << low.module.types.ptr(0) if closure
   proc.arg_types.each do |at|
     params << low.typer.llvm_type(at)
   end
   ret_ir = low.typer.llvm_return_type(proc.return_type)
   fn_type = low.module.types.func(params, ret_ir)
-  fn = codegen_fun(low, name, node.def, nil, proc.arg_types, fn_type, ret_ir, proc.return_type, class_owner)
+  fn = codegen_fun(low, name, node.def, nil, proc.arg_types, fn_type, ret_ir, proc.return_type, class_owner, closure ? source : nil)
   if proc.return_type.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
   end
-  null_ctx = low.builder.const_null(low.module.types.ptr(0)).as(Value)
-  low.last = make_fun(low, proc_type, fn.as(Value), null_ctx)
+  ctx = closure ? source.closure_ptr.as(Value) : low.builder.const_null(low.module.types.ptr(0)).as(Value)
+  low.last = make_fun(low, proc_type, fn.as(Value), ctx)
 end

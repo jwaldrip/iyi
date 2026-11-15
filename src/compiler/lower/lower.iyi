@@ -51,6 +51,8 @@ import compiler/ir/verifier::{verify_function}
 import compiler/lower/primitives::{iyi_gc_arena?}
 import compiler/lower/gc_table::{define_gc_layouts}
 import compiler/lower/proc::{lower_proc_literal}
+import compiler/lower/closure::{allocate_closure}
+import compiler/semantic/closures::{ClosureFacts}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, to_rhs, type_id_of_value, type_id_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
@@ -168,7 +170,13 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   store_aligned(low, fn.param(1), argv_global)
   initialize_program_constants(low)
   emit_well_known_funs(low)
-  preallocate_locals(low, root, [] of String)
+  facts = ClosureFacts.new(analysed)
+  program_frame = facts.analyse_program(root)
+  low.current_context.closure_facts = facts
+  captured = [] of String
+  program_frame.closured.each { |var| captured << var.name }
+  preallocate_locals(low, root, captured)
+  allocate_closure(low, program_frame)
   low.needs_value = true
   codegen_node(low, root)
   codegen_return(low, ret_ir)
@@ -258,7 +266,7 @@ pub def emit_fun_def(low : Lowerer, node : FunDef, rec : LibFun, ret : Type) : N
   # the names asm refers to (`asm_referenced_fun?`), the personality on darwin (fun.cr:781), and `__iyi_new`, which the
   # allocation declares and which stays external in the hosted module. Any other fun is external.
   if name.starts_with?("__crystal_") || name.starts_with?("__iyi_")
-    if asm_referenced_fun?(name) || name == "__iyi_new" || (low.module.target.darwin? && name.starts_with?("__iyi_personality"))
+    if asm_referenced_fun?(name) || name == "__iyi_new" || (low.module.target.darwin? && name == abi_name(low, "personality"))
       fn.linkage = Linkage::External
     else
       fn.linkage = Linkage::Internal
@@ -631,10 +639,13 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
       refuse_reached_pool(low)
       return
     end
-    if expanded = low.analysed.expansions[call]?
+    expanded = low.analysed.expansions[call]? || call.expanded
+    if expanded
+      context = low.current_context
+      previous = context.macro_origin
+      context.macro_origin = previous || call.location
       codegen_node(low, expanded)
-    elsif expanded = call.expanded
-      codegen_node(low, expanded)
+      context.macro_origin = previous
     else
       codegen_call_node(low, call)
     end
@@ -748,6 +759,7 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     if exp.is_a?(Var)
       var = low.current_context.vars[exp.as(Var).name]?
       raise "BUG: variable #{exp.as(Var).name} is read before it is assigned (hosted codegen.cr: visit(PointerOf))" if var.nil?
+      raise "BUG: pointerof argument #{exp.as(Var).name} has no addressable slot" if var.as(LowerVar).already_loaded
       low.last = var.as(LowerVar).pointer
       return
     end
@@ -1016,7 +1028,7 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
   end
   var = low.current_context.vars[target.name]?
   v_var = var.as(LowerVar)
-  if v_var.type.full_name != vt.full_name
+  if v_var.closure_slot || v_var.type.full_name != vt.full_name
     # A value of another type than the variable goes through the casts slice (the hosted upcast into a union).
     assign(low, v_var.pointer, v_var.type, vt, v)
   elsif !vt.is_a?(NilType)
