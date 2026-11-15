@@ -754,6 +754,8 @@ module Iyi
         iyi_define_all_match_funs
         iyi_define_metaclass_fun
         iyi_define_all_artifact_const_reads
+        # Artifact object code may need this table even if the consumer has no cast of its own.
+        ensure_type_id_to_class_name_map if crystal_raise_cast_failed_fun
         iyi_define_msvc_catch_globals if @program.has_flag?("msvc")
       end
 
@@ -2092,16 +2094,22 @@ module Iyi
       end
     end
 
-    def type_id_to_class_name(type_id)
+    # Artifact units refer to the table in the consumer's main module. Define it
+    # there once, using the consumer's type IDs, even when no local cast needs it.
+    private def ensure_type_id_to_class_name_map
       map_name = type_id_to_class_name_map_name
-
-      global = @main_mod.globals[map_name]?
-      unless global
+      @main_mod.globals[map_name]? || begin
         global = @main_mod.globals.add(@main_llvm_typer.llvm_type(@program.string).array(@program.llvm_id.@ids.size), map_name)
         global.linkage = LLVM::Linkage::Internal if iyi_internalise?
         global.initializer = create_type_id_to_class_name_map
         global.global_constant = true
+        global
       end
+    end
+
+    def type_id_to_class_name(type_id)
+      map_name = type_id_to_class_name_map_name
+      global = ensure_type_id_to_class_name_map
 
       if @llvm_mod != @main_mod
         global = @llvm_mod.globals[map_name]?
