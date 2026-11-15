@@ -21,7 +21,7 @@ import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system, type_node_metaclass}
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries, NamedTupleInstanceType, TupleInstanceType, VirtualType}
-import compiler/types/types::{GenericModuleInstanceType}
+import compiler/types/types::{GenericModuleInstanceType, GenericTraitInstanceType}
 import compiler/types/types::{VirtualMetaclassType}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/intersect::{TypeIntersect}
@@ -617,6 +617,44 @@ pub class MainVisitor < TypeNodeHost
     nil
   end
 
+  # Hosted type_lookup.cr:189-208 reads an associated answer from the
+  # receiver's instantiated trait ancestor.
+  def trait_instance(owner : Type, trait_type : Type, seen : Set(String)) : GenericTraitInstanceType?
+    current = owner
+    current = current.as(VirtualType).base_type if current.is_a?(VirtualType)
+    current = current.as(MetaclassType).instance_type if current.is_a?(MetaclassType)
+    return nil if seen.includes?(current.full_name)
+    seen.add(current.full_name)
+    if current.is_a?(GenericTraitInstanceType) && current.as(GenericTraitInstanceType).generic_type == trait_type
+      return current.as(GenericTraitInstanceType)
+    end
+    parents = if current.is_a?(GenericInstanceType)
+                current.as(GenericInstanceType).parents
+              elsif current.is_a?(ModuleType)
+                current.as(ModuleType).parents
+              else
+                [] of Type
+              end
+    parents.each do |parent|
+      if found = trait_instance(parent, trait_type, seen)
+        return found
+      end
+    end
+    nil
+  end
+
+  def current_trait_instance(owner : Type?) : GenericTraitInstanceType?
+    return nil if owner.nil?
+    if cd = @current_def
+      if defining = @program.def_owner(cd)
+        if defining.is_a?(GenericTraitType)
+          return trait_instance(owner.as(Type), defining, Set(String).new)
+        end
+      end
+    end
+    nil
+  end
+
   # The type a type node names under `owner`. A generic instance binds its type
   # parameter names to its type arguments (`T` is UInt64 in Pointer(UInt64)), and a
   # generic written with those names (`Pointer(T)`) is instantiated, as the hosted
@@ -629,6 +667,10 @@ pub class MainVisitor < TypeNodeHost
         return o.as(MetaclassType).instance_type if o.is_a?(MetaclassType)
         return o.as(Type) unless o.is_a?(SemanticProgram)
       end
+    end
+    if instance = current_trait_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)
+      return found.as(Type) unless found.is_a?(LookupError)
     end
     if cd = @current_def
       if bound = @def_free_types[cd]?
@@ -737,6 +779,13 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : AssocTypeDecl) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  # Impl declarations are already registered; only their body is visited here.
+  def visit(node : ImplDef) : Bool
+    node.body.accept(self)
     set_type(node, @program.nil_type)
     false
   end
@@ -1643,6 +1692,22 @@ pub class MainVisitor < TypeNodeHost
             end
             return false
           end
+        end
+      end
+    end
+    if !node.global && node.names.size == 1
+      if trait_parent = current_trait_instance(@scope)
+        if bound = trait_parent.type_vars[node.names.first]?
+          if @in_type_args == 0
+            if meta = type_node_metaclass(bound)
+              set_type(node, meta)
+            else
+              return refuse(node, "expected a type with a metaclass, not #{bound.full_name}")
+            end
+          else
+            set_type(node, bound)
+          end
+          return false
         end
       end
     end
@@ -2997,20 +3062,21 @@ pub class MainVisitor < TypeNodeHost
   def collect_arm_levels(type : Type, name : String, walk : ArmWalk, levels : Array(Type), visited : Set(String)) : Nil
     actual = type
     actual = actual.as(VirtualType).base_type if actual.is_a?(VirtualType)
-    actual = actual.as(GenericInstanceType).generic_type if actual.is_a?(GenericInstanceType)
-    return nil unless actual.is_a?(ModuleType)
-    mod = actual.as(ModuleType)
-    return nil if visited.includes?(mod.full_name)
-    visited.add(mod.full_name)
-    levels << mod
+    declaring = actual.is_a?(GenericInstanceType) ? actual.as(GenericInstanceType).generic_type : actual
+    return nil unless declaring.is_a?(ModuleType)
+    mod = declaring.as(ModuleType)
+    return nil if visited.includes?(actual.full_name)
+    visited.add(actual.full_name)
+    levels << actual
     return nil unless MethodLookup.walks_parents?(mod, name)
+    parents = actual.is_a?(GenericInstanceType) ? actual.as(GenericInstanceType).parents : mod.parents
     if walk == ArmWalk::Modules
-      mod.parents.each do |parent|
-        break unless parent.is_a?(NonGenericModuleType) || parent.is_a?(GenericModuleType) || parent.is_a?(GenericModuleInstanceType) || parent.is_a?(TraitType)
+      parents.each do |parent|
+        break unless parent.is_a?(NonGenericModuleType) || parent.is_a?(GenericModuleType) || parent.is_a?(GenericModuleInstanceType) || parent.is_a?(GenericTraitInstanceType) || parent.is_a?(TraitType)
         collect_arm_levels(parent, name, walk, levels, visited)
       end
     else
-      mod.parents.each { |parent| collect_arm_levels(parent, name, walk, levels, visited) }
+      parents.each { |parent| collect_arm_levels(parent, name, walk, levels, visited) }
     end
     nil
   end
@@ -3048,7 +3114,8 @@ pub class MainVisitor < TypeNodeHost
     if call_node.obj.nil?
       has_candidates = false
       levels.each do |level|
-        if level.is_a?(ModuleType) && MethodLookup.own_defs(level.as(ModuleType), name)
+        declaring = level.is_a?(GenericInstanceType) ? level.as(GenericInstanceType).generic_type : level
+        if declaring.is_a?(ModuleType) && MethodLookup.own_defs(declaring.as(ModuleType), name)
           has_candidates = true
         end
       end
@@ -3225,8 +3292,9 @@ pub class MainVisitor < TypeNodeHost
     matches = [] of Match
     first_error : String? = nil
     levels.each do |level|
-      next unless level.is_a?(ModuleType)
-      mod = level.as(ModuleType)
+      declaring = level.is_a?(GenericInstanceType) ? level.as(GenericInstanceType).generic_type : level
+      next unless declaring.is_a?(ModuleType)
+      mod = declaring.as(ModuleType)
       defs = MethodLookup.own_defs(mod, name)
       next if defs.nil?
       ordered = [] of Def
@@ -3251,6 +3319,7 @@ pub class MainVisitor < TypeNodeHost
         @current_type = defining
         enter_file_scope(definition)
         match_owner = owner
+        match_owner = level if level.is_a?(GenericTraitInstanceType) || level.is_a?(GenericModuleInstanceType)
         if owner.is_a?(MetaclassType)
           instance = owner.as(MetaclassType).instance_type
           match_owner = instance if instance.is_a?(GenericInstanceType)
@@ -4894,7 +4963,6 @@ pub class MainVisitor < TypeNodeHost
       end
     end
 
-
     if node.obj.nil? && node.name != "super" && !node.expansion
       if global_fun = global_fun_named(node.name)
         own = [] of Def
@@ -4932,7 +5000,6 @@ pub class MainVisitor < TypeNodeHost
         end
       end
     end
-
 
     infer_class_vars = node.named_args.nil? && node.block_arg.nil?
     arms : Array(Match)? = nil
