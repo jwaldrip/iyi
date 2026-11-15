@@ -22,6 +22,7 @@ import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_not
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system, type_node_metaclass}
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries, NamedTupleInstanceType, TupleInstanceType, VirtualType}
 import compiler/types/types::{GenericModuleInstanceType}
+import compiler/types/types::{VirtualMetaclassType}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/intersect::{TypeIntersect}
 import compiler/types/indirection::{TypeIndirection}
@@ -1058,6 +1059,13 @@ pub class MainVisitor < TypeNodeHost
     end
     if node.name == "allocate" || node.name == "pointer_malloc" || node.name == "pointer_new"
       if sc = @scope
+        # Hosted main_visitor.cr:2899-2945 types a virtual allocation as its
+        # instance type, or NoReturn for an abstract virtual base.
+        if node.name == "allocate" && sc.is_a?(VirtualMetaclassType)
+          instance = sc.as(VirtualMetaclassType).instance_type
+          set_type(node, instance.abstract? ? @program.no_return_type : instance)
+          return false
+        end
         if sc.is_a?(MetaclassType)
           instance = sc.as(MetaclassType).instance_type
           if node.name == "pointer_malloc" && instance.is_a?(GenericClassType)
@@ -1863,6 +1871,9 @@ pub class MainVisitor < TypeNodeHost
       end
       @dead_depth = @dead_depth - 1 if dead_here
       @flow_dead = false
+      # A dead tail may contain an intentionally untyped narrowed-out read.
+      # It contributes no value to the return merge (hosted call.cr:697-714).
+      last_type = @program.no_return_type if dead_here && last_type.nil?
       if lt = last_type
         set_type(node, lt)
       end
@@ -4935,7 +4946,7 @@ pub class MainVisitor < TypeNodeHost
         return false
       end
     end
-    if matches.size > 1 || (!node.expansion && (rec_type.is_a?(UnionType) || rec_type.is_a?(VirtualType)))
+    if matches.size > 1 || (!node.expansion && (rec_type.is_a?(UnionType) || rec_type.is_a?(VirtualType) || rec_type.is_a?(VirtualMetaclassType)))
       return dispatch_call(node, matches)
     end
     if matches.empty?
@@ -4966,9 +4977,11 @@ pub class MainVisitor < TypeNodeHost
 
   # The receiver groups follow VirtualTypeLookup: subtype-owned definitions
   # precede the base, while each subtype searches only its own modules.
-  def virtual_dispatch_arms(node : Call, receiver : VirtualType, infer_class_vars : Bool) : Array(Match)?
+  def virtual_dispatch_arms(node : Call, receiver : VirtualType, infer_class_vars : Bool, metaclass : Bool = false) : Array(Match)?
     base = receiver.base_type
-    base_matches = lookup_call_arms(base, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    lookup_base = metaclass ? (type_node_metaclass(base) || base) : base
+    virtual_owner : Type = metaclass ? receiver.metaclass : receiver
+    base_matches = lookup_call_arms(lookup_base, virtual_owner, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
     trace_arg_dispatch(base, node.name, node.args, node, base_matches, nil)
     subtypes = TypeQueries.all_subclasses(base)
     if subtypes.empty?
@@ -4990,8 +5003,22 @@ pub class MainVisitor < TypeNodeHost
       i += 1
       next if subtype.is_a?(GenericClassType) || TypeQueries.unbound?(subtype)
       next if subtype.abstract? && TypeQueries.subclasses(subtype).empty?
-      owner = TypeQueries.virtual_type(subtype)
-      found = lookup_call_arms(subtype, owner, node.name, node.args, node, ArmWalk::Modules, infer_class_vars)
+      owner : Type = TypeQueries.virtual_type(subtype)
+      lookup_subtype : Type = subtype
+      if metaclass
+        owner = type_node_metaclass(owner) || owner
+        lookup_subtype = type_node_metaclass(subtype) || subtype
+      end
+      found = lookup_call_arms(lookup_subtype, owner, node.name, node.args, node, ArmWalk::Modules, infer_class_vars)
+      # Hosted method_lookup.cr:516-524: a subtype's incompatible initializer
+      # must not inherit a matching constructor from the virtual base.
+      if metaclass && node.name == "new" && found.empty? && subtype.is_a?(ModuleType)
+        initializers = subtype.as(ModuleType).defs["initialize"]?
+        if initializers && !initializers.empty?
+          refuse_uncovered(node, receiver.metaclass, node.name, node.args)
+          return nil
+        end
+      end
       if !subtype.abstract? && !base_matches.cover_all? && !found.cover_all?
         unless virtual_superclass_covered?(subtype, base, covered)
           refuse_uncovered(node, receiver, node.name, node.args)
@@ -5046,6 +5073,9 @@ pub class MainVisitor < TypeNodeHost
   def receiver_dispatch_arms(node : Call, receiver : Type, infer_class_vars : Bool) : Array(Match)?
     if receiver.is_a?(VirtualType)
       return virtual_dispatch_arms(node, receiver.as(VirtualType), infer_class_vars)
+    end
+    if receiver.is_a?(VirtualMetaclassType)
+      return virtual_dispatch_arms(node, receiver.as(VirtualMetaclassType).instance_type, infer_class_vars, true)
     end
     if receiver.is_a?(UnionType)
       result = [] of Match

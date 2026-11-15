@@ -363,6 +363,22 @@ prove_mutation "a constant assignment has type Nil" "$MAIN_VISITOR" \
       set_type(node, @program.nil_type)" \
   "      # Hosted main_visitor.cr:1084-1087: the assignment itself is Nil.
       set_type(node, val_type)" -- const_owner_at_expected || status=1
+strict_typing_at_expected() {
+  "$IYI" build -o "$WORK/strict_mutant" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/strict_mut_build.log" 2>&1 || {
+    body_build_failed "$WORK/strict_mut_build.log"
+    return $?
+  }
+  "$WORK/strict_mutant" "$strict_fixture" -o "$WORK/strict_native" --pipeline typed --prelude --probe-phase > "$WORK/strict_mut.log" 2>&1 || :
+  grep -Fq '[phase] bodies: pass' "$WORK/strict_mut.log"
+}
+strict_fixture="$REPO/bench/fixtures/sem_bodies_virtual_metaclass.iyi"
+prove_mutation "virtual metaclass calls dispatch to concrete metaclasses" "$MAIN_VISITOR" \
+  "    if receiver.is_a?(VirtualMetaclassType)" \
+  "    if false" -- strict_typing_at_expected || status=1
+strict_fixture="$REPO/bench/fixtures/sem_bodies_dead_return_tail.iyi"
+prove_mutation "an untyped unreachable tail does not erase returns" "$MAIN_VISITOR" \
+  "      last_type = @program.no_return_type if dead_here && last_type.nil?" \
+  "      nil" -- strict_typing_at_expected || status=1
 class_self_return_at_expected() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_class_self_return.iyi"
