@@ -895,6 +895,11 @@ pub class LibFun
   property external_var : Bool = false
   property external_type_spec : ASTNode? = nil
   property thread_local : Bool = false
+  # Hosted External's function annotations (fun.cr:842-855).
+  property naked : Bool = false
+  property no_inline : Bool = false
+  property always_inline : Bool = false
+  property returns_twice : Bool = false
   property primitive : String? = nil
   property previous : LibFun? = nil
 
@@ -3207,6 +3212,8 @@ pub class TopLevelVisitor < Visitor
   # Lib and global funs share the resolved signature read by call typing and
   # lowering. A global fun may also carry a body.
   def visit(node : FunDef) : Bool
+    annotations = @pending_annotations
+    @pending_annotations = [] of Annotation
     if node.body && !@current_type.is_a?(SemanticProgram)
       raise("can only declare fun at lib or global scope")
     end
@@ -3218,6 +3225,15 @@ pub class TopLevelVisitor < Visitor
       record.node = node
       record.owner = @current_type
       record.imports = @program.current_imports
+      annotations.each do |ann|
+        annotation_type = @program.lookup_type_path?(ann.path, @current_type)
+        if annotation_type
+          record.naked = true if annotation_type == @program.types["Naked"]
+          record.no_inline = true if annotation_type == @program.types["NoInline"]
+          record.always_inline = true if annotation_type == @program.types["AlwaysInline"]
+          record.returns_twice = true if annotation_type == @program.types["ReturnsTwice"]
+        end
+      end
       # iyi: the argument and return types resolved here, as the hosted pass resolves them when it
       # visits a fun (top_level_visitor.cr 2628-2680): the call typing and the lowering read them.
       node.args.each do |arg|

@@ -18,7 +18,7 @@ set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 export IYI_PATH="$REPO/src"
-IYI="$REPO/bin/iyi"
+IYI="${IYI_COMPILER:-$REPO/bin/iyi}"
 CRYSTAL="${CRYSTAL:-crystal}"
 TYPER_FILE="$REPO/src/compiler/lower/typer.iyi"
 TYPE_ID_FILE="$REPO/src/compiler/lower/type_id.iyi"
@@ -206,7 +206,7 @@ if [ "${LOWER_TYPES_RAISE:-0}" = 1 ]; then
 fi
 own_fails=$(awk -F'\t' '$1 == "BELOW FLOOR" || $1 == "RAISE THE FLOOR" || $1 == "NO FLOOR"' "$own_verdicts" | wc -l | tr -d ' ')
 if [ "${LOWER_TYPES_RAISE:-0}" = 1 ]; then
-  own_fails=0
+  own_fails=$(awk -F'\t' '$1 == "BELOW FLOOR"' "$own_verdicts" | wc -l | tr -d ' ')
 fi
 awk -F'\t' '$1 == "BELOW FLOOR" { printf "  BELOW FLOOR: %s identical %s, floor %s. A regression: restore the lowering, lower nothing.\n", $2, $3, $4 }
   $1 == "RAISE THE FLOOR" { printf "  RAISE THE FLOOR: %s identical %s, floor %s. Raise it (LOWER_TYPES_RAISE=1).\n", $2, $3, $4 }

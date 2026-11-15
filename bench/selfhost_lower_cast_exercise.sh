@@ -189,7 +189,11 @@ nilable_downcast_check() {
 }
 nilable_downcast_check || { echo "  baseline: nilable reference downcast differs"; status=1; }
 prove_mutation "nilable reference downcast reads the local slot instead of its value" "$REPO/src/compiler/lower/lower.iyi" \
-  '    down_source = last_value' '    down_source = pointer_of_value(low, node.obj, last_value, obj_type)' -- nilable_downcast_check || status=1
+  '    down_source = last_value' '    down_source = low.current_context.vars[node.obj.as(Var).name].pointer' -- nilable_downcast_check || status=1
+cast_fixture=compatible_virtual
+new_cast_check || { echo "  baseline: compatible virtual union differs"; status=1; }
+prove_mutation "compatible virtual union member is refused" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if !member && TypeQueries.reference_like?(value_type)' '  if false' -- new_cast_check || status=1
 cast_fixture=tuple_upcast
 new_cast_check || { echo "  baseline: tuple widening differs"; status=1; }
 prove_mutation "tuple widening is refused" "$REPO/src/compiler/lower/cast.iyi" \

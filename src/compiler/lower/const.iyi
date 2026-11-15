@@ -20,7 +20,7 @@ module compiler/lower/const
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
 import compiler/syntax/token::{NumberKind}
-import compiler/ir/values::{Value}
+import compiler/ir/values::{Value, u64_as_i64}
 import compiler/ir/inst::{Inst, Op, Block, CallConv, CallAux}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/types::{IrType}
@@ -149,7 +149,14 @@ pub def literal_of_type(low : Lowerer, value : ASTNode, typ : Type) : Value?
       return low.builder.const_float(low.typer.llvm_type(typ), text.to_f)
     end
     if typ.full_name == "Int128" || typ.full_name == "UInt128"
-      refuse_port("lower: a 128-bit integer literal is not ported yet: the literal path that emits int128 (hosted const.cr: read_const)")
+      result = MathInterpreter.new.interpret(value)
+      unless result.is_a?(MathValue)
+        refuse_port("lower: a 128-bit integer literal exceeds the math interpreter's supported range (hosted const.cr: read_const)")
+      end
+      bits = MathInterpreter.bits_of(result.as(MathValue).value)
+      lo = u64_as_i64((bits & 18446744073709551615_u128).to_u64)
+      hi = u64_as_i64((bits >> 64).to_u64)
+      return low.builder.const_wide(low.typer.llvm_type(typ), hi, lo)
     end
     if typ.full_name == "UInt64"
       unsigned_value = text.to_u64
