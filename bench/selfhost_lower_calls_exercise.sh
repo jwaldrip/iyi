@@ -945,6 +945,10 @@ prove_mutation "an inherited dispatch arm loses its defining owner" "$REPO/src/c
   '        return owner if low.analysed.program.def_owner(target)' '        return owner if false' -- lower_calls_check || status=1
 prove_mutation "a recursive named call targets an untyped clone" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '@call_target_defs[call] = frame.definition' '@call_target_defs[call] = target_def' -- lower_calls_check || status=1
+prove_mutation "a yielded block loses its writer's narrowed-out locals" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '@untyped_locals = writer_untyped.dup' '@untyped_locals = Hash(String, String).new' -- lower_calls_check || status=1
+prove_mutation "a repeated block loses its narrowed-out entry locals" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '@untyped_locals = entry_untyped_locals.dup' '@untyped_locals = Hash(String, String).new' -- lower_calls_check || status=1
 prove_mutation "a nil receiver is not accepted" "$REPO/src/compiler/lower/call.iyi" \
   '  return owner if owner.is_a?(NilType)' '  pending_visit_node("nil receiver") if owner.is_a?(NilType)' -- lower_calls_check || status=1
 prove_mutation "an aggregate dispatch argument remains a pointer" "$REPO/src/compiler/lower/call.iyi" \
