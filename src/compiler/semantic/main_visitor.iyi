@@ -4685,7 +4685,9 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def infer_constructor_receiver(node : Call, owner : Type, definition : Def) : Type?
-    generic = CallMatch.inferable_generic(@program, owner, @program.def_owner(definition), definition, node.args.size)
+    defining = @program.def_owner(definition)
+    return nil if defining.nil?
+    generic = CallMatch.inferable_generic(@program, owner, defining, definition, node.args.size)
     return nil if generic.nil?
     arg_types = [] of Type
     node.args.each do |arg|
@@ -4696,6 +4698,31 @@ pub class MainVisitor < TypeNodeHost
     ts = type_node_system(@program)
     bound = FreeBindings.of_def(definition, arg_types, ts, generic.as(GenericClassType).type_vars)
     return nil if bound.nil?
+    # Hosted Type#restrict(Path) binds a type variable of an uninstantiated
+    # generic from the block output (restrictions.cr:917-933, call.cr:1472-1493).
+    if blk = node.block
+      if block_arg = definition.block_arg
+        if notation = block_arg.restriction.as?(ProcNotation)
+          if output = notation.output
+            names = generic.as(GenericClassType).type_vars
+            if FreeBindings.unbound?(output, names, bound.as(Hash(String, Type)))
+              inputs = [] of Type
+              input_nodes = notation.inputs || [] of ASTNode
+              input_nodes.each do |input|
+                return nil if input.is_a?(Splat) || FreeBindings.unbound?(input, names, bound.as(Hash(String, Type)))
+                resolved = ArgRestriction.lookup_free(ts, defining.as(ModuleType), input, owner, bound.as(Hash(String, Type)))
+                return nil if resolved.is_a?(LookupError)
+                inputs << resolved.as(Type)
+              end
+              block_type = type_block_before_body(blk, inputs, @current_type)
+              return nil if block_type.nil?
+              return nil unless FreeBindings.bind(output, block_type.as(Type), names, bound.as(Hash(String, Type)))
+              set_type(blk, block_type.as(Type))
+            end
+          end
+        end
+      end
+    end
     ordered = [] of Type
     generic.as(GenericClassType).type_vars.each do |name|
       arg_type = bound.as(Hash(String, Type))[name]?
@@ -4851,7 +4878,7 @@ pub class MainVisitor < TypeNodeHost
 
 
 
-    infer_class_vars = node.named_args.nil? && node.block.nil? && node.block_arg.nil?
+    infer_class_vars = node.named_args.nil? && node.block_arg.nil?
     arms : Array(Match)? = nil
     if node.expansion && node.obj.nil?
       current = @current_def
