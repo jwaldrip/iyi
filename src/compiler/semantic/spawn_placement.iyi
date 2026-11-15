@@ -1,11 +1,11 @@
 module compiler/semantic/spawn_placement
 
-import compiler/syntax/ast::{ASTNode, Assign, Block, BoolLiteral, Break, Call, CharLiteral, ClassDef, Def, Expressions, FunDef, If, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, ModuleDef, Next, NilLiteral, NodeMap, Nop, Not, NumberLiteral, Path, Primitive, ProcLiteral, Return, Self, StringLiteral, SymbolLiteral, Var, While, Yield}
+import compiler/syntax/ast::{ASTNode, Assign, Block, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, Def, Expressions, FunDef, If, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, ModuleDef, Next, NilableCast, NilLiteral, NodeMap, Nop, Not, NumberLiteral, Path, Primitive, ProcLiteral, Return, Self, StringLiteral, SymbolLiteral, Var, While, Yield}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{MetaclassType, ModuleType, NoReturnType, SemanticProgram, Type}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/closures::{ClosureFacts, ClosureFrame}
-import compiler/semantic/share::{share_witness, share_witness_for_self}
+import compiler/semantic/share::{ShareFacts}
 import compiler/types/types::{VirtualMetaclassType}
 
 pub enum SpawnTarget
@@ -234,6 +234,7 @@ pub class SpawnAnalysis
 
   def self.analyse(visitor : MainVisitor, root : ASTNode) : SpawnAnalysis
     analysis = SpawnAnalysis.new
+    share = ShareFacts.new
     threads = false
     if group = visitor.program.types["IyiGroup"]?
       if group.is_a?(ModuleType)
@@ -241,13 +242,13 @@ pub class SpawnAnalysis
       end
     end
 
-    root.accept(SpawnSiteCollector.new(visitor, analysis, root, nil, nil, threads, true))
+    root.accept(SpawnSiteCollector.new(visitor, analysis, share, root, nil, nil, threads, true))
     seen = Set(UInt64).new
     visitor.typed_instances.each do |instance|
       definition = instance.definition
       next if seen.includes?(definition.node_id)
       seen.add(definition.node_id)
-      definition.body.accept(SpawnSiteCollector.new(visitor, analysis, root, definition, instance.self_type, threads, false))
+      definition.body.accept(SpawnSiteCollector.new(visitor, analysis, share, root, definition, instance.self_type, threads, false))
     end
     # Constants used from imported units need not occur in the entry tree.
     constants = visitor.target_consts.values
@@ -256,7 +257,7 @@ pub class SpawnAnalysis
       value = constant.value
       next if seen_constants.includes?(value.node_id)
       seen_constants.add(value.node_id)
-      value.accept(SpawnSiteCollector.new(visitor, analysis, value, nil, nil, threads, true))
+      value.accept(SpawnSiteCollector.new(visitor, analysis, share, value, nil, nil, threads, true))
     end
     analysis.sort_sites
 
@@ -281,7 +282,7 @@ end
 class SpawnSiteCollector < Visitor
   @facts : ClosureFacts? = nil
 
-  def initialize(@visitor : MainVisitor, @analysis : SpawnAnalysis, @root : ASTNode, @in_def : Def?, @self_type : Type?, @threads : Bool, @root_scope : Bool)
+  def initialize(@visitor : MainVisitor, @analysis : SpawnAnalysis, @share : ShareFacts, @root : ASTNode, @in_def : Def?, @self_type : Type?, @threads : Bool, @root_scope : Bool)
   end
 
   def visit_any(node : ASTNode) : Bool
@@ -443,7 +444,7 @@ class SpawnSiteCollector < Visitor
     if frame.nil?
       return SpawnVerdict.new(SpawnTarget::Unproven, placement, "the spawn block has no closure frame", site)
     end
-    walk = SpawnWitnessWalk.new(@visitor, facts.as(ClosureFacts), frame.as(ClosureFrame), @in_def, @self_type)
+    walk = SpawnWitnessWalk.new(@visitor, facts.as(ClosureFacts), @share, frame.as(ClosureFrame), @in_def, @self_type)
     walk.walk(literal.as(ProcLiteral).def.body)
     if reason = walk.reason
       return SpawnVerdict.new(SpawnTarget::AsWritten, placement, reason, site)
@@ -456,16 +457,16 @@ class SpawnSiteCollector < Visitor
   end
 end
 
-# This walk deliberately has a whitelist. A witness is valid only when the
-# reference is retained in the body the hosted cleanup examines. A missing
-# witness is not a Share proof.
+# This whitelist follows references retained by hosted cleanup. Its Cast and
+# NilableCast transforms keep the runtime operand, not the target type syntax.
+# A missing witness is not a Share proof.
 class SpawnWitnessWalk
   getter reason : String? = nil
   getter unsupported : String? = nil
   @frames : Array(ClosureFrame)
   @allow_expansions : Bool = true
 
-  def initialize(@visitor : MainVisitor, @facts : ClosureFacts, @proc_frame : ClosureFrame, @in_def : Def?, @self_type : Type?)
+  def initialize(@visitor : MainVisitor, @facts : ClosureFacts, @share : ShareFacts, @proc_frame : ClosureFrame, @in_def : Def?, @self_type : Type?)
     @frames = [@proc_frame] of ClosureFrame
   end
 
@@ -521,7 +522,7 @@ class SpawnWitnessWalk
       if binding = parent.resolve?(node.name)
         return unless binding.captured
         type = binding.variable.type
-        if witness = share_witness(type)
+        if witness = @share.witness(type)
           @reason = "the block captures `#{node.name} : #{type}`, which is not Share: #{witness}"
         end
       end
@@ -535,7 +536,7 @@ class SpawnWitnessWalk
     return unless definition && type
     return if type.is_a?(MetaclassType) || type.is_a?(VirtualMetaclassType)
     return if @visitor.program.def_owner(definition).is_a?(SemanticProgram)
-    if witness = share_witness_for_self(type)
+    if witness = @share.witness_for_self(type)
       @reason = "the block captures `self : #{type}`, which is not Share: #{witness}"
     end
   end
@@ -707,13 +708,17 @@ class SpawnWitnessWalk
       else
         unavailable("missing proc frame")
       end
+    elsif node.is_a?(Cast)
+      walk(node.as(Cast).obj)
+    elsif node.is_a?(NilableCast)
+      walk(node.as(NilableCast).obj)
     elsif node.is_a?(Not)
       walk(node.as(Not).exp)
     elsif node.is_a?(Path)
       path = node.as(Path)
       if @visitor.target_const?(path)
         if type = @visitor.type_of?(path)
-          if witness = share_witness(type)
+          if witness = @share.witness(type)
             @reason = "the block names the constant `#{path} : #{type}`, which is not Share: #{witness}"
           end
         end
