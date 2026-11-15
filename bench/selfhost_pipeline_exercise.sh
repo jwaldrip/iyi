@@ -347,6 +347,23 @@ else
   status=1
 fi
 echo
+echo "== 4b. Imported unit class-variable array"
+imported_array_check() {
+  local tool="$1"
+  local fixture="$REPO/bench/fixtures/pipeline_unit_cvar_array.iyi"
+  rm -f "$WORK/unit_array"
+  IYI_PATH="$REPO/src" "$tool" "$fixture" -o "$WORK/unit_array" --pipeline typed --prelude --probe-phase > "$WORK/unit_array.log" 2>&1 || return 1
+  codesign -v --strict "$WORK/unit_array" > /dev/null 2>&1 || return 1
+  timeout 30 "$WORK/unit_array" > "$WORK/unit_array.out" 2>&1
+}
+if imported_array_check "$WORK/tool"; then
+  echo "  imported array initializes and retains its contents"
+else
+  echo "  FAIL: imported class-variable array did not run"
+  status=1
+fi
+
+echo
 echo "== 5. Mutation proofs: the gate must catch each patch"
 # The check rebuilds the tool from the patched source and requires: one fixture that links and runs equal, a
 # fixture that must exit nonzero and write nothing (the refusal), and the typed build of a program with its
@@ -365,6 +382,17 @@ pipeline_check() {
   [ ! -e "$WORK/mut_b" ] || return 1
   return 0
 }
+
+imported_array_mutation_check() {
+  build_tool "$TOOL_SRC" "$WORK/unit_array_tool" || return 1
+  imported_array_check "$WORK/unit_array_tool"
+}
+prove_mutation "an existing allocator declaration is defined a second time" "$LOWER_SRC" \
+  'fn = declared_or_defined_fun(low, name, fun_def_type(low, rec, ret))' \
+  'fn = low.module.define_function(name, fun_def_type(low, rec, ret))' -- imported_array_mutation_check || status=1
+prove_mutation "a unit module wrapper does not type its class-variable initializer" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  $'    # semantic_visitor.cr:1811-1828 visits either resolved module body.\n    if t && t.is_a?(ModuleType)' \
+  $'    # semantic_visitor.cr:1811-1828 visits either resolved module body.\n    if t && t.is_a?(ClassType)' -- imported_array_mutation_check || status=1
 
 # The lowering table names and counts no Primitive-annotated def. The hosted compiler lowers a primitive at its call
 # site, so a probe of such a def's body is a refusal row for a def that is never a function of its own. The hello
