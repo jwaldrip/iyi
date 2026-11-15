@@ -4554,6 +4554,18 @@ pub class MainVisitor < TypeNodeHost
     end
     @call_receivers.delete(node)
     @needs_type_filters = saved_call_ntf
+    # Total analysis must not pass an untyped child to overload matching or
+    # its diagnostics, both of which require types for every argument.
+    if @total
+      node.args.each do |arg|
+        return untyped(node, "an argument was not typed: #{arg}") if child_type(arg).nil?
+      end
+      if named = node.named_args
+        named.each do |arg|
+          return untyped(node, "an argument was not typed: #{arg.value}") if child_type(arg.value).nil?
+        end
+      end
+    end
     if node.obj.nil? && node.name == "super"
       return visit_super(node)
     end
