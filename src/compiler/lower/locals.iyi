@@ -99,8 +99,10 @@ pub def preallocate_locals(low : Lowerer, body : ASTNode, skip : Array(String)) 
     if unions = low.current_context.var_unions
       t = unions[name]? || t
     end
-    next if t.nil? || t.is_a?(VoidType) || t.is_a?(NoReturnType)
-    type = t.as(Type)
+    # Hosted codegen.cr:2570 assigns Nil storage to a local whose type was
+    # never reached, including a synthetic binding in an unreachable branch.
+    type = t.nil? ? low.analysed.program.nil_type : t.as(Type)
+    next if type.is_a?(VoidType) || type.is_a?(NoReturnType)
     pointer = low.alloca(low.typer.llvm_type(type), name)
     low.current_context.vars[name] = LowerVar.new(pointer, type, false)
     if r = resets
