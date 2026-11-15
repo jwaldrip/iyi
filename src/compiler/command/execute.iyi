@@ -99,6 +99,10 @@ pub class CommandExecutor
     compile(opts, opts.output_filename.as(String))
   end
 
+  def self.remove_temporary(path : String) : Nil
+    File.delete(path) if File.exists?(path)
+  end
+
   def self.run(opts : CompilerOptions) : Int32
     if reason = unsupported(opts)
       return fail(reason)
@@ -110,12 +114,16 @@ pub class CommandExecutor
     if File.exists?(temp) || File.symlink?(temp)
       return fail("temporary output already exists: #{temp}")
     end
-    defer File.delete(temp) if File.exists?(temp)
+    defer remove_temporary(temp)
     status = compile(opts, temp)
-    return status unless status == 0
+    unless status == 0
+      remove_temporary(temp)
+      return status
+    end
     STDOUT.flush
     STDERR.flush
     child = Process.run(temp, opts.arguments, capture: false)
+    remove_temporary(temp)
     if child.is_a?(ProcessResult)
       if child.signal != 0
         STDERR.puts "iyi: the program was killed by signal #{child.signal}"
