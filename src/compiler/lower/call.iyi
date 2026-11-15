@@ -773,7 +773,13 @@ pub def discard_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Ni
   if o.is_a?(Var)
     vt = low.analysed.type_of?(o)
     raise "BUG: the analysed program has no type for receiver variable #{o.name} (hosted call.cr: prepare_call_args)" if vt.nil?
-    return if passed_by_value?(vt.as(Type))
+    if passed_by_value?(vt.as(Type))
+      if slot = low.current_context.vars[o.as(Var).name]?
+        # A narrowed local still needs the hosted downcast, even when the
+        # inlined body ignores self: it emits the union payload address.
+        return if slot.type.full_name == vt.as(Type).full_name
+      end
+    end
   end
   wants = low.needs_value
   prev_unused = low.receiver_unused
@@ -1251,7 +1257,7 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
     elsif at.full_name != target_type.full_name && !at.is_a?(NoReturnType) && at.implements?(target_type)
       converted = upcast(low, passed, at, target_type)
     else
-      passed = pointer_of_value(low, arg_node, passed, at) if at.is_a?(MixedUnionType)
+      passed = pointer_of_value(low, arg_node, passed, at) if at.is_a?(MixedUnionType) && at.full_name != target_type.full_name
       converted = downcast(low, passed, target_type, at, true)
     end
     if passed_by_value?(target_type) && converted.type.pointer?
