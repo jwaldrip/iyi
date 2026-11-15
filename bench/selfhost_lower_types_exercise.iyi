@@ -207,7 +207,7 @@ module BenchSelfhostLowerTypesExercise
     if mm.nil?
       out = out + "type_id: -\ntype_range: -\nmetaclass_id: -\n"
     else
-      pair = mm.as(Array(Int32))
+      pair = mm.as(Tuple(Int32, Int32))
       out = out + "type_id: #{pair[1]}\ntype_range: #{pair[0]} #{pair[1]}\n"
       meta = ids.metaclass_id(t)
       out = out + "metaclass_id: #{meta.nil? ? "-" : meta.to_s}\n"

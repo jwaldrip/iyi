@@ -21,29 +21,26 @@ import compiler/types/types::{GenericInstanceType, GenericClassInstanceType, Typ
 import compiler/lower/typer::{primitive_kind}
 
 pub class LowerTypeIds
-  @ids : Hash(String, Array(Int32))
+  @ids : Hash(String, Tuple(Int32, Int32))
   @id_to_metaclass : Hash(Int32, Int32)
   @next_id : Int32
   @names : Hash(Int32, String)
   @types : Array(Type)
 
   def initialize
-    @ids = Hash(String, Array(Int32)).new
+    @ids = Hash(String, Tuple(Int32, Int32)).new
     @id_to_metaclass = Hash(Int32, Int32).new
     @next_id = 0
     @names = Hash(Int32, String).new
     @types = [] of Type
   end
 
-  # min_max exposes mutable ranges, so each fork owns its pairs as well as
-  # its maps. A probe must not change the seed or a sibling through a pair.
+  # Range pairs are immutable tuples, so copies of the map can share them.
   def fork : LowerTypeIds
-    ids = Hash(String, Array(Int32)).new
-    @ids.each { |name, pair| ids[name] = pair.dup }
-    LowerTypeIds.new(ids, @id_to_metaclass.dup, @next_id, @names.dup, @types.dup)
+    LowerTypeIds.new(@ids.dup, @id_to_metaclass.dup, @next_id, @names.dup, @types.dup)
   end
 
-  def initialize(@ids : Hash(String, Array(Int32)), @id_to_metaclass : Hash(Int32, Int32), @next_id : Int32, @names : Hash(Int32, String), @types : Array(Type))
+  def initialize(@ids : Hash(String, Tuple(Int32, Int32)), @id_to_metaclass : Hash(Int32, Int32), @next_id : Int32, @names : Hash(Int32, String), @types : Array(Type))
   end
 
   # The hosted `LLVMId#initialize`: number every class reachable from *root* (Object), then
@@ -55,7 +52,7 @@ pub class LowerTypeIds
   end
 
   # The hosted `min_max_type_id`: the pair of a numbered type, or nil.
-  def min_max(type : Type) : Array(Int32)?
+  def min_max(type : Type) : Tuple(Int32, Int32)?
     @ids[type.full_name]?
   end
 
@@ -233,7 +230,7 @@ pub class LowerTypeIds
 
   def put(type : Type, min : Int32, max : Int32) : Nil
     @types << type unless @ids[type.full_name]?
-    @ids[type.full_name] = [min, max]
+    @ids[type.full_name] = {min, max}
     @names[max] = type.full_name
     nil
   end

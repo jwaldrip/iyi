@@ -61,11 +61,16 @@ type_id_fork_ok() {
   "$WORK/fork_probe" > "$WORK/fork_probe.out" 2>&1
 }
 if type_id_fork_ok; then
-  prove_mutation "type-id probe forks share mutable range pairs" "$TYPE_ID_FILE" \
-    '@ids.each { |name, pair| ids[name] = pair.dup }' \
-    '@ids.each { |name, pair| ids[name] = pair }' -- type_id_fork_ok || status=1
+  prove_mutation "type-id probe forks share the baseline map" "$TYPE_ID_FILE" \
+    'LowerTypeIds.new(@ids.dup, @id_to_metaclass.dup, @next_id, @names.dup, @types.dup)' \
+    'LowerTypeIds.new(@ids, @id_to_metaclass.dup, @next_id, @names.dup, @types.dup)' -- type_id_fork_ok || status=1
 else
   echo "  FAIL: type-id fork baseline failed"
+  status=1
+fi
+if "$IYI" build --no-codegen "$REPO/bench/fixtures/lower_type_id_tuple_write.iyi" > "$WORK/tuple_write.log" 2>&1 ||
+   ! grep -Fq "undefined method '[]=' for Tuple(Int32, Int32)" "$WORK/tuple_write.log"; then
+  echo "  FAIL: tuple element assignment was not rejected"
   status=1
 fi
 
