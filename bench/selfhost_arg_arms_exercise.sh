@@ -52,6 +52,11 @@ check_arms() {
   cmp -s "$WORK/numeric-ambiguous" "$WORK/expected" || return 1
   "$IYI" run "$REPO/bench/fixtures/sem_arms_numeric_ambiguous.iyi" > "$WORK/ambiguous-oracle" 2>&1 && return 1
   grep -Fq 'ambiguous call, implicit cast of 1 matches all of Int64, UInt64' "$WORK/ambiguous-oracle" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_numeric_parent.iyi" "$REPO/src" widen > "$WORK/numeric-parent" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'Child#widen:Int64' > "$WORK/expected"
+  cmp -s "$WORK/numeric-parent" "$WORK/expected" || return 1
+  "$IYI" run "$REPO/bench/fixtures/sem_arms_numeric_parent.iyi" > "$WORK/numeric-parent-oracle" 2>&1 || return 1
+  grep -Fxq 1 "$WORK/numeric-parent-oracle" || return 1
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_unresolved.iyi" "$REPO/src" consume > "$WORK/unresolved" || return 1
   printf '%s\n' 'arms=1 cover=true' 'main#consume:Int32' > "$WORK/expected"
   cmp -s "$WORK/unresolved" "$WORK/expected" || return 1
@@ -104,4 +109,7 @@ prove_mutation 'autocast compares every viable overload' "$REPO/src/compiler/sem
 prove_mutation 'a single successful autocast covers its call' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '    return Matches.new(widened.matches, true) if widened.error.nil? && widened.matches.size == 1' \
   '    return Matches.new(widened.matches, false) if widened.error.nil? && widened.matches.size == 1' -- check_arms || status=1
+prove_mutation 'autocast stops after the first matching owner level' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      if signature.autocast_nodes && matches.size > level_start' \
+  '      if false' -- check_arms || status=1
 exit "$status"

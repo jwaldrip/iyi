@@ -3032,6 +3032,9 @@ pub class MainVisitor < TypeNodeHost
           return Matches.new(matches, true) if arm.exact && signature.autocast_nodes.nil?
         end
       end
+      if signature.autocast_nodes && matches.size > level_start
+        return Matches.new(matches, true)
+      end
       return Matches.new(matches, CallCover.all?(signature, matches)) if walk == ArmWalk::Modules && matches.size > level_start
       return Matches.new(matches, true) if signature.autocast_nodes.nil? && CallCover.all?(signature, matches)
     end
