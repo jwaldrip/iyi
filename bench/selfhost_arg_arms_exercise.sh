@@ -75,6 +75,17 @@ check_arms() {
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_block_unbound.iyi" "$REPO/src" produce > "$WORK/block-unbound" || return 1
   printf '%s\n' 'arms=0 cover=false' 'error=undefined constant V' > "$WORK/expected"
   cmp -s "$WORK/block-unbound" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_bare_splat_named.iyi" "$REPO/src" pick > "$WORK/bare" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'Bare.class#pick:Int32' > "$WORK/expected"
+  cmp -s "$WORK/bare" "$WORK/expected" || return 1
+  for kind in missing excess; do
+    "$WORK/probe" "$REPO/bench/fixtures/sem_arms_bare_splat_${kind}.iyi" "$REPO/src" pick > "$WORK/bare-$kind" || return 1
+    printf '%s\n' 'arms=0 cover=false' > "$WORK/expected"
+    cmp -s "$WORK/bare-$kind" "$WORK/expected" || return 1
+  done
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_splat_tail.iyi" "$REPO/src" pick > "$WORK/named-tail" || return 1
+  printf '%s\n' 'arms=0 cover=false' 'error=parameters after a named splat are not ported' > "$WORK/expected"
+  cmp -s "$WORK/named-tail" "$WORK/expected" || return 1
 }
 
 check_arms || exit 1
@@ -124,4 +135,10 @@ prove_mutation 'autocast stops after the first matching owner level' "$REPO/src/
 prove_mutation 'a supplied block can bind free names in its output' "$REPO/src/compiler/semantic/match.iyi" \
   '                    deferred = FreeBindings.mentions?(output, [free_names[j]])' \
   '                    deferred = false' -- check_arms || status=1
+prove_mutation 'bare splats allow named-only trailing parameters' "$REPO/src/compiler/semantic/match.iyi" \
+  '      if count > k + 1 && !definition.args[k].name.empty?' \
+  '      if count > k + 1' -- check_arms || status=1
+prove_mutation 'bare splats reject excess positional arguments' "$REPO/src/compiler/semantic/match.iyi" \
+  '    if splat && definition.args[splat.as(Int32)].name.empty? && given > prefix' \
+  '    if false' -- check_arms || status=1
 exit "$status"

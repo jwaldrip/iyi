@@ -132,7 +132,9 @@ pub class CallMatch
     splat = definition.splat_index
     if splat
       k = splat.as(Int32)
-      return MatchAttempt.failed("parameters after a splat are not ported") if count > k + 1
+      if count > k + 1 && !definition.args[k].name.empty?
+        return MatchAttempt.failed("parameters after a named splat are not ported")
+      end
     end
     splat_restriction = CallMatch.splat_restriction_of(definition, splat)
     dsplat = definition.double_splat
@@ -146,6 +148,9 @@ pub class CallMatch
     given = signature.arg_types.size
     prefix = splat ? splat.as(Int32) : count
     return MatchAttempt.none if !splat && given > count
+    if splat && definition.args[splat.as(Int32)].name.empty? && given > prefix
+      return MatchAttempt.none
+    end
     splat_types = [] of Type
     if splat
       si = prefix
