@@ -1919,12 +1919,8 @@ class Isel
     @fn.attrs.any? { |a| a.name == "naked" }
   end
 
-  # A naked function (SPEC 2.2 step 3): the body is the assembled template alone. Its arguments stay where the
-  # convention left them, so nothing is bound for them and no prologue, epilogue, probe or save is emitted. The body
-  # is one block holding one void inline asm call with no operands, and a terminator: `unreachable`, or the `ret`
-  # the hosted compiler writes after the template (the prelude's context switch and fiber entry end `ret void`
-  # and `ret i64 0`). The template returns itself, so that `ret` is never reached; it is emitted as LLVM emits it,
-  # the constant moved to the result register and a bare return, with no epilogue.
+  # Naked bodies are only the inline asm: no compiler-generated prologue,
+  # epilogue or return may execute after the template.
   def run_naked : MFunction
     @mf.naked = true
     @fn.blocks.each do |b|
@@ -1940,7 +1936,6 @@ class Isel
     @fn.blocks[0].insts.each do |i|
       next if i.op == Op::Unreachable
       if i.op == Op::Ret
-        lower_ret(i)
         next
       end
       unless asm_call?(i)
