@@ -10,7 +10,7 @@
 module compiler/loader
 
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Expressions, ImportDecl, Require, Call, StringLiteral, MacroIf, MacroFor, MacroLiteral}
+import compiler/syntax/ast::{ASTNode, Expressions, ImportDecl, Require, Call, StringLiteral, MacroIf, MacroFor, MacroLiteral, ClassDef, ModuleDef, TraitDef, ImplDef, VisibilityModifier}
 import compiler/macros/engine::{MacroEngine}
 
 lib LibC
@@ -243,6 +243,16 @@ pub class Loader
       node.as(Expressions).expressions.each do |e|
         collect_import_paths(e, into, engine, filename, user_imports)
       end
+    elsif node.is_a?(ClassDef)
+      collect_import_paths(node.as(ClassDef).body, into, engine, filename, user_imports)
+    elsif node.is_a?(ModuleDef)
+      collect_import_paths(node.as(ModuleDef).body, into, engine, filename, user_imports)
+    elsif node.is_a?(TraitDef)
+      collect_import_paths(node.as(TraitDef).body, into, engine, filename, user_imports)
+    elsif node.is_a?(ImplDef)
+      collect_import_paths(node.as(ImplDef).body, into, engine, filename, user_imports)
+    elsif node.is_a?(VisibilityModifier)
+      collect_import_paths(node.as(VisibilityModifier).exp, into, engine, filename, user_imports)
     end
   end
 

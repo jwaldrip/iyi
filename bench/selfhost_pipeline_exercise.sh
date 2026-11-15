@@ -111,7 +111,7 @@ for fixture in $fixtures; do
   if [ "$ts" -eq 0 ] && [ "$reached" = "link" ]; then
     prelude=empty
     hosted_path="$REPO/src"
-    if [ "$name" = lowglob_cvar_lazy ]; then
+    if [ "$name" = lowglob_cvar_lazy ] || [ "$name" = lowglob_cvar_lazy_aggregate ]; then
       prelude=iyi/prelude
       hosted_path="$REPO/bench/fixtures/lowglob_abi:$hosted_path"
     fi
@@ -389,6 +389,33 @@ else
   status=1
 fi
 
+echo "== 4d. Nested imports preserve dependency initialization"
+nested_import_check() {
+  local tool="$1"
+  rm -f "$WORK/nested_import"
+  IYI_PATH="$REPO/src" "$tool" "$REPO/bench/fixtures/pipeline_import_nested.iyi" -o "$WORK/nested_import" --pipeline typed --prelude --probe-phase > "$WORK/nested_import.log" 2>&1 || return 1
+  codesign -v --strict "$WORK/nested_import" > /dev/null 2>&1 || return 1
+  timeout 30 "$WORK/nested_import" > "$WORK/nested_import.out" 2>&1
+}
+if IYI_PATH="$REPO/src" "$IYI" run "$REPO/bench/fixtures/pipeline_import_nested.iyi" > "$WORK/nested_import.hosted" 2>&1 && nested_import_check "$WORK/tool"; then
+  echo "  nested class and module imports initialize their shared dependency"
+else
+  echo "  FAIL: nested import initializer"
+  status=1
+fi
+for bad in pipeline_import_cycle pipeline_import_missing; do
+  rm -f "$WORK/$bad"
+  IYI_PATH="$REPO/src" "$IYI" run "$REPO/bench/fixtures/$bad.iyi" > "$WORK/$bad.hosted" 2>&1; hs=$?
+  IYI_PATH="$REPO/src" "$WORK/tool" "$REPO/bench/fixtures/$bad.iyi" -o "$WORK/$bad" --pipeline typed --prelude --probe-phase > "$WORK/$bad.native" 2>&1; ns=$?
+  if [ "$bad" = pipeline_import_cycle ]; then expected="import cycle"; else expected="can't find module 'pipeline_nonexistent_dependency'"; fi
+  if [ "$hs" -eq 0 ] || [ "$ns" -eq 0 ] || [ -e "$WORK/$bad" ] || ! grep -Fq "$expected" "$WORK/$bad.hosted" || ! grep -Fq "$expected" "$WORK/$bad.native"; then
+    echo "  FAIL: $bad did not reject on both compilers"
+    status=1
+  else
+    echo "  $bad rejected by hosted and native"
+  fi
+done
+
 echo
 echo "== 5. Mutation proofs: the gate must catch each patch"
 # The check rebuilds the tool from the patched source and requires: one fixture that links and runs equal, a
@@ -430,6 +457,19 @@ prove_mutation "an initialized instance variable loses its virtual type" "$REPO/
 prove_mutation "an uninitialized instance variable loses its virtual type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   $'          # Preserve the declaration pass\047s virtualized field type and metadata.\n          ivar = mod_type.instance_vars[ivar_node.name]?' \
   $'          # Preserve the declaration pass\047s virtualized field type and metadata.\n          ivar = nil' -- virtual_ivar_mutation_check || status=1
+
+nested_import_mutation_check() {
+  build_tool "$TOOL_SRC" "$WORK/nested_import_tool" || { [ "${_PM_ARMED:-0}" = 1 ] && return 0; return 1; }
+  nested_import_check "$WORK/nested_import_tool"
+}
+prove_mutation "the loader omits class-scoped imports" "$REPO/src/compiler/loader.iyi" \
+  'collect_import_paths(node.as(ClassDef).body, into, engine, filename, user_imports)' \
+  'nil' -- nested_import_mutation_check || status=1
+prove_mutation "the loader omits module-scoped imports" "$REPO/src/compiler/loader.iyi" \
+  'collect_import_paths(node.as(ModuleDef).body, into, engine, filename, user_imports)' \
+  'nil' -- nested_import_mutation_check || status=1
+prove_mutation "a resolved import is refused during lowering" "$LOWER_SRC" \
+  'if node.is_a?(ImportDecl)' 'if false && node.is_a?(ImportDecl)' -- nested_import_mutation_check || status=1
 
 # The lowering table names and counts no Primitive-annotated def. The hosted compiler lowers a primitive at its call
 # site, so a probe of such a def's body is a refusal row for a def that is never a function of its own. The hello
