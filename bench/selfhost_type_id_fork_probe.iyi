@@ -6,6 +6,14 @@ base = LowerTypeIds.new
 base.assign_all(program.object_type)
 first = base.fork
 second = base.fork
+first_range = first.min_max(program.object_type).as(Array(Int32))
+base_range = base.min_max(program.object_type).as(Array(Int32))
+second_range = second.min_max(program.object_type).as(Array(Int32))
+original_min = base_range[0]
+first_range[0] = original_min + 1
+raise "fork mutated baseline range" unless base_range[0] == original_min
+raise "fork mutated sibling range" unless second_range[0] == original_min
+raise "fork did not retain its own range" unless first.min_max(program.object_type).as(Array(Int32))[0] == original_min + 1
 one = NonGenericModuleType.new(program, nil, "ProbeOne")
 two = NonGenericModuleType.new(program, nil, "ProbeTwo")
 id_one = first.type_id(one)

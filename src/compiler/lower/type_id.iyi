@@ -35,10 +35,12 @@ pub class LowerTypeIds
     @types = [] of Type
   end
 
-  # A probe may assign IDs for additional types. Copy the numbered baseline
-  # so those assignments cannot affect any later probe's numbering.
+  # min_max exposes mutable ranges, so each fork owns its pairs as well as
+  # its maps. A probe must not change the seed or a sibling through a pair.
   def fork : LowerTypeIds
-    LowerTypeIds.new(@ids.dup, @id_to_metaclass.dup, @next_id, @names.dup, @types.dup)
+    ids = Hash(String, Array(Int32)).new
+    @ids.each { |name, pair| ids[name] = pair.dup }
+    LowerTypeIds.new(ids, @id_to_metaclass.dup, @next_id, @names.dup, @types.dup)
   end
 
   def initialize(@ids : Hash(String, Array(Int32)), @id_to_metaclass : Hash(Int32, Int32), @next_id : Int32, @names : Hash(Int32, String), @types : Array(Type))
