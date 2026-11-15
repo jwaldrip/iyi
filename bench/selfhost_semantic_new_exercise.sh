@@ -22,6 +22,7 @@ NEW_FILE="$REPO/src/compiler/semantic/new.iyi"
 TOP_LEVEL_FILE="$REPO/src/compiler/semantic/top_level.iyi"
 MAIN_VISITOR_FILE="$REPO/src/compiler/semantic/main_visitor.iyi"
 RESTRICTIONS_FILE="$REPO/src/compiler/semantic/restrictions.iyi"
+MATCH_FILE="$REPO/src/compiler/semantic/match.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -122,14 +123,14 @@ prove_mutation "a generic class inherits its default new instead of owning one" 
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic receiver does not bind its type parameters in a lookup" "$MAIN_VISITOR_FILE" \
-  "if bound = inst.type_vars[path.names.first]?" \
-  "if bound = inst.type_vars[\"no-such-param\"]?" \
+  $'if instance = receiver_instance(owner)\n      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)' \
+  $'if instance = receiver_instance(owner)\n      found = LookupError.new("unbound")' \
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a generic receiver does not bind its type parameters in a restriction" "$MAIN_VISITOR_FILE" \
-  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
-  "found = LookupError.new(\"unbound\")" \
+prove_mutation "a generic receiver does not bind its type parameters in a restriction" "$MATCH_FILE" \
+  "restriction = ArgRestriction.of_bound(ts, defining, arg, owner, bound)" \
+  "restriction = ArgRestriction.of_bound(ts, defining, arg, nil, bound)" \
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
