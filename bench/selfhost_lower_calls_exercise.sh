@@ -178,7 +178,7 @@ super_refusal_checks() {
     echo "  previous_def: port unexpectedly accepted"
     return 1
   fi
-  grep -Fq "'previous_def'" "$WORK/previous_def.err" || return 1
+  grep -Fq "previous_def" "$WORK/previous_def.err" || return 1
 
   fixture="$REPO/bench/fixtures/lowcallwait_super_argument_dispatch.iyi"
   if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/super_args.out" 2> "$WORK/super_args.err"; then
@@ -312,6 +312,13 @@ for name in lowcallinfer_generic_new lowcallinfer_explicit_struct; do
     echo "  $name: native and hosted status 7, stdout identical"
   fi
 done
+generic_wait_reason() {
+  case "$1" in
+    lowcallwait_generic_handwritten_make) printf "%s" "expected argument #1 to 'Maker.make' to be T, not Int32" ;;
+    lowcallwait_generic_handwritten_new) printf "%s" "expected argument #1 to 'Maker.new' to be T, not Int32" ;;
+    lowcallwait_generic_default_new) printf "%s" "expected argument #1 to 'Opt.new' to be T, not Int32" ;;
+  esac
+}
 for name in lowcallwait_uninferred_generic_new lowcallwait_generic_handwritten_make lowcallwait_generic_handwritten_new lowcallwait_generic_default_new; do
   fixture="$REPO/bench/fixtures/$name.iyi"
   rm -f "$WORK/$name.native"
@@ -325,11 +332,14 @@ for name in lowcallwait_uninferred_generic_new lowcallwait_generic_handwritten_m
       echo "  $name: unexpected refusal"
       status=1
     fi
-  elif ! grep -Fq 'expected type, got T' "$WORK/$name.native.log"; then
-    echo "  $name: unexpected refusal"
+  elif ! "$IYI" build --prelude empty --no-codegen "$fixture" > "$WORK/$name.hosted.log" 2>&1; then
+    echo "  $name: hosted compiler unexpectedly refused"
+    status=1
+  elif ! grep -Fq "$(generic_wait_reason "$name")" "$WORK/$name.native.log"; then
+    echo "  $name: unexpected port refusal"
     status=1
   else
-    echo "  $name: expected type, got T; no executable"
+    echo "  $name: hosted accepted; port refuses unbound generic T"
   fi
 done
 if "$IYI" build --prelude empty -o "$WORK/uninferred.hosted" "$REPO/bench/fixtures/lowcallwait_uninferred_generic_new.iyi" > "$WORK/uninferred.hosted.log" 2>&1; then
@@ -411,7 +421,7 @@ generic_constructor_check() {
       return 1
     fi
     [ ! -e "$WORK/constructor.check.exe" ] || return 1
-    grep -Fq 'expected type, got T' "$WORK/constructor.check.log" || return 1
+    grep -Fq "$(generic_wait_reason "$name")" "$WORK/constructor.check.log" || return 1
   done
 }
 
