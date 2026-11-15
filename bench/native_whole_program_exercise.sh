@@ -364,8 +364,8 @@ else
   prove_mutation "a library named beside the IR is not loaded" src/compiler/tools/compile_native.iyi \
     'names << name unless name.empty? || name.starts_with?("#")' \
     'names << name if name.empty?' -- still_runs native samples/iyi/cores.iyi || status=1
-  prove_mutation "a narrow saturating conversion skips its clamp" src/compiler/native/aarch64/isel.iyi \
-    '    d = clamp_narrow(d, bits, signed) if clamp' '    d = d if clamp' -- still_runs native "$FIX/float_to_int.iyi" || status=1
+  prove_mutation "an i8 saturating conversion uses the i16 clamp" src/compiler/native/aarch64/isel.iyi \
+    '    d = clamp_narrow(d, bits, signed) if clamp' '    d = clamp_narrow(d, 16, signed) if clamp' -- still_runs native "$FIX/float_to_int.iyi" || status=1
   prove_mutation "the unsigned 128-bit conversion calls the signed helper" src/compiler/native/aarch64/isel.iyi \
     'call.sym = symbol_index(signed ? "__iyi_native_fptosi_sat_i128" : "__iyi_native_fptoui_sat_i128")' \
     'call.sym = symbol_index("__iyi_native_fptosi_sat_i128")' -- still_runs native "$FIX/float_to_int.iyi" || status=1
