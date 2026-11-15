@@ -21,11 +21,11 @@ differ=0
 compare() {
   local label="$1" hs cs
   shift
-  "$hosted" "$@" </dev/null >"$work/hosted.out" 2>"$work/hosted.err"
+  perl -e 'alarm 30; exec @ARGV or exit 127' -- "$hosted" "$@" </dev/null >"$work/hosted.out" 2>"$work/hosted.err"
   hs=$?
-  "$candidate" "$@" </dev/null >"$work/candidate.out" 2>"$work/candidate.err"
+  perl -e 'alarm 30; exec @ARGV or exit 127' -- "$candidate" "$@" </dev/null >"$work/candidate.out" 2>"$work/candidate.err"
   cs=$?
-  if [ "$hs" -eq "$cs" ] && cmp -s "$work/hosted.out" "$work/candidate.out" && cmp -s "$work/hosted.err" "$work/candidate.err"; then
+  if [ "$hs" -ne 142 ] && [ "$cs" -ne 142 ] && [ "$hs" -eq "$cs" ] && cmp -s "$work/hosted.out" "$work/candidate.out" && cmp -s "$work/hosted.err" "$work/candidate.err"; then
     printf 'agree %s\n' "$label"
     agree=$((agree + 1))
   else
@@ -35,6 +35,14 @@ compare() {
     if cmp -s "$work/hosted.err" "$work/candidate.err"; then printf 'equal'; else printf 'different'; fi
     printf ')\n'
     differ=$((differ + 1))
+    if [ -n "${PARSE_CORPUS_DIFF_DIR:-}" ]; then
+      local evidence="$PARSE_CORPUS_DIFF_DIR/case-$differ"
+      mkdir -p "$evidence"
+      printf '%s\n' "$label" >"$evidence/input.txt"
+      printf '%s\n' "$hs" >"$evidence/hosted.status"
+      printf '%s\n' "$cs" >"$evidence/candidate.status"
+      cp "$work/hosted.out" "$work/hosted.err" "$work/candidate.out" "$work/candidate.err" "$evidence/"
+    fi
   fi
 }
 compare '<no argument>'
