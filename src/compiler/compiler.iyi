@@ -315,8 +315,11 @@ pub class Compiler
     end
     # The live stream is durable even if a keep-going probe is interrupted
     # before its final refusal table and sidecar can be assembled.
+    # IYI_NO_REFUSAL_STREAM=1 runs without it: the streaming gate compares a
+    # run with the stream against a run without it.
     stream : IyiIO? = nil
-    if @config.probe_phase && @config.keep_going
+    stream_off = ENV["IYI_NO_REFUSAL_STREAM"]? == "1"
+    if @config.probe_phase && @config.keep_going && !stream_off
       stream = File.open(@config.output_filename + ".refusals", "w")
       typed.visitor.refusal_stream = stream
     end
