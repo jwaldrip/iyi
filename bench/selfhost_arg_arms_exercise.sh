@@ -66,6 +66,15 @@ check_arms() {
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_unresolved_only.iyi" "$REPO/src" consume > "$WORK/unresolved-only" || return 1
   printf '%s\n' 'arms=0 cover=false' 'error=undefined constant MissingType' > "$WORK/expected"
   cmp -s "$WORK/unresolved-only" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_block_output.iyi" "$REPO/src" produce > "$WORK/block" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#produce:' > "$WORK/expected"
+  cmp -s "$WORK/block" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_capture_output.iyi" "$REPO/src" capture > "$WORK/capture" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#capture:' > "$WORK/expected"
+  cmp -s "$WORK/capture" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_block_unbound.iyi" "$REPO/src" produce > "$WORK/block-unbound" || return 1
+  printf '%s\n' 'arms=0 cover=false' 'error=undefined constant V' > "$WORK/expected"
+  cmp -s "$WORK/block-unbound" "$WORK/expected" || return 1
 }
 
 check_arms || exit 1
@@ -112,4 +121,7 @@ prove_mutation 'a single successful autocast covers its call' "$REPO/src/compile
 prove_mutation 'autocast stops after the first matching owner level' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '      if signature.autocast_nodes && matches.size > level_start' \
   '      if false' -- check_arms || status=1
+prove_mutation 'a supplied block can bind free names in its output' "$REPO/src/compiler/semantic/match.iyi" \
+  '                    deferred = FreeBindings.mentions?(output, [free_names[j]])' \
+  '                    deferred = false' -- check_arms || status=1
 exit "$status"
