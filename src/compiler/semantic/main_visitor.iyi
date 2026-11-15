@@ -1402,7 +1402,8 @@ pub class MainVisitor < TypeNodeHost
     elsif node.target.is_a?(Path)
       p = node.target.as(Path)
       set_type(p, val_type)
-      set_type(node, val_type)
+      # Hosted main_visitor.cr:1084-1087: the assignment itself is Nil.
+      set_type(node, @program.nil_type)
     else
       set_type(node, val_type)
     end

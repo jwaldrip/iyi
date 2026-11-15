@@ -344,6 +344,11 @@ const_owner_at_expected || status=1
 prove_mutation "a constant initializer uses its declaring scope" "$MAIN_VISITOR" \
   "        inner.current_type = c.namespace || @program" \
   "        inner.current_type = @current_type" -- const_owner_at_expected || status=1
+prove_mutation "a constant assignment has type Nil" "$MAIN_VISITOR" \
+  "      # Hosted main_visitor.cr:1084-1087: the assignment itself is Nil.
+      set_type(node, @program.nil_type)" \
+  "      # Hosted main_visitor.cr:1084-1087: the assignment itself is Nil.
+      set_type(node, val_type)" -- const_owner_at_expected || status=1
 prove_mutation "an abstract requirement is typed as an empty implementation" "$MAIN_VISITOR" \
   '    if target_def.abstract' '    if false && target_def.abstract' -- abstract_probe_at_expected || status=1
 owner_mutant_at_expected() {
