@@ -16,7 +16,7 @@ class InputWalk < Visitor
 end
 
 class ArmProbe < Visitor
-  def initialize(@program : SemanticProgram, @typer : MainVisitor, @name : String, @counts : Hash(UInt64, Int32))
+  def initialize(@program : SemanticProgram, @typer : MainVisitor, @name : String, @counts : Hash(UInt64, Int32), @walk : ArmWalk)
   end
 
   def visit(node : Call) : Bool
@@ -36,7 +36,7 @@ class ArmProbe < Visitor
       # the positional count captured before typing for this matcher probe.
       count = @counts[node.object_id]? || node.args.size
       positional = node.args[0, count]
-      found = @typer.lookup_call_arms(receiver, receiver, node.name, positional, node, ArmWalk::Parents)
+      found = @typer.lookup_call_arms(receiver, receiver, node.name, positional, node, @walk)
       puts "arms=#{found.matches.size} cover=#{found.cover_all?}"
       if error = found.error
         puts "error=#{error}"
@@ -65,5 +65,6 @@ node.accept(inputs)
 typer = MainVisitor.new(program)
 typer.total = true
 node.accept(typer)
-probe = ArmProbe.new(program, typer, Program.args[2], inputs.counts)
+walk = Program.args.size > 3 && Program.args[3] == "modules" ? ArmWalk::Modules : ArmWalk::Parents
+probe = ArmProbe.new(program, typer, Program.args[2], inputs.counts, walk)
 node.accept(probe)

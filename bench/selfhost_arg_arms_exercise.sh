@@ -41,6 +41,12 @@ check_arms() {
     printf '%s\n' 'arms=2 cover=true' 'main#show:A' 'main#show:(A | B)' > "$WORK/expected"
     cmp -s "$WORK/$kind" "$WORK/expected" || return 1
   done
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_module_walk.iyi" "$REPO/src" select modules > "$WORK/modules" || return 1
+  printf '%s\n' 'arms=1 cover=false' 'Label#select:String' > "$WORK/expected"
+  cmp -s "$WORK/modules" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_numeric.iyi" "$REPO/src" widen > "$WORK/numeric" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#widen:Int64' > "$WORK/expected"
+  cmp -s "$WORK/numeric" "$WORK/expected" || return 1
 }
 
 check_arms || exit 1
@@ -69,4 +75,10 @@ prove_mutation 'generic match retains its metaclass owner' "$REPO/src/compiler/s
 prove_mutation 'named argument types participate in matching' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '      named_types = collected' \
   '      named_types = nil' -- check_arms || status=1
+prove_mutation 'module-only walk does not search the superclass' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      return Matches.new(matches, CallCover.all?(signature, matches)) if walk == ArmWalk::Modules && matches.size > level_start' \
+  '      return Matches.new(matches, CallCover.all?(signature, matches)) if false' -- check_arms || status=1
+prove_mutation 'unmatched numeric calls receive an autocast pass' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    return found if found.error || !found.empty? || !NumericAutocast.any?(args, arg_types)' \
+  '    return found' -- check_arms || status=1
 exit "$status"
