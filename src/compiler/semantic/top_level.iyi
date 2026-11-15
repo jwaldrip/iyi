@@ -1332,6 +1332,9 @@ pub class SemanticProgram < NonGenericModuleType
   @new_expansions : Array(NewExpansion) = [] of NewExpansion
 
   @object_type : ClassType?
+  # Non-raising alias probes can recurse through generic arguments.
+  @optional_aliases : Hash(UInt64, Bool) = Hash(UInt64, Bool).new
+  property optional_alias_probe : Bool = false
   property merge_hook : TypeHook?
   # The explicit instance variables the top-level passes declared, for `resolve_declared_types`.
   getter declared_ivars : Array(DeclaredIvar)
@@ -1805,6 +1808,25 @@ pub class SemanticProgram < NonGenericModuleType
     current
   end
 
+  # Bare-file declaration re-resolution must not force an unresolved alias:
+  # a file can name external types from a prelude or another unit not loaded
+  # by the probe. This is probe tolerance, not hosted alias semantics.
+  def remove_alias?(type : Type) : Type?
+    return type unless type.is_a?(AliasType)
+    alias_type = type.as(AliasType)
+    id = alias_type.object_id
+    return nil if @optional_aliases[id]?
+    @optional_aliases[id] = true
+    defer @optional_aliases.delete(id)
+    if cached = alias_type.aliased_type
+      return remove_alias?(cached)
+    end
+    scope = alias_type.namespace || self
+    target = lookup_type_node?(alias_type.value, scope)
+    return nil if target.nil?
+    remove_alias?(target.as(Type))
+  end
+
   # Each class body the top-level pass visited, in order, with its type.
   def type_bodies : Array(TypeBody)
     @type_bodies
@@ -1999,8 +2021,15 @@ pub class SemanticProgram < NonGenericModuleType
     while i < names.size
       name = names[i]
       if c = curr
-        # Hosted path_lookup.cr:338-344 follows aliases before looking up a member.
-        c = remove_alias(c)
+        # When walking the target of an optional alias probe, a missing
+        # intermediate alias must remain a miss instead of exiting the process.
+        if @optional_aliases.empty?
+          c = remove_alias(c)
+        else
+          resolved = remove_alias?(c)
+          return nil if resolved.nil?
+          c = resolved.as(Type)
+        end
         if c.is_a?(NamedType)
           curr = c.as(NamedType).lookup_type(name)
         else
@@ -2118,8 +2147,14 @@ pub class SemanticProgram < NonGenericModuleType
             g.type_vars.each do |t|
               arg = lookup_type_node?(t, current_type)
               return nil unless arg
-              # Hosted type_lookup.cr resolves aliases while looking up generic arguments.
-              type_args << remove_alias(arg)
+              # Only bare-file probes defer unresolved external aliases.
+              if @optional_alias_probe
+                resolved = remove_alias?(arg)
+                return nil if resolved.nil?
+                type_args << resolved.as(Type)
+              else
+                type_args << remove_alias(arg)
+              end
             end
             return hook.instantiate_type(base_type, type_args)
           end

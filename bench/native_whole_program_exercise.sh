@@ -319,10 +319,10 @@ still_runs() {
   mkdir -p "$t"
   if [ "$which" = bridge ]; then
     cp "$tools/compile_native" "$t/compile_native"
-    "$iyi" build -o "$t/iyi-ir" "$BRIDGE_SRC" >"$t/build.bridge.log" 2>&1 || return 1
+    "$iyi" build -o "$t/iyi-ir" "$BRIDGE_SRC" >"$t/build.bridge.log" 2>&1 || { touch "$work/mutation-build-failed"; return 1; }
   else
     cp "$tools/iyi-ir" "$t/iyi-ir"
-    "$iyi" build -o "$t/compile_native" "$TOOL_SRC" >"$t/build.tool.log" 2>&1 || return 1
+    "$iyi" build -o "$t/compile_native" "$TOOL_SRC" >"$t/build.tool.log" 2>&1 || { touch "$work/mutation-build-failed"; return 1; }
   fi
   dir="$work/p/$(dirname "$src" | tr '/' '_')_$(basename "$src" .iyi)"
   [ -f "$dir/hosted.ll" ] || return 1
@@ -371,6 +371,7 @@ else
     'call.sym = symbol_index("__iyi_native_fptosi_sat_i128")' -- still_runs native "$FIX/float_to_int.iyi" || status=1
   prove_mutation "the signed 128-bit helper saturates one exponent late" src/compiler/native/rt/builtins_text.iyi \
     '%past = icmp uge i64 %exp, 1150' '%past = icmp uge i64 %exp, 1151' -- still_runs native "$FIX/float_to_int.iyi" || status=1
+  [ ! -e "$work/mutation-build-failed" ] || fail "a mutation tool failed to build; its behavior is not proven"
   [ "$status" -eq 0 ] || fail "a mutation was not caught"
 fi
 

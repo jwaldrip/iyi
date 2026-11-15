@@ -231,7 +231,7 @@ echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires every primitive fixture
 # to match the hosted module exactly. It returns 0 only on the unmutated behaviour.
 lower_primitives_check() {
-  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_primitives_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_primitives_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || { touch "$WORK/mutation-build-failed"; return 1; }
   for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
     name="$(basename "$fixture" .iyi)"
     # A fixture waiting by name cannot pass the check; the check covers the rest.
@@ -440,7 +440,7 @@ else
   status=1
 fi
 required_overflow_check() {
-  "$IYI" build -o "$WORK/required-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/required-build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/required-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/required-build.log" 2>&1 || { touch "$WORK/mutation-build-failed"; return 1; }
   (cd "$required" && "$WORK/required-port" probe-required runtime.iyi main.iyi "$WORK/required-oracle.normal.ll") > "$WORK/required.ir" 2> "$WORK/required.err" || return 1
   awk '/^declare external void @__iyi_raise_overflow/ {found=1} END {exit !found}' "$WORK/required.ir" || return 1
   "$WORK/port" oracle "$WORK/required.ir" > "$WORK/required-port.txt" 2> "$WORK/required-port.err" || return 1
@@ -473,7 +473,7 @@ one_def() {
   awk -v n="@\"*$1<" 'index($0, "define ") == 1 && index($0, n) { p = 1; c++ } p { print } p && /^}/ { p = 0 } END { exit c != 1 }' "$2"
 }
 float_iyi_check() {
-  "$IYI" build -o "$WORK/float-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/float-build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/float-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/float-build.log" 2>&1 || { touch "$WORK/mutation-build-failed"; return 1; }
   (cd "$required" && "$WORK/float-port" probe-iyi runtime.iyi float_int.iyi "$WORK/float-oracle.normal.ll" $float_names) > "$WORK/float.ir" 2> "$WORK/float.err" || return 1
   "$WORK/port" oracle "$WORK/float.ir" > "$WORK/float-port.txt" 2> "$WORK/float-port.err" || return 1
   for name in $float_names; do
@@ -494,6 +494,11 @@ prove_mutation "a checked float conversion ignores the prelude in use" "$REPO/sr
 prove_mutation "the iyi prelude's upper float bound is excluded" "$REPO/src/compiler/lower/primitives.iyi" \
   '      above = low.builder.fcmp(RealPredicate::OGE, value, low.builder.const_float(float_ir, pow2_f64(past)))' \
   '      above = low.builder.fcmp(RealPredicate::OGT, value, low.builder.const_float(float_ir, pow2_f64(past)))' -- float_iyi_check || status=1
+
+if [ -e "$WORK/mutation-build-failed" ]; then
+  echo "  NOT PROVEN: a mutation driver failed to build"
+  status=1
+fi
 
 echo
 if [ "$status" -eq 0 ]; then

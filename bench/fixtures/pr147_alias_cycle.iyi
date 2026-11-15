@@ -1,0 +1,4 @@
+alias CycleA = CycleB
+alias CycleB = CycleA
+
+value = uninitialized Pointer(CycleA)
