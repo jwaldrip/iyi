@@ -118,7 +118,7 @@ def stack_pointer?(pointer : Value) : Bool
 end
 
 # A plain non-reference union has the same aggregate layout as MixedUnionType.
-# Nilable procs have their own scalar representation and must not use this path.
+# Nilable procs have their own representation and must not use this path.
 pub def mixed_union_type?(type : Type) : Bool
   return true if type.is_a?(MixedUnionType)
   type.is_a?(UnionType) && !type.is_a?(NilableProcType) && !reference_union?(type.as(UnionType))
