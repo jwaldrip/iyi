@@ -4051,6 +4051,11 @@ pub class MainVisitor < TypeNodeHost
                         @def_free_types[target_def] = bound unless bound.empty?
                       end
                     end
+                  else
+                    # Hosted call.cr:1424-1446 leaves a captured wildcard or
+                    # absent output unbound; FixMissingTypes:66-75 gives the
+                    # Block NoReturn, while the Proc keeps its body's type.
+                    set_type(blk, @program.no_return_type)
                   end
                   result_type = resolved_output || bt
                   literal_args = [] of Arg
