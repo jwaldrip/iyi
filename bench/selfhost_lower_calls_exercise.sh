@@ -285,6 +285,27 @@ echo "  end to end: $e2e_pass fixture(s) run to the hosted result, $e2e_fail fai
 if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
   status=1
 fi
+# Array#map and its block-output type variable require the real prelude. This
+# fixture must not run through the empty-prelude IR comparison above.
+map_fixture="$REPO/bench/fixtures/lowcallrun_block_map_u.iyi"
+if ! "$IYI" build --no-debug -o "$WORK/block_map.hosted" "$map_fixture" > "$WORK/block_map.hosted.log" 2>&1 ||
+   ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$map_fixture" -o "$WORK/block_map.native" --pipeline typed --prelude > "$WORK/block_map.native.log" 2>&1; then
+  echo "  block map: hosted or native source build failed"
+  status=1
+elif [ "$(uname -s)" = Darwin ] && { ! codesign -v --strict "$WORK/block_map.hosted" || ! codesign -v --strict "$WORK/block_map.native"; }; then
+  echo "  block map: signature verification failed"
+  status=1
+else
+  timeout 30 "$WORK/block_map.hosted" > "$WORK/block_map.hosted.out" 2>&1; hs=$?
+  timeout 30 "$WORK/block_map.native" > "$WORK/block_map.native.out" 2>&1; ns=$?
+  if [ "$hs" -ne 0 ] || [ "$ns" -ne "$hs" ] || ! cmp -s "$WORK/block_map.hosted.out" "$WORK/block_map.native.out" || [ "$(< "$WORK/block_map.native.out")" != "a-b" ]; then
+    echo "  block map: hosted and native output or exit status differs"
+    status=1
+  else
+    echo "  block map: real-prelude native matches hosted output a-b"
+  fi
+fi
+
 
 echo
 echo "== 3a. Generic constructor inference and refusal boundaries"
