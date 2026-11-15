@@ -1,0 +1,27 @@
+import compiler/semantic/top_level::{SemanticProgram, NonGenericModuleType, NonGenericClassType, Type, UnionType}
+
+program = SemanticProgram.new
+parent = NonGenericModuleType.new(program, program, "Before")
+child = NonGenericClassType.new(program, parent, "Child")
+other = NonGenericClassType.new(program, parent, "Child")
+raise "initial name" unless child.full_name == "Before::Child"
+raise "cache did not retain value" unless child.full_name.object_id == child.full_name.object_id
+raise "same name equality" unless child == other
+parent.name = "After"
+raise "parent rename" unless child.full_name == "After::Child"
+child.name = "Leaf"
+raise "child rename" unless child.full_name == "After::Leaf"
+raise "unequal names" if child == other
+child.namespace = program
+raise "namespace change" unless child.full_name == "Leaf"
+argument = NonGenericClassType.new(program, program, "Second")
+replacement = NonGenericClassType.new(program, program, "Third")
+union = UnionType.new(program, [argument, replacement] of Type)
+raise "union name" unless union.full_name == "(Second | Third)"
+raise "union cache" unless union.full_name.object_id == union.full_name.object_id
+replacement.name = "Alpha"
+raise "renamed union member" unless union.full_name == "(Alpha | Second)"
+union.union_types[1] = child
+raise "changed union member" unless union.full_name == "(Leaf | Second)"
+raise "self equality" unless child == child
+puts "TYPE NAME CACHE OK"
