@@ -897,6 +897,26 @@ prove_mutation "a recursive call targets a fresh clone" "$REPO/src/compiler/sema
   "remember_def_instance(cache_key, target_def, provisional)" \
   "nil" -- recursion_owner_check || status=1
 
+generic_frame_owner_check() {
+  if ! "$IYI" build -o "$WORK/frame_owner" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/frame_owner.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/frame_owner"; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/frame_owner" generic-frame "$REPO/bench/fixtures/lowcall_generic_self_new.iyi" > "$WORK/frame_owner.out" 2>&1
+}
+if ! generic_frame_owner_check; then
+  echo "  baseline: generic owner lost its metaclass context"
+  status=1
+else
+  prove_mutation "a generic class method drops its metaclass context" "$REPO/src/compiler/lower/fun.iyi" \
+    '      return owner.as(GenericClassInstanceType).metaclass' \
+    '      return owner' -- generic_frame_owner_check || status=1
+fi
+
 # A generic class method compiled without a runtime self (the typed probe drops
 # it) must still lower a receiverless new. Hosted fun.cr:289 keeps the metaclass
 # as context; call.cr:95 passes that type id as self.
@@ -919,9 +939,6 @@ if ! generic_frame_check; then
   exit 1
 fi
 echo "  generic class-method context lowers a receiverless new"
-prove_mutation "a generic class method drops its metaclass context" "$REPO/src/compiler/lower/fun.iyi" \
-  '      return owner.as(GenericClassInstanceType).metaclass' \
-  '      return owner' -- generic_frame_check || status=1
 prove_mutation "a receiverless call in a generic class method is treated as builtin" "$REPO/src/compiler/lower/call.iyi" \
   '      elsif class_meta = receiverless_class_metaclass(ct)' \
   '      elsif class_meta = nil' -- generic_frame_check || status=1
