@@ -51,13 +51,11 @@ if [ "$switch_result" != '  switch i32 %x, label %else [ i32 1, label %a, i32 2,
   exit 1
 fi
 
-# lowcall_capture_none waits on a real Proc#call: S1wDefaults3 expands the call to an
-# arity-specific target, and S2d13Primitives supplies the Primitive body. The gate fails if
-# that fixture stops refusing by this name, and it returns to the passing list when Proc lands.
-WAITING_FIXTURES="lowcall_capture_none"
+# Fixtures with a named, intentionally unsupported refusal belong here until
+# their hosted and port modules agree.
+WAITING_FIXTURES=""
 waiting_reason() {
   case "$1" in
-    lowcall_capture_none) printf "%s" "undefined method 'call' for Proc(Int32)" ;;
     *) printf "%s" "" ;;
   esac
 }
@@ -446,8 +444,10 @@ if generic_constructor_check && [ ! -e "$WORK/constructor.invalid" ]; then
   constructor_prove "lowering ignores the inferred receiver" "$REPO/src/compiler/lower/call.iyi" \
     '  if recorded = low.analysed.call_receiver?(node)' \
     '  if recorded = (node.obj.nil? ? low.analysed.call_receiver?(node) : nil)' || status=1
-  constructor_prove "generic struct allocation leaves an address" "$REPO/src/compiler/lower/call.iyi" \
-    '      if passed_by_value?(allocated_type)' '      if false' || status=1
+  # Leaving a struct address is indistinguishable in the exercised callers:
+  # their stores and returns load it. Force the opposite classification instead.
+  constructor_prove "class allocation is loaded as a struct" "$REPO/src/compiler/lower/call.iyi" \
+    '      if passed_by_value?(allocated_type)' '      if true' || status=1
 else
   echo "  constructor mutation baseline failed or did not build"
   status=1
