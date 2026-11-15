@@ -9,7 +9,7 @@ import compiler/ir/values::{Value}
 import compiler/lower/cast::{union_temp}
 import compiler/lower/context::{LowerContext, Lowerer}
 import compiler/lower/fun::{visit_node}
-import compiler/lower/helpers::{at_terminator?, llvm_nil, load_aligned, store_aligned}
+import compiler/lower/helpers::{abi_name, at_terminator?, llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{passed_by_value?}
@@ -78,6 +78,11 @@ pub def lower_exception_handler(low : Lowerer, node : ExceptionHandler) : Nil
   cleanup = node.ensure
   if cleanup.nil?
     refuse_port("exception handler without defer cleanup")
+  end
+  # Hosted exception handlers attach the runtime personality even when this
+  # lowering only emits their normal exit.
+  if personality = low.module.get_function?(abi_name(low, "personality"))
+    low.current_context.fun.personality = personality
   end
   t = low.analysed.type_of?(node.as(ASTNode))
   wants = low.needs_value

@@ -336,6 +336,8 @@ nil_flow_check() {
     cat "$WORK/nil-flow.build.log" > "$WORK/nil-flow.invalid"
     return 1
   fi
+  "$WORK/nil-flow" context > "$WORK/nil-flow.context" 2>&1 || return 1
+  grep -qx 'CONTEXT OK' "$WORK/nil-flow.context" || return 1
   local name
   for name in "$@"; do
     "$WORK/nil-flow" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/nil-flow.out" 2> "$WORK/nil-flow.err" || return 1
@@ -348,6 +350,8 @@ if nil_flow_check lower_or_nil_left; then
     '    elsif else_type && (then_unreachable || speculative)' -- nil_flow_check lower_or_nil_left || status=1
   prove_mutation "a narrowed-out read records a loop refusal" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '      if reason == narrowed_out_reason(node.name)' '      if false' -- nil_flow_check lower_or_nil_left || status=1
+  prove_mutation "hidden build-name collision shifts later string globals" "$REPO/bench/selfhost_lower_core_exercise.iyi" \
+    '  return lines if offset == 0' '  return lines' -- nil_flow_check lower_or_nil_left || status=1
 else
   echo "FAIL: nil-left alternatives do not match the hosted module"
   status=1
@@ -365,6 +369,10 @@ if nil_flow_check $nil_storage_fixtures; then
     '      nil' -- nil_flow_check $nil_storage_fixtures || status=1
 else
   echo "FAIL: read-observed nil storage does not match the hosted modules"
+  status=1
+fi
+if [ -e "$WORK/nil-flow.invalid" ]; then
+  echo "FAIL: a nil-flow mutant did not compile"
   status=1
 fi
 if "$WORK/port" lower "$REPO/bench/fixtures/lower_trait.iyi" "$WORK/lower_trait.oracle.ll" > "$WORK/trait.out" 2>&1 &&
@@ -835,17 +843,31 @@ else
   status=1
 fi
 visibility_macro_check() {
-  "$IYI" build -o "$WORK/port-vis-macro" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/vis-macro.build.log" 2>&1 || return 1
-  "$WORK/port-vis-macro" lower "$REPO/bench/fixtures/lower_visibility_macro.iyi" "$WORK/lower_visibility_macro.oracle.ll" > "$WORK/vis-macro.out" 2> "$WORK/vis-macro.err" || return 1
-  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/vis-macro.out"
+  if ! "$IYI" build -o "$WORK/port-vis-macro" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/vis-macro.build.log" 2>&1; then
+    touch "$WORK/vis-macro.invalid"
+    return 1
+  fi
+  local fixture
+  for fixture in lower_visibility_macro lower_macro_expansions; do
+    "$WORK/port-vis-macro" lower "$REPO/bench/fixtures/$fixture.iyi" "$WORK/$fixture.oracle.ll" > "$WORK/vis-macro.out" 2> "$WORK/vis-macro.err" || return 1
+    awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/vis-macro.out" || return 1
+  done
 }
 if visibility_macro_check; then
-  prove_mutation "an expanded declaration macro is not lowered" "$REPO/src/compiler/lower/lower.iyi" \
-    '      codegen_node(low, expanded)' \
-    '      nil' -- visibility_macro_check || status=1
+  prove_mutation "an expanded macro is not lowered" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if node.is_a?(MacroIf) || node.is_a?(MacroFor) || node.is_a?(MacroExpression) || node.is_a?(MacroVerbatim)
+    if expanded = low.analysed.expansions[node]?
+      codegen_node(low, expanded)' \
+    '  if node.is_a?(MacroIf) || node.is_a?(MacroFor) || node.is_a?(MacroExpression) || node.is_a?(MacroVerbatim)
+    if expanded = low.analysed.expansions[node]?
+      nil' -- visibility_macro_check || status=1
 else
   echo "FAIL: wrapped macro fixture does not match the hosted module"
   awk 'NR<=8' "$WORK/vis-macro.err" "$WORK/vis-macro.out" "$WORK/vis-macro.build.log"
+  status=1
+fi
+if [ -e "$WORK/vis-macro.invalid" ]; then
+  echo "FAIL: the expanded-macro mutant did not compile"
   status=1
 fi
 atomic_return_check() {

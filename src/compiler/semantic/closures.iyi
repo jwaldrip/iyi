@@ -1,6 +1,6 @@
 module compiler/semantic/closures
 
-import compiler/syntax/ast::{ASTNode, Assign, Block, Break, Def, InstanceVar, Next, NodeMap, ProcLiteral, Return, Self, Var, While, Yield}
+import compiler/syntax/ast::{ASTNode, Assign, Block, Break, Call, Def, InstanceVar, Next, NodeMap, ProcLiteral, Return, Self, Var, While, Yield}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{MetaclassType, SemanticProgram, Type}
 import compiler/semantic/main_visitor::{MainVisitor}
@@ -49,6 +49,7 @@ pub class ClosureFrame
   property self_closured : Bool = false
   getter bindings : Array(ClosureBinding)
   getter errors : Array(String)
+  property generated : Bool = false
   property self_type : Type? = nil
 
   def initialize(@kind : FrameKind, @node : ASTNode, @parent : ClosureFrame?)
@@ -110,6 +111,26 @@ pub class ClosureWalk < Visitor
   getter frame : ClosureFrame
 
   def initialize(@facts : ClosureFacts, @visitor : MainVisitor, @frame : ClosureFrame, @inside_while : Bool = false)
+  end
+
+  # Walk the same typed expansion lowering visits, instead of the unexpanded
+  # macro call whose children do not contain its captured variables.
+  def visit_any(node : ASTNode) : Bool
+    if expanded = @visitor.expansions[node]?
+      @facts.enter_expansion
+      expanded.accept(self)
+      @facts.leave_expansion
+      return false
+    end
+    if node.is_a?(Call)
+      if expanded = node.as(Call).expanded
+        @facts.enter_expansion
+        expanded.accept(self)
+        @facts.leave_expansion
+        return false
+      end
+    end
+    true
   end
 
   def visit(node : Def) : Bool
@@ -298,17 +319,28 @@ end
 pub class ClosureFacts
   @frames : NodeMap(ClosureFrame)
   @ordered : Array(ClosureFrame)
+  @expansion_depth : Int32
 
   def initialize(@visitor : MainVisitor)
     @frames = NodeMap(ClosureFrame).new
     @ordered = [] of ClosureFrame
+    @expansion_depth = 0
   end
 
   def add_frame(kind : FrameKind, node : ASTNode, parent : ClosureFrame?) : ClosureFrame
     frame = ClosureFrame.new(kind, node, parent)
+    frame.generated = @expansion_depth > 0
     @frames[node] = frame
     @ordered << frame
     frame
+  end
+
+  def enter_expansion : Nil
+    @expansion_depth += 1
+  end
+
+  def leave_expansion : Nil
+    @expansion_depth -= 1
   end
 
   def analyse_def(def_node : Def, self_type : Type?) : ClosureFrame
@@ -392,6 +424,7 @@ pub class ClosureFacts
           enclosing = parent
         end
         next unless enclosing.node.node_id == root.node.node_id
+        next if frame.generated
         next if frame.kind == FrameKind::Program
         loc = frame.node.location
         next unless loc && loc.filename == file

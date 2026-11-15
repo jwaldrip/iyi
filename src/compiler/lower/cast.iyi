@@ -29,6 +29,7 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/helpers::{at_terminator?, llvm_nil, load_aligned, store_aligned}
+import compiler/lower/layouts::{has_inner_pointers?}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{primitive_kind, passed_by_value?}
@@ -100,7 +101,59 @@ end
 # target's own type is stored as it is; a value of another type goes into a mixed union.
 # A nil value into a union only writes the type id and the zeroed area (the caller must not
 # store the nil itself).
+# A stack alloca and GEPs or casts derived from it are rescanned at the
+# collector's final stop and do not require a heap write barrier.
+def stack_pointer?(pointer : Value) : Bool
+  current = pointer
+  count = 0
+  while current.is_a?(Inst) && count < 16
+    inst = current.as(Inst)
+    return true if inst.op == Op::Alloca
+    return false unless inst.op == Op::Gep || inst.op == Op::BitCast
+    return false if inst.args.empty?
+    current = inst.args[0]
+    count += 1
+  end
+  false
+end
+
 pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type, value : Value) : Nil
+  return if at_terminator?(low) || TypeQueries.no_return?(value_type)
+  begin_fn = low.module.get_function?("__iyi_write_barrier_begin")
+  shade_fn = low.module.get_function?("__iyi_write_barrier")
+  if low.analysed.program.types["IyiHeap"]?.nil? || !has_inner_pointers?(target) || stack_pointer?(pointer) || begin_fn.nil? || shade_fn.nil?
+    assign_unbarriered(low, pointer, target, value_type, value)
+    return
+  end
+  marking = low.module.get_global?("__iyi_marking")
+  marking = low.module.add_global("__iyi_marking", low.module.types.int8) if marking.nil?
+  active_byte = load_aligned(low, low.module.types.int8, marking.as(Global))
+  active = low.builder.icmp(IntPredicate::NE, active_byte, low.builder.const_int(low.module.types.int8, 0_i64))
+  begin_block = low.new_block("barrier_begin")
+  plain_block = low.new_block("barrier_plain")
+  join_block = low.new_block("barrier_join")
+  low.builder.cond_br(active, begin_block, plain_block)
+  low.builder.position_at_end(begin_block)
+  low.builder.call(begin_fn.fn_type, begin_fn, [] of Value, "")
+  low.builder.br(join_block)
+  low.builder.position_at_end(plain_block)
+  low.builder.br(join_block)
+  low.builder.position_at_end(join_block)
+  assign_unbarriered(low, pointer, target, value_type, value)
+  return if at_terminator?(low)
+  size = low.typer.size_of(low.typer.llvm_type(target))
+  words = (size + 7_i64) // 8_i64
+  words = 1_i64 if words < 1_i64
+  shade_block = low.new_block("barrier_shade")
+  done_block = low.new_block("barrier_done")
+  low.builder.cond_br(active, shade_block, done_block)
+  low.builder.position_at_end(shade_block)
+  low.builder.call(shade_fn.fn_type, shade_fn, [pointer, low.builder.const_int(low.typer.size_t, words).as(Value)] of Value, "")
+  low.builder.br(done_block)
+  low.builder.position_at_end(done_block)
+end
+
+def assign_unbarriered(low : Lowerer, pointer : Value, target : Type, value_type : Type, value : Value) : Nil
   # Hosted cast.cr 73-85: an ended block or NoReturn value produces no store.
   return if at_terminator?(low) || TypeQueries.no_return?(value_type)
   target = TypeIndirection.remove_indirection(target)
