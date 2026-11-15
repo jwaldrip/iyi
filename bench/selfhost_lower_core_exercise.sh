@@ -320,6 +320,9 @@ else
   status=1
 fi
 
+echo "== 2c4. Captured generic output inside a group"
+bash "$REPO/bench/selfhost_lower_group_output_exercise.sh" || status=1
+
 module_floor_file="$REPO/bench/selfhost_lower_core_module.floor"
 module_floor="$(awk 'NR==1 { print $1 }' "$module_floor_file" 2>/dev/null)"
 module_floor="${module_floor:-0}"

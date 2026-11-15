@@ -3919,6 +3919,20 @@ pub class MainVisitor < TypeNodeHost
               end
               if existing = blk.fun_literal
                 captured_block_type = child_type(existing)
+                # Hosted call.cr:1424-1432 restricts every typed ProcLiteral's
+                # result against the block output, including a reused literal.
+                if captured_block_type.is_a?(ProcInstanceType)
+                  if output = notation.output
+                    if free_names = target_def.free_vars
+                      bound = @def_free_types[target_def]? || Hash(String, Type).new
+                      unless FreeBindings.bind(output, captured_block_type.as(ProcInstanceType).return_type, free_names, bound)
+                        refuse(blk, "expected block to return #{output}, not #{captured_block_type.as(ProcInstanceType).return_type.full_name}")
+                        return nil
+                      end
+                      @def_free_types[target_def] = bound unless bound.empty?
+                    end
+                  end
+                end
                 # Hosted call.cr:1370-1372,1427-1440,1525-1541 checks
                 # a forwarded proc's parameters and binds its output.
                 if forwarded_call = call_node
