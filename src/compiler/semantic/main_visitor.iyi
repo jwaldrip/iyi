@@ -4105,6 +4105,7 @@ pub class MainVisitor < TypeNodeHost
       settled = false
       commit_pass = false
       passes = 0
+      committed = false
       recursive_frame.estimating = true
       while passes < 10
         passes += 1
@@ -4147,6 +4148,7 @@ pub class MainVisitor < TypeNodeHost
         @super_barrier = saved_super_barrier
         next_type = merge_jump_values(child_type(body.as(ASTNode)), @return_types)
         if commit_pass
+          committed = true
           body_type = next_type
           unless next_type && next_type.full_name == assumed.full_name
             recursive_error = "recursive return type of '#{target_def.name}' changed in the final pass"
@@ -4171,8 +4173,8 @@ pub class MainVisitor < TypeNodeHost
           estimate = merged
         end
       end
-      unless settled
-        @speculation.depth = @speculation.depth - 1
+      unless committed
+        @speculation.depth = @speculation.depth - 1 unless settled
         recursive_error = "recursive return type of '#{target_def.name}' did not settle"
       end
     end
@@ -4794,11 +4796,25 @@ pub class MainVisitor < TypeNodeHost
     end
     @needs_type_filters = saved_call_ntf
     @call_receivers.delete(node)
+    if node.obj.nil? && node.name == "super"
+      return visit_super(node)
+    end
     # Lib calls type `out` from the formal parameter in record_lib_call,
     # rather than from the argument walk (hosted semantic/call.cr:77-92).
     if rec_type.is_a?(LibType)
       return visit_lib_call(node, rec_type.as(LibType))
     end
+
+    trait_receiver = false
+    unless node.obj.nil?
+      concrete = TypeIndirection.trait_value_type(rec_type)
+      unless concrete.object_id == rec_type.object_id
+        rec_type = concrete
+        trait_receiver = true
+      end
+    end
+
+
     if node.obj.nil? && node.name != "super" && !node.expansion
       if global_fun = global_fun_named(node.name)
         own = [] of Def
@@ -4836,19 +4852,6 @@ pub class MainVisitor < TypeNodeHost
         end
       end
     end
-    if node.obj.nil? && node.name == "super"
-      return visit_super(node)
-    end
-
-    trait_receiver = false
-    unless node.obj.nil?
-      concrete = TypeIndirection.trait_value_type(rec_type)
-      unless concrete.object_id == rec_type.object_id
-        rec_type = concrete
-        trait_receiver = true
-      end
-    end
-
 
 
     infer_class_vars = node.named_args.nil? && node.block.nil? && node.block_arg.nil?

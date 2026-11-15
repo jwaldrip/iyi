@@ -2,14 +2,14 @@ def recursive_inferred_once(&)
   yield
 end
 
-def recursive_inferred_block(n : Int32)
-  if n == 0
-    0
+def recursive_inferred_block(flag : Bool)
+  if flag
+    value = nil
+    recursive_inferred_once { value = recursive_inferred_block(false) }
+    value
   else
-    value = 0
-    recursive_inferred_once { value = recursive_inferred_block(n - 1) }
-    value + 1
+    true
   end
 end
 
-recursive_inferred_block(3)
+recursive_inferred_block(true)
