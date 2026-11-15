@@ -1,0 +1,25 @@
+abstract class Thing
+end
+
+class Item < Thing
+end
+
+abstract class Hook
+  abstract def merge(items : Array(Thing)) : Thing
+end
+
+class Impl < Hook
+  def merge(items : Array(Thing)) : Thing
+    items[0]
+  end
+end
+
+def invoke(hook : Hook, item : Thing) : Thing
+  items = [] of Thing
+  items << item
+  hook.merge(items)
+end
+
+x = invoke(Impl.new, Item.new)
+puts x.class == Item
+puts x.is_a?(Item)
