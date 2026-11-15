@@ -1,4 +1,7 @@
 # Each annotation is checked against hosted placement before the native verdict.
+@[Unsafe("tests field addresses and a trusted mutable type")]
+module bench/spawnshare_corpus
+
 class AssignedField
   getter n : Int32
   def initialize(@n : Int32); end
@@ -23,7 +26,6 @@ class ParameterAssignedField
   def reset(@n : Int32); end
 end
 
-@[Unsafe("the witness checks an address taken from this field")]
 class AddressedField
   getter n : Int32
   def initialize(@n : Int32); end
@@ -97,7 +99,6 @@ class InitializedField
   def initialize(@n : Int32); end
 end
 
-@[Unsafe("tests that a trusted type is not scanned")]
 @[Share]
 class TrustedAssignedField
   getter n : Int32

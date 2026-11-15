@@ -6,4 +6,7 @@ finished = result.as(ProcessResult)
 raise "wrong child exit" unless finished.exit_code == 7
 raise "inherited stdout was captured" unless finished.stdout.empty?
 raise "inherited stderr was captured" unless finished.stderr.empty?
+echoed = Process.run("/bin/cat", [] of String, input: "hello")
+raise "cat did not return a result" unless echoed.is_a?(ProcessResult)
+raise "cat did not echo its input" unless echoed.as(ProcessResult).stdout == "hello"
 puts ":parent-ok"
