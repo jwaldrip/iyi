@@ -1,0 +1,25 @@
+import compiler/semantic/top_level::{SemanticProgram, AliasType, Type}
+import compiler/syntax/ast::{ASTNode, Generic, Path}
+import compiler/types/type_system::{TypeSystem}
+
+program = SemanticProgram.new
+program.optional_alias_probe = true
+TypeSystem.new(program)
+
+program.types["MissingAlias"] = AliasType.new(program, program, "MissingAlias", Path.global(["MissingLibrary", "Thing"]))
+program.types["OuterAlias"] = AliasType.new(program, program, "OuterAlias", Path.new(["MissingAlias", "Nested"]))
+program.types["First"] = AliasType.new(program, program, "First", Path.new("Int32"))
+program.types["Second"] = AliasType.new(program, program, "Second", Path.new("First"))
+program.types["CycleA"] = AliasType.new(program, program, "CycleA", Path.new("CycleB"))
+program.types["CycleB"] = AliasType.new(program, program, "CycleB", Path.new("CycleA"))
+
+missing = Generic.new(Path.new("Pointer"), [Path.new("MissingAlias")] of ASTNode)
+raise "unresolved alias should be a miss" unless program.lookup_type_node?(missing, program).nil?
+raise "nested unresolved alias should be a miss" unless program.remove_alias?(program.types["OuterAlias"]).nil?
+valid = Generic.new(Path.new("Pointer"), [Path.new("Second")] of ASTNode)
+resolved = program.lookup_type_node?(valid, program)
+raise "valid chain lost its argument" unless resolved && resolved.full_name == "Pointer(Int32)"
+cycle = Generic.new(Path.new("Pointer"), [Path.new("CycleA")] of ASTNode)
+raise "cycle should be a miss" unless program.lookup_type_node?(cycle, program).nil?
+raise "cycle guard was not cleared" unless program.lookup_type_node?(cycle, program).nil?
+puts "OPTIONAL ALIAS PROBE OK"

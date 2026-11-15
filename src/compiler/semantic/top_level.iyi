@@ -1334,6 +1334,7 @@ pub class SemanticProgram < NonGenericModuleType
   @object_type : ClassType?
   # Non-raising alias probes can recurse through generic arguments.
   @optional_aliases : Hash(UInt64, Bool) = Hash(UInt64, Bool).new
+  property optional_alias_probe : Bool = false
   property merge_hook : TypeHook?
   # The explicit instance variables the top-level passes declared, for `resolve_declared_types`.
   getter declared_ivars : Array(DeclaredIvar)
@@ -2020,8 +2021,15 @@ pub class SemanticProgram < NonGenericModuleType
     while i < names.size
       name = names[i]
       if c = curr
-        # Hosted path_lookup.cr:338-344 follows aliases before looking up a member.
-        c = remove_alias(c)
+        # When walking the target of an optional alias probe, a missing
+        # intermediate alias must remain a miss instead of exiting the process.
+        if @optional_aliases.empty?
+          c = remove_alias(c)
+        else
+          resolved = remove_alias?(c)
+          return nil if resolved.nil?
+          c = resolved.as(Type)
+        end
         if c.is_a?(NamedType)
           curr = c.as(NamedType).lookup_type(name)
         else
@@ -2139,11 +2147,14 @@ pub class SemanticProgram < NonGenericModuleType
             g.type_vars.each do |t|
               arg = lookup_type_node?(t, current_type)
               return nil unless arg
-              # A declaration probe may see an alias before its external target
-              # is in scope. The strict resolver still raises when it is used.
-              resolved = remove_alias?(arg)
-              return nil if resolved.nil?
-              type_args << resolved.as(Type)
+              # Only bare-file probes defer unresolved external aliases.
+              if @optional_alias_probe
+                resolved = remove_alias?(arg)
+                return nil if resolved.nil?
+                type_args << resolved.as(Type)
+              else
+                type_args << remove_alias(arg)
+              end
             end
             return hook.instantiate_type(base_type, type_args)
           end

@@ -1,0 +1,9 @@
+alias First = Int32
+alias Second = First
+alias Wrapped = Pointer(Second)
+
+def accept(value : Wrapped)
+  1
+end
+
+1
