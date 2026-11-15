@@ -53,6 +53,15 @@ check_arms() {
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_tuple_invalid.iyi" "$REPO/src" '[]' > "$WORK/tuple-invalid" || return 1
   printf '%s\n' 'arms=0 cover=false' 'error=index out of bounds for Tuple(Int32, String) (5 not in -2..1)' > "$WORK/expected"
   cmp -s "$WORK/tuple-invalid" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_unresolved.iyi" "$REPO/src" consume > "$WORK/unresolved" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#consume:Int32' > "$WORK/expected"
+  cmp -s "$WORK/unresolved" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_unresolved_partial.iyi" "$REPO/src" consume > "$WORK/unresolved-partial" || return 1
+  printf '%s\n' 'arms=1 cover=false' 'main#consume:Int32' > "$WORK/expected"
+  cmp -s "$WORK/unresolved-partial" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_unresolved_only.iyi" "$REPO/src" consume > "$WORK/unresolved-only" || return 1
+  printf '%s\n' 'arms=0 cover=false' 'error=undefined constant MissingType' > "$WORK/expected"
+  cmp -s "$WORK/unresolved-only" "$WORK/expected" || return 1
 }
 
 check_arms || exit 1
@@ -93,4 +102,7 @@ prove_mutation 'tuple indexers keep their synthesized target' "$REPO/src/compile
 prove_mutation 'tuple index errors remain errors' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '    if indexer.is_a?(String)' \
   '    if false && indexer.is_a?(String)' -- check_arms || status=1
+prove_mutation 'unresolved restrictions are reported only when no arm matches' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    return Matches.new(matches, false, first_error) if matches.empty? && first_error' \
+  '    return Matches.new(matches, false, first_error) if first_error' -- check_arms || status=1
 exit "$status"
