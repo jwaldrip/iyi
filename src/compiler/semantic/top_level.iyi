@@ -22,10 +22,28 @@ pub class TypeException
   end
 end
 
+module TypeNameEpoch
+  @@value : UInt64 = 0_u64
+
+  def self.current : UInt64
+    @@value
+  end
+
+  def self.changed : Nil
+    @@value = @@value &+ 1_u64
+  end
+end
+
 pub abstract class Type
   property program : SemanticProgram
-  property namespace : ModuleType?
-  property name : String
+  getter namespace : ModuleType?
+  getter name : String
+  @cached_base_name : String? = nil
+  @cached_base_epoch : UInt64 = 0_u64
+  @cached_composed_part : String? = nil
+  @cached_composed_prefix : String? = nil
+  @cached_composed_suffix : String? = nil
+  @cached_composed_name : String? = nil
   property visibility : Visibility
   property abstract : Bool
   property struct : Bool
@@ -63,10 +81,17 @@ pub abstract class Type
     @struct = false
   end
 
-  # The name without type parameters: a namespace prefix and a generic's base
-  # name (hosted `to_s_with_options(generic_args: false)`).
-  def base_full_name : String
-    full_name
+  # A rename can affect nested types too, so invalidate their cached names.
+  def name=(name : String) : String
+    @name = name
+    TypeNameEpoch.changed
+    name
+  end
+
+  def namespace=(namespace : ModuleType?) : ModuleType?
+    @namespace = namespace
+    TypeNameEpoch.changed
+    namespace
   end
 
   # The name as a type argument. The hosted printer passes skip_union_parens to
@@ -91,15 +116,35 @@ pub abstract class Type
   end
 
   def base_full_name : String
-    if ns = @namespace
-      if ns.is_a?(SemanticProgram)
-        @name
-      else
-        "#{ns.base_full_name}::#{@name}"
+    if @cached_base_epoch == TypeNameEpoch.current
+      if cached = @cached_base_name
+        return cached
       end
-    else
-      @name
     end
+    result = if ns = @namespace
+               ns.is_a?(SemanticProgram) ? @name : "#{ns.base_full_name}::#{@name}"
+             else
+               @name
+             end
+    @cached_base_name = result
+    @cached_base_epoch = TypeNameEpoch.current
+    result
+  end
+
+  # Cache composite spellings by their actual component, so renames and
+  # mutable wrapped-type references cannot leave a stale name behind.
+  def composed_name(prefix : String, part : String, suffix : String) : String
+    if value = @cached_composed_name
+      if @cached_composed_part == part && @cached_composed_prefix == prefix && @cached_composed_suffix == suffix
+        return value
+      end
+    end
+    value = prefix + part + suffix
+    @cached_composed_part = part
+    @cached_composed_prefix = prefix
+    @cached_composed_suffix = suffix
+    @cached_composed_name = value
+    value
   end
 
   def full_name : String
@@ -122,6 +167,7 @@ pub abstract class Type
   end
 
   def ==(other : Type) : Bool
+    return true if object_id == other.object_id
     full_name == other.full_name
   end
 
@@ -730,7 +776,7 @@ pub class MetaclassType < ClassType
 
   def full_name : String
     return "Class" if @name == "Class"
-    "#{@instance_type.to_s}.class"
+    composed_name("", @instance_type.to_s, ".class")
   end
 
   def to_s : String
@@ -1164,6 +1210,9 @@ end
 
 pub class UnionType < Type
   getter union_types : Array(Type)
+  @cached_union_members : Array(String)? = nil
+  @cached_union_arg : String? = nil
+  @cached_union_full : String? = nil
 
   def initialize(program : SemanticProgram, @union_types : Array(Type))
     super(program, nil, "Union")
@@ -1174,27 +1223,50 @@ pub class UnionType < Type
   end
 
   def arg_full_name : String
+    cached = @cached_union_members
+    if result = @cached_union_arg
+      if cached && cached.size == @union_types.size
+        same = true
+        i = 0
+        while i < @union_types.size
+          if cached[i] != @union_types[i].full_name
+            same = false
+            break
+          end
+          i += 1
+        end
+        return result if same
+      end
+    end
+    names = [] of String
     non_nil_names = [] of String
     has_nil = false
-    i = 0
-    while i < @union_types.size
-      t = @union_types[i]
-      if t.full_name == "Nil"
+    @union_types.each do |type|
+      name = type.full_name
+      names << name
+      if name == "Nil"
         has_nil = true
       else
-        non_nil_names << t.full_name
+        non_nil_names << name
       end
-      i = i + 1
     end
     sorted = non_nil_names.sorted
-    if has_nil
-      sorted << "Nil"
-    end
-    sorted.join(" | ")
+    sorted << "Nil" if has_nil
+    result = sorted.join(" | ")
+    @cached_union_members = names
+    @cached_union_arg = result
+    @cached_union_full = nil
+    result
   end
 
   def full_name : String
-    "(#{arg_full_name})"
+    arg = arg_full_name
+    if result = @cached_union_full
+      return result
+    end
+    result = "(#{arg})"
+    @cached_union_full = result
+    result
   end
 
   def to_s : String
