@@ -107,6 +107,19 @@ check_arms() {
   cmp -s "$WORK/named-free-range" "$WORK/expected" || return 1
   "$IYI" run "$REPO/bench/fixtures/sem_arms_named_free_out_of_range.iyi" > "$WORK/named-free-range-oracle" 2>&1 && return 1
   grep -Fq "expected argument 'second' to 'pair' to be Int32, not Int64" "$WORK/named-free-range-oracle" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_numeric_union.iyi" "$REPO/src" pick parents binding > "$WORK/named-numeric-union" || return 1
+  printf '%s\n' 'arms=2 cover=true' 'main#pick:' 'named=Int32,Int64' 'main#pick:' 'named=Bool,Int64' > "$WORK/expected"
+  cmp -s "$WORK/named-numeric-union" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_numeric_union.iyi" "$REPO/src" pick > "$WORK/numeric-union" || return 1
+  printf '%s\n' 'arms=2 cover=true' 'main#pick:Int32,Int64' 'main#pick:Bool,Int64' > "$WORK/expected"
+  cmp -s "$WORK/numeric-union" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_numeric_partial.iyi" "$REPO/src" pick parents binding > "$WORK/named-numeric-partial" || return 1
+  printf '%s\n' 'arms=1 cover=false' 'main#pick:' 'named=Int32,Int64' > "$WORK/expected"
+  cmp -s "$WORK/named-numeric-partial" "$WORK/expected" || return 1
+  "$IYI" run "$REPO/bench/fixtures/sem_arms_named_numeric_union.iyi" > "$WORK/named-numeric-union-oracle" 2>&1 || return 1
+  grep -Fxq 7 "$WORK/named-numeric-union-oracle" || return 1
+  "$IYI" run "$REPO/bench/fixtures/sem_arms_named_numeric_partial.iyi" > "$WORK/named-numeric-partial-oracle" 2>&1 && return 1
+  grep -Fq "expected argument 'value' to 'pick' to be Int32" "$WORK/named-numeric-partial-oracle" || return 1
   for kind in ambiguous later; do
     "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_numeric_${kind}.iyi" "$REPO/src" widen > "$WORK/named-numeric-$kind" || return 1
     printf '%s\n' 'arms=0 cover=false' 'error=ambiguous call, implicit cast of 1 matches all of Int64, UInt64' > "$WORK/expected"
@@ -157,9 +170,18 @@ prove_mutation 'unresolved restrictions are reported only when no arm matches' "
 prove_mutation 'autocast compares every viable overload' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '          return Matches.new(matches, true) if arm.exact && signature.autocast_nodes.nil?' \
   '          return Matches.new(matches, true) if arm.exact' -- check_arms || status=1
-prove_mutation 'a single successful autocast covers its call' "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  '    return Matches.new(widened.matches, true) if widened.error.nil? && widened.matches.size == 1' \
-  '    return Matches.new(widened.matches, false) if widened.error.nil? && widened.matches.size == 1' -- check_arms || status=1
+prove_mutation 'multiple union arms with the same numeric cast are not ambiguous' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      if error = arm_autocast_ambiguity(widened.matches, args, named_nodes)' \
+  '      if error = arm_autocast_ambiguity(widened.matches, args, named_nodes) || "ambiguity"' -- check_arms || status=1
+prove_mutation 'widened calls preserve coverage of every union member' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      return Matches.new(widened.matches, cover)' \
+  '      return Matches.new(widened.matches, true)' -- check_arms || status=1
+prove_mutation 'positional widened types are used for coverage' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        type = matches[0].arg_types[i]' \
+  '        type = signature.arg_types[i]' -- check_arms || status=1
+prove_mutation 'named widened types are used for coverage' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '          type = matches[0].named_arg_types[i].type' \
+  '          type = named[i].type' -- check_arms || status=1
 prove_mutation 'autocast stops after the first matching owner level' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '      if signature.autocast_nodes && matches.size > level_start' \
   '      if false' -- check_arms || status=1
