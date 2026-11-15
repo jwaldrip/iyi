@@ -1616,8 +1616,18 @@ pub class MainVisitor < TypeNodeHost
       elsif c_type = type_of?(c.value)
         set_type(node, c_type)
       else
-        splice_const_value(c)
-        c.value.accept(self)
+        # Hosted main_visitor.cr:205-214 types the initializer in its owner's
+        # lexical scope with fresh locals, not in the scope of the reader.
+        saved_imports = @program.current_imports
+        saved_import_defs = @program.current_import_defs
+        inner = sub_visitor(Hash(String, Type).new).as(MainVisitor)
+        inner.current_type = c.namespace || @program
+        inner.scope = nil
+        enter_file_scope(c.value)
+        inner.splice_const_value(c)
+        c.value.accept(inner)
+        @program.current_imports = saved_imports
+        @program.current_import_defs = saved_import_defs
         if c_type = child_type(c.value)
           set_type(node, c_type)
         end
