@@ -8,9 +8,8 @@ def mark(value : Int32) : Int32
   value
 end
 
-def combine(a : Int32, b : Int32 = mark(100), line : Int32 = __LINE__) : Int32
-  line
+def where(line = __LINE__, tag : Int32 = 0, other : Int32 = 1) : Int32
+  line &+ tag &- 65
 end
 
-result = combine(a: mark(97))
-LibC.exit(result)
+LibC.exit(where(other: mark(66), tag: mark(65)))
