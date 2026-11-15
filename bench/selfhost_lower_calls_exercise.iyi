@@ -13,6 +13,8 @@ import bench/lib/lower_gate::{analyse, ir_module, run_emit, run_lower, run_oracl
 import compiler/lower/fun::{darwin_triple?, def_context_type, target_def_fun}
 import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType}
 import compiler/ir/types::{IrType}
+import compiler/ir/inst::{Block}
+import compiler/lower/call::{finish_block_call_body}
 import compiler/lower/context::{Lowerer}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{LowerTyper}
@@ -47,6 +49,33 @@ def run : Nil
     int_phi.add(low, value, true)
     raise "integer phi dropped its value" unless int_phi.values.size == 1
     puts "NIL PHI OK"
+  elsif mode == "noreturn-phi"
+    analysis = analyse("nil\n", "noreturn_phi_check.iyi", true)
+    m = ir_module("aarch64-apple-darwin27.0.0")
+    typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
+    low = Lowerer.new(m, typer, analysis.visitor)
+    fun_type = m.types.func([] of IrType, m.types.void)
+    no_return = analysis.visitor.program.no_return_type
+    int_type = analysis.visitor.program.int32_type
+    low.begin_main_function("open_noreturn", fun_type, false)
+    open_phi = LowerPhi.new(true, m.types.int32, int_type)
+    finish_block_call_body(low, open_phi, no_return, int_type)
+    open_block = low.builder.insert_block.as(Block)
+    raise "NoReturn body left an open block" unless open_block.terminated?
+    raise "NoReturn body contributed a phi value" unless open_phi.count == 0
+    low.begin_main_function("closed_noreturn", fun_type, false)
+    low.builder.unreachable
+    closed_block = low.builder.insert_block.as(Block)
+    before = closed_block.insts.size
+    closed_phi = LowerPhi.new(true, m.types.int32, int_type)
+    finish_block_call_body(low, closed_phi, no_return, int_type)
+    raise "NoReturn body added a second terminator" unless closed_block.insts.size == before
+    low.begin_main_function("ordinary_body", fun_type, false)
+    low.last = low.builder.const_int(m.types.int32, 12)
+    ordinary_phi = LowerPhi.new(true, m.types.int32, int_type)
+    finish_block_call_body(low, ordinary_phi, int_type, int_type)
+    raise "ordinary block body lost its phi value" unless ordinary_phi.count == 1 && ordinary_phi.values.size == 1
+    puts "NORETURN PHI OK"
   elsif mode == "generic-frame"
     fixture = args[1]
     analysis = analyse(File.read(fixture), fixture, true)

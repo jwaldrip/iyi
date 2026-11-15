@@ -786,6 +786,24 @@ pub def call_arguments(self_value : Value?, values : Array(Value)) : Array(Value
   out
 end
 
+# Hosted Phi#add emits unreachable for a NoReturn body or call result. Its
+# builder makes that a no-op when the current block already has a terminator.
+pub def finish_block_call_body(low : Lowerer, phi : LowerPhi, body_t : Type, ret : Type) : Nil
+  if ret.is_a?(NoReturnType) || body_t.is_a?(NoReturnType)
+    low.builder.unreachable unless block_ended?(low)
+    return
+  end
+  value = low.last
+  if !block_ended?(low) && !value.nil? && !ret.is_a?(NilType)
+    if passed_by_value?(ret)
+      low.last = join_pointer(low, value.as(Value), body_t, ret)
+    else
+      low.last = upcast(low, value.as(Value), body_t, ret)
+    end
+  end
+  phi.add(low, low.last, true)
+end
+
 # The hosted `codegen_call_with_block` (call.cr:356) for a def that does not use its block argument.
 # It may still name or annotate that argument. The arguments and receiver are already evaluated.
 # The block's own variables (its arguments and its locals) are made in a copy of the
@@ -805,9 +823,6 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   end
   body_t = low.analysed.type_of?(def_node.body)
   raise "BUG: the analysed program has no type for the body of #{node.name} (hosted call.cr: codegen_call_with_block)" if body_t.nil?
-  # A body typed NoReturn never yields a value: its block jumps out with `break` or `next`, so the hosted upcast of the body's
-  # value does not apply and the body adds no value to the phi.
-  body_no_return = body_t.as(Type).is_a?(NoReturnType)
 
   wants = low.needs_value
   caller = low.current_context
@@ -876,24 +891,7 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
 
   low.needs_value = true
   visit_node(low, def_node.body)
-  if noreturn
-    # Hosted `phi.add` of a NoReturn body: `unreachable`, unless the body already ended.
-    unless block_ended?(low)
-      low.builder.unreachable
-    end
-  else
-    unless body_no_return
-      value = low.last
-      if !block_ended?(low) && !value.nil? && !ret.is_a?(NilType)
-        if passed_by_value?(ret)
-          low.last = join_pointer(low, value.as(Value), body_t.as(Type), ret)
-        else
-          low.last = upcast(low, value.as(Value), body_t.as(Type), ret)
-        end
-      end
-      phi.add(low, low.last, true)
-    end
-  end
+  finish_block_call_body(low, phi, body_t.as(Type), ret)
   low.context = caller
   low.needs_value = wants
   if noreturn

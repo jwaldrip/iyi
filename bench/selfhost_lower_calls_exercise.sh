@@ -782,8 +782,24 @@ prove_mutation "a struct call result is returned as the aggregate, not its spill
   '        low.last = temp' '        low.last = inst' -- lower_calls_check || status=1
 prove_mutation "a module-level build constant is kept in the module (the module check catches it)" "$REPO/bench/lib/lower_gate.iyi" \
   'next if stripped.starts_with?("@") && build_constant?(stripped, builds) || stripped.starts_with?("%Nil = type")' 'next if stripped.starts_with?("%Nil = type")' -- lower_calls_check || status=1
-prove_mutation "a block body typed NoReturn is refused (no hosted upcast applies to a body that never returns)" "$REPO/src/compiler/lower/call.iyi" \
-  'body_no_return = body_t.as(Type).is_a?(NoReturnType)' 'body_no_return = false' -- lower_calls_check || status=1
+noreturn_phi_check() {
+  if ! "$IYI" build -o "$WORK/noreturn_phi" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/noreturn_phi.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/noreturn_phi"; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/noreturn_phi" noreturn-phi > "$WORK/noreturn_phi.out" 2>&1
+}
+if noreturn_phi_check; then
+  prove_mutation "a NoReturn body leaves an open block" "$REPO/src/compiler/lower/call.iyi" \
+    '  if ret.is_a?(NoReturnType) || body_t.is_a?(NoReturnType)' '  if ret.is_a?(NoReturnType)' -- noreturn_phi_check || status=1
+else
+  echo "  FAIL: NoReturn phi baseline did not pass"
+  status=1
+fi
 prove_mutation "a top-level fun with a body is emitted with the iyi calling convention" "$REPO/src/compiler/lower/fun.iyi" \
   "  CallConv::C
 end" "  CallConv::Iyi
