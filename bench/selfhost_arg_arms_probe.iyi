@@ -46,6 +46,11 @@ class ArmProbe < Visitor
         if Program.args.size > 4 && Program.args[4] == "signature"
           puts "signature=#{@typer.format_overload_signature(receiver, match.definition)}"
         end
+        if Program.args.size > 4 && Program.args[4] == "binding"
+          names = match.bound.keys.sorted
+          names.each { |name| puts "binding=#{name}:#{match.bound[name].full_name}" }
+          puts "named=#{match.named_arg_types.map { |arg| arg.type.full_name }.join(",")}"
+        end
         if node.name == "new"
           puts "owner=#{match.owner.full_name}"
         end
