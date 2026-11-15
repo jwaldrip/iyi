@@ -5238,17 +5238,7 @@ pub class Parser < Lexer
 
     @type_nest = @type_nest - 1
 
-    assoc_types = [] of AssocTypeDecl
-    each_assoc_type_decl(body) do |decl|
-      unless decl.value
-        syntax_error("an impl has to answer the associated type #{decl.name}: write `type #{decl.name} = ...`", decl.location)
-      end
-      if assoc_types.any? { |existing| existing.name == decl.name }
-        syntax_error("duplicate associated type #{decl.name}", decl.location)
-      end
-      assoc_types << decl
-    end
-    impl_def = ImplDef.new(trait_path, target, body, type_vars, trait_args, assoc_types.empty? ? nil : assoc_types).at(location).at_end(end_location)
+    impl_def = ImplDef.new(trait_path, target, body, type_vars, trait_args).at(location).at_end(end_location)
     impl_def
   end
 
