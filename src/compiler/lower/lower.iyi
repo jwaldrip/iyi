@@ -20,7 +20,7 @@ import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, Ca
 import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, HashLiteral, RangeLiteral, MultiAssign, Select, StringInterpolation}
 import compiler/syntax/ast::{NamedTupleLiteral, EnumDef}
 import compiler/syntax/ast::{Underscore}
-import compiler/syntax/ast::{ImplDef, TraitDef}
+import compiler/syntax/ast::{AssocTypeDecl, ImplDef, TraitDef}
 import compiler/types/types::{NamedTupleInstanceType}
 import compiler/syntax/ast::{TupleLiteral, Splat, Generic}
 import compiler/syntax/ast::{ReadInstanceVar}
@@ -801,6 +801,12 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     low.needs_value = false
     codegen_node(low, node.as(ImplDef).body)
     low.needs_value = wants
+    low.last = llvm_nil(low)
+    return
+  end
+  # Hosted codegen.cr:1237-1241 treats associated-type answers as declarations:
+  # they emit nothing and the expression's value is Nil.
+  if node.is_a?(AssocTypeDecl)
     low.last = llvm_nil(low)
     return
   end
