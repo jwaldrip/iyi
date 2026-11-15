@@ -190,6 +190,16 @@ nilable_downcast_check() {
 nilable_downcast_check || { echo "  baseline: nilable reference downcast differs"; status=1; }
 prove_mutation "nilable reference downcast reads the local slot instead of its value" "$REPO/src/compiler/lower/lower.iyi" \
   '    down_source = last_value' '    down_source = pointer_of_value(low, node.obj, last_value, obj_type)' -- nilable_downcast_check || status=1
+cast_fixture=tuple_upcast
+new_cast_check || { echo "  baseline: tuple widening differs"; status=1; }
+prove_mutation "tuple widening is refused" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if target.is_a?(TupleInstanceType) && value_type.is_a?(TupleInstanceType)' '  if false' -- new_cast_check || status=1
+cast_fixture=named_tuple_upcast
+new_cast_check || { echo "  baseline: named tuple widening differs"; status=1; }
+prove_mutation "named tuple widening is refused" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if target.is_a?(NamedTupleInstanceType) && value_type.is_a?(NamedTupleInstanceType)' '  if false' -- new_cast_check || status=1
+prove_mutation "tuple upcast is refused" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if (t.is_a?(TupleInstanceType) && f.is_a?(TupleInstanceType)) || (t.is_a?(NamedTupleInstanceType) && f.is_a?(NamedTupleInstanceType))' '  if false' -- new_cast_check || status=1
 cast_fixture=virtual_store
 new_cast_check || { echo "  baseline: virtual assignment differs"; status=1; }
 prove_mutation "virtual target assignment is refused" "$REPO/src/compiler/lower/cast.iyi" \
@@ -224,8 +234,7 @@ prove_mutation "virtual range excludes its first type id" "$REPO/src/compiler/lo
   '      lower = low.builder.icmp(IntPredicate::SGE, param_tid, min_id)' '      lower = low.builder.icmp(IntPredicate::SGT, param_tid, min_id)' -- new_cast_check || status=1
 no_return_check() {
   "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
-  "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_noreturn_union.iyi" "$WORK/lowcast_noreturn_union.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
-  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
+  "$WORK/mut" skip_noreturn > "$WORK/mut.out" 2> "$WORK/mut.err"
 }
 struct_union_check() {
   "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
@@ -307,7 +316,7 @@ if [ ! -f "$WORK/nil_proc_mutant_built" ]; then
 fi
 
 no_return_check || { echo "  baseline: no-return union fixture differs"; status=1; }
-prove_mutation "a no-return union assignment stores a value" "$REPO/src/compiler/lower/cast.iyi" \
+prove_mutation_all "a no-return union assignment stores a value" "$REPO/src/compiler/lower/cast.iyi" \
   '  return if at_terminator?(low) || TypeQueries.no_return?(value_type)' '  return if false' -- no_return_check || status=1
 if [ "$passed" -eq 0 ]; then
   echo "  NOT PROVEN: no cast fixture is identical to the hosted module yet, so no mutation can be"
