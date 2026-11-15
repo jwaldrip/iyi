@@ -2976,13 +2976,18 @@ pub class MainVisitor < TypeNodeHost
     signature.autocast_nodes = nil
     signature.named_autocast_nodes = nil
     if widened.matches.size > 1
-      return Matches.new([] of Match, false, arm_autocast_ambiguity(widened.matches, args, named_nodes))
+      if error = arm_autocast_ambiguity(widened.matches, args, named_nodes)
+        return Matches.new([] of Match, false, error)
+      end
     end
-    return Matches.new(widened.matches, true) if widened.error.nil? && widened.matches.size == 1
+    if widened.error.nil? && !widened.matches.empty?
+      cover = arm_autocast_cover(signature, widened.matches, args, named_nodes)
+      return Matches.new(widened.matches, cover)
+    end
     widened
   end
 
-  def arm_autocast_ambiguity(matches : Array(Match), args : Array(ASTNode), named_nodes : Array(ASTNode)) : String
+  def arm_autocast_ambiguity(matches : Array(Match), args : Array(ASTNode), named_nodes : Array(ASTNode)) : String?
     i = 0
     while i < args.size
       names = [] of String
@@ -3013,14 +3018,35 @@ pub class MainVisitor < TypeNodeHost
       end
       i += 1
     end
-    names = [] of String
-    matches.each do |match|
-      unless match.declared.empty?
-        text = match.declared[0].to_s
-        names << text unless names.includes?(text)
+    nil
+  end
+
+  def arm_autocast_cover(signature : CallSignature, matches : Array(Match), args : Array(ASTNode), named_nodes : Array(ASTNode)) : Bool
+    types = [] of Type
+    i = 0
+    while i < signature.arg_types.size
+      type = signature.arg_types[i]
+      if i < args.size && i < matches[0].arg_types.size && NumericAutocast.supports?(args[i], type)
+        type = matches[0].arg_types[i]
       end
+      types << type
+      i += 1
     end
-    NumericAutocast.ambiguity("0", names)
+    named_types : Array(NamedArgumentType)? = nil
+    if named = signature.named_args
+      collected = [] of NamedArgumentType
+      i = 0
+      while i < named.size
+        type = named[i].type
+        if i < named_nodes.size && i < matches[0].named_arg_types.size && NumericAutocast.supports?(named_nodes[i], type)
+          type = matches[0].named_arg_types[i].type
+        end
+        collected << NamedArgumentType.new(named[i].name, type)
+        i += 1
+      end
+      named_types = collected
+    end
+    CallCover.all?(CallSignature.new(signature.name, types, named_types, signature.block), matches)
   end
 
   def arm_comparison_type(definition : Def, restriction : ASTNode, owner : Type, bound : Hash(String, Type)?) : Type
