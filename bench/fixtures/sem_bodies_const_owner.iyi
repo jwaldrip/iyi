@@ -1,0 +1,16 @@
+struct ConstMaker
+  struct Inner
+    def value : Int32
+      7
+    end
+  end
+  VALUE = Inner.new
+end
+
+struct ConstConsumer
+  def self.value : Int32
+    ConstMaker::VALUE.value
+  end
+end
+
+ConstConsumer.value

@@ -1797,6 +1797,8 @@ pub class SemanticProgram < NonGenericModuleType
     while i < names.size
       name = names[i]
       if c = curr
+        # Hosted path_lookup.cr:338-344 follows aliases before looking up a member.
+        c = remove_alias(c)
         if c.is_a?(NamedType)
           curr = c.as(NamedType).lookup_type(name)
         else
