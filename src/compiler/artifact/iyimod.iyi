@@ -593,8 +593,9 @@ pub class BinaryReader
   @size : Int32
   @pos : Int32
   @claimed : UInt64
+  @path : String
 
-  def initialize(str : String)
+  def initialize(str : String, @path : String = "")
     @buffer = str.to_unsafe
     @size = str.bytesize
     @pos = 0
@@ -654,6 +655,13 @@ pub class BinaryReader
     val
   end
 
+  def refuse(why : String) : Nil
+    if @path.empty?
+      raise Error.new(why).to_s
+    end
+    raise Error.new(@path + " is not a readable .iyimod: " + why + ". It is damaged, or was written by something that is not this compiler; rebuild it with `--emit-iyimod`").to_s
+  end
+
   # Match the hosted reader's per-section, cumulative allocation bounds.
   def read_count(least : Int32) : Int32
     count = read_u32_le.to_u64
@@ -661,11 +669,11 @@ pub class BinaryReader
     claim = count * least.to_u64
     if claim > left
       unit = least == 1 ? "byte" : "bytes"
-      raise Error.new("a section counts " + count.to_s + " of something that takes " + least.to_s + " " + unit + " or more each, and has " + left.to_s + " bytes left").to_s
+      refuse("a section counts " + count.to_s + " of something that takes " + least.to_s + " " + unit + " or more each, and has " + left.to_s + " bytes left")
     end
     @claimed = @claimed + claim
     if @claimed > @size.to_u64
-      raise Error.new("a section's counts claim " + @claimed.to_s + " bytes between them, and it is " + @size.to_s + " bytes long").to_s
+      refuse("a section's counts claim " + @claimed.to_s + " bytes between them, and it is " + @size.to_s + " bytes long")
     end
     count.to_i64.to_i32
   end
@@ -941,31 +949,31 @@ pub class IyiMod
       verify(path, entry.kind, payload, entry.checksum)
 
       case entry.kind
-      when  1_u16 then header_data = decode_header(payload)
-      when  2_u16 then hashes = decode_hashes(payload)
-      when  3_u16 then imports_data = decode_imports(payload)
-      when  4_u16 then exports_data = decode_exports(payload)
-      when  5_u16 then macro_bodies = decode_macro_bodies(payload)
-      when  6_u16 then mono_bodies = decode_mono_bodies(payload)
-      when  7_u16 then object_code = decode_object_code(payload)
+      when  1_u16 then header_data = decode_header(payload, path)
+      when  2_u16 then hashes = decode_hashes(payload, path)
+      when  3_u16 then imports_data = decode_imports(payload, path)
+      when  4_u16 then exports_data = decode_exports(payload, path)
+      when  5_u16 then macro_bodies = decode_macro_bodies(payload, path)
+      when  6_u16 then mono_bodies = decode_mono_bodies(payload, path)
+      when  7_u16 then object_code = decode_object_code(payload, path)
       when  8_u16 then initialiser = payload
-      when  9_u16 then type_ids = decode_type_ids(payload)
-      when 10_u16 then constants = decode_constants(payload)
-      when 11_u16 then requires = decode_requires(payload)
-      when 12_u16 then regexes = decode_regexes(payload)
-      when 13_u16 then class_vars = decode_class_vars(payload)
-      when 14_u16 then match_types = decode_match_types(payload)
-      when 15_u16 then symbols = decode_symbols(payload)
-      when 16_u16 then top_level = decode_top_level(payload)
-      when 17_u16 then reopened = decode_reopened(payload)
-      when 18_u16 then libs = decode_libs(payload)
-      when 19_u16 then top_level_funs = decode_top_level_funs(payload)
-      when 64_u16 then layouts = decode_layouts(payload)
-      when 20_u16 then inputs = decode_strings(payload)
-      when 21_u16 then symbol_literals = decode_strings(payload)
-      when 65_u16 then source_positions = decode_source_positions(payload)
-      when 66_u16 then spawns = decode_spawns(payload)
-      when 67_u16 then reaches = decode_reaches(payload)
+      when  9_u16 then type_ids = decode_type_ids(payload, path)
+      when 10_u16 then constants = decode_constants(payload, path)
+      when 11_u16 then requires = decode_requires(payload, path)
+      when 12_u16 then regexes = decode_regexes(payload, path)
+      when 13_u16 then class_vars = decode_class_vars(payload, path)
+      when 14_u16 then match_types = decode_match_types(payload, path)
+      when 15_u16 then symbols = decode_symbols(payload, path)
+      when 16_u16 then top_level = decode_top_level(payload, path)
+      when 17_u16 then reopened = decode_reopened(payload, path)
+      when 18_u16 then libs = decode_libs(payload, path)
+      when 19_u16 then top_level_funs = decode_top_level_funs(payload, path)
+      when 64_u16 then layouts = decode_layouts(payload, path)
+      when 20_u16 then inputs = decode_strings(payload, path)
+      when 21_u16 then symbol_literals = decode_strings(payload, path)
+      when 65_u16 then source_positions = decode_source_positions(payload, path)
+      when 66_u16 then spawns = decode_spawns(payload, path)
+      when 67_u16 then reaches = decode_reaches(payload, path)
       else
         # Unknown section skipped
       end
@@ -1061,13 +1069,13 @@ pub class IyiMod
       verify(path, entry.kind, payload, entry.checksum)
 
       case entry.kind
-      when 1_u16 then header_data = decode_header(payload)
-      when 2_u16 then hashes = decode_hashes(payload)
+      when 1_u16 then header_data = decode_header(payload, path)
+      when 2_u16 then hashes = decode_hashes(payload, path)
       when 3_u16
-        imp = decode_imports(payload)
+        imp = decode_imports(payload, path)
         imports = imp.edges
       when 20_u16
-        inputs = decode_strings(payload)
+        inputs = decode_strings(payload, path)
       end
       i = i + 1
     end
@@ -1173,8 +1181,8 @@ pub class IyiMod
 
   # The last two strings are read the way the flag bytes are: a header that ends
   # before one of them, a hand-written one, names nothing there.
-  def self.decode_header(payload : String) : HeaderDecoded
-    r = BinaryReader.new(payload)
+  def self.decode_header(payload : String, path : String = "") : HeaderDecoded
+    r = BinaryReader.new(payload, path)
     mod_name = r.read_string
     src_path = r.read_string
     comp_ver = r.read_string
@@ -1199,8 +1207,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_hashes(payload : String) : Hashes
-    r = BinaryReader.new(payload)
+  def self.decode_hashes(payload : String, path : String = "") : Hashes
+    r = BinaryReader.new(payload, path)
     Hashes.new(r.read_string, r.read_string, r.read_string)
   end
 
@@ -1220,8 +1228,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_imports(payload : String) : ImportsDecoded
-    r = BinaryReader.new(payload)
+  def self.decode_imports(payload : String, path : String = "") : ImportsDecoded
+    r = BinaryReader.new(payload, path)
     count = r.read_count(13)
     edges = [] of ImportEdge
     i = 0
@@ -1243,8 +1251,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_requires(payload : String) : Array(String)
-    BinaryReader.new(payload).read_strings
+  def self.decode_requires(payload : String, path : String = "") : Array(String)
+    BinaryReader.new(payload, path).read_strings
   end
 
   def self.encode_strings(values : Array(String)) : String
@@ -1253,8 +1261,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_strings(payload : String) : Array(String)
-    BinaryReader.new(payload).read_strings
+  def self.decode_strings(payload : String, path : String = "") : Array(String)
+    BinaryReader.new(payload, path).read_strings
   end
 
   # `Section::Spawns`: where each `g.spawn` ran, and whether it was asked to.
@@ -1275,8 +1283,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_spawns(payload : String) : Array(SpawnRecord)
-    r = BinaryReader.new(payload)
+  def self.decode_spawns(payload : String, path : String = "") : Array(SpawnRecord)
+    r = BinaryReader.new(payload, path)
     count = r.read_count(21)
     res = [] of SpawnRecord
     i = 0
@@ -1313,8 +1321,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_reaches(payload : String) : Array(ReachRecord)
-    r = BinaryReader.new(payload)
+  def self.decode_reaches(payload : String, path : String = "") : Array(ReachRecord)
+    r = BinaryReader.new(payload, path)
     count = r.read_count(32)
     res = [] of ReachRecord
     i = 0
@@ -1393,8 +1401,8 @@ pub class IyiMod
     io.to_s
   end
 
-  def self.decode_source_positions(payload : String) : SourcePositionsDecoded
-    r = BinaryReader.new(payload)
+  def self.decode_source_positions(payload : String, path : String = "") : SourcePositionsDecoded
+    r = BinaryReader.new(payload, path)
     filenames = r.read_strings
     bodies = {} of String => Array(SourcePosition)
     count = r.read_count(8)
@@ -1427,8 +1435,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_mono_bodies(payload : String) : Hash(String, String)
-    r = BinaryReader.new(payload)
+  def self.decode_mono_bodies(payload : String, path : String = "") : Hash(String, String)
+    r = BinaryReader.new(payload, path)
     count = r.read_count(8)
     bodies = {} of String => String
     i = 0
@@ -1447,8 +1455,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_macro_bodies(payload : String) : Array(String)
-    BinaryReader.new(payload).read_strings
+  def self.decode_macro_bodies(payload : String, path : String = "") : Array(String)
+    BinaryReader.new(payload, path).read_strings
   end
 
   def self.encode_type_ids(artifact : Artifact) : String
@@ -1457,8 +1465,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_type_ids(payload : String) : Array(String)
-    BinaryReader.new(payload).read_strings
+  def self.decode_type_ids(payload : String, path : String = "") : Array(String)
+    BinaryReader.new(payload, path).read_strings
   end
 
   def self.encode_constants(artifact : Artifact) : String
@@ -1467,8 +1475,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_constants(payload : String) : Array(String)
-    BinaryReader.new(payload).read_strings
+  def self.decode_constants(payload : String, path : String = "") : Array(String)
+    BinaryReader.new(payload, path).read_strings
   end
 
   def self.encode_layouts(artifact : Artifact) : String
@@ -1501,8 +1509,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_layouts(payload : String) : Array({String, TypeLayout})
-    r = BinaryReader.new(payload)
+  def self.decode_layouts(payload : String, path : String = "") : Array({String, TypeLayout})
+    r = BinaryReader.new(payload, path)
     count = r.read_count(24)
     res = [] of {String, TypeLayout}
     i = 0
@@ -1546,8 +1554,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_regexes(payload : String) : Array(RegexConst)
-    r = BinaryReader.new(payload)
+  def self.decode_regexes(payload : String, path : String = "") : Array(RegexConst)
+    r = BinaryReader.new(payload, path)
     count = r.read_count(12)
     res = [] of RegexConst
     i = 0
@@ -1575,8 +1583,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_class_vars(payload : String) : Array(ClassVarRef)
-    r = BinaryReader.new(payload)
+  def self.decode_class_vars(payload : String, path : String = "") : Array(ClassVarRef)
+    r = BinaryReader.new(payload, path)
     count = r.read_count(5)
     res = [] of ClassVarRef
     i = 0
@@ -1595,8 +1603,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_match_types(payload : String) : Array(String)
-    BinaryReader.new(payload).read_strings
+  def self.decode_match_types(payload : String, path : String = "") : Array(String)
+    BinaryReader.new(payload, path).read_strings
   end
 
   def self.encode_symbols(artifact : Artifact) : String
@@ -1605,8 +1613,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_symbols(payload : String) : Array(String)
-    BinaryReader.new(payload).read_strings
+  def self.decode_symbols(payload : String, path : String = "") : Array(String)
+    BinaryReader.new(payload, path).read_strings
   end
 
   def self.encode_libs(artifact : Artifact) : String
@@ -1615,8 +1623,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_libs(payload : String) : Array(String)
-    BinaryReader.new(payload).read_strings
+  def self.decode_libs(payload : String, path : String = "") : Array(String)
+    BinaryReader.new(payload, path).read_strings
   end
 
   def self.encode_reopened(artifact : Artifact) : String
@@ -1625,8 +1633,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_reopened(payload : String) : Array(TypeDecl)
-    read_type_declarations(BinaryReader.new(payload))
+  def self.decode_reopened(payload : String, path : String = "") : Array(TypeDecl)
+    read_type_declarations(BinaryReader.new(payload, path))
   end
 
   def self.encode_top_level_funs(artifact : Artifact) : String
@@ -1635,8 +1643,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_top_level_funs(payload : String) : Array(String)
-    BinaryReader.new(payload).read_strings
+  def self.decode_top_level_funs(payload : String, path : String = "") : Array(String)
+    BinaryReader.new(payload, path).read_strings
   end
 
   def self.encode_top_level(artifact : Artifact) : String
@@ -1645,8 +1653,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_top_level(payload : String) : Array(Signature)
-    read_signatures(BinaryReader.new(payload))
+  def self.decode_top_level(payload : String, path : String = "") : Array(Signature)
+    read_signatures(BinaryReader.new(payload, path))
   end
 
   def self.encode_object_code(artifact : Artifact) : String
@@ -1663,8 +1671,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_object_code(payload : String) : Array(ObjectUnit)
-    r = BinaryReader.new(payload)
+  def self.decode_object_code(payload : String, path : String = "") : Array(ObjectUnit)
+    r = BinaryReader.new(payload, path)
     count = r.read_count(8)
     res = [] of ObjectUnit
     i = 0
@@ -1702,8 +1710,8 @@ pub class IyiMod
     w.to_s
   end
 
-  def self.decode_exports(payload : String) : Exports
-    r = BinaryReader.new(payload)
+  def self.decode_exports(payload : String, path : String = "") : Exports
+    r = BinaryReader.new(payload, path)
     funcs = read_signatures(r)
     types = read_type_declarations(r)
 
@@ -1834,7 +1842,7 @@ pub class IyiMod
   def self.read_type_declarations(r : BinaryReader, depth : Int32 = 0) : Array(TypeDecl)
     count = r.read_count(77)
     if depth > 200 && count > 0
-      raise Error.new("a section declares types more than 200 deep inside one another, which is deeper than a .iyimod holds").to_s
+      r.refuse("a section declares types more than 200 deep inside one another, which is deeper than a .iyimod holds")
     end
     res = [] of TypeDecl
     i = 0

@@ -377,12 +377,12 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUTATIONS_RUN=$((MUTATIONS_RUN + 6))
 
 run_proof "altering magic bytes breaks container verification" \
-  'MAGIC          = "IYIMOD\0\0"' \
-  'MAGIC          = "BADMOD\0\0"'
+  'MAGIC               = "IYIMOD\0\0"' \
+  'MAGIC               = "BADMOD\0\0"'
 
 run_proof "altering format version allows or writes wrong version" \
-  'FORMAT_VERSION = 62_u32' \
-  'FORMAT_VERSION = 63_u32'
+  'FORMAT_VERSION      = 62_u32' \
+  'FORMAT_VERSION      = 63_u32'
 
 run_proof "bypassing section checksum verification accepts damaged payload" \
   'return if checksum(payload) == sum' \
