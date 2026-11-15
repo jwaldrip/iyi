@@ -1006,6 +1006,19 @@ prove_mutation "captured block output binds its callee's free variable" "$MAIN_V
                         @def_free_types[target_def] = bound unless bound.empty?" \
   "                      if FreeBindings.bind(output, bt, free_names, bound)
                         nil" -- captured_free_output_at_floor || status=1
+captured_wildcard_at_expected() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
+  fixture="$REPO/bench/fixtures/bodies_capture_wildcard.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+  diff -q "$WORK/mo.txt" "$WORK/mp.txt" >/dev/null
+}
+captured_wildcard_at_expected || status=1
+prove_mutation "captured wildcard block has its hosted NoReturn type" "$MAIN_VISITOR" \
+  "                    # Block NoReturn, while the Proc keeps its body's type.
+                    set_type(blk, @program.no_return_type)" \
+  "                    # Block NoReturn, while the Proc keeps its body's type.
+                    nil" -- captured_wildcard_at_expected || status=1
 generic_rebuild_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   touch "$WORK/imported_generic_mutant_built"

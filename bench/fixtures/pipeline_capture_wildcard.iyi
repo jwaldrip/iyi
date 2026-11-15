@@ -1,0 +1,23 @@
+@[Unsafe("uses C exit to report the captured block result")]
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+module GraphemeProbe
+  def self.each_grapheme(text : String, &block : String -> _) : Nil
+    size = text.bytesize
+    return if size == 0
+    block.call(text)
+  end
+
+  def self.graphemes(text : String) : Array(String)
+    found = [] of String
+    each_grapheme(text) { |cluster| found << cluster }
+    found
+  end
+end
+
+result = GraphemeProbe.graphemes("x")
+empty = GraphemeProbe.graphemes("")
+ok = result.size == 1 && result[0] == "x" && empty.size == 0
+LibC.exit(ok ? 0 : 1)
