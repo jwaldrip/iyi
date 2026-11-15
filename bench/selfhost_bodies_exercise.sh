@@ -396,6 +396,10 @@ strict_fixture="$REPO/bench/fixtures/sem_bodies_dead_return_tail.iyi"
 prove_mutation "an untyped unreachable tail does not erase returns" "$MAIN_VISITOR" \
   "      last_type = @program.no_return_type if dead_here && last_type.nil?" \
   "      nil" -- strict_typing_at_expected || status=1
+strict_fixture="$REPO/bench/fixtures/sem_bodies_digest_reach.iyi"
+prove_mutation "an unnameable virtual Self probe stays caller-typed" "$REPO/src/compiler/semantic/definition_typing.iyi" \
+  "    written.is_a?(Self) && TypeQueries.virtual_type(scope).is_a?(VirtualType)" \
+  "    false" -- strict_typing_at_expected || status=1
 class_self_return_at_expected() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_class_self_return.iyi"
