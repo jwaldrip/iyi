@@ -19,4 +19,8 @@ def pick(flag : Bool) : Base
   flag ? Left.new : Right.new
 end
 
-LibC.exit(pick(true).name &+ pick(false).name)
+def pick_reverse(flag : Bool) : Base
+  flag ? Right.new : Left.new
+end
+
+LibC.exit((pick(true).name &+ pick(false).name &+ pick_reverse(true).name &+ pick_reverse(false).name) &- 9)
