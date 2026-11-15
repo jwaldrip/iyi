@@ -378,6 +378,17 @@ else
   status=1
 fi
 
+echo "== 4c. Imported digest's atomic class variable"
+if IYI_PATH="$REPO/src" "$IYI" run "$REPO/bench/fixtures/pipeline_import_digest.iyi" > "$WORK/digest.hosted" 2>&1 &&
+   IYI_PATH="$REPO/src" "$WORK/tool" "$REPO/bench/fixtures/pipeline_import_digest.iyi" -o "$WORK/digest" --pipeline typed --prelude --probe-phase > "$WORK/digest.log" 2>&1 &&
+   codesign -v --strict "$WORK/digest" > /dev/null 2>&1 &&
+   timeout 30 "$WORK/digest" > "$WORK/digest.out" 2>&1; then
+  echo "  imported digest initializer runs on hosted and native"
+else
+  echo "  FAIL: imported digest initializer"
+  status=1
+fi
+
 echo
 echo "== 5. Mutation proofs: the gate must catch each patch"
 # The check rebuilds the tool from the patched source and requires: one fixture that links and runs equal, a
@@ -399,7 +410,7 @@ pipeline_check() {
 }
 
 imported_array_mutation_check() {
-  build_tool "$TOOL_SRC" "$WORK/unit_array_tool" || return 1
+  build_tool "$TOOL_SRC" "$WORK/unit_array_tool" || { [ "${_PM_ARMED:-0}" = 1 ] && return 0; return 1; }
   imported_array_check "$WORK/unit_array_tool"
 }
 prove_mutation "an existing allocator declaration is defined a second time" "$LOWER_SRC" \
@@ -410,7 +421,7 @@ prove_mutation "a unit module wrapper does not type its class-variable initializ
   $'    # semantic_visitor.cr:1811-1828 visits either resolved module body.\n    if t && t.is_a?(ClassType)' -- imported_array_mutation_check || status=1
 
 virtual_ivar_mutation_check() {
-  build_tool "$TOOL_SRC" "$WORK/virtual_ivar_tool" || return 1
+  build_tool "$TOOL_SRC" "$WORK/virtual_ivar_tool" || { [ "${_PM_ARMED:-0}" = 1 ] && return 0; return 1; }
   virtual_ivar_check "$WORK/virtual_ivar_tool"
 }
 prove_mutation "an initialized instance variable loses its virtual type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
