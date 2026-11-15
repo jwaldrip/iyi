@@ -7,7 +7,8 @@
 #   - the tool runs with --probe-phase and reaches a phase: parse, declarations, bodies, lower,
 #     verify, native, link. A refusal names its phase on stdout and exits 1 with no output file.
 #   - a fixture that reaches link is run; its stdout and exit status must equal the hosted
-#     compiler's executable for the same fixture (built with --prelude empty). That is run-equal.
+#     executable (built with --prelude empty, except lowglob_cvar_lazy which uses the
+#     lowglob_abi prelude). That is run-equal.
 #   - a fixture that reaches link and differs is a failure. A refused fixture must exit nonzero
 #     and write no output.
 # The floor (bench/selfhost_pipeline.floor) records the phase each fixture reaches. A phase may
@@ -525,7 +526,7 @@ else
   status=1
 fi
 prove_mutation "post-splice runtime code is dropped" "$COMPILER_SRC" \
-  'module_tops[mod_info.filename].each { |node| top_level << node }' 'module_tops[mod_info.filename].each { |node| }' -- pipeline_loader_if_check || status=1
+  'top_level.concat(runtime_by_unit[mod_info.filename])' 'top_level.concat([] of ASTNode)' -- pipeline_loader_if_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
