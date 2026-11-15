@@ -43,6 +43,9 @@ class ArmProbe < Visitor
       end
       found.matches.each do |match|
         puts "#{match.defining.full_name}##{match.definition.name}:#{match.arg_types.map(&.full_name).join(",")}"
+        if Program.args.size > 4 && Program.args[4] == "signature"
+          puts "signature=#{@typer.format_overload_signature(receiver, match.definition)}"
+        end
         if node.name == "new"
           puts "owner=#{match.owner.full_name}"
         end

@@ -2952,7 +2952,7 @@ pub class MainVisitor < TypeNodeHost
     result
   end
 
-  def arm_more_specific?(first : Def, second : Def, args : Array(ASTNode), owner : Type) : Bool
+  def arm_more_specific?(first : Def, second : Def, args : Array(ASTNode), owner : Type, call_node : Call) : Bool
     return false if first.splat_index && !second.splat_index
     return true if second.splat_index && !first.splat_index
     if a = first.splat_index
@@ -2980,7 +2980,27 @@ pub class MainVisitor < TypeNodeHost
       strict = true if t1 != t2
       i += 1
     end
+    if named = call_node.named_args
+      named.each do |argument|
+        t1 = arm_named_comparison_type(first, argument.name, owner, bound1)
+        t2 = arm_named_comparison_type(second, argument.name, owner, bound2)
+        return false unless t1.subtype_of?(t2)
+        strict = true if t1 != t2
+      end
+    end
     strict
+  end
+
+  def arm_named_comparison_type(definition : Def, name : String, owner : Type, bound : Hash(String, Type)?) : Type
+    definition.args.each do |parameter|
+      if parameter.external_name == name
+        if restriction = parameter.restriction
+          return arm_comparison_type(definition, restriction, owner, bound)
+        end
+        return @program.object_type
+      end
+    end
+    @program.object_type
   end
 
   def lookup_arm_levels(levels : Array(Type), owner : Type, name : String, args : Array(ASTNode), call_node : Call, walk : ArmWalk, signature : CallSignature) : Matches
@@ -2999,7 +3019,7 @@ pub class MainVisitor < TypeNodeHost
           next if args.size < min_args_count(definition) || args.size > definition.args.size
         end
         at = 0
-        while at < ordered.size && !arm_more_specific?(definition, ordered[at], args, owner)
+        while at < ordered.size && !arm_more_specific?(definition, ordered[at], args, owner, call_node)
           at += 1
         end
         ordered.insert(at, definition)
