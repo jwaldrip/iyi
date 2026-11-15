@@ -825,8 +825,8 @@ prove_mutation "dispatch drops the argument type test" "$REPO/src/compiler/lower
   '        matches = low.builder.bitwise_and(matches, match_type_id(low, arg_types[i], params[i], arg_tids[i]))' \
   '        matches = int1(low, 1_i64)' -- lower_calls_check || status=1
 prove_mutation "dispatch drops the argument downcast" "$REPO/src/compiler/lower/call.iyi" \
-  '        passed = downcast(low, passed, params[i], arg_types[i], true)' \
-  '        passed = values[i]' -- lower_calls_check || status=1
+  '          passed = downcast(low, passed, params[i], arg_types[i], true)' \
+  '          passed = values[i]' -- lower_calls_check || status=1
 prove_mutation "dispatch evaluates an argument in every arm" "$REPO/src/compiler/lower/call.iyi" \
   '      passed = values[i]' '      visit_node(low, arguments[i])
       passed = values[i]' -- lower_calls_check || status=1
@@ -837,6 +837,9 @@ prove_mutation "generic bindings ignore matched argument types" "$REPO/src/compi
 prove_mutation "numeric arguments ignore their matched type" "$REPO/src/compiler/lower/call.iyi" \
   '      converted = lib_number_value(low, arg_node.as(NumberLiteral), target_type)' \
   '      converted = downcast(low, passed, target_type, at, true)' -- lower_calls_check || status=1
+prove_mutation "dispatched numeric arguments ignore their matched type" "$REPO/src/compiler/lower/call.iyi" \
+  '          passed = lib_number_value(low, arguments[i].as(NumberLiteral), params[i])' \
+  '          passed = downcast(low, passed, params[i], arg_types[i], true)' -- lower_calls_check || status=1
 prove_mutation "typing mutates the written argument list" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '    CallExpansion.new(target, arguments)' '    node.args = arguments
     CallExpansion.new(target, arguments)' -- lower_calls_check || status=1
