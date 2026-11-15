@@ -1,0 +1,58 @@
+import compiler/semantic/top_level::{SemanticProgram, NonGenericModuleType, NonGenericClassType, GenericClassType, Type, UnionType}
+import compiler/types/types::{GenericClassInstanceType, VirtualType, NilableType, TupleInstanceType, ProcInstanceType, NamedArgumentType, NamedTupleInstanceType}
+
+program = SemanticProgram.new
+parent = NonGenericModuleType.new(program, program, "Before")
+child = NonGenericClassType.new(program, parent, "Child")
+other = NonGenericClassType.new(program, parent, "Child")
+raise "initial name" unless child.full_name == "Before::Child"
+raise "cache did not retain value" unless child.full_name.object_id == child.full_name.object_id
+raise "same name equality" unless child == other
+parent.name = "After"
+raise "parent rename" unless child.full_name == "After::Child"
+child.name = "Leaf"
+raise "child rename" unless child.full_name == "After::Leaf"
+raise "unequal names" if child == other
+child.namespace = program
+raise "namespace change" unless child.full_name == "Leaf"
+generic = GenericClassType.new(program, program, "Box", ["T"])
+argument = NonGenericClassType.new(program, program, "First")
+instance = GenericClassInstanceType.new(program, generic, Hash(String, Type).new, [argument] of Type)
+raise "generic name" unless instance.full_name == "Box(First)"
+raise "generic cache" unless instance.full_name.object_id == instance.full_name.object_id
+argument.name = "Second"
+raise "renamed generic argument" unless instance.full_name == "Box(Second)"
+replacement = NonGenericClassType.new(program, program, "Third")
+instance.type_args[0] = replacement
+raise "changed generic argument" unless instance.full_name == "Box(Third)"
+generic.name = "Crate"
+raise "renamed generic" unless instance.full_name == "Crate(Third)"
+union = UnionType.new(program, [argument, replacement] of Type)
+raise "union name" unless union.full_name == "(Second | Third)"
+raise "union cache" unless union.full_name.object_id == union.full_name.object_id
+replacement.name = "Alpha"
+raise "renamed union member" unless union.full_name == "(Alpha | Second)"
+union.union_types[1] = child
+raise "changed union member" unless union.full_name == "(Leaf | Second)"
+virtual = VirtualType.new(program, argument)
+raise "virtual name" unless virtual.full_name == "Second+"
+raise "virtual cache" unless virtual.full_name.object_id == virtual.full_name.object_id
+nilable = NilableType.new(program, argument)
+raise "nilable name" unless nilable.full_name == "(Second | Nil)"
+tuple = TupleInstanceType.new(program, [argument, child] of Type)
+raise "tuple name" unless tuple.full_name == "Tuple(Second, Leaf)"
+proc_type = ProcInstanceType.new(program, [argument] of Type, child)
+raise "proc name" unless proc_type.full_name == "Proc(Second, Leaf)"
+entry = NamedArgumentType.new("value", argument)
+named = NamedTupleInstanceType.new(program, [entry])
+raise "named tuple" unless named.full_name == "NamedTuple(value: Second)"
+entry.name = "renamed"
+raise "named tuple field mutation" unless named.full_name == "NamedTuple(renamed: Second)"
+argument.name = "Final"
+raise "virtual member rename" unless virtual.full_name == "Final+"
+raise "nilable member rename" unless nilable.full_name == "(Final | Nil)"
+raise "tuple member rename" unless tuple.full_name == "Tuple(Final, Leaf)"
+raise "proc member rename" unless proc_type.full_name == "Proc(Final, Leaf)"
+raise "named tuple member rename" unless named.full_name == "NamedTuple(renamed: Final)"
+raise "self equality" unless child == child
+puts "TYPE NAME CACHE OK"
