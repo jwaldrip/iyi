@@ -314,6 +314,22 @@ abstract_probe_at_expected() {
   diff -u "$abstract_expected" "$WORK/abstract_mutant.actual"
 }
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
+alias_members_at_expected() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/alias_mut_build.log" 2>&1 || {
+    body_build_failed "$WORK/alias_mut_build.log"
+    return $?
+  }
+  local fixture="$REPO/bench/fixtures/sem_bodies_alias_members.iyi"
+  "$ORACLE" "$fixture" > "$WORK/alias.oracle" 2>/dev/null || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" > "$WORK/alias.port" 2>/dev/null || return 1
+  diff -q "$WORK/alias.oracle" "$WORK/alias.port" >/dev/null
+}
+alias_members_at_expected || status=1
+prove_mutation "qualified alias members resolve through their target" "$REPO/src/compiler/semantic/top_level.iyi" \
+  "        c = remove_alias(c)" "        nil" -- alias_members_at_expected || status=1
+prove_mutation "an alias expression has its target's metaclass" "$MAIN_VISITOR" \
+  "    t = @program.remove_alias(t) if t.is_a?(AliasType)" \
+  "    nil" -- alias_members_at_expected || status=1
 prove_mutation "an abstract requirement is typed as an empty implementation" "$MAIN_VISITOR" \
   '    if target_def.abstract' '    if false && target_def.abstract' -- abstract_probe_at_expected || status=1
 owner_mutant_at_expected() {

@@ -1601,6 +1601,8 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     t = @program.lookup_type_path(node, @current_type)
+    # Hosted main_visitor.cr:237-248 types a simple alias as its underlying type.
+    t = @program.remove_alias(t) if t.is_a?(AliasType)
     if t.const?
       c = t.as(Const)
       c.used = true
