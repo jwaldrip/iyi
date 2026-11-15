@@ -1,0 +1,10 @@
+trait ItemSource
+  type Item
+end
+
+struct Holder(T)
+end
+
+impl ItemSource for Holder(T) forall T
+  type Item = T
+end

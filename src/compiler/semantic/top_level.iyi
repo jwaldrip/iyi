@@ -4,7 +4,7 @@ import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
-import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, ExternalVar, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, AssocTypeDecl, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, ExternalVar, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 import compiler/macros/target_flags::{MacroTargetFlags}
@@ -1240,8 +1240,11 @@ pub class ImplRecord
   getter trait_type : Type
   getter target_type : Type
   getter type_vars : Array(String)?
+  getter declaration : ImplDef?
+  getter imports : Hash(String, Type)?
+  getter scope : ModuleType?
 
-  def initialize(@trait_type : Type, @target_type : Type, @type_vars : Array(String)? = nil)
+  def initialize(@trait_type : Type, @target_type : Type, @type_vars : Array(String)? = nil, @declaration : ImplDef? = nil, @imports : Hash(String, Type)? = nil, @scope : ModuleType? = nil)
   end
 end
 
@@ -1563,6 +1566,7 @@ pub class SemanticProgram < NonGenericModuleType
   # lib funs again through it, in the scope and imports of the file that declared each one, so
   # `fun get(p : Pointer(Int32))` takes `Pointer(Int32)`, as the hosted pass has it.
   def resolve_declared_types : Nil
+    resolve_impl_traits
     saved = @current_imports
     @lib_funs_by_node.each_value do |f|
       if owner = f.owner
@@ -1630,6 +1634,54 @@ pub class SemanticProgram < NonGenericModuleType
         if mv = dc.owner.class_vars[dc.name]?
           mv.var_type = t
         end
+      end
+    end
+    @current_imports = saved
+    nil
+  end
+
+  # Re-resolve impl parents once the type system is installed. Hosted
+  # top_level_visitor.cr:900-921 appends associated answers to trait arguments.
+  def resolve_impl_traits : Nil
+    hook = @merge_hook
+    return nil if hook.nil?
+    saved = @current_imports
+    @impls.each do |record|
+      trait_type = record.trait_type
+      node = record.declaration
+      target = record.target_type
+      next unless trait_type.is_a?(GenericTraitType) && node && target.is_a?(ModuleType)
+      generic = trait_type.as(GenericTraitType)
+      if imports = record.imports
+        @current_imports = imports
+      end
+      outer = record.scope || self
+      scope = NonGenericModuleType.new(self, outer, "__impl_scope")
+      target_vars = target.as(ModuleType).generic_type_vars
+      if target_vars
+        target_vars.each { |name| scope.add_type(name, TypeParameterType.new(self, name)) }
+      end
+      args = [] of Type
+      if trait_args = node.trait_args
+        trait_args.each { |arg| args << remove_alias(lookup_type_node(arg, scope)) }
+      end
+      answers = node.assoc_types || [] of AssocTypeDecl
+      generic.assoc_types.each do |name|
+        answer : ASTNode? = nil
+        answers.each { |item| answer = item.value if item.name == name }
+        raise("impl #{generic.full_name} does not answer associated type #{name}") if answer.nil?
+        args << remove_alias(lookup_type_node(answer.as(ASTNode), scope))
+      end
+      next if args.empty?
+      resolved = hook.as(TypeHook).instantiate_type(generic, args)
+      parents = target.as(ModuleType).parents
+      i = 0
+      while i < parents.size
+        if parents[i] == trait_type
+          parents[i] = resolved
+          break
+        end
+        i += 1
       end
     end
     @current_imports = saved
@@ -2738,7 +2790,9 @@ pub class TopLevelVisitor < Visitor
       end
 
       if tv || at
-        generic = GenericTraitType.new(@program, scope, name, tv || [] of String)
+        params = tv ? tv.as(Array(String)).dup : [] of String
+        params.concat(at.as(Array(String))) if at
+        generic = GenericTraitType.new(@program, scope, name, params)
         if at
           at.each { |a| generic.assoc_types << a }
         end
@@ -2816,7 +2870,8 @@ pub class TopLevelVisitor < Visitor
     @current_type = old_type
 
     target_mod.include(trait_type)
-    @program.impls << ImplRecord.new(trait_type, target_mod, node.type_vars)
+    @program.impls << ImplRecord.new(trait_type, target_mod, node.type_vars, node, @program.current_imports.dup, old_type)
+    @program.resolve_impl_traits unless @program.merge_hook.nil?
 
     false
   end
