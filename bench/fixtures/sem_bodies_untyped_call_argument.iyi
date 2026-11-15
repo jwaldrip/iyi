@@ -13,6 +13,7 @@ class CensusDerived < CensusParent
   def compute : Int32
     fresh = super { |value| value }
     self.consume(fresh)
+    self.consume(value: fresh)
   end
 end
 

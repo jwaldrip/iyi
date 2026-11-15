@@ -862,6 +862,27 @@ if ! atomic_free_at_floor; then
   echo "  ATOMIC: one of the instantiated atomic bodies was refused or not reached"
   status=1
 fi
+untyped_call_arguments_safe() {
+  if ! "$IYI" build -o "$WORK/untyped_call_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/untyped_call_build.log" 2>&1; then
+    body_build_failed "$WORK/untyped_call_build.log"
+    return $?
+  fi
+  codesign -v --strict "$WORK/untyped_call_tool" || return 1
+  "$WORK/untyped_call_tool" "$REPO/bench/fixtures/sem_bodies_untyped_call_argument.iyi" \
+    -o "$WORK/untyped_call" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/untyped_call.log" 2>&1 || true
+  grep -Fq '[phase] bodies: pass' "$WORK/untyped_call.log" || return 1
+  grep -Eq '^table: sem_bodies_untyped_call_argument refusal 2 owner=.* reason=an argument was not typed: fresh ' "$WORK/untyped_call.log"
+}
+if ! untyped_call_arguments_safe; then
+  echo "  UNTYPED CALL: positional and named arguments must be refused without a bodies panic"
+  status=1
+fi
+prove_mutation "an untyped positional argument stops before call matching" "$MAIN_VISITOR" \
+  'return untyped(node, "an argument was not typed: #{arg}") if child_type(arg).nil?' \
+  'nil' -- untyped_call_arguments_safe || status=1
+prove_mutation "an untyped named argument stops before call matching" "$MAIN_VISITOR" \
+  'return untyped(node, "an argument was not typed: #{arg.value}") if child_type(arg.value).nil?' \
+  'nil' -- untyped_call_arguments_safe || status=1
 prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
   "@def_free_types[target_def] = free_types unless free_types.empty?" \
   "        nil" -- atomic_free_at_floor || status=1
