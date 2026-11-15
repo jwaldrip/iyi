@@ -118,6 +118,7 @@ pub class DefaultArguments
     wrapper.calls_initialize = rec_def.calls_initialize
     wrapper.calls_previous_def = rec_def.calls_previous_def
     wrapper.share_annotated = rec_def.share_annotated
+    wrapper.share_crossing = rec_def.share_crossing.dup
     wrapper
   end
 
@@ -295,6 +296,7 @@ pub class DefaultArguments
     wrapper.calls_initialize = rec_def.calls_initialize
     wrapper.calls_previous_def = rec_def.calls_previous_def
     wrapper.share_annotated = rec_def.share_annotated
+    wrapper.share_crossing = rec_def.share_crossing.dup
     wrapper
   end
 

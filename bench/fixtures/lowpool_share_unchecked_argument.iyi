@@ -1,0 +1,12 @@
+@[Unsafe("tests a Share def's ordinary, unchecked parameter")]
+@[Share]
+def schedule(values : Array(Int32), &work : -> Int32) : Int32 | Panicked
+  result = group do |g|
+    task = g.spawn { values.size }
+    task.value
+  end
+  work.call
+  result
+end
+
+puts schedule([1, 2, 3]) { 7 }

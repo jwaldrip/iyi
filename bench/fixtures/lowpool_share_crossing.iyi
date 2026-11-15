@@ -1,0 +1,20 @@
+@[Unsafe("tests a trusted crossing parameter")]
+@[Share(owns: true)]
+class TrustedBox
+  getter value : Int32
+
+  def initialize(@value : Int32)
+  end
+end
+
+@[Share(crossing: {box: "Use a trusted box"})]
+def schedule(box : TrustedBox, &work : -> Int32) : Int32 | Panicked
+  result = group do |g|
+    task = g.spawn { box.value }
+    task.value
+  end
+  work.call
+  result
+end
+
+puts schedule(TrustedBox.new(7)) { 1 }

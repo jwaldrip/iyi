@@ -5,6 +5,7 @@ import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, AssocTypeDecl, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, ExternalVar, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{NamedTupleLiteral}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 import compiler/macros/target_flags::{MacroTargetFlags}
@@ -3459,6 +3460,13 @@ pub class TopLevelVisitor < Visitor
       if annotation_type = @program.lookup_type_path?(ann.path, @current_type)
         if annotation_type.is_a?(AnnotationType) && annotation_type.object_id == @program.types["Share"].object_id
           node.share_annotated = true
+          if named = ann.named_args
+            named.each do |arg|
+              if arg.name == "crossing" && arg.value.is_a?(NamedTupleLiteral)
+                arg.value.as(NamedTupleLiteral).entries.each { |entry| node.share_crossing << entry.key }
+              end
+            end
+          end
         end
       end
     end

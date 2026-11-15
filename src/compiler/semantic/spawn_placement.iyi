@@ -1,6 +1,7 @@
 module compiler/semantic/spawn_placement
 
 import compiler/syntax/ast::{ASTNode, Assign, Block, BoolLiteral, Break, Call, CharLiteral, ClassDef, Def, Expressions, FunDef, If, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, ModuleDef, Next, NilLiteral, NodeMap, Nop, Not, NumberLiteral, Path, Primitive, ProcLiteral, Return, Self, StringLiteral, SymbolLiteral, Var, While, Yield}
+import compiler/syntax/ast::{MultiAssign, OpAssign}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{MetaclassType, ModuleType, NoReturnType, SemanticProgram, Type}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
@@ -456,6 +457,27 @@ class SpawnSiteCollector < Visitor
   end
 end
 
+# Hosted cleanup_transformer.cr:1494-1530 trusts only an unreassigned kept
+# block or a crossing parameter. Inspect all assignment spellings in its body.
+class SpawnAssignedNames < Visitor
+  getter names : Set(String) = Set(String).new
+
+  def visit(node : Assign) : Bool
+    names.add(node.target.as(Var).name) if node.target.is_a?(Var)
+    true
+  end
+
+  def visit(node : OpAssign) : Bool
+    names.add(node.target.as(Var).name) if node.target.is_a?(Var)
+    true
+  end
+
+  def visit(node : MultiAssign) : Bool
+    node.targets.each { |target| names.add(target.as(Var).name) if target.is_a?(Var) }
+    true
+  end
+end
+
 # This walk deliberately has a whitelist. A witness is valid only when the
 # reference is retained in the body the hosted cleanup examines. A missing
 # witness is not a Share proof.
@@ -501,10 +523,15 @@ class SpawnWitnessWalk
   def trusted_argument?(name : String) : Bool
     definition = @in_def
     return false unless definition && definition.share_annotated
+    kept = false
     if block_arg = definition.block_arg
-      return true if block_arg.name == name
+      kept = block_arg.name == name && !block_arg.name.empty?
     end
-    definition.args.any? { |arg| arg.name == name }
+    crossed = definition.args.any? { |arg| arg.name == name && definition.share_crossing.includes?(arg.external_name) }
+    return false unless kept || crossed
+    assigned = SpawnAssignedNames.new
+    definition.body.accept(assigned)
+    !assigned.names.includes?(name)
   end
 
   def variable(node : Var) : Nil

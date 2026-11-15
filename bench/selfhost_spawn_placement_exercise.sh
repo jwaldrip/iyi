@@ -12,7 +12,7 @@ status=0
 spawn_check() {
   "$IYI" build -o "$WORK/stage1" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/stage.build" 2>&1 || return 1
   codesign -v --strict "$WORK/stage1" || return 1
-  for n in same_unit_capture mutable_capture explicit_same pointer_capture tuple_capture; do
+  for n in same_unit_capture mutable_capture explicit_same pointer_capture tuple_capture share_unchecked_argument; do
     f="$REPO/bench/fixtures/lowpool_$n.iyi"
     "$IYI" build --no-debug --emit llvm-ir -o "$WORK/$n-hosted" "$f" > "$WORK/$n.hosted.log" 2>&1 || return 1
     if grep -Eq '^define .*@__iyi_preempt\(' "$WORK/$n-hosted.ll"; then echo "$n: hosted reaches pool"; return 1; fi
@@ -23,7 +23,7 @@ spawn_check() {
     [ "$h" = "$p" ] && cmp -s "$WORK/$n.hosted.out" "$WORK/$n.native.out" || return 1
     echo "$n: hosted/native output and exit agree"
   done
-  for n in parallel_eligible explicit_new share_capture trusted_capture immutable_capture; do
+  for n in parallel_eligible explicit_new share_capture trusted_capture immutable_capture share_crossing; do
     f="$REPO/bench/fixtures/lowpool_$n.iyi"
     "$IYI" build --no-debug --emit llvm-ir -o "$WORK/$n-hosted" "$f" > "$WORK/$n.hosted.log" 2>&1 || return 1
     grep -Eq '^define .*@__iyi_preempt\(' "$WORK/$n-hosted.ll" || { echo "$n: hosted did not reach pool"; return 1; }
@@ -46,6 +46,9 @@ prove_mutation 'raw pointer witness is dropped' "$REPO/src/compiler/semantic/sha
 prove_mutation 'tuple member witness is dropped' "$REPO/src/compiler/semantic/share.iyi" \
   '          return "#{type} holds #{member}: #{why}"' \
   '          return nil' -- spawn_check || status=1
+prove_mutation 'unchecked Share arguments are trusted' "$REPO/src/compiler/semantic/spawn_placement.iyi" \
+  '    return false unless kept || crossed' \
+  '    return true unless kept || crossed' -- spawn_check || status=1
 prove_mutation 'setter witness is dropped' "$REPO/src/compiler/semantic/share.iyi" \
   '      if setters.includes?(name)' \
   '      if false' -- spawn_check || status=1
