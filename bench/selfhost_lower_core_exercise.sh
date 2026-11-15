@@ -320,6 +320,9 @@ else
   status=1
 fi
 
+echo "== 2c4. Captured generic output inside a group"
+bash "$REPO/bench/selfhost_lower_group_output_exercise.sh" || status=1
+
 module_floor_file="$REPO/bench/selfhost_lower_core_module.floor"
 module_floor="$(awk 'NR==1 { print $1 }' "$module_floor_file" 2>/dev/null)"
 module_floor="${module_floor:-0}"
@@ -632,7 +635,16 @@ prove_mutation "Pointer#malloc refuses a UInt64 count by inverting the size_t ch
 prove_mutation "Cast nil to Pointer emits llvm_nil instead of null pointer" "$REPO/src/compiler/lower/lower.iyi" \
   "      low.last = low.builder.const_null(low.typer.llvm_type(to_type))" "      low.last = llvm_nil(low)" -- lower_core_check || status=1
 prove_mutation "NilableCast branches swap matches and doesnt_match" "$REPO/src/compiler/lower/lower.iyi" \
-  "    low.builder.cond_br(cmp, matches_block, doesnt_match_block)" "    low.builder.cond_br(cmp, doesnt_match_block, matches_block)" -- lower_core_check || status=1
+  '    doesnt_match_block = blocks[1]
+    low.builder.cond_br(cmp, matches_block, doesnt_match_block)
+
+    low.builder.position_at_end(doesnt_match_block)
+    nil_val = llvm_nil(low)' \
+  '    doesnt_match_block = blocks[1]
+    low.builder.cond_br(cmp, doesnt_match_block, matches_block)
+
+    low.builder.position_at_end(doesnt_match_block)
+    nil_val = llvm_nil(low)' -- lower_core_check || status=1
 prove_mutation "Assign to a parameter skips the local copy" "$REPO/src/compiler/lower/fun.iyi" \
   "  needs_copy = assigned_to || var_type.full_name != arg_type.full_name" "  needs_copy = false || var_type.full_name != arg_type.full_name" -- lower_core_check || status=1
 prove_mutation "is_a? on NilableType tests non-null instead of null" "$REPO/src/compiler/lower/cast.iyi" \
@@ -821,8 +833,6 @@ struct_join_check() {
 if struct_join_check; then
   prove_mutation "a struct does not join by pointer" "$REPO/src/compiler/lower/lower.iyi" \
     '  passed_by_value?(t)' '  false' -- struct_join_check || status=1
-  prove_mutation "a tuple literal loses its storage pointer" "$REPO/src/compiler/lower/lower.iyi" \
-    '  low.last = tuple' '  low.last = load_aligned(low, ir_type, tuple)' -- struct_join_check || status=1
 else
   echo "FAIL: struct join does not match the hosted module"
   status=1
@@ -849,7 +859,14 @@ virtual_ivar_check() {
 }
 if virtual_ivar_check; then
   prove_mutation "virtual receiver fields have no base type" "$REPO/src/compiler/lower/lower.iyi" \
-    '    if owner.is_a?(VirtualType)' '    if false' -- virtual_ivar_check || status=1
+    '    if owner.is_a?(VirtualType)
+      owner = owner.as(VirtualType).base_type
+    end
+    if owner.is_a?(UnionType)' \
+    '    if owner.is_a?(VirtualType)
+      pending_visit_node("virtual receiver fields require a base type")
+    end
+    if owner.is_a?(UnionType)' -- virtual_ivar_check || status=1
   prove_mutation "explicit instance-variable reads are not lowered" "$REPO/src/compiler/lower/lower.iyi" \
     '  if node.is_a?(ReadInstanceVar)' '  if false' -- virtual_ivar_check || status=1
   prove_mutation "virtual receiver fields cannot be typed" "$REPO/src/compiler/semantic/main_visitor.iyi" \
@@ -1126,6 +1143,21 @@ else
   awk 'NR<=8' "$WORK/tuple.err" "$WORK/tuple.out" "$WORK/tuple.build.log"
   status=1
 fi
+tuple_storage_check() {
+  "$IYI" build -o "$WORK/port-tuple-storage" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple-storage.build.log" 2>&1 || return 1
+  "$WORK/port-tuple-storage" lower "$REPO/bench/fixtures/lower_tuple_storage.iyi" "$WORK/lower_tuple_storage.oracle.ll" > "$WORK/tuple-storage.out" 2> "$WORK/tuple-storage.err" || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/tuple-storage.out"
+}
+prove_mutation "a tuple literal loses its storage pointer" "$REPO/src/compiler/lower/lower.iyi" \
+  '  low.needs_value = wants
+  low.last = tuple
+end
+
+pub def codegen_node' '  low.needs_value = wants
+  low.last = load_aligned(low, ir_type, tuple)
+end
+
+pub def codegen_node' -- tuple_storage_check || status=1
 tuple_entry_check() {
   "$IYI" build -o "$WORK/port-tuple-entry" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple-entry.build.log" 2>&1 || return 1
   "$WORK/port-tuple-entry" emit "$REPO/bench/fixtures/lower_tuple.iyi" "$WORK/lower_tuple.oracle.ll" > "$WORK/tuple-entry.ir" 2> "$WORK/tuple-entry.err" || return 1

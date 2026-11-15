@@ -57,6 +57,7 @@ import compiler/lower/gc_table::{define_gc_layouts}
 import compiler/lower/proc::{lower_proc_literal}
 import compiler/lower/closure::{allocate_closure}
 import compiler/semantic/closures::{ClosureFacts}
+import compiler/semantic/spawn_placement::{SpawnAnalysis, SpawnTarget, spawn_call?}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, to_rhs, type_id_of_value, type_id_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
@@ -156,6 +157,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
     low.stubbed_defs = emitted
   end
   low.body_visitor = CoreBody.new
+  low.spawn_analysis = SpawnAnalysis.analyse(analysed, root)
   i32 = m.types.int32
   ptr = m.types.ptr(0)
 
@@ -324,6 +326,12 @@ end
 # The declaration may come from any unit, not just the entry root.
 pub def emit_well_known_funs(low : Lowerer, census : Bool = false) : Nil
   if pool_reached?(low) && !census
+    if analysis = low.spawn_analysis
+      unless analysis.pool_proven
+        pending_visit_node("spawn classification of #{analysis.pool_site} is not ported (hosted cleanup_transformer.cr classify_spawn)")
+        return
+      end
+    end
     refuse_reached_pool(low)
     return
   end
@@ -337,18 +345,23 @@ pub def emit_well_known_funs(low : Lowerer, census : Bool = false) : Nil
 end
 
 # The probe module runs the same pre-visit once, before its per-def loop (program.iyi lowering_table).
-pub def emit_probe_well_known(m : Module, typer : LowerTyper, analysed : MainVisitor, census : Bool = false) : String?
+pub def emit_probe_well_known(m : Module, typer : LowerTyper, analysed : MainVisitor, census : Bool = false, analysis : SpawnAnalysis? = nil) : String?
   low = Lowerer.new(m, typer, analysed)
   low.body_visitor = CoreBody.new
+  low.spawn_analysis = analysis
   example : String? = nil
   if census
-    analysed.typed_instances.each do |inst|
-      if pool_start?(low, inst.definition, inst.self_type)
-        example = "IyiWorkers.start"
-        if loc = inst.definition.location
-          example = "#{loc.filename}:#{loc.line_number} in IyiWorkers.start"
+    if analysis
+      example = analysis.pool_site
+    else
+      analysed.typed_instances.each do |inst|
+        if pool_start?(low, inst.definition, inst.self_type)
+          example = "IyiWorkers.start"
+          if loc = inst.definition.location
+            example = "#{loc.filename}:#{loc.line_number} in IyiWorkers.start"
+          end
+          break
         end
-        break
       end
     end
   end
@@ -365,6 +378,9 @@ def refuse_reached_pool(low : Lowerer) : Nil
 end
 
 def pool_reached?(low : Lowerer) : Bool
+  if analysis = low.spawn_analysis
+    return analysis.reached?
+  end
   low.analysed.typed_instances.each do |inst|
     return true if pool_start?(low, inst.definition, inst.self_type)
   end
@@ -702,6 +718,19 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     if pool_start_call?(low, call)
       refuse_reached_pool(low)
       return
+    end
+    if analysis = low.spawn_analysis
+      if spawn_call?(low.analysed, call)
+        verdict = analysis.verdicts[call]?
+        if verdict.nil?
+          pending_visit_node("spawn classification of #{call.name} is not ported (hosted cleanup_transformer.cr classify_spawn)")
+          return
+        end
+        if verdict.target != SpawnTarget::AsWritten
+          pending_visit_node("spawn classification of #{verdict.placement} is not ported (hosted cleanup_transformer.cr classify_spawn): #{verdict.reason}")
+          return
+        end
+      end
     end
     expanded = low.analysed.expansions[call]? || call.expanded
     if expanded

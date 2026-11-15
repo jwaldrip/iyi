@@ -30,6 +30,7 @@ import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance, nod
 import compiler/semantic/match::{YieldFinder}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
+import compiler/semantic/spawn_placement::{SpawnAnalysis, SpawnTarget}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/loader::{ModuleInfo}
 import compiler/ir/module::{Module}
@@ -500,8 +501,24 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   reasons = [] of String
   counts = [] of Int32
   examples = [] of String
-  if example = emit_probe_well_known(m, typer, typed.visitor, census)
-    reason = "a reached pool: loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)"
+  spawn_analysis = SpawnAnalysis.analyse(typed.visitor, typed.root)
+  spawn_analysis.ordered.each do |verdict|
+    placement = "unproven"
+    if verdict.target == SpawnTarget::AsWritten
+      placement = "as-written"
+    elsif verdict.target == SpawnTarget::Pooled
+      placement = "pooled"
+    elsif verdict.target == SpawnTarget::Refused
+      placement = "refused"
+    end
+    refused << "spawn\t#{verdict.site}\t#{placement}\t#{verdict.placement}\t#{verdict.reason}"
+  end
+  if example = emit_probe_well_known(m, typer, typed.visitor, census, spawn_analysis)
+    reason = if spawn_analysis.pool_proven
+               "a reached pool: loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)"
+             else
+               "spawn classification is not ported (hosted cleanup_transformer.cr classify_spawn)"
+             end
     reasons << reason
     counts << 1
     examples << example
@@ -522,6 +539,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     before = [] of String
     m.functions.each { |fn| before << fn.name }
     probe_lowerer = Lowerer.new(m, typer, typed.visitor)
+    probe_lowerer.spawn_analysis = spawn_analysis
     outcome = group do |g|
       task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m, probe_lowerer) }
       task.value

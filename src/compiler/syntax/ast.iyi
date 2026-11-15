@@ -120,6 +120,10 @@ pub class NodeMap(V)
     @store.delete(node.node_id)
   end
 
+  def values : Array(V)
+    @store.values
+  end
+
   def size : Int32
     @store.size
   end
@@ -3483,6 +3487,7 @@ pub class Def < ASTNode
   property macro_yields : Bool = false
   property no_inline : Bool = false
   property always_inline : Bool = false
+  property share_annotated : Bool = false
   # The def this one replaced, and the def that replaced this one.
   # Hosted `Def#previous` is a DefWithMetadata; the port keeps the def itself.
   property previous : Def? = nil
@@ -3564,6 +3569,7 @@ pub class Def < ASTNode
     d.macro_yields = @macro_yields
     d.no_inline = @no_inline
     d.always_inline = @always_inline
+    d.share_annotated = @share_annotated
     # Hosted syntax Def#clone_without_location does not copy previous or next.
     # The semantic reopening copies previous only; iyi cannot reopen that class.
     d.iyi_defer = @iyi_defer
