@@ -69,13 +69,6 @@ def dump_def(d : Iyi::Def, io : IO, indent : String)
   end
 end
 
-# Overload order is a lookup implementation detail. Canonicalize complete
-# records, retaining every overload and property without ordering the methods
-# that the compiler actually uses for dispatch.
-def def_dump_key(d : Iyi::Def) : String
-  String.build { |io| dump_def(d, io, "") }
-end
-
 def dump_type(t : Iyi::Type, io : IO, indent : String, entry : String?)
   full_name = t.is_a?(Iyi::NamedType) ? t.full_name : t.to_s
   if declared_in?(t.locations, entry)
@@ -168,7 +161,7 @@ def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String
       end
     end
     all_defs = all_defs.select { |d| def_declared?(d, entry) }
-    all_defs.sort_by! { |d| def_dump_key(d) }
+    all_defs.sort_by! { |d| "#{d.receiver ? "self." : ""}#{d.name}" }
     all_defs.each do |d|
       dump_def(d, io, "#{indent}  ")
     end
@@ -186,7 +179,7 @@ def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entr
     top_defs = [] of Iyi::Def
     pdefs.each_value { |list| list.each { |item| top_defs << item.def } }
     top_defs = top_defs.select { |d| def_declared?(d, entry) }
-    top_defs.sort_by! { |d| def_dump_key(d) }
+    top_defs.sort_by!(&.name)
     top_defs.each do |d|
       dump_def(d, io, "")
     end

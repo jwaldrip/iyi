@@ -424,6 +424,17 @@ check_wrong_arity_diverge() {
   [ "$actual" = "$expected" ]
 }
 
+check_declaration_order_diverge() {
+  if ! "$IYI" build -o "$WORK/mut-order" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" >/dev/null 2>&1; then
+    echo "mutation failed to build, not a behavioral catch"
+    return 0
+  fi
+  local fixture="$REPO/bench/fixtures/sem_declaration_order.iyi"
+  "$WORK/declarations_oracle" "$fixture" > "$WORK/order-oracle.ast" 2>/dev/null || return 0
+  "$WORK/mut-order" "$fixture" > "$WORK/order-mutant.ast" 2>/dev/null || return 0
+  cmp -s "$WORK/order-oracle.ast" "$WORK/order-mutant.ast"
+}
+
 check_ivar_dump_diverge() {
   "$IYI" build -o "$WORK/mut-declarations" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" >/dev/null 2>&1 || return 1
   "$WORK/mut-declarations" "$REPO/bench/fixtures/sem_bodies_ivar_read.iyi" > "$WORK/mut-ivar.ast" 2>/dev/null || return 1
@@ -558,6 +569,12 @@ prove_mutation "wrong arity is reported as a type mismatch" "$SEM_MAIN" \
   '      if wrong = CallError.wrong_number_for(method_name, args.size, compatible, candidates.size)' \
   '      if wrong = (args.size < 0 ? CallError.wrong_number_for(method_name, args.size, compatible, candidates.size) : nil)' \
   -- check_wrong_arity_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "declaration overload order ignores strictness" "$SEM" \
+  '            break if DeclarationOrder.before?(a_def, l[at], self, yields)' \
+  '            break if false && DeclarationOrder.before?(a_def, l[at], self, yields)' \
+  -- check_declaration_order_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "overload resolution most specific filter is bypassed" "$SEM_MAIN" \
