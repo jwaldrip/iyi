@@ -610,17 +610,23 @@ prove_mutation "a call-site __LINE__ expands as a string" "$MAIN_VISITOR" \
   'literal = magic.expand_node(node.location, node.end_location).at(node)' \
   'literal = StringLiteral.new("?").at(node)' -- bodies_at_floor || status=1
 prove_mutation "if x narrows a truthy variable in its then branch" "$MAIN_VISITOR" \
-  "    filter_vars(cond_type_filters)" \
-  "    nil" -- bodies_at_floor || status=1
+  "    filter_vars(cond_type_filters)
+    then_dead = @narrowed_out" \
+  "    nil
+    then_dead = @narrowed_out" -- bodies_at_floor || status=1
 prove_mutation "if x.nil?, unless x and !x narrow the else branch" "$MAIN_VISITOR" \
-  "    filter_vars(TypeFilters.invert(cond_type_filters))" \
-  "    nil" -- bodies_at_floor || status=1
+  "    filter_vars(TypeFilters.invert(cond_type_filters))
+    else_dead = @narrowed_out" \
+  "    nil
+    else_dead = @narrowed_out" -- bodies_at_floor || status=1
 prove_mutation "while cond narrows its variable in the loop body" "$MAIN_VISITOR" \
   "      filter_vars(cond_type_filters)" \
   "      nil" -- bodies_at_floor || status=1
 prove_mutation "early exit in then branch narrows the rest of the body" "$MAIN_VISITOR" \
-  "        elsif then_unreachable" \
-  "        elsif false" -- bodies_at_floor || status=1
+  "        elsif then_unreachable
+          merged_vars[name] = else_var" \
+  "        elsif false
+          merged_vars[name] = else_var" -- bodies_at_floor || status=1
 prove_mutation_all "a refused body with declared return is cached" "$MAIN_VISITOR" \
   "remember_def_instance(cache_key, target_def," \
   "nil # " -- bodies_at_floor || status=1
@@ -649,8 +655,10 @@ prove_mutation "an error contract survives a non-returning body" "$MAIN_VISITOR"
   "if bt.is_a?(NoReturnType)" -- bodies_at_floor || status=1
 
 prove_mutation "metaclass owner binds its instance parameters" "$MAIN_VISITOR" \
-  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)" \
-  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)" -- bodies_at_floor || status=1
+  "    if instance = receiver_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)" \
+  "    if instance = receiver_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)" -- bodies_at_floor || status=1
 prove_mutation "typeof inside type arguments yields the instance type" "$REPO/src/compiler/semantic/type_nodes.iyi" \
   "  if depth > 0" \
   "  if false" -- bodies_at_floor || status=1
@@ -891,8 +899,10 @@ macro_ivars_at_floor() {
   [ "$matched" -ge 10 ]
 }
 prove_mutation "instance variable facts are not passed to the body splice" "$REPO/src/compiler/semantic/macro_bindings.iyi" \
-  "facts.instance_vars_known = true" \
-  "facts.instance_vars_known = false" -- macro_ivars_at_floor || status=1
+  "      facts.instance_vars_known = true
+      owner.as(ModuleType).all_instance_vars.each" \
+  "      facts.instance_vars_known = false
+      owner.as(ModuleType).all_instance_vars.each" -- macro_ivars_at_floor || status=1
 macro_annotations_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   fixture="$REPO/bench/fixtures/sem_bodies_macro_annotations.iyi"
@@ -914,9 +924,21 @@ macro_value_at_floor() {
 }
 prove_mutation "a value-position macro expansion is not typed" "$MAIN_VISITOR" \
   "    expanded.accept(self)
-    if et = child_type(expanded)" \
+    if et = child_type(expanded)
+      set_type(node, et)
+    end
+    false
+  end
+
+  def visit(node : MacroFor)" \
   "    nil
-    if et = child_type(expanded)" -- macro_value_at_floor || status=1
+    if et = child_type(expanded)
+      set_type(node, et)
+    end
+    false
+  end
+
+  def visit(node : MacroFor)" -- macro_value_at_floor || status=1
 macro_empty_at_floor() {
   if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1; then
     echo "INVALID MUTANT: typed dump did not build"
@@ -952,8 +974,10 @@ free_types_at_floor() {
   [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
 }
 prove_mutation "a callee's free types are unavailable to body and return lookup" "$MAIN_VISITOR" \
-  "found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)" \
-  "found = LookupError.new(\"unbound\")" -- free_types_at_floor || status=1
+  "      if bound = @def_free_types[cd]?
+        found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)" \
+  "      if bound = @def_free_types[cd]?
+        found = LookupError.new(\"unbound\")" -- free_types_at_floor || status=1
 block_free_output_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   for name in sem_bodies_block_free_output sem_bodies_block_free_body; do
@@ -1014,8 +1038,10 @@ writer_type_at_floor() {
   [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
 }
 prove_mutation "block body uses the writer's current type" "$MAIN_VISITOR" \
-  "          @current_type = writer_type" \
-  "          nil" -- writer_type_at_floor || status=1
+  "        if writer_type = owner.writer_type
+          @current_type = writer_type" \
+  "        if writer_type = owner.writer_type
+          nil" -- writer_type_at_floor || status=1
 captured_input_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_capture_none.iyi"
@@ -1108,8 +1134,10 @@ prove_mutation "generic arguments resolve their aliases before instantiation" "$
   "      return expand(target.as(Type))" \
   "      return type" -- generic_alias_lookup_matches || status=1
 prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
-  "@def_free_types[target_def] = free_types unless free_types.empty?" \
-  "        nil" -- atomic_free_at_floor || status=1
+  "      if free_types = FreeBindings.of_def(target_def, call_arg_types, type_node_system(@program))
+        @def_free_types[target_def] = free_types unless free_types.empty?" \
+  "      if free_types = FreeBindings.of_def(target_def, call_arg_types, type_node_system(@program))
+        nil" -- atomic_free_at_floor || status=1
 # Concrete static array annotations retain their element type and size.
 static_array_return_at_floor() {
   if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/static_array_mut_build.log" 2>&1; then
@@ -1158,8 +1186,10 @@ prove_mutation "a named argument survives splat expansion" "$REPO/src/compiler/s
   "        matching = rec_def.args[param_index(rec_def, named.name)]
         nil" -- bare_splat_bounds || status=1
 prove_mutation "a splat expansion retains its call-site name" "$REPO/src/compiler/semantic/default_arguments.iyi" \
-  '        new_name = "#{new_name}:#{named.name}"' \
-  '        new_name = rec_def.name' -- bare_splat_bounds || status=1
+  '        new_name = "#{new_name}:#{named.name}"
+        matching = rec_def.args[param_index(rec_def, named.name)]' \
+  '        new_name = rec_def.name
+        matching = rec_def.args[param_index(rec_def, named.name)]' -- bare_splat_bounds || status=1
 prove_mutation "a bare splat rejects excess positionals" "$REPO/src/compiler/semantic/default_arguments.iyi" \
   "    if rec_def.args[index].name.empty? && given > index" \
   "    if false" -- bare_splat_bounds || status=1
