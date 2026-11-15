@@ -52,6 +52,8 @@ pub struct CompilerConfig
   # Keep going past a refusal where the phase allows: the body typer records each refusal on its node in total
   # mode and the probe's table reports them. The lowering still stops at its first refusal.
   property keep_going : Bool
+  property stub_refused : Bool
+  property stub_also : Array(String)
 
   def initialize(
     @output_filename : String = "a.out",
@@ -64,6 +66,8 @@ pub struct CompilerConfig
     @probe_verify : Bool = false,
     @typed_pipeline : Bool = false,
     @keep_going : Bool = false,
+    @stub_refused : Bool = false,
+    @stub_also : Array(String) = [] of String,
   )
   end
 end
@@ -331,10 +335,22 @@ pub class Compiler
       STDOUT.flush
     end
 
+    stub_defs = Hash(String, String).new
+    stubbed_defs = Hash(String, String).new
+    if @config.stub_refused
+      STDERR.puts "iyi-compile-native: DIAGNOSTIC BUILD: refused functions will be replaced with fatal stubs"
+      probe_names = [] of String
+      probe_refused = [] of String
+      lowering_table(typed, triple, Compiler.module_name_from_path(root_filename), probe_names, probe_refused, stub_defs)
+      @config.stub_also.each do |name|
+        stub_defs[name] = "manually requested diagnostic stub"
+      end
+    end
+
     typed_start("lower")
     name = Compiler.module_name_from_path(root_filename)
     lowered = group do |g|
-      task = g.spawn { lower_program(typed, triple, name) }
+      task = g.spawn { lower_program(typed, triple, name, stub_defs, stubbed_defs) }
       task.value
     end
     if lowered.is_a?(Panicked)
@@ -367,6 +383,15 @@ pub class Compiler
     refusal = link_program(objects, parts[parts.size - 1], output, typed.links)
     unless refusal.nil?
       return typed_refuse("link", reached, refusal.as(String))
+    end
+    if @config.stub_refused
+      lines = [] of String
+      stubbed_defs.each do |name, reason|
+        line = "#{name}\t#{reason}"
+        lines << line
+        STDERR.puts "iyi-compile-native: DIAGNOSTIC STUB: #{line}"
+      end
+      File.write(output + ".stubs", lines.join("\n") + "\n")
     end
     typed_pass("link")
     if @config.probe_phase

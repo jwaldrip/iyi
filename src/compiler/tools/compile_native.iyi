@@ -97,6 +97,8 @@ module CompileNative
     asked_llvm = false
     typed = false
     keep_going = false
+    stub_refused = false
+    stub_also = [] of String
     i = 3
     while i < args.size
       if args[i] == "--target" && i + 1 < args.size
@@ -113,6 +115,12 @@ module CompileNative
         i = i + 2
       elsif args[i] == "--keep-going"
         keep_going = true
+        i = i + 1
+      elsif args[i] == "--stub-refused"
+        stub_refused = true
+        i = i + 1
+      elsif args[i].starts_with?("--stub-also=")
+        stub_also = args[i]["--stub-also=".size..-1].split(',')
         i = i + 1
       elsif args[i] == "--probe-phase"
         probe = true
@@ -139,6 +147,8 @@ module CompileNative
         fail("unknown argument #{args[i]}")
       end
     end
+    fail("--stub-refused requires --pipeline typed") if stub_refused && !typed
+    fail("--stub-also requires --stub-refused") if !stub_also.empty? && !stub_refused
     if asked_llvm
       STDERR.puts(Backend.no_backend_message(target))
       LibC.exit(1)
@@ -161,6 +171,8 @@ module CompileNative
       end
       config = CompilerConfig.new(output, false, nil, false, target, probe, false, false, typed)
       config.keep_going = keep_going
+      config.stub_refused = stub_refused
+      config.stub_also = stub_also
       loader = Loader.new
       loader.load_prelude = prelude
       compiler = Compiler.new(config, loader, NativeBackend.new)

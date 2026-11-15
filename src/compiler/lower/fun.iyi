@@ -34,7 +34,7 @@ import compiler/lower/locals::{preallocate_locals}
 import compiler/lower/closure::{allocate_closure, setup_closure_vars}
 import compiler/semantic/closures::{ClosureFacts}
 import compiler/semantic/main_visitor::{MainVisitor}
-import compiler/lower/helpers::{load_aligned, store_aligned}
+import compiler/lower/helpers::{load_aligned, store_aligned, unique_global_name}
 import compiler/lower/instance_var::{self_by_pointer?}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/types/merge::{TypeMerge}
@@ -341,6 +341,13 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   fn.attrs << Attribute.new("noinline", 0_u64, nil, nil) if target.no_inline
   fn.attrs << Attribute.new("alwaysinline", 0_u64, nil, nil) if target.always_inline
 
+  if reason = low.stub_defs[name]?
+    emit_refused_stub(low, fn, name, reason)
+    low.emitting.delete(name)
+    mark_fun_emission_done(low.module, name)
+    return fn
+  end
+
   saved = low.save_function_state
   ctx_type = def_context_type(self_type, class_owner)
   low.context = LowerContext.new(fn, fn_type, ctx_type, Hash(String, LowerVar).new)
@@ -413,6 +420,33 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   low.emitting.delete(name)
   mark_fun_emission_done(low.module, name)
   fn
+end
+
+# Emit only after the normal signature and attributes exist. No part of the
+# refused body is visited, so no partial blocks or frame state need recovery.
+def emit_refused_stub(low : Lowerer, fn : Function, name : String, reason : String) : Nil
+  m = low.module
+  b = low.builder
+  old = b.insert_block
+  text = "iyi: refused def hit at runtime: #{name}: #{reason}\n"
+  bytes = m.types.array_of(m.types.int(8), text.bytesize.to_i64)
+  data = m.add_global(unique_global_name(low, "__iyi_refused_message"), bytes)
+  data.linkage = Linkage::Private
+  data.global_constant = true
+  data.initializer = b.const_string(text, false)
+  entry = fn.append_basic_block("entry")
+  b.position_at_end(entry)
+  write_type = m.types.func([m.types.int32, m.types.ptr(0), m.types.int64] of IrType, m.types.int64)
+  write_fn = m.get_function?("write") || m.add_function("write", write_type, CallConv::C)
+  b.call(write_type, write_fn, [b.const_int(m.types.int32, 2), data.as(Value), b.const_int(m.types.int64, text.bytesize.to_i64)] of Value, "")
+  exit_type = m.types.func([m.types.int32] of IrType, m.types.void)
+  exit_fn = m.get_function?("exit") || m.add_function("exit", exit_type, CallConv::C)
+  b.call(exit_type, exit_fn, [b.const_int(m.types.int32, 70)] of Value, "")
+  b.unreachable
+  low.stubbed_defs[name] = reason
+  if block = old
+    b.position_at_end(block)
+  end
 end
 
 # Ordinary and inlined defs share the same owner context. A generic class

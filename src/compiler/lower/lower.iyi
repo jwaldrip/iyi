@@ -142,8 +142,14 @@ end
 
 # The hosted `codegen` of a program into `m`: the entry of the unit. `root` is the program's
 # parsed tree, `analysed` the semantic pass that typed it.
-pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyper, m : Module) : Nil
+pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyper, m : Module, stub_defs : Hash(String, String)? = nil, stubbed_defs : Hash(String, String)? = nil) : Nil
   low = Lowerer.new(m, typer, analysed)
+  if defs = stub_defs
+    low.stub_defs = defs
+  end
+  if emitted = stubbed_defs
+    low.stubbed_defs = emitted
+  end
   low.body_visitor = CoreBody.new
   i32 = m.types.int32
   ptr = m.types.ptr(0)
