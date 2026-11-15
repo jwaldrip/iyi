@@ -4475,7 +4475,7 @@ pub class MainVisitor < TypeNodeHost
     end
 
 
-    if node.obj.nil?
+    if node.obj.nil? && !node.expansion
       if global_fun = global_fun_named(node.name)
         own = [] of Def
         seen = Set(String).new
@@ -4486,7 +4486,26 @@ pub class MainVisitor < TypeNodeHost
     end
 
     infer_class_vars = node.named_args.nil? && node.block.nil? && node.block_arg.nil?
-    arms = receiver_dispatch_arms(node, rec_type, infer_class_vars)
+    arms : Array(Match)? = nil
+    if node.expansion && node.obj.nil?
+      current = @current_def
+      raise "BUG: expansion call outside a def" if current.nil?
+      owner = @program.def_owner(current.as(Def))
+      raise "BUG: expansion call has no defining owner" if owner.nil?
+      lookup_owner = body_lookup_owner(owner.as(ModuleType), rec_type)
+      found = lookup_call_arms(lookup_owner, rec_type, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+      unless found.cover_all?
+        if message = found.error
+          refuse_call(node, message)
+        else
+          refuse_uncovered(node, lookup_owner, node.name, node.args)
+        end
+        return false
+      end
+      arms = found.matches
+    else
+      arms = receiver_dispatch_arms(node, rec_type, infer_class_vars)
+    end
     return false if arms.nil?
     matches = arms.as(Array(Match))
     if matches.size > 1
@@ -4507,7 +4526,7 @@ pub class MainVisitor < TypeNodeHost
         return false
       end
     end
-    if matches.size > 1 || rec_type.is_a?(UnionType) || rec_type.is_a?(VirtualType)
+    if matches.size > 1 || (!node.expansion && (rec_type.is_a?(UnionType) || rec_type.is_a?(VirtualType)))
       return dispatch_call(node, matches)
     end
     if matches.empty?
@@ -4739,11 +4758,6 @@ pub class MainVisitor < TypeNodeHost
     target_def = super_target_def(node)
     return false if target_def.nil?
     scope = @scope.as(Type)
-    if node.named_args.nil? && node.args.size < target_def.args.size && DefaultArguments.forwards?(target_def, node.args.size)
-      owner = @program.def_owner(target_def).as(Type)
-      refuse_call(node, "not ported: super into #{format_method_display_name(owner, target_def.name)} with omitted defaults that forward to it by a call (hosted call.cr lookup_matches_checking_expansion resolves that call in the original owner)")
-      return false
-    end
     instantiate_call_target(node, scope, scope, target_def, false)
   end
 

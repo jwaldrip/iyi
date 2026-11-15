@@ -164,15 +164,13 @@ super_refusal_checks() {
   grep -Fq -- "$line" "$WORK/super_missing.err" || return 1
 
   fixture="$REPO/bench/fixtures/lowcallwait_super_forwarded_default.iyi"
-  "$IYI" build --prelude empty -o "$WORK/super_default" "$fixture" > "$WORK/super_default.log" 2>&1 || return 1
+  "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/super_default" "$fixture" > "$WORK/super_default.log" 2>&1 || return 1
   "$WORK/super_default" > "$WORK/super_default.run" 2>&1
   rc=$?
   [ "$rc" -eq 3 ] || return 1
-  if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/super_default.out" 2> "$WORK/super_default.err"; then
-    echo "  super default: port unexpectedly accepted"
-    return 1
-  fi
-  grep -Fq 'omitted defaults that forward' "$WORK/super_default.err" || return 1
+  awk "$CALL_TYPES" "$WORK/super_default.ll" | normalize_switches > "$WORK/super_default.oracle.ll" || return 1
+  "$driver" lower "$fixture" "$WORK/super_default.oracle.ll" > "$WORK/super_default.out" 2> "$WORK/super_default.err" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/super_default.out" || return 1
 
   fixture="$REPO/bench/fixtures/lowcallwait_previous_def_refused.iyi"
   if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/previous_def.out" 2> "$WORK/previous_def.err"; then
@@ -210,6 +208,22 @@ if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/uninstantiat
   fi
 else
   echo "  uninstantiated generic: hosted compiler refused the fixture"
+  status=1
+fi
+
+uncovered_check() {
+  local driver="$1" fixture="$REPO/bench/fixtures/lowcallwait_dispatch_uncovered.iyi"
+  if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/uncovered.out" 2> "$WORK/uncovered.err"; then
+    echo "  uncovered union: port unexpectedly accepted"
+    return 1
+  fi
+  grep -Fq "expected argument #1 to 'consume'" "$WORK/uncovered.err"
+}
+if "$IYI" build --prelude empty -o "$WORK/uncovered.hosted" "$REPO/bench/fixtures/lowcallwait_dispatch_uncovered.iyi" > "$WORK/uncovered.hosted.log" 2>&1; then
+  echo "  uncovered union: hosted compiler unexpectedly accepted"
+  status=1
+elif ! grep -Fq "expected argument #1 to 'consume'" "$WORK/uncovered.hosted.log" || ! uncovered_check "$WORK/port"; then
+  echo "  uncovered union: expected argument diagnostic missing"
   status=1
 fi
 
@@ -335,6 +349,23 @@ else
     else
       echo "  $name: hosted and native output 213, status 35"
     fi
+  fi
+fi
+
+fixture="$REPO/bench/fixtures/lowcallwait_super_forwarded_default.iyi"
+if ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/super_default.native" --pipeline typed > "$WORK/super_default.native.log" 2>&1; then
+  echo "  super forwarded default: native compilation failed"
+  status=1
+elif [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/super_default.native"; then
+  echo "  super forwarded default: native signature verification failed"
+  status=1
+else
+  timeout 30 "$WORK/super_default.native" > "$WORK/super_default.native.out" 2>&1; ns=$?
+  if [ "$ns" -ne 3 ] || ! cmp -s "$WORK/super_default.run" "$WORK/super_default.native.out"; then
+    echo "  super forwarded default: native status $ns or output differs"
+    status=1
+  else
+    echo "  super forwarded default: native matches hosted status 3"
   fi
 fi
 
@@ -466,6 +497,28 @@ lower_calls_check() {
   return 0
 }
 
+uncovered_mutation_check() {
+  if ! "$IYI" build -o "$WORK/uncovered-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/uncovered-mut.build.log" 2>&1; then
+    touch "$WORK/uncovered.invalid"
+    return 1
+  fi
+  uncovered_check "$WORK/uncovered-mut"
+}
+if uncovered_check "$WORK/port"; then
+  prove_mutation "uncovered argument combinations are accepted" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    found = lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    unless found.cover_all?' \
+    '    found = lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    unless true' -- uncovered_mutation_check || status=1
+else
+  echo "  FAIL: uncovered union baseline did not refuse"
+  status=1
+fi
+if [ -e "$WORK/uncovered.invalid" ]; then
+  echo "  FAIL: uncovered union mutation failed to compile"
+  status=1
+fi
+
 triple_check() {
   "$IYI" build -o "$WORK/triple-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/triple-mut.build.log" 2>&1 || return 1
   "$WORK/triple-mut" triple > "$WORK/triple-mut.out" 2>&1
@@ -500,8 +553,8 @@ else
     '    instantiate_call_target(node, scope, scope, target_def, false)' '    instantiate_call_target(node, @program.def_owner(target_def).as(Type), @program.def_owner(target_def).as(Type), target_def, false)' -- super_check || status=1
   prove_mutation "super permits argument dispatch" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '      if arms.matches.size > 1' '      if false' -- super_check || status=1
-  prove_mutation "super forwards an omitted default without its guard" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-    'DefaultArguments.forwards?(target_def, node.args.size)' 'false && DefaultArguments.forwards?(target_def, node.args.size)' -- super_check || status=1
+  prove_mutation "an expansion call dispatches on self" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '    if node.expansion && node.obj.nil?' '    if false' -- super_check || status=1
   prove_mutation "lowering refuses super as previous_def" "$REPO/src/compiler/lower/call.iyi" \
     '  if node.previous_def?' '  if node.previous_def? || node.super?' -- super_check || status=1
 fi
