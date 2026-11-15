@@ -342,6 +342,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
 CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_while_true lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union lower_trait lower_nilable_reference_union_assign lower_union_consumers lower_union_block_jumps"
+CORE_CHECK_FIXTURES="$CORE_CHECK_FIXTURES lower_trait_assoc lower_negated_is_a"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -480,6 +481,10 @@ if "$WORK/port" lower "$REPO/bench/fixtures/lower_trait.iyi" "$WORK/lower_trait.
     'if node.is_a?(TraitDef)' 'if false && node.is_a?(TraitDef)' -- lower_core_check || status=1
   prove_mutation "impl declaration is not visited" "$REPO/src/compiler/lower/lower.iyi" \
     'if node.is_a?(ImplDef)' 'if false && node.is_a?(ImplDef)' -- lower_core_check || status=1
+  prove_mutation "associated type declaration is not visited" "$REPO/src/compiler/lower/lower.iyi" \
+    'if node.is_a?(AssocTypeDecl)' 'if false && node.is_a?(AssocTypeDecl)' -- lower_core_check || status=1
+  prove_mutation "logical temporary loses static truthiness" "$REPO/src/compiler/lower/lower.iyi" \
+    'settled = static_condition(low, cond_node)' 'settled : Bool? = nil' -- lower_core_check || status=1
 else
   echo "FAIL: trait fixture does not match the hosted module"
   status=1
@@ -887,8 +892,8 @@ if case_paths_check; then
   prove_mutation "a constant case condition is not rewritten to equality" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '          @expansions[node] = comparison' '          @expansions[node] = node.const' -- case_paths_check || status=1
   prove_mutation "a rewritten case condition is folded as a type test" "$REPO/src/compiler/lower/lower.iyi" \
-    '  if cond_node.is_a?(IsA) && low.analysed.expansions[cond_node]?.nil?' \
-    '  if cond_node.is_a?(IsA)' -- case_paths_check || status=1
+    '  if test_node.is_a?(IsA) && low.analysed.expansions[test_node]?.nil?' \
+    '  if test_node.is_a?(IsA)' -- case_paths_check || status=1
   prove_mutation "a rewritten case condition is not emitted" "$REPO/src/compiler/lower/lower.iyi" \
     '  if isa_expanded = low.analysed.expansions[node]?' '  if isa_expanded = (false ? low.analysed.expansions[node]? : nil)' -- case_paths_check || status=1
 else
