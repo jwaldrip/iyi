@@ -78,18 +78,16 @@ check_primitive_refusal_mutant() {
 # Check the whole IR module as well as runtime values: allocation kind and the
 # null-context ABI are observable even when the immediate result is unchanged.
 check_self_ir() {
-  local fixture="$1"
+  local fixture="$1" expected="$2"
   "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$fixture" "bench/fixtures/$fixture.iyi" > "$WORK/$fixture.ir.log" 2>&1 || return 1
   awk "$CALL_TYPES" "$WORK/$fixture.ll" > "$WORK/$fixture.normalized.ll"
   "$WORK/core" lower "bench/fixtures/$fixture.iyi" "$WORK/$fixture.normalized.ll" > "$WORK/$fixture.ir.out" 2>&1 || return 1
-  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=1$/ {
-    split($2, same, "="); split($3, total, "=")
-    if (same[2] == total[2] && total[2] > 0) { print; ok=1 }
-  } END { exit !ok }' "$WORK/$fixture.ir.out"
+  grep -qx "SUMMARY identical=$expected total=$expected module=1" "$WORK/$fixture.ir.out" || return 1
+  echo "$fixture: SUMMARY identical=$expected total=$expected module=1"
 }
 
 check_self_ir_mutant() {
-  local fixture="$1"
+  local fixture="$1" expected="$2"
   if ! build_compiler ||
      ! "$WORK/stage1" "bench/fixtures/$fixture.iyi" -o "$WORK/ir-native-mutant" --pipeline typed --prelude > "$WORK/ir-native-mutant.log" 2>&1 ||
      ! codesign -v --strict "$WORK/ir-native-mutant"; then
@@ -105,10 +103,7 @@ check_self_ir_mutant() {
     echo 'INVALID: IR mutant did not report a comparison'
     return 0
   fi
-  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=1$/ {
-    split($2, same, "="); split($3, total, "=")
-    if (same[2] == total[2] && total[2] > 0) ok=1
-  } END { exit !ok }' "$WORK/$fixture.mutant.out"
+  grep -qx "SUMMARY identical=$expected total=$expected module=1" "$WORK/$fixture.mutant.out"
 }
 
 check_macro_ir() {
@@ -193,9 +188,8 @@ for fixture in lower_closure_top_level lower_closure_nested_block lower_pointero
   fi
 done
 check_macro_ir || { cat "$WORK/macro.out"; exit 1; }
-for fixture in lower_closure_self_class lower_closure_self_unit_call; do
-  check_self_ir "$fixture" || { cat "$WORK/$fixture.ir.out" "$WORK/$fixture.ir.log"; exit 1; }
-done
+check_self_ir closure_self_class_ir 8 || { cat "$WORK/closure_self_class_ir.ir.out" "$WORK/closure_self_class_ir.ir.log"; exit 1; }
+check_self_ir closure_self_unit_ir 10 || { cat "$WORK/closure_self_unit_ir.ir.out" "$WORK/closure_self_unit_ir.ir.log"; exit 1; }
 "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/defer" bench/fixtures/lower_defer_closure.iyi > "$WORK/defer.log" 2>&1 || exit 1
 awk "$CALL_TYPES" "$WORK/defer.ll" > "$WORK/defer.normalized.ll"
 "$WORK/core" lower bench/fixtures/lower_defer_closure.iyi "$WORK/defer.normalized.ll" > "$WORK/defer.out" 2>&1 || exit 1
@@ -233,11 +227,11 @@ prove_mutation 'captured struct self is not copied' "$REPO/src/compiler/lower/cl
 prove_mutation 'captured self is recovered from the wrong field' "$REPO/src/compiler/lower/closure.iyi" \
   'self_index = source.closure_names.size' 'self_index = 0' -- check_self_behavior_mutant lower_closure_self_class || status=1
 prove_mutation 'pointerful self uses atomic allocation' "$REPO/src/compiler/lower/closure.iyi" \
-  'pointerful = true if has_inner_pointers?(st)' 'nil' -- check_self_ir_mutant lower_closure_self_class || status=1
+  'pointerful = true if has_inner_pointers?(st)' 'nil' -- check_self_ir_mutant closure_self_class_ir 8 || status=1
 prove_mutation 'capture-free proc receives a context' "$REPO/src/compiler/lower/proc.iyi" \
-  'closure = !frame.nil? && frame.closure' 'closure = !frame.nil? && (frame.closure || node.def.args.empty?)' -- check_self_ir_mutant lower_closure_self_class || status=1
+  'closure = !frame.nil? && frame.closure' 'closure = !frame.nil? && (frame.closure || node.def.args.empty?)' -- check_self_ir_mutant closure_self_class_ir 8 || status=1
 prove_mutation 'unit call incorrectly captures self' "$REPO/src/compiler/semantic/closures.iyi" \
-  'return false if owner.is_a?(ModuleType) && owner.as(ModuleType).iyi_unit' 'nil' -- check_self_ir_mutant lower_closure_self_unit_call || status=1
+  'return false if owner.is_a?(ModuleType) && owner.as(ModuleType).iyi_unit' 'nil' -- check_self_ir_mutant closure_self_unit_ir 10 || status=1
 prove_mutation 'primitive self is not refused' "$REPO/src/compiler/lower/closure.iyi" \
   'refuse_port("closure over self of #{st.full_name}: only a class or a struct passed by pointer is ported (hosted malloc_closure, codegen.cr:2661-2668)")' \
   'return st' -- check_primitive_refusal_mutant || status=1
