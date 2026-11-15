@@ -338,6 +338,10 @@ nested_case_block_check() {
 nested_case_block_check || { echo "  baseline: nested case block differs"; status=1; }
 prove_mutation "yielded writes do not widen the caller's local" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '      unions = owner.unions' '      unions = @var_unions' -- nested_case_block_check || status=1
+prove_mutation "untyped branch locals do not receive Nil storage" "$REPO/src/compiler/lower/locals.iyi" \
+  '    type = t.nil? ? low.analysed.program.nil_type : t.as(Type)' '    next if t.nil?; type = t.as(Type)' -- nested_case_block_check || status=1
+prove_mutation "Bool union storage drops the widened value" "$REPO/src/compiler/lower/cast.iyi" \
+  '    widened = bool_widened(low, value, low.module.types.int(bits.to_i32))' '    widened = low.builder.const_int(low.module.types.int(bits.to_i32), 0_i64)' -- nested_case_block_check || status=1
 
 # These fixtures must lower, rather than entering the general loop's named waiting set.
 nil_flow_check() {

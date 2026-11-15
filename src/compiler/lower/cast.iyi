@@ -319,19 +319,21 @@ pub def store_in_union(low : Lowerer, union_type : Type, union_pointer : Value, 
   struct_ir = low.typer.llvm_type(union_type)
   area = mixed_union_value_area(struct_ir)
   store_aligned(low, nonmixed_type_id_of_value(low, value, value_type), union_type_id_ptr(low, struct_ir, union_pointer))
-  field = union_value_ptr(low, struct_ir, union_pointer)
   kind = primitive_kind(value_type)
   if value_type.is_a?(NilType)
+    field = union_value_ptr(low, struct_ir, union_pointer)
     store_aligned(low, low.builder.const_zero(area), field)
     return
   end
   if kind == "bool"
     bits = low.typer.size_of(area) * 8
     widened = bool_widened(low, value, low.module.types.int(bits.to_i32))
+    field = union_value_ptr(low, struct_ir, union_pointer)
     stored = store_aligned(low, widened, field)
     stored.alignment = low.typer.pointer_size.to_i32
     return
   end
+  field = union_value_ptr(low, struct_ir, union_pointer)
   if kind == "int" || kind == "char" || kind == "symbol" || kind == "float" || value_type.is_a?(EnumType)
     store_aligned(low, value, field)
     return
