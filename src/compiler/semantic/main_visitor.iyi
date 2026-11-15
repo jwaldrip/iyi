@@ -323,6 +323,8 @@ pub class MainVisitor < TypeNodeHost
   property typing_stack : Array(String)
   # Every refusal recorded, in order (see Refusal). Shared with a fun body's visitor.
   property refusals : Array(Refusal)
+  # Optional live event stream for a probe that may be interrupted.
+  property refusal_stream : IyiIO? = nil
   property speculation : SpeculationLedger
   # Every instantiation whose body typing started with all its parameters typed,
   # in order (see TypedInstance). Shared with a fun body's visitor.
@@ -552,8 +554,24 @@ pub class MainVisitor < TypeNodeHost
         end
       end
     end
+    if stream = @refusal_stream
+      site = "#{file || "<no location>"}:#{line}:#{column}"
+      stream.puts("record\t#{@refusals.size}\t#{site.inspect}\t#{(def_name || "<top level>").inspect}\t#{reason.inspect}\t#{@speculation.depth}\t#{@speculation.recursive_frames.size}\t#{node.node_id}")
+      stream.flush
+    end
     @refusals << Refusal.new(reason, file, line, column, def_name, node)
     @speculation.taint = @speculation.taint + 1
+    nil
+  end
+
+  # A speculative pass can discard refusals it emitted. The log records the
+  # same truncation so a reader can reconstruct the live refusal list.
+  def truncate_refusals(mark : Int32) : Nil
+    if stream = @refusal_stream
+      stream.puts("rollback\t#{mark}")
+      stream.flush
+    end
+    @refusals.truncate(0, mark)
     nil
   end
 
@@ -2283,7 +2301,7 @@ pub class MainVisitor < TypeNodeHost
   def discard_loop_pass(entry_mark : Int32, refusal_mark : Int32) : Nil
     entries = @speculation.entries
     if entries.size == entry_mark
-      @refusals.truncate(0, refusal_mark)
+      truncate_refusals(refusal_mark)
       return nil
     end
     removed = Hash(UInt64, Bool).new
@@ -2315,7 +2333,7 @@ pub class MainVisitor < TypeNodeHost
       @typed_instances.truncate(0, kept)
     end
     entries.truncate(0, entry_mark)
-    @refusals.truncate(0, refusal_mark)
+    truncate_refusals(refusal_mark)
     nil
   end
 
@@ -4242,7 +4260,7 @@ pub class MainVisitor < TypeNodeHost
         writes.truncate(0, recursive_cache_mark)
         @typed_instances.truncate(0, recursive_instance_mark)
         @speculation.entries.truncate(0, recursive_entry_mark)
-        @refusals.truncate(0, recursive_refusal_mark)
+        truncate_refusals(recursive_refusal_mark)
         @vars = recursive_start_vars.dup
         @var_unions = Hash(String, Type).new
         @nil_candidates = Set(String).new
@@ -5702,6 +5720,7 @@ pub class MainVisitor < TypeNodeHost
     inner.total = @total
     inner.typing_stack = @typing_stack
     inner.refusals = @refusals
+    inner.refusal_stream = @refusal_stream
     inner.typed_instances = @typed_instances
     inner.def_instances = @def_instances
     inner.def_var_unions = @def_var_unions
