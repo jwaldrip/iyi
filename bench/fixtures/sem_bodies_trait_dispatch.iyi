@@ -29,3 +29,4 @@ def choose(flag : Bool) : Greeting
 end
 
 result = describe(choose(true))
+direct = choose(true).as(Greeting).greet

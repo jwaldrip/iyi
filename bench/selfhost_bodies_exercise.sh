@@ -546,8 +546,8 @@ trait_dispatch_at_expected() {
   fi
   "$ORACLE" "$REPO/bench/fixtures/sem_bodies_trait_dispatch.iyi" 2>/dev/null | sort > "$WORK/trait.oracle" || return 1
   "$MUT_TD" "$REPO/bench/fixtures/sem_bodies_trait_dispatch.iyi" "$REPO/src" 2>/dev/null | sort > "$WORK/trait.port" || return 1
-  grep -Fxq '31:10 Call String' "$WORK/trait.oracle" &&
-    grep -Fxq '31:10 Call String' "$WORK/trait.port"
+  grep -Fxq '32:10 Call String' "$WORK/trait.oracle" &&
+    grep -Fxq '32:10 Call String' "$WORK/trait.port"
 }
 trait_dispatch_at_expected || status=1
 prove_mutation "trait implementers dispatch without argument dispatch" "$MAIN_VISITOR" \
@@ -613,11 +613,22 @@ prove_mutation "typeof inside type arguments yields the instance type" "$REPO/sr
 prove_mutation "enum members have the enum type" "$MAIN_VISITOR" \
   "        set_type(node, enum_type)" \
   "        set_type(node, @program.int32_type)" -- bodies_at_floor || status=1
+generic_union_matches_hosted() {
+  if ! "$IYI" build -o "$WORK/union_calls" "$REPO/bench/selfhost_semantic_calls_exercise.iyi" > "$WORK/union_calls_build.log" 2>&1; then
+    body_build_failed "$WORK/union_calls_build.log"
+    return $?
+  fi
+  "$WORK/union_calls" "$REPO/bench/fixtures/semcall_match_union_generic.iyi" > "$WORK/union_calls.port" 2>&1 || return 1
+  diff -q "$WORK/union_calls.hosted" "$WORK/union_calls.port" >/dev/null
+}
+CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing -o "$WORK/union_calls_oracle" "$REPO/bench/selfhost_semantic_calls_oracle.cr" > "$WORK/union_calls_oracle_build.log" 2>&1 || { cat "$WORK/union_calls_oracle_build.log"; exit 1; }
+"$WORK/union_calls_oracle" "$REPO/bench/fixtures/semcall_match_union_generic.iyi" > "$WORK/union_calls.hosted" || exit 1
+generic_union_matches_hosted || status=1
 prove_mutation "a generic union member retains its arguments" "$REPO/src/compiler/semantic/restrictions.iyi" \
   "      member = ArgRestriction.lookup_bound(ts, scope, node.types[i], owner)" \
   "      member_node = node.types[i]
       member_node = member_node.as(Generic).name if member_node.is_a?(Generic)
-      member = ArgRestriction.lookup_bound(ts, scope, member_node, owner)" -- bodies_at_floor || status=1
+      member = ArgRestriction.lookup_bound(ts, scope, member_node, owner)" -- generic_union_matches_hosted || status=1
 type_lookup_at_expected() {
   if ! "$IYI" build -o "$WORK/type_lookup_probe" "$REPO/bench/selfhost_type_lookup_probe.iyi" > "$WORK/type_lookup_probe.build.log" 2>&1; then
     body_build_failed "$WORK/type_lookup_probe.build.log"
@@ -638,7 +649,7 @@ prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" 
       else
         # Total analysis still records independent argument nodes when the
         # receiver cannot be typed. The call itself remains unresolved.
-        if @total
+        if @total || @speculation.depth > 0
           node.args.each do |arg|
             arg.accept(self)
           end
@@ -669,7 +680,7 @@ prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" 
       else
         # Total analysis still records independent argument nodes when the
         # receiver cannot be typed. The call itself remains unresolved.
-        if @total
+        if @total || @speculation.depth > 0
           node.args.each do |arg|
             arg.accept(self)
           end
@@ -999,8 +1010,8 @@ atomic_free_at_floor() {
    return 1
  }
 prove_mutation "a block call matches only a yielding new" "$MAIN_VISITOR" \
-  "      keep = CallMatch.yields?(candidates[read_at]) == wants_block" \
-  "      keep = true" -- array_new_yields || status=1
+  "        next unless CallMatch.yields?(definition) == !call_node.block.nil?" \
+  "        next if CallMatch.yields?(definition) == !call_node.block.nil?" -- array_new_yields || status=1
 if ! atomic_free_at_floor; then
   echo "  ATOMIC: one of the instantiated atomic bodies was refused or not reached"
   status=1
@@ -1129,10 +1140,8 @@ restriction_scope_at_floor() {
 }
 restriction_scope_at_floor || status=1
 prove_mutation "a restriction resolves in its definition owner scope" "$MAIN_VISITOR" \
-  "      if owner = @program.def_owner(d)
-        @current_type = owner" \
-  "      if owner = @program.def_owner(d)
-        @current_type = owner if owner.iyi_unit" -- restriction_scope_at_floor || status=1
+  "        enter_file_scope(definition)" \
+  "        nil" -- restriction_scope_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"
