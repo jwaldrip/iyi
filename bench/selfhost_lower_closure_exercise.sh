@@ -88,10 +88,15 @@ check_self_ir() {
 
 check_self_ir_mutant() {
   local fixture="$1" expected="$2"
-  if ! build_compiler ||
-     ! "$WORK/stage1" "bench/fixtures/$fixture.iyi" -o "$WORK/ir-native-mutant" --pipeline typed --prelude > "$WORK/ir-native-mutant.log" 2>&1 ||
+  if ! build_compiler; then
+    echo 'INVALID: IR mutant compiler failed to build'
+    cat "$WORK/build.log"
+    return 0
+  fi
+  if ! "$WORK/stage1" "bench/fixtures/$fixture.iyi" -o "$WORK/ir-native-mutant" --pipeline typed --prelude > "$WORK/ir-native-mutant.log" 2>&1 ||
      ! codesign -v --strict "$WORK/ir-native-mutant"; then
-    echo 'INVALID: IR mutant did not build the compiler and native fixture'
+    echo 'INVALID: IR mutant fixture failed to build and sign'
+    cat "$WORK/ir-native-mutant.log"
     return 0
   fi
   if ! "$IYI" build -o "$WORK/core-mutant" bench/selfhost_lower_core_exercise.iyi > "$WORK/core-mutant.log" 2>&1 ||
@@ -188,7 +193,7 @@ for fixture in lower_closure_top_level lower_closure_nested_block lower_pointero
   fi
 done
 check_macro_ir || { cat "$WORK/macro.out"; exit 1; }
-check_self_ir closure_self_class_ir 8 || { cat "$WORK/closure_self_class_ir.ir.out" "$WORK/closure_self_class_ir.ir.log"; exit 1; }
+check_self_ir closure_self_class_ir 10 || { cat "$WORK/closure_self_class_ir.ir.out" "$WORK/closure_self_class_ir.ir.log"; exit 1; }
 check_self_ir closure_self_unit_ir 10 || { cat "$WORK/closure_self_unit_ir.ir.out" "$WORK/closure_self_unit_ir.ir.log"; exit 1; }
 "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/defer" bench/fixtures/lower_defer_closure.iyi > "$WORK/defer.log" 2>&1 || exit 1
 awk "$CALL_TYPES" "$WORK/defer.ll" > "$WORK/defer.normalized.ll"
@@ -227,9 +232,9 @@ prove_mutation 'captured struct self is not copied' "$REPO/src/compiler/lower/cl
 prove_mutation 'captured self is recovered from the wrong field' "$REPO/src/compiler/lower/closure.iyi" \
   'self_index = source.closure_names.size' 'self_index = 0' -- check_self_behavior_mutant lower_closure_self_class || status=1
 prove_mutation 'pointerful self uses atomic allocation' "$REPO/src/compiler/lower/closure.iyi" \
-  'pointerful = true if has_inner_pointers?(st)' 'nil' -- check_self_ir_mutant closure_self_class_ir 8 || status=1
+  'pointerful = true if has_inner_pointers?(st)' 'nil' -- check_self_ir_mutant closure_self_class_ir 10 || status=1
 prove_mutation 'capture-free proc receives a context' "$REPO/src/compiler/lower/proc.iyi" \
-  'closure = !frame.nil? && frame.closure' 'closure = !frame.nil? && (frame.closure || node.def.args.empty?)' -- check_self_ir_mutant closure_self_class_ir 8 || status=1
+  'closure = !frame.nil? && frame.closure' 'closure = !frame.nil? && (frame.closure || (node.def.args.empty? && !source.closure_ptr.nil? && !closure_self_type(source).nil?))' -- check_self_ir_mutant closure_self_class_ir 10 || status=1
 prove_mutation 'unit call incorrectly captures self' "$REPO/src/compiler/semantic/closures.iyi" \
   'return false if owner.is_a?(ModuleType) && owner.as(ModuleType).iyi_unit' 'nil' -- check_self_ir_mutant closure_self_unit_ir 10 || status=1
 prove_mutation 'primitive self is not refused' "$REPO/src/compiler/lower/closure.iyi" \

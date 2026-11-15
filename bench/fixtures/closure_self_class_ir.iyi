@@ -1,5 +1,14 @@
 lib LibC
+  fun malloc(size : UInt64) : Void*
   fun exit(status : Int32) : NoReturn
+end
+
+fun __crystal_malloc64(size : UInt64) : Void*
+  LibC.malloc(size)
+end
+
+fun __crystal_malloc_atomic64(size : UInt64) : Void*
+  LibC.malloc(size)
 end
 
 struct Proc
