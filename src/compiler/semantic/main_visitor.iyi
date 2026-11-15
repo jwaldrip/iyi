@@ -4556,6 +4556,20 @@ pub class MainVisitor < TypeNodeHost
     end
     @call_receivers.delete(node)
     @needs_type_filters = saved_call_ntf
+    # Lib calls type `out` from the formal parameter in record_lib_call,
+    # rather than from the argument walk (hosted semantic/call.cr:77-92).
+    if rec_type.is_a?(LibType)
+      return visit_lib_call(node, rec_type.as(LibType))
+    end
+    if node.obj.nil? && node.name != "super" && !node.expansion
+      if global_fun = global_fun_named(node.name)
+        own = [] of Def
+        seen = Set(String).new
+        collect_candidate_defs(rec_type, node.name, own, seen)
+        collect_scope_defs(rec_type, node.name, own, seen) if own.empty?
+        return visit_global_fun_call(node, global_fun) if own.empty?
+      end
+    end
     # Total analysis must not pass an untyped child to overload matching or
     # its diagnostics, both of which require types for every argument.
     if @total
@@ -4571,9 +4585,6 @@ pub class MainVisitor < TypeNodeHost
     if node.obj.nil? && node.name == "super"
       return visit_super(node)
     end
-    if rec_type.is_a?(LibType)
-      return visit_lib_call(node, rec_type.as(LibType))
-    end
 
     trait_receiver = false
     unless node.obj.nil?
@@ -4585,15 +4596,6 @@ pub class MainVisitor < TypeNodeHost
     end
 
 
-    if node.obj.nil? && !node.expansion
-      if global_fun = global_fun_named(node.name)
-        own = [] of Def
-        seen = Set(String).new
-        collect_candidate_defs(rec_type, node.name, own, seen)
-        collect_scope_defs(rec_type, node.name, own, seen) if own.empty?
-        return visit_global_fun_call(node, global_fun) if own.empty?
-      end
-    end
 
     infer_class_vars = node.named_args.nil? && node.block.nil? && node.block_arg.nil?
     arms : Array(Match)? = nil
