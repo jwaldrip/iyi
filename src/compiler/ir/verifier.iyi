@@ -360,6 +360,10 @@ class Verifier
       report("types", "trunc must narrow an integer", f) unless operand_type(i.args[0]).int? && i.type.int? && i.type.bits < operand_type(i.args[0]).bits
     when Op::ZExt, Op::SExt
       report("types", "an extension must widen an integer", f) unless operand_type(i.args[0]).int? && i.type.int? && i.type.bits > operand_type(i.args[0]).bits
+    when Op::PtrToInt
+      unless operand_type(i.args[0]).pointer? && i.type.int?
+        report("types", "ptrtoint needs a pointer operand and integer result", f)
+      end
     end
   end
 

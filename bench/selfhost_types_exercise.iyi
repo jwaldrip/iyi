@@ -231,6 +231,19 @@ module BenchSelfhostTypesExercise
     unless ts.render(pr) == "Proc(Int32, String)"
       raise "proc render failed"
     end
+    # Hosted NilableType and NilableProcType enumerate Nil before their value.
+    nr = NilableType.new(prog, prog.string_type)
+    unless nr.union_types[0].nil_type? && nr.union_types[1].full_name == prog.string_type.full_name
+      raise "nilable reference member order differs from hosted"
+    end
+    np = NilableProcType.new(prog, pr.as(ProcInstanceType))
+    unless np.union_types[0].nil_type? && np.union_types[1].full_name == pr.full_name
+      raise "nilable proc member order differs from hosted"
+    end
+    mixed = u_nil.as(UnionType)
+    unless mixed.union_types[0].full_name == "Int32" && mixed.union_types[1].nil_type?
+      raise "mixed union member order changed"
+    end
 
     ptr = ts.pointer_of(prog.int32_type)
     unless ts.render(ptr) == "Pointer(Int32)"
