@@ -4905,7 +4905,6 @@ pub class MainVisitor < TypeNodeHost
       end
     end
 
-
     if node.obj.nil? && node.name != "super" && !node.expansion
       if global_fun = global_fun_named(node.name)
         own = [] of Def
@@ -4943,7 +4942,6 @@ pub class MainVisitor < TypeNodeHost
         end
       end
     end
-
 
     infer_class_vars = node.named_args.nil? && node.block_arg.nil?
     arms : Array(Match)? = nil
@@ -5200,14 +5198,15 @@ pub class MainVisitor < TypeNodeHost
       else
         expanded_args = arguments
       end
-      instantiated_def = target_def.clone
-      defaults_bind_splat(original_def, instantiated_def, supplied_args)
-      @program.copy_def_owner(target_def, instantiated_def)
+      instantiated_def : Def
       ret_t : Type? = nil
       if hit = cached_instance(dkey)
         instantiated_def = hit.definition
         ret_t = hit.return_type
       else
+        instantiated_def = target_def.clone
+        defaults_bind_splat(original_def, instantiated_def, supplied_args)
+        @program.copy_def_owner(target_def, instantiated_def)
         @call_target_defs[node] = instantiated_def
         ret_t = type_method_body(instantiated_def, union_instance_owner, arguments, node.block, node, dkey, node)
         instantiated_def = @call_target_defs[node]? || instantiated_def
@@ -5340,9 +5339,7 @@ pub class MainVisitor < TypeNodeHost
     target_def = expanded.as(CallExpansion).target
     arguments = expanded.as(CallExpansion).arguments
     @call_arguments[node] = arguments if node.named_args || arguments.size != node.args.size
-    instantiated_def = target_def.clone
-    defaults_bind_splat(original_def, instantiated_def, node.args)
-    @program.copy_def_owner(target_def, instantiated_def)
+    instantiated_def : Def
     body_ret : Type? = nil
     if hit = cached_instance(dkey)
       # A cached instance: the call records its clone and takes its return type. Its block breaks
@@ -5351,6 +5348,9 @@ pub class MainVisitor < TypeNodeHost
       @call_target_defs[node] = instantiated_def
       body_ret = hit.return_type
     else
+      instantiated_def = target_def.clone
+      defaults_bind_splat(original_def, instantiated_def, node.args)
+      @program.copy_def_owner(target_def, instantiated_def)
       @call_target_defs[node] = instantiated_def
       if blk = node.block
         @block_breaks[blk] = [] of Type?
