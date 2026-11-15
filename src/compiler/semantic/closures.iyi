@@ -2,7 +2,7 @@ module compiler/semantic/closures
 
 import compiler/syntax/ast::{ASTNode, Assign, Block, Break, Call, Def, InstanceVar, Next, NodeMap, ProcLiteral, Return, Self, Var, While, Yield}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{MetaclassType, SemanticProgram, Type}
+import compiler/semantic/top_level::{MetaclassType, ModuleType, SemanticProgram, Type}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/types/unification::{TypeUnification}
 
@@ -130,7 +130,31 @@ pub class ClosureWalk < Visitor
         return false
       end
     end
+    capture_self if node.is_a?(Call) && node.as(Call).obj.nil? && implicit_self_call?(node.as(Call))
     true
+  end
+
+  # Hosted call.cr:445-449 and 1139-1141 capture self for receiverless
+  # instance calls, but program and iyi unit functions have no receiver.
+  def implicit_self_target?(definition : Def) : Bool
+    owner = @visitor.program.def_owner(definition)
+    return false if owner.nil? || owner.is_a?(SemanticProgram)
+    return false if owner.is_a?(ModuleType) && owner.as(ModuleType).iyi_unit
+    true
+  end
+
+  def implicit_self_call?(call : Call) : Bool
+    if target = @visitor.target_def?(call)
+      return implicit_self_target?(target)
+    end
+    if targets = @visitor.dispatch_targets?(call)
+      i = 0
+      while i < targets.size
+        return true if implicit_self_target?(targets[i].definition)
+        i += 1
+      end
+    end
+    false
   end
 
   def visit(node : Def) : Bool
@@ -230,7 +254,6 @@ pub class ClosureWalk < Visitor
           unless self_type.is_a?(MetaclassType)
             frame.self_closured = true
             frame.closure = true
-            frame.errors << "self of a struct type captured" if self_type.struct?
             inside : ClosureFrame? = @frame
             while part = inside
               break if part.node.node_id == frame.node.node_id

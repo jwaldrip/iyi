@@ -1,22 +1,21 @@
 module compiler/lower/proc
 
-# The hosted proc literal names a function and carries a context pointer when
-# the literal captures enclosing locals. Capture-free literals use null.
-# Captures of self, instance variables, blocks and nested literals remain
-# explicitly refused until their context handling is ported.
+# A proc literal carries a context for captured locals or self; capture-free
+# literals use null. Blocks and nested literals remain explicitly refused.
 
 import compiler/foundation/location::{Location}
 import compiler/ir/types::{IrType}
 import compiler/ir/inst::{Attribute}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer}
+import compiler/lower/closure::{closure_self_type}
 import compiler/lower/fun::{codegen_fun}
 import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
 import compiler/syntax/ast::{ASTNode, Assign, Call, ClassDef, Def, InstanceVar, ModuleDef, ProcLiteral, Self, Var}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/main_visitor::{MainVisitor}
-import compiler/semantic/top_level::{NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, SemanticProgram, Type}
+import compiler/semantic/top_level::{ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, SemanticProgram, Type}
 import compiler/types/types::{ProcInstanceType}
 
 # The hosted `Iyi.symbol_text` (util.cr:59): a text someone else chose, written into a symbol with `%`, `@` and
@@ -71,21 +70,21 @@ pub def proc_literal_name(low : Lowerer, node : ProcLiteral, proc_type : Type) :
   "~proc" + rest
 end
 
-# What a proc literal's body reads and assigns, found by a walk over the body. A local is declared by an
-# assignment or a parameter; a read of a name no assignment declares is a capture. `refused` names the first
-# node that makes the literal a closure this port does not lower (a block, a nested literal or def, `self`, an
-# instance variable).
+# Collect the literal's references, receiverless calls and unsupported forms.
+# Self and instance variables are permitted when its context carries self.
 pub class ProcScan < Visitor
   getter referenced : Array(String)
   getter assigned : Array(String)
   getter receiverless_calls : Array(Call)
   getter refused : String?
+  getter self_use : String?
 
   def initialize(@analysed : MainVisitor)
     @referenced = [] of String
     @assigned = [] of String
     @receiverless_calls = [] of Call
     @refused = nil
+    @self_use = nil
   end
 
   def visit_any(node : ASTNode) : Bool
@@ -112,15 +111,19 @@ pub class ProcScan < Visitor
       return false
     end
     if node.is_a?(InstanceVar)
-      @refused = "an instance variable read by a proc literal (hosted closure over self)" if @refused.nil?
+      @self_use = "an instance variable read by a proc literal (hosted closure over self)" if @self_use.nil?
       return false
     end
     if node.is_a?(Call) && node.obj.nil?
+      if node.as(Call).super? || node.as(Call).name == "previous_def"
+        @refused = "super or previous_def inside a proc literal (hosted closure over self)" if @refused.nil?
+        return false
+      end
       @receiverless_calls << node
     end
     if node.is_a?(Var)
       if node.as(Var).name == "self"
-        @refused = "self read by a proc literal (hosted closure over self)" if @refused.nil?
+        @self_use = "self read by a proc literal (hosted closure over self)" if @self_use.nil?
         return false
       end
       @referenced << node.as(Var).name
@@ -149,8 +152,7 @@ pub def make_fun(low : Lowerer, proc_type : Type, fun_ptr : Value, ctx_ptr : Val
   load_aligned(low, struct_type, closure_ptr).as(Value)
 end
 
-# The literal function takes the heap context before its ordinary parameters
-# when semantic closure facts say it captures an enclosing local.
+# A closure function takes its heap context before its ordinary parameters.
 pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   t = low.analysed.type_of?(node.as(ASTNode))
   raise "BUG: the analysed program has no type for a proc literal (hosted codegen.cr: visit(ProcLiteral))" if t.nil?
@@ -160,7 +162,7 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   end
   proc = proc_type.as(ProcInstanceType)
 
-  # Keep the unsupported self and nested-scope forms explicitly refused.
+  # Keep nested-scope and type-position self forms explicitly refused.
   scan = ProcScan.new(low.analysed)
   node.def.body.accept(scan)
   refused = scan.refused
@@ -184,6 +186,10 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   if closure && source.closure_ptr.nil?
     refuse_port("proc literal captures locals but its enclosing closure context is missing")
   end
+  carried = closure ? closure_self_type(source) : nil
+  if self_use = scan.self_use
+    refuse_port("proc literal: #{self_use}") if carried.nil?
+  end
 
   class_owner : Type? = nil
   frame = low.current_context.type
@@ -193,7 +199,10 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   scan.receiverless_calls.each do |call|
     if target = low.analysed.target_def?(call)
       owner = low.analysed.program.def_owner(target)
-      if owner && !owner.is_a?(SemanticProgram) && class_owner.nil?
+      next if owner.nil? || owner.is_a?(SemanticProgram)
+      # Unit functions are independent of the current instance (call.iyi:225-230).
+      next if owner.is_a?(ModuleType) && owner.as(ModuleType).iyi_unit
+      if class_owner.nil? && carried.nil?
         refuse_port("proc literal calls #{call.name} with an implicit self or class context that is not carried by the capture-free proc (hosted closure)")
       end
     end

@@ -31,7 +31,7 @@ import compiler/ir/module::{Module}
 import compiler/lower/cast::{assign, to_rhs, upcast}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
 import compiler/lower/locals::{preallocate_locals}
-import compiler/lower/closure::{allocate_closure, setup_closure_vars}
+import compiler/lower/closure::{allocate_closure, closure_self_type, setup_closure_vars}
 import compiler/semantic/closures::{ClosureFacts}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/lower/helpers::{load_aligned, store_aligned, unique_global_name}
@@ -346,6 +346,12 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
 
   saved = low.save_function_state
   ctx_type = def_context_type(self_type, class_owner)
+  if source = closure_source
+    if carried = closure_self_type(source)
+      raise "BUG: closure self has an ordinary receiver" unless self_type.nil? && class_owner.nil?
+      ctx_type = carried
+    end
+  end
   low.context = LowerContext.new(fn, fn_type, ctx_type, Hash(String, LowerVar).new)
   low.current_context.return_type = ret
   low.current_context.var_unions = low.analysed.def_var_unions[target]?

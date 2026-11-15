@@ -3,6 +3,7 @@
 bench/fixtures/semclos_block.iyi 6
 bench/fixtures/semclos_hello_proc.iyi 5
 bench/fixtures/semclos_hello_thread.iyi 4
+bench/fixtures/semclos_implicit_self.iyi 17
 bench/fixtures/semclos_install.iyi 6
 bench/fixtures/semclos_literal.iyi 3
 bench/fixtures/semclos_literal_block.iyi 5

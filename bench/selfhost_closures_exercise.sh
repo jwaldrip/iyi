@@ -62,6 +62,21 @@ mutation_check() {
   build_port && compare_fixtures && refusal_check
 }
 
+# An uncompilable mutant is not evidence that semantic facts changed.
+check_implicit_self_mutant() {
+  if ! build_port; then
+    echo 'INVALID: implicit-self mutant did not build'
+    return 0
+  fi
+  local fixture=bench/fixtures/semclos_implicit_self.iyi
+  if ! IYI_PATH="$PRELUDE_PATH" "$ORACLE" "$fixture" > "$WORK/implicit.oracle" 2> "$WORK/implicit.err" ||
+     ! "$PORT" "$fixture" > "$WORK/implicit.port" 2>> "$WORK/implicit.err"; then
+    echo 'INVALID: implicit-self mutant did not analyse the fixture'
+    return 0
+  fi
+  cmp -s "$WORK/implicit.oracle" "$WORK/implicit.port"
+}
+
 printf '%s\n' '== 3. Mutation proofs'
 status=0
 prove_mutation 'captured variable is omitted' "$REPO/src/compiler/semantic/closures.iyi" \
@@ -76,6 +91,9 @@ prove_mutation 'instance variable does not capture self' "$REPO/src/compiler/sem
   'def visit(node : InstanceVar) : Bool
     capture_self' 'def visit(node : InstanceVar) : Bool
     nil' -- mutation_check || status=1
+prove_mutation 'implicit instance call does not capture self' "$REPO/src/compiler/semantic/closures.iyi" \
+  'capture_self if node.is_a?(Call) && node.as(Call).obj.nil? && implicit_self_call?(node.as(Call))' \
+  'nil' -- check_implicit_self_mutant || status=1
 prove_mutation 'reassignment after capture is not mutable' "$REPO/src/compiler/semantic/closures.iyi" \
   'elsif assignment && binding.captured' 'elsif false && assignment && binding.captured' -- mutation_check || status=1
 prove_mutation 'changing captured variable is not refused' "$REPO/src/compiler/semantic/closures.iyi" \
