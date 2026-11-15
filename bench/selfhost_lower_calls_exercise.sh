@@ -653,6 +653,17 @@ prove_mutation "block locals retain only the first assignment type" "$REPO/src/c
   '          @types[var.name] = @analysed.program.type_merge(previous, type)' \
   '          @types[var.name] = previous' -- block_storage_check || status=1
 
+block_loop_rw_check() {
+  if ! "$IYI" build -o "$WORK/block-loop-rw-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-loop-rw-mut.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/block-loop-rw-mut" lower "$REPO/bench/fixtures/lowcall_block_nilable_rw.iyi" "$WORK/lowcall_block_nilable_rw.oracle.ll" > "$WORK/block-loop-rw-mut.out" 2>/dev/null || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-loop-rw-mut.out"
+}
+prove_mutation "a loop yield sees only the first block invocation" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      if !saved_jump_whiles.empty?' '      if false && !saved_jump_whiles.empty?' -- block_loop_rw_check || status=1
+
 uncovered_mutation_check() {
   if ! "$IYI" build -o "$WORK/uncovered-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/uncovered-mut.build.log" 2>&1; then
     touch "$WORK/uncovered.invalid"

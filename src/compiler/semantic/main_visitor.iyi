@@ -2556,6 +2556,25 @@ pub class MainVisitor < TypeNodeHost
       saved_super_barrier = @super_barrier
       @super_barrier = "a block"
       blk.body.accept(self)
+      # A yield in a loop can observe writes made by earlier invocations of
+      # the block. Revisit the block with those captured values merged into
+      # its entry flow, like hosted's loop-carried variable bindings.
+      if !saved_jump_whiles.empty?
+        if ctx = callee_context_vars
+          ctx.each do |name, before|
+            if after = @vars[name]?
+              blk_vars[name] = @program.type_merge(before, after)
+            end
+          end
+          blk.args.each do |arg|
+            if arg_type = type_of?(arg)
+              blk_vars[arg.name] = arg_type
+            end
+          end
+          @vars = blk_vars
+          blk.body.accept(self)
+        end
+      end
       @super_barrier = saved_super_barrier
       @current_type = callee_type
       @var_owners = callee_var_owners
