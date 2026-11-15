@@ -3499,7 +3499,6 @@ pub class Def < ASTNode
     @calls_previous_def
   end
 
-
   def uses_block_arg? : Bool
     @uses_block_arg
   end
@@ -3935,9 +3934,6 @@ pub class ImplDef < ASTNode
       ta.each { |a| a.accept(visitor) }
     end
     @target.accept(visitor)
-    if at = @assoc_types
-      at.each { |a| a.accept(visitor) }
-    end
     @body.accept(visitor)
   end
 
