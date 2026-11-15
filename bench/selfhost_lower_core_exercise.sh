@@ -240,6 +240,24 @@ else
   status=1
 fi
 
+if "$IYI" build --prelude empty --no-debug -o "$WORK/float-fraction-host" "$REPO/bench/fixtures/wait_lowconst_float_fraction.iyi" > "$WORK/float-fraction-host.log" 2>&1 &&
+   ! "$WORK/port" emit "$REPO/bench/fixtures/wait_lowconst_float_fraction.iyi" "$WORK/lowconst_float_nan.oracle.ll" > "$WORK/float-fraction.out" 2> "$WORK/float-fraction.err" &&
+   grep -Fq 'constant FRACTION is an operator call' "$WORK/float-fraction.err"; then
+  echo "  nonzero float division: hosted accepts, port refuses by name"
+else
+  echo "  FAIL: nonzero float division did not reach its named refusal"
+  status=1
+fi
+
+if "$IYI" build --prelude empty --no-debug -o "$WORK/path-float-host" "$REPO/bench/fixtures/wait_lowconst_path_float.iyi" > "$WORK/path-float-host.log" 2>&1 &&
+   ! "$WORK/port" emit "$REPO/bench/fixtures/wait_lowconst_path_float.iyi" "$WORK/lowconst_path.oracle.ll" > "$WORK/path-float.out" 2> "$WORK/path-float.err" &&
+   grep -Fq 'constant ALIAS is a path to another constant' "$WORK/path-float.err"; then
+  echo "  float constant alias: hosted accepts, port refuses by name"
+else
+  echo "  FAIL: float constant alias did not reach its named refusal"
+  status=1
+fi
+
 class_self_check() {
   "$IYI" build -o "$WORK/port-class-self" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/class-self.build.log" 2>&1 || return 1
   "$WORK/port-class-self" lower "$REPO/bench/fixtures/lower_class_self.iyi" "$WORK/lower_class_self.oracle.ll" > "$WORK/class-self.out" 2> "$WORK/class-self.err" || return 1
@@ -341,6 +359,28 @@ folded_const_check() {
 prove_mutation "integer constant expressions are not folded" "$REPO/src/compiler/lower/const.iyi" \
   '  result = MathInterpreter.new.interpret(const.value)' '  return nil
   result = MathInterpreter.new.interpret(const.value)' -- folded_const_check || status=1
+
+float_zero_division_check() {
+  if ! "$IYI" build -o "$WORK/const-float-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-float-mut.log" 2>&1; then
+    touch "$WORK/m.invalid"
+    return 1
+  fi
+  "$WORK/const-float-mut" lower "$REPO/bench/fixtures/lowconst_float_nan.iyi" "$WORK/lowconst_float_nan.oracle.ll" > "$WORK/const-float-mut.out" 2>&1 || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-float-mut.out"
+}
+prove_mutation "float zero division is not folded in its initializer" "$REPO/src/compiler/lower/const.iyi" \
+  '  v = float_zero_division(low, const)' '  v = nil' -- float_zero_division_check || status=1
+
+constant_path_check() {
+  if ! "$IYI" build -o "$WORK/const-path-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-path-mut.log" 2>&1; then
+    touch "$WORK/m.invalid"
+    return 1
+  fi
+  "$WORK/const-path-mut" lower "$REPO/bench/fixtures/lowconst_path.iyi" "$WORK/lowconst_path.oracle.ll" > "$WORK/const-path-mut.out" 2>&1 || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-path-mut.out"
+}
+prove_mutation "a constant alias is not folded" "$REPO/src/compiler/lower/const.iyi" \
+  '    return literal_path_value(low, const)' '    return nil' -- constant_path_check || status=1
 
 nested_case_block_check() {
   "$IYI" build -o "$WORK/nested-case-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/nested-case.build.log" 2>&1 || return 1

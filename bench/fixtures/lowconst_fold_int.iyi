@@ -5,4 +5,4 @@ end
 SUM     = 4 &+ 5
 DIFF    = 9 &- 2
 PRODUCT = 3 &* 5
-LibC.exit(SUM &+ DIFF &+ PR
+LibC.exit(SUM &+ DIFF &+ PRODUCT)
