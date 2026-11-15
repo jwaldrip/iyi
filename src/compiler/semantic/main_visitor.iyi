@@ -4691,6 +4691,8 @@ pub class MainVisitor < TypeNodeHost
     if merged_call_t = call_result(node, merged_ret)
       set_type(node, merged_call_t)
       @unreachable = true if merged_call_t.is_a?(NoReturnType)
+    else
+      @call_arguments.delete(node)
     end
     @type_filters = nil
     false
