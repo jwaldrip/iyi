@@ -127,6 +127,12 @@ if [ "${refused_cache_count:-}" != 1 ]; then
   echo "  CACHE: refused declared-return body was instantiated more than once"
   status=1
 fi
+named_cache_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_named_instance_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
+echo "  named instance cache: ${named_cache_count:-none} (expected 8)"
+if [ "${named_cache_count:-}" != 8 ]; then status=1; fi
+fanout_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_named_recursion_fanout.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
+echo "  named recursion fanout: ${fanout_count:-none} (expected 5)"
+if [ "${fanout_count:-}" != 5 ]; then status=1; fi
 
 echo
 echo "== 2d. Program defs share instances across callers without shadowing methods"
@@ -481,7 +487,9 @@ recursion_targets_ok() {
   "$recursion_probe" "$REPO/bench/fixtures/lowcall_recursion_top.iyi" "$REPO/src" > "$WORK/recursion_top.txt" 2>"$WORK/recursion_top.err" || return 1
   grep -q '^cycle_a target=.* typed-params Bool$' "$WORK/recursion_top.txt" || return 1
   "$recursion_probe" "$REPO/bench/fixtures/sem_bodies_recursion_state.iyi" "$REPO/src" > "$WORK/recursion_state.txt" 2>"$WORK/recursion_state.err" || return 1
-  awk '/^lock target=/ { id = $2; sub("target=", "", id); if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 2 && kinds == 1) }' "$WORK/recursion_state.txt"
+  awk '/^lock target=/ { id = $2; sub("target=", "", id); if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 2 && kinds == 1) }' "$WORK/recursion_state.txt" || return 1
+  "$recursion_probe" "$REPO/bench/fixtures/lowcall_recursive_named_mixed.iyi" "$REPO/src" > "$WORK/recursion_mixed.txt" 2>"$WORK/recursion_mixed.err" || return 1
+  awk '/^recursive_named_mixed target=.* typed-params Bool,Bool$/ { id = $2; if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 1 && kinds == 1) }' "$WORK/recursion_mixed.txt"
 }
 if recursion_targets_ok; then
   echo "  recursive calls share the in-progress typed instance"
@@ -496,13 +504,13 @@ recursion_fresh_clone() {
     if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
     return 1
   fi
-  if ! "$WORK/recursion_mutant" "$REPO/bench/fixtures/sem_bodies_recursive_named_default.iyi" "$REPO/src" > "$WORK/recursion_mutant.txt" 2>"$WORK/recursion_mutant.err"; then
+  if ! "$WORK/recursion_mutant" "$REPO/bench/fixtures/lowcall_recursive_named_mixed.iyi" "$REPO/src" > "$WORK/recursion_mutant.txt" 2>"$WORK/recursion_mutant.err"; then
     echo "INVALID MUTANT: recursion probe failed to run" >&2
     cat "$WORK/recursion_mutant.err" >&2
     if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
     return 1
   fi
-  awk '/^recursive_named_default target=.* typed-params Bool,Bool$/ { id = $2; if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 2 && kinds == 1) }' "$WORK/recursion_mutant.txt"
+  awk '/^recursive_named_mixed target=.* typed-params Bool,Bool$/ { id = $2; if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 1 && kinds == 1) }' "$WORK/recursion_mutant.txt"
 }
 unit_cycle_targets_ok() {
   if ! "$IYI" build -o "$WORK/unit_cycle_probe" "$REPO/bench/selfhost_recursion_target_probe.iyi" > "$WORK/unit_cycle_build.log" 2>&1; then
@@ -520,6 +528,22 @@ prove_mutation "unit helper cycle uses its defining owner" "$MAIN_VISITOR" \
 prove_mutation "a recursive call targets a fresh clone" "$MAIN_VISITOR" \
   "@call_target_defs[call] = frame.definition" \
   "@call_target_defs.delete(call)" -- recursion_fresh_clone || status=1
+named_keys_at_expected() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/named_keys_build.log" 2>&1; then
+    body_build_failed "$WORK/named_keys_build.log"
+    return $?
+  fi
+  count=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_named_instance_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
+  [ "${count:-}" = 8 ] || return 1
+  count=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_named_recursion_fanout.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
+  [ "${count:-}" = 5 ]
+}
+prove_mutation "a call with named arguments is not cached" "$MAIN_VISITOR" \
+  '      key = key + "|named(" + entries.join(",") + ")"' \
+  '      return nil' -- named_keys_at_expected || status=1
+prove_mutation "a named argument key drops its name" "$MAIN_VISITOR" \
+  '        entries << "#{arg_name.bytesize}:#{arg_name}=#{text.bytesize}:#{text}"' \
+  '        entries << "#{text.bytesize}:#{text}"' -- named_keys_at_expected || status=1
 prove_mutation "program defs use their declared owner" "$MAIN_VISITOR" \
   "        instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)" \
   "        instance_owner = rec_type if declared_owner.is_a?(SemanticProgram)" -- owner_mutant_at_expected || status=1

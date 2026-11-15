@@ -221,6 +221,8 @@
 
 ### Fixed
 
+- The typed pipeline caches named-argument instantiations by their original definition, receiver, and ordered argument names and types. Recursive named calls no longer retype each path through the same instantiations.
+
 - **The port's math fold no longer dies on x86-64 hardware.** `MathValue` and `MathExact` held an `Int128` and a
   `UInt128` field. The hosted compiler reads a 128-bit field with a load aligned to 16 bytes (`movaps`), and the
   prelude's allocator hands out an object with a header at 8 bytes past a 16-byte boundary about half the time (18

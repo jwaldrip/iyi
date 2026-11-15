@@ -3733,13 +3733,10 @@ pub class MainVisitor < TypeNodeHost
     key
   end
 
-  # The key of a cached instantiation (hosted Call#instantiate, def_instance_key). It names the
-  # def by its original's identity (the clone is what is typed), the receiver, and the argument
-  # types. Nil when the call cannot share an instance: an argument has no type yet, the call has
-  # named arguments, or it passes a block to a def that does not take one (hosted
-  # `use_cache = !block || match.def.block_arg`).
+  # Hosted DefInstanceKey includes named argument names and types in written
+  # order (call.cr:623-630). The original def, not its per-call wrapper, is
+  # the cache identity. Named order must match the wrapper's parameter order.
   def def_instance_key(origin : Def, rec_type : Type, call_node : Call) : String?
-    return nil if call_node.named_args
     block = call_node.block
     return nil if block && origin.block_arg.nil?
     parts = [] of String
@@ -3755,6 +3752,19 @@ pub class MainVisitor < TypeNodeHost
       key_owner = owner if owner.iyi_unit
     end
     key = "#{origin.node_id}|#{key_owner.full_name}(#{parts.join(",")})"
+    if named = call_node.named_args
+      entries = [] of String
+      j = 0
+      while j < named.size
+        named_type = child_type(named[j].value)
+        return nil if named_type.nil?
+        arg_name = named[j].name
+        text = named_type.full_name
+        entries << "#{arg_name.bytesize}:#{arg_name}=#{text.bytesize}:#{text}"
+        j = j + 1
+      end
+      key = key + "|named(" + entries.join(",") + ")"
+    end
     if blk = block
       key = key + "&#{blk.node_id}"
     end
@@ -4098,9 +4108,9 @@ pub class MainVisitor < TypeNodeHost
     # instantiations whose argument types keep growing.
     key = instance_key(rec_type, target_def, args, block)
     if @typing_stack.includes?(key)
-      # Named/default calls are not cached, but a recursive call must still
-      # target the active typed clone, whose parameters are already bound.
-      # Hosted call.cr 625-630 installs that clone before visiting its body.
+      # A positional and a named spelling have different cache keys, so an
+      # active recursive call still needs its already-bound clone here
+      # (hosted call.cr:625-630).
       if call = call_node
         @speculation.recursive_frames.each do |frame|
           if frame.stack_key == key
