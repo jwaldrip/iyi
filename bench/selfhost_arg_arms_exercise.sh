@@ -89,6 +89,11 @@ check_arms() {
 }
 
 check_arms || exit 1
+"$WORK/probe" "$REPO/bench/fixtures/sem_arms_proc_call.iyi" "$REPO/src" call prelude > "$WORK/proc" || exit 1
+printf '%s\n' 'arms=1 cover=true' 'Proc#call:' > "$WORK/expected"
+cmp -s "$WORK/proc" "$WORK/expected" || exit 1
+"$WORK/probe" "$REPO/bench/fixtures/lowcall_capture_none.iyi" "$REPO/src" call prelude-instances > "$WORK/captured-proc" || exit 1
+cmp -s "$WORK/captured-proc" "$WORK/expected" || exit 1
 "$IYI" build -o "$WORK/compiler" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/compiler-build.log" 2>&1 || exit 1
 if [ "$(uname -s)" = Darwin ]; then
   codesign -v --strict "$WORK/compiler" || exit 1

@@ -57,6 +57,11 @@ node = Normalizer.new(NormalizerProgram.new(false)).normalize(Parser.new(File.re
 program = SemanticProgram.new
 program.total_mode = true
 program.search_path = [Program.args[1]]
+if Program.args.size > 3 && (Program.args[3] == "prelude" || Program.args[3] == "prelude-instances")
+  prelude = TopLevelVisitor.new(program)
+  prelude.load_file("#{Program.args[1]}/iyi/prelude.iyi")
+  prelude.finish
+end
 top = TopLevelVisitor.new(program, path)
 node.accept(top)
 top.finish
@@ -67,4 +72,12 @@ typer.total = true
 node.accept(typer)
 walk = Program.args.size > 3 && Program.args[3] == "modules" ? ArmWalk::Modules : ArmWalk::Parents
 probe = ArmProbe.new(program, typer, Program.args[2], inputs.counts, walk)
-node.accept(probe)
+if Program.args.size > 3 && Program.args[3] == "prelude-instances"
+  typer.typed_instances.each do |instance|
+    if instance.definition.name == "spawn"
+      instance.definition.body.accept(probe)
+    end
+  end
+else
+  node.accept(probe)
+end
