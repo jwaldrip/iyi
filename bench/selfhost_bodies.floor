@@ -5,6 +5,7 @@ bench/fixtures/sem_bodies_bare_splat.iyi 18
 bench/fixtures/sem_bodies_block_context.iyi 14
 bench/fixtures/sem_bodies_block_free_body.iyi 20
 bench/fixtures/sem_bodies_block_free_output.iyi 11
+bench/fixtures/sem_bodies_block_generic_inference.iyi 17
 bench/fixtures/sem_bodies_block_nil_output.iyi 9
 bench/fixtures/sem_bodies_block_nil_value.iyi 8
 bench/fixtures/sem_bodies_block_output.iyi 9
