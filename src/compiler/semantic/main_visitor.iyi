@@ -88,9 +88,9 @@ end
 # both, so the body is not typed again and the call site records the clone the lowering reads.
 pub class DefInstance
   getter definition : Def
-  getter return_type : Type
+  getter return_type : Type?
 
-  def initialize(@definition : Def, @return_type : Type)
+  def initialize(@definition : Def, @return_type : Type?)
   end
 end
 
@@ -105,11 +105,42 @@ pub class SpeculativeEntry
   end
 end
 
+# A currently instantiated body. The cache entry is installed before the body
+# is visited, so a hit on one of these entries identifies a recursive cycle.
+pub class RecursiveFrame
+  getter key : String?
+  getter definition : Def
+  property cyclic : Bool = false
+  property estimating : Bool = false
+
+  def initialize(@key : String?, @definition : Def)
+  end
+end
+
+# Types and call bindings from a speculative body must not survive a re-visit.
+pub class RecursiveClear < Visitor
+  def initialize(@visitor : MainVisitor)
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    @visitor.node_types.delete(node)
+    @visitor.untyped_reasons.delete(node)
+    @visitor.call_target_defs.delete(node)
+    @visitor.call_dispatch_targets.delete(node)
+    @visitor.call_arguments.delete(node)
+    @visitor.call_receivers.delete(node)
+    @visitor.lib_call_targets.delete(node)
+    true
+  end
+end
+
 pub class SpeculationLedger
   property depth : Int32 = 0
   property taint : Int32 = 0
   getter entries : Array(SpeculativeEntry) = [] of SpeculativeEntry
   getter dirty_keys : Hash(String, Bool) = Hash(String, Bool).new
+  getter recursive_frames : Array(RecursiveFrame) = [] of RecursiveFrame
+  getter recursive_cache_writes : Array(String) = [] of String
 end
 
 # The def a block is written in, and the return values of its body (hosted: a `return` in a
@@ -3522,6 +3553,16 @@ pub class MainVisitor < TypeNodeHost
   def cached_instance(key : String?) : DefInstance?
     if k = key
       if instance = @def_instances[k]?
+        @speculation.recursive_frames.each do |frame|
+          if frame.key == k && frame.definition.return_type.nil?
+            unless frame.cyclic
+              frame.cyclic = true
+              @speculation.depth = @speculation.depth + 1
+            end
+            return DefInstance.new(instance.definition, nil) unless frame.estimating
+            break
+          end
+        end
         if @speculation.dirty_keys[k]?
           @speculation.taint = @speculation.taint + 1
         end
@@ -3533,8 +3574,9 @@ pub class MainVisitor < TypeNodeHost
 
   # Caches a finished instance, including one with a refused body and a declared
   # return type. Its recorded refusals remain attached to the cached definition.
-  def remember_def_instance(key : String?, definition : Def, return_type : Type) : Nil
+  def remember_def_instance(key : String?, definition : Def, return_type : Type?) : Nil
     if k = key
+      @speculation.recursive_cache_writes << k unless @def_instances.has_key?(k)
       @def_instances[k] = DefInstance.new(definition, return_type)
     end
     nil
@@ -3963,11 +4005,105 @@ pub class MainVisitor < TypeNodeHost
     end
     body = splice_def_body(body.as(ASTNode))
     target_def.body = body.as(ASTNode)
+    recursive_frame = RecursiveFrame.new(cache_key, target_def)
+    @speculation.recursive_frames << recursive_frame
+    recursive_cache_mark = @speculation.recursive_cache_writes.size
+    recursive_instance_mark = @typed_instances.size
+    recursive_entry_mark = @speculation.entries.size
+    recursive_refusal_mark = @refusals.size
+    recursive_start_vars = @vars.dup
+    recursive_start_dead_depth = @dead_depth
+    recursive_start_context = if ctx = @current_block_context_vars
+                                ctx.dup
+                              else
+                                nil
+                              end
     saved_super_barrier = @super_barrier
     @super_barrier = nil
     body.as(ASTNode).accept(self)
     @super_barrier = saved_super_barrier
     body_type = merge_jump_values(child_type(body.as(ASTNode)), @return_types)
+    recursive_error : String? = nil
+    if recursive_frame.cyclic
+      # Hosted call.cr installs the instance before visiting its body, and
+      # bindings.cr propagates the inferred type to dependent calls. Revisit
+      # against growing estimates rather than retaining the seed's bindings.
+      estimate = body_type
+      settled = false
+      commit_pass = false
+      passes = 0
+      recursive_frame.estimating = true
+      while passes < 10
+        passes += 1
+        body.as(ASTNode).accept(RecursiveClear.new(self))
+        writes = @speculation.recursive_cache_writes
+        index = recursive_cache_mark
+        while index < writes.size
+          @def_instances.delete(writes[index])
+          @speculation.dirty_keys.delete(writes[index])
+          index += 1
+        end
+        writes.truncate(0, recursive_cache_mark)
+        @typed_instances.truncate(0, recursive_instance_mark)
+        @speculation.entries.truncate(0, recursive_entry_mark)
+        @refusals.truncate(0, recursive_refusal_mark)
+        @vars = recursive_start_vars.dup
+        @var_unions = Hash(String, Type).new
+        @nil_candidates = Set(String).new
+        @nil_resets = Set(String).new
+        @var_owners = Hash(String, LocalStorage).new
+        @untyped_locals = Hash(String, String).new
+        @return_types = [] of Type?
+        @type_filters = nil
+        @needs_type_filters = 0
+        @unreachable = false
+        @flow_dead = false
+        @dead_depth = recursive_start_dead_depth
+        @while_break_vars = [] of Array(Hash(String, Type))
+        @jump_whiles = [] of While
+        @current_block_context_vars = if ctx = recursive_start_context
+                                        ctx.dup
+                                      else
+                                        nil
+                                      end
+        @current_yield_nodes = [] of Yield if block
+        assumed = estimate || @program.no_return_type
+        remember_def_instance(cache_key, target_def, commit_pass ? assumed : estimate)
+        @super_barrier = nil
+        body.as(ASTNode).accept(self)
+        @super_barrier = saved_super_barrier
+        next_type = merge_jump_values(child_type(body.as(ASTNode)), @return_types)
+        if commit_pass
+          body_type = next_type
+          unless next_type && next_type.full_name == assumed.full_name
+            recursive_error = "recursive return type of '#{target_def.name}' changed in the final pass"
+          end
+          break
+        end
+        merged = if old = estimate
+                   if current = next_type
+                     merge_flow(old, current)
+                   else
+                     old
+                   end
+                 else
+                   next_type
+                 end
+        if (estimate.nil? && merged.nil?) || (estimate && merged && estimate.as(Type).full_name == merged.as(Type).full_name)
+          estimate = merged
+          settled = true
+          commit_pass = true
+          @speculation.depth = @speculation.depth - 1
+        else
+          estimate = merged
+        end
+      end
+      unless settled
+        @speculation.depth = @speculation.depth - 1
+        recursive_error = "recursive return type of '#{target_def.name}' did not settle"
+      end
+    end
+    @speculation.recursive_frames.pop
 
     if block && (ctx_vars = @current_block_context_vars)
       ctx_vars.each do |k, new_v|
@@ -4017,6 +4153,9 @@ pub class MainVisitor < TypeNodeHost
     @jump_block = saved_jump_block
     @jump_whiles = saved_jump_whiles
     @typing_stack.pop
+    if error = recursive_error
+      return refuse_recursion(site, target_def, error)
+    end
 
     unless params_typed
       if call = call_node
@@ -4525,7 +4664,7 @@ pub class MainVisitor < TypeNodeHost
       else
         # Total analysis still records independent argument nodes when the
         # receiver cannot be typed. The call itself remains unresolved.
-        if @total
+        if @total || @speculation.depth > 0
           node.args.each do |arg|
             arg.accept(self)
           end
@@ -4552,6 +4691,22 @@ pub class MainVisitor < TypeNodeHost
     end
     @call_receivers.delete(node)
     @needs_type_filters = saved_call_ntf
+    if @speculation.recursive_frames.any?(&.cyclic)
+      node.args.each do |arg|
+        if type_of?(arg).nil?
+          @type_filters = nil
+          return false
+        end
+      end
+      if named = node.named_args
+        named.each do |arg|
+          if type_of?(arg.value).nil?
+            @type_filters = nil
+            return false
+          end
+        end
+      end
+    end
     if node.obj.nil? && node.name == "super"
       return visit_super(node)
     end
