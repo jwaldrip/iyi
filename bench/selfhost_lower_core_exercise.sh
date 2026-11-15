@@ -258,6 +258,15 @@ else
   status=1
 fi
 
+if "$IYI" build --prelude empty --no-debug -o "$WORK/wide-unsigned-host" "$REPO/bench/fixtures/wait_lowconst_wide_unsigned.iyi" > "$WORK/wide-unsigned-host.log" 2>&1 &&
+   ! "$WORK/port" emit "$REPO/bench/fixtures/wait_lowconst_wide_unsigned.iyi" "$WORK/lowconst_wide.oracle.ll" > "$WORK/wide-unsigned.out" 2> "$WORK/wide-unsigned.err" &&
+   grep -Fq '128-bit integer literal exceeds the math interpreter' "$WORK/wide-unsigned.err"; then
+  echo "  high UInt128: hosted accepts, port refuses by name"
+else
+  echo "  FAIL: high UInt128 did not reach its named refusal"
+  status=1
+fi
+
 class_self_check() {
   "$IYI" build -o "$WORK/port-class-self" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/class-self.build.log" 2>&1 || return 1
   "$WORK/port-class-self" lower "$REPO/bench/fixtures/lower_class_self.iyi" "$WORK/lower_class_self.oracle.ll" > "$WORK/class-self.out" 2> "$WORK/class-self.err" || return 1
@@ -381,6 +390,17 @@ constant_path_check() {
 }
 prove_mutation "a constant alias is not folded" "$REPO/src/compiler/lower/const.iyi" \
   '    return literal_path_value(low, const)' '    return nil' -- constant_path_check || status=1
+
+wide_constant_check() {
+  if ! "$IYI" build -o "$WORK/const-wide-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-wide-mut.log" 2>&1; then
+    touch "$WORK/m.invalid"
+    return 1
+  fi
+  "$WORK/const-wide-mut" lower "$REPO/bench/fixtures/lowconst_wide.iyi" "$WORK/lowconst_wide.oracle.ll" > "$WORK/const-wide-mut.out" 2>&1 || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/const-wide-mut.out"
+}
+prove_mutation "a wide constant loses its high word" "$REPO/src/compiler/lower/const.iyi" \
+  '      hi = u64_as_i64((bits >> 64).to_u64)' '      hi = 0_i64' -- wide_constant_check || status=1
 
 nested_case_block_check() {
   "$IYI" build -o "$WORK/nested-case-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/nested-case.build.log" 2>&1 || return 1
