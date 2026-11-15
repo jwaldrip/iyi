@@ -33,6 +33,12 @@ check_arms() {
     printf '%s\n' 'arms=2 cover=true' 'main#show:A' 'main#show:(A | B)' > "$WORK/expected"
     cmp -s "$WORK/$kind" "$WORK/expected" || return 1
   done
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_tuple_index.iyi" "$REPO/src" '[]' > "$WORK/tuple" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#[]:Int32' > "$WORK/expected"
+  cmp -s "$WORK/tuple" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_tuple_invalid.iyi" "$REPO/src" '[]' > "$WORK/tuple-invalid" || return 1
+  printf '%s\n' 'arms=0 cover=false' 'error=index out of bounds for Tuple(Int32, String) (5 not in -2..1)' > "$WORK/expected"
+  cmp -s "$WORK/tuple-invalid" "$WORK/expected" || return 1
 }
 
 check_arms || exit 1
@@ -61,4 +67,10 @@ prove_mutation 'generic match retains its metaclass owner' "$REPO/src/compiler/s
 prove_mutation 'named argument types participate in matching' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '      named_types = collected' \
   '      named_types = nil' -- check_arms || status=1
+prove_mutation 'tuple indexers keep their synthesized target' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    if indexer.is_a?(Def)' \
+  '    if false && indexer.is_a?(Def)' -- check_arms || status=1
+prove_mutation 'tuple index errors remain errors' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    if indexer.is_a?(String)' \
+  '    if false && indexer.is_a?(String)' -- check_arms || status=1
 exit "$status"
