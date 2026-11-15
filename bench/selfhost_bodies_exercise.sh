@@ -632,7 +632,7 @@ prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" 
       else
         # Total analysis still records independent argument nodes when the
         # receiver cannot be typed. The call itself remains unresolved.
-        if @total
+        if @total || @speculation.depth > 0
           node.args.each do |arg|
             arg.accept(self)
           end
@@ -663,7 +663,7 @@ prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" 
       else
         # Total analysis still records independent argument nodes when the
         # receiver cannot be typed. The call itself remains unresolved.
-        if @total
+        if @total || @speculation.depth > 0
           node.args.each do |arg|
             arg.accept(self)
           end
