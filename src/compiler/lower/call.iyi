@@ -66,6 +66,7 @@ import compiler/lower/instance_var::{self_argument, self_as_value, self_by_point
 import compiler/lower/primitives::{primitive_name, lower_primitive_call, lower_primitive_with_values, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
 import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType, GenericClassInstanceMetaclassType, IntegerType, FloatType}
+import compiler/syntax/token::{NumberKind}
 import compiler/semantic/lib_call::{LibCallTarget}
 import compiler/semantic/main_visitor::{DispatchTarget}
 import compiler/types/indirection::{TypeIndirection}
@@ -1197,8 +1198,14 @@ end
 # as the hosted pass rewrites the literal's type.
 pub def lib_number_value(low : Lowerer, node : NumberLiteral, t : Type) : Value
   ir = low.typer.llvm_type(t)
-  if node.value.includes?(".")
+  if primitive_kind(t) == "float"
     return low.builder.const_float(ir, node.value.to_f).as(Value)
+  end
+  if node.kind == NumberKind::U64
+    value = node.value.to_u64
+    half = 1_u64.unsafe_shl(63_u64)
+    bits = value >= half ? (value - half).to_i64 + (0_i64 - 9223372036854775807_i64 - 1_i64) : value.to_i64
+    return low.builder.const_int(ir, bits).as(Value)
   end
   low.builder.const_int(ir, node.value.to_i64).as(Value)
 end
@@ -1229,7 +1236,9 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
     # (zeroinitializer); the helper `llvm_nil` is an undef constant in this port, so it is not used here.
     passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)
     converted : Value
-    if at.full_name != target_type.full_name && !at.is_a?(NoReturnType) && at.implements?(target_type)
+    if at.full_name != target_type.full_name && arg_node.is_a?(NumberLiteral) && (primitive_kind(at) == "int" || primitive_kind(at) == "float") && (primitive_kind(target_type) == "int" || primitive_kind(target_type) == "float")
+      converted = lib_number_value(low, arg_node.as(NumberLiteral), target_type)
+    elsif at.full_name != target_type.full_name && !at.is_a?(NoReturnType) && at.implements?(target_type)
       converted = upcast(low, passed, at, target_type)
     else
       passed = pointer_of_value(low, arg_node, passed, at) if at.is_a?(MixedUnionType)

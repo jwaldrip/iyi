@@ -3632,10 +3632,14 @@ pub class MainVisitor < TypeNodeHost
     # Hosted call.cr binds the match's free variables from the call arguments,
     # including for primitive and recursive definitions with no body to visit.
     call_arg_types = [] of Type
-    args.each do |call_arg|
-      if call_arg_type = child_type(call_arg)
-        call_arg_types << call_arg_type
+    args.each_with_index do |call_arg, index|
+      call_arg_type = child_type(call_arg)
+      if call_node
+        if matched = @matched_call_args[call_node]?
+          call_arg_type = matched[index] if index < matched.size
+        end
       end
+      call_arg_types << call_arg_type.as(Type) unless call_arg_type.nil?
     end
     if call_arg_types.size == args.size
       if free_types = FreeBindings.of_def(target_def, call_arg_types, type_node_system(@program))
