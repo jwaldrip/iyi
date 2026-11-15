@@ -74,6 +74,9 @@ end
 # gave the constant's value; nil when the value is not a literal of a kind the port inlines (the hosted
 # `compile_time_value` is nil there, and the constant is initialised at run time).
 pub def literal_value(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : Value?
+  if const.value.is_a?(Path)
+    return literal_path_value(low, const)
+  end
   if float_const?(const)
     return nil
   end
@@ -97,6 +100,22 @@ pub def literal_value(low : Lowerer, const : Compiler::Semantic::TopLevel::Const
     bits = bits - 18446744073709551616_i128
   end
   low.builder.const_int(low.typer.llvm_type(type.as(Type)), bits.to_i64)
+end
+
+# Follow the typed constant binding, not the lowering context's current scope.
+# Cycles are left to the ordinary named refusal rather than recursing forever.
+def literal_path_value(low : Lowerer, original : Compiler::Semantic::TopLevel::Const) : Value?
+  seen = [] of UInt64
+  current = original
+  while current.value.is_a?(Path)
+    id = current.object_id
+    return nil if seen.includes?(id)
+    seen << id
+    target = low.analysed.target_const?(current.value.as(Path))
+    return nil if target.nil?
+    current = target.as(Compiler::Semantic::TopLevel::Const)
+  end
+  literal_value(low, current)
 end
 
 # The value of a literal node (a Bool, Char or integer literal) as an IR constant of the type the analysis gave it;
