@@ -1632,8 +1632,14 @@ pub class MainVisitor < TypeNodeHost
         target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
-          mod_type.instance_vars[ivar_node.name] = MetaTypeVar.new(ivar_node.name, decl_type, val)
-          set_type(ivar_node, decl_type)
+          # Hosted type_declaration_processor.cr resolves the written field once,
+          # including its virtual type; visiting its initializer must retain it.
+          ivar = mod_type.instance_vars[ivar_node.name]?
+          if ivar.nil?
+            ivar = MetaTypeVar.new(ivar_node.name, decl_type, val)
+            mod_type.instance_vars[ivar_node.name] = ivar
+          end
+          set_type(ivar_node, ivar.as(MetaTypeVar).type)
         end
       elsif node.var.is_a?(ClassVar)
         cvar_node = node.var.as(ClassVar)
@@ -1674,8 +1680,13 @@ pub class MainVisitor < TypeNodeHost
         target_type = target_type.as(VirtualType).base_type if target_type.is_a?(VirtualType)
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
-          mod_type.instance_vars[ivar_node.name] = MetaTypeVar.new(ivar_node.name, decl_type, nil)
-          set_type(ivar_node, decl_type)
+          # Preserve the declaration pass's virtualized field type and metadata.
+          ivar = mod_type.instance_vars[ivar_node.name]?
+          if ivar.nil?
+            ivar = MetaTypeVar.new(ivar_node.name, decl_type, nil)
+            mod_type.instance_vars[ivar_node.name] = ivar
+          end
+          set_type(ivar_node, ivar.as(MetaTypeVar).type)
         end
       elsif node.var.is_a?(ClassVar)
         cvar_node = node.var.as(ClassVar)
@@ -2497,13 +2508,15 @@ pub class MainVisitor < TypeNodeHost
 
   def visit(node : ClassDef) : Bool
     t = @program.lookup_type_path?(node.name, @current_type)
-    if t && t.is_a?(ClassType)
+    # Unit assembly uses ClassDef wrappers for module headers. Hosted
+    # semantic_visitor.cr:1811-1828 visits either resolved module body.
+    if t && t.is_a?(ModuleType)
       old_type = @current_type
-      @current_type = t.as(ClassType)
+      @current_type = t.as(ModuleType)
       node.body.accept(self)
       @current_type = old_type
 
-      cls = t.as(ClassType)
+      cls = t.as(ModuleType)
       cls.class_vars.each_value do |cvar|
         if cvar.initializer.nil? && !cvar.type.nilable?
           return refuse(node, "class variable '#{cvar.name}' of #{cls.full_name} is not nilable (it's #{cvar.type.full_name}) so it must have an initializer")

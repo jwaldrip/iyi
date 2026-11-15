@@ -49,7 +49,7 @@ import compiler/lower/pending::{refuse_port, pending_visit_node}
 import compiler/lower/call::{codegen_call_node, codegen_responds_to, responds_to_value, declare_lib_var}
 import compiler/lower/block::{branch_to_phi, lower_yield}
 import compiler/lower/ensure::{lower_exception_handler, execute_ensures_until, set_ensure_exception_handler}
-import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun, clear_fun_emission_done}
+import compiler/lower/fun::{block_ended?, declared_or_defined_fun, function_attributes, target_def_fun, clear_fun_emission_done}
 import compiler/ir/verifier::{verify_function}
 import compiler/lower/primitives::{iyi_gc_arena?}
 import compiler/lower/primitives::{raise_cast_failed}
@@ -257,10 +257,10 @@ pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
   low.fun_defs_done[name] = true
   ret = rt.as(Type)
   if !well_known && !rec.used
-    # A fun is C (def_convention). The declaration is what a later generated call copies, and the
-    # body pass has not run yet, so the convention has to be C here: `__iyi_new` is called from
-    # `new` before `emit_unused_fun_defs` fills the body.
-    low.module.define_function(name, fun_def_type(low, rec, ret), CallConv::C)
+    # The allocator can have declared __iyi_new already. Hosted codegen_fun (fun.cr:717-725)
+    # reuses that declaration before the unused-fun pass fills in its body.
+    fn = declared_or_defined_fun(low, name, fun_def_type(low, rec, ret))
+    fn.call_convention = CallConv::C
     low.unused_fun_defs << node
     return
   end
