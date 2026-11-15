@@ -3,7 +3,7 @@
 set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+IYI="${IYI_COMPILER:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 . "$REPO/bench/lib/mutation.sh"
@@ -28,10 +28,10 @@ check_barriers() {
   for ir in "$WORK/hosted.ll" "$WORK/port.ll"; do
     awk '/^define / { fn=$0; selected = (fn ~ /Array\(GcValue|Array\(GcBranch|Pointer\(GcValue|Pointer\(GcBranch|GcBranch#initialize/) } selected && /call.*__iyi_write_barrier\(/ { n++ } END { print n+0 }' "$ir"
   done > "$WORK/barrier-counts"
-  [ "$(sed -n '1p' "$WORK/barrier-counts")" = 7 ] && [ "$(sed -n '2p' "$WORK/barrier-counts")" = 7 ]
+  [ "$(sed -n '1p' "$WORK/barrier-counts")" = 8 ] && [ "$(sed -n '2p' "$WORK/barrier-counts")" = 8 ]
 }
 if check_barriers; then
-  echo 'GC barrier: hosted/native match, 7 write-barrier sites each'
+  echo 'GC barrier: hosted/native match, 8 write-barrier sites each'
 else
   echo 'FAIL: GC barrier runtime or IR parity'
   status=1
