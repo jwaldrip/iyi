@@ -1914,7 +1914,8 @@ pub class SemanticProgram < NonGenericModuleType
             g.type_vars.each do |t|
               arg = lookup_type_node?(t, current_type)
               return nil unless arg
-              type_args << arg
+              # Hosted type_lookup.cr resolves aliases while looking up generic arguments.
+              type_args << remove_alias(arg)
             end
             return hook.instantiate_type(base_type, type_args)
           end

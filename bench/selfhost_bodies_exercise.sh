@@ -905,6 +905,19 @@ prove_mutation "an untyped positional argument stops before call matching" "$MAI
 prove_mutation "an untyped named argument stops before call matching" "$MAIN_VISITOR" \
   'return untyped(node, "an argument was not typed: #{arg.value}") if child_type(arg.value).nil?' \
   'nil' -- untyped_call_arguments_safe || status=1
+generic_alias_restriction_safe() {
+  if ! "$IYI" build -o "$WORK/alias_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/alias_build.log" 2>&1; then
+    body_build_failed "$WORK/alias_build.log"
+    return $?
+  fi
+  codesign -v --strict "$WORK/alias_tool" || return 1
+  "$WORK/alias_tool" "$REPO/bench/fixtures/sem_bodies_generic_alias_restriction.iyi" \
+    -o "$WORK/alias_probe" --pipeline typed --prelude --probe-phase > "$WORK/alias_probe.log" 2>&1
+}
+generic_alias_restriction_safe || status=1
+prove_mutation "generic arguments resolve their aliases before instantiation" "$REPO/src/compiler/semantic/top_level.iyi" \
+  "              type_args << remove_alias(arg)" \
+  "              type_args << arg" -- generic_alias_restriction_safe || status=1
 prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
   "@def_free_types[target_def] = free_types unless free_types.empty?" \
   "        nil" -- atomic_free_at_floor || status=1
