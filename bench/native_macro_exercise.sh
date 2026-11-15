@@ -112,7 +112,7 @@ fi
 
 typed_fixtures_ok=1
 echo "== Native typed macro fixtures"
-for name in macro_def_shadows_macro macro_typenode_ancestors macro_array_any macro_array_map macro_tuple_map_splat macro_range_map macro_lookup_arity; do
+for name in macro_def_shadows_macro macro_typenode_ancestors macro_array_any macro_array_map macro_tuple_map_splat macro_range_map macro_lookup_arity macro_typeof_prelude; do
   fixture="$REPO/bench/fixtures/$name.iyi"
   if ! "$IYI" run "$fixture" >"$WORK/$name.hosted" 2>"$WORK/$name.hosted.err"; then
     echo "FAIL: hosted $name"
@@ -183,6 +183,11 @@ mut_run=$((mut_run + 1))
 prove_mutation "ancestor methods are omitted" "$REPO/src/compiler/macros/methods.iyi" \
   '            ancestor.methods.each { |item| ancestor_facts.methods << item }' '            nil' \
   -- check_typed_macro_fixture macro_typenode_ancestors && mut_caught=$((mut_caught + 1)) || status=1
+
+mut_run=$((mut_run + 1))
+prove_mutation "typeof fails to restore local types" "$REPO/src/compiler/semantic/type_nodes.iyi" \
+  '    visitor.vars[name] = t' '    nil' \
+  -- check_typed_macro_fixture macro_typeof_prelude && mut_caught=$((mut_caught + 1)) || status=1
 else
   echo "FAIL: typed macro mutation proofs skipped because their unmutated fixtures failed"
   status=1
