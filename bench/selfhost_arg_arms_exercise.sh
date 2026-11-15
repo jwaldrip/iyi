@@ -29,7 +29,18 @@ check_arms() {
   cmp -s "$WORK/generic" "$WORK/expected" || return 1
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_generic_new_mismatch.iyi" "$REPO/src" new > "$WORK/mismatch" || return 1
   printf '%s\n' 'arms=0 cover=false' > "$WORK/expected"
-  cmp -s "$WORK/mismatch" "$WORK/expected"
+  cmp -s "$WORK/mismatch" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_new.iyi" "$REPO/src" new > "$WORK/named" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'Stream.class#new:Int64' 'owner=Stream.class' > "$WORK/expected"
+  cmp -s "$WORK/named" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_new_mismatch.iyi" "$REPO/src" new > "$WORK/named-mismatch" || return 1
+  printf '%s\n' 'arms=0 cover=false' > "$WORK/expected"
+  cmp -s "$WORK/named-mismatch" "$WORK/expected" || return 1
+  for kind in module trait; do
+    "$WORK/probe" "$REPO/bench/fixtures/sem_arms_${kind}_arg.iyi" "$REPO/src" show > "$WORK/$kind" || return 1
+    printf '%s\n' 'arms=2 cover=true' 'main#show:A' 'main#show:(A | B)' > "$WORK/expected"
+    cmp -s "$WORK/$kind" "$WORK/expected" || return 1
+  done
 }
 
 check_arms || exit 1
@@ -55,4 +66,7 @@ prove_mutation 'generic metaclass restrictions use the bound instance' "$REPO/sr
 prove_mutation 'generic match retains its metaclass owner' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '            arm = Match.new(match.definition, match.arg_types, owner, match.defining, match.exact, match.named_arg_types, match.declared, match.bound)' \
   '            arm = match' -- check_arms || status=1
+prove_mutation 'named argument types participate in matching' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      named_types = collected' \
+  '      named_types = nil' -- check_arms || status=1
 exit "$status"
