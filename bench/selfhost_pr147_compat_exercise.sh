@@ -224,7 +224,9 @@ if [ "$probes_only" -eq 0 ]; then
     status=1
   else
     strict="$REPO/bench/fixtures/pr147_alias_strict.iyi"
+    unused="$REPO/bench/fixtures/pr147_alias_unused.iyi"
     chain="$REPO/bench/fixtures/pr147_alias_chain.iyi"
+    recursive_pointer="$REPO/bench/fixtures/pr147_alias_recursive_pointer.iyi"
     if "$IYI" build --no-codegen "$strict" > "$WORK/hosted-strict.log" 2>&1; then
       echo "FAIL: hosted compiler accepted the unresolved alias"
       status=1
@@ -241,6 +243,36 @@ if [ "$probes_only" -eq 0 ]; then
       status=1
     else
       echo "  strict referenced alias refuses with hosted error; valid chain builds"
+    fi
+    if "$IYI" build --no-codegen "$unused" > "$WORK/hosted-unused.log" 2>&1; then
+      echo "FAIL: hosted compiler accepted the unused unresolved alias"
+      status=1
+    elif "$WORK/typed_compile" "$unused" -o "$WORK/unused" --pipeline typed --prelude --probe-phase > "$WORK/port-unused.log" 2>&1; then
+      echo "FAIL: typed compiler accepted the unused unresolved alias"
+      status=1
+    elif ! grep -Fxq 'Error: undefined constant ::MissingLibrary::Thing' "$WORK/hosted-unused.log" ||
+         ! grep -Fxq 'Error: undefined constant ::MissingLibrary::Thing' "$WORK/port-unused.log"; then
+      echo "FAIL: unused alias diagnostics differ"
+      status=1
+    else
+      echo "  unused unresolved alias refuses with the hosted error"
+    fi
+    timeout 30 "$WORK/typed_compile" "$cycle" -o "$WORK/cycle" --pipeline typed --prelude --probe-phase > "$WORK/port-cycle.log" 2>&1
+    cycle_status=$?
+    if [ "$cycle_status" -eq 0 ] || [ "$cycle_status" -eq 124 ] ||
+       ! grep -Fxq 'Error: infinite recursive definition of alias CycleA' "$WORK/hosted-cycle.log" ||
+       ! grep -Fxq 'Error: infinite recursive definition of alias CycleA' "$WORK/port-cycle.log"; then
+      echo "FAIL: strict alias cycle did not reject with the hosted error (status $cycle_status)"
+      status=1
+    else
+      echo "  strict alias cycle refuses with the hosted error"
+    fi
+    if ! "$IYI" build --no-codegen "$recursive_pointer" > "$WORK/hosted-recursive-pointer.log" 2>&1 ||
+       ! "$WORK/typed_compile" "$recursive_pointer" -o "$WORK/recursive-pointer" --pipeline typed --prelude --probe-phase > "$WORK/port-recursive-pointer.log" 2>&1; then
+      echo "FAIL: a valid recursive pointer alias was refused"
+      status=1
+    else
+      echo "  recursive pointer alias is accepted by both compilers"
     fi
   fi
 fi

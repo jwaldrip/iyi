@@ -1150,6 +1150,7 @@ pub class AliasType < NamedType
   property value : ASTNode
   property aliased_type : Type?
   property aliased_type_display : String?
+  @resolving_value : Bool = false
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @value : ASTNode)
     super(program, namespace, name)
@@ -1170,6 +1171,11 @@ pub class AliasType < NamedType
   end
 
   def process_value : Type
+    if @resolving_value
+      refuse_port("infinite recursive definition of alias #{@name}")
+    end
+    @resolving_value = true
+    defer @resolving_value = false
     if at = @aliased_type
       at
     else
@@ -1801,8 +1807,18 @@ pub class SemanticProgram < NonGenericModuleType
   # The type an alias names, through any chain of aliases (hosted Type#remove_alias): a declared
   # instance variable takes the type the alias stands for, not the alias.
   def remove_alias(type : Type) : Type
-    current = type
+    return type unless type.is_a?(AliasType)
+    first = type.as(AliasType)
+    current = first.process_value
+    return current unless current.is_a?(AliasType)
+    seen = Set(UInt64).new
+    seen.add(first.object_id)
     while current.is_a?(AliasType)
+      id = current.object_id
+      if seen.includes?(id)
+        refuse_port("infinite recursive definition of alias #{current.name}")
+      end
+      seen.add(id)
       current = current.as(AliasType).process_value
     end
     current

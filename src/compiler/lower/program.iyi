@@ -24,7 +24,7 @@ module compiler/lower/program
 #     the hosted analysis does (NEEDS.md, lowering calls row 31). Same as bench/lib/lower_gate.iyi.
 
 import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Primitive, Arg, Path, Annotation, StringLiteral, InstanceVar, And, Assign, Call, Case, ClassVar, If, Not, Or, Unless, Var, While}
-import compiler/semantic/top_level::{LibType, MetaclassType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
+import compiler/semantic/top_level::{AliasType, LibType, MetaclassType, NamedType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
 import compiler/types/types::{GenericClassInstanceMetaclassType}
 import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance, node_class_name}
 import compiler/semantic/match::{YieldFinder}
@@ -118,8 +118,35 @@ pub def declare_program(classes : Array(ClassDef), libs : Array(LibDef), defs : 
   TypedProgram.new(root, prog, mv, links)
 end
 
+# Strict typed programs validate every alias after declarations, including
+# aliases no expression references. Bare-file and total probes stay tolerant.
+def validate_aliases(program : SemanticProgram, root : NamedType, seen : Set(UInt64)) : Nil
+  id = root.object_id
+  return if seen.includes?(id)
+  seen.add(id)
+  root.types.each_value do |type|
+    if type.is_a?(AliasType)
+      written = type.as(AliasType)
+      saved = program.current_imports
+      if locations = written.locations
+        unless locations.empty?
+          filename = locations[0].filename
+          program.current_imports = program.file_imports[filename]? || program.file_imports[normalize_path(filename)]? || saved
+        end
+      end
+      program.remove_alias(written)
+      program.current_imports = saved
+    elsif type.is_a?(NamedType)
+      validate_aliases(program, type.as(NamedType), seen)
+    end
+  end
+end
+
 # The bodies phase: the body typer over the root, then the recursive struct check.
 pub def type_bodies(typed : TypedProgram) : Nil
+  unless typed.visitor.total || typed.prog.optional_alias_probe
+    validate_aliases(typed.prog, typed.prog, Set(UInt64).new)
+  end
   typed.root.accept(typed.visitor)
   RecursiveStructChecker.new(typed.prog).run
 end

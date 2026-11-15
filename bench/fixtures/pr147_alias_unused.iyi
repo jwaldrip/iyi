@@ -1,0 +1,3 @@
+alias Dormant = ::MissingLibrary::Thing
+
+1
