@@ -343,8 +343,8 @@ prove_mutation "a return type is resolved without the bound free variables" "$CA
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an unbound free variable is not refused" "$MATCH_FILE" \
-  '        return MatchAttempt.failed("undefined constant #{free_names[j]}") if bound[free_names[j]]?.nil?' \
-  '        return MatchAttempt.failed("undefined constant #{free_names[j]}") if false' \
+  '          return MatchAttempt.failed("undefined constant #{free_names[j]}") unless deferred' \
+  '          return MatchAttempt.failed("undefined constant #{free_names[j]}") if false' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic restriction with bound arguments is a class instance, not instantiated through TypeLookup" "$RESTRICT_FILE" \
