@@ -180,6 +180,13 @@ super_refusal_checks() {
     return 1
   fi
   grep -Fq "'previous_def'" "$WORK/previous_def.err" || return 1
+
+  fixture="$REPO/bench/fixtures/lowcallwait_super_argument_dispatch.iyi"
+  if "$driver" emit "$fixture" "$WORK/lowcall_super.oracle.ll" > "$WORK/super_args.out" 2> "$WORK/super_args.err"; then
+    echo "  super argument dispatch: port unexpectedly accepted"
+    return 1
+  fi
+  grep -Fq 'not ported: super with an argument dispatch (hosted codegen/call.cr:473-475)' "$WORK/super_args.err" || return 1
 }
 if ! super_refusal_checks "$WORK/port"; then
   echo "  super refusal checks failed"
@@ -304,6 +311,31 @@ elif ! grep -Fq 'can'"'"'t infer `T`' "$WORK/uninferred.hosted.log" && ! grep -F
   status=1
 else
   echo "  uninferred generic: hosted compiler could not infer T"
+fi
+
+# Generated new has a different expansion from hosted; compare its run only.
+name=lowcallrun_named_new
+fixture="$REPO/bench/fixtures/$name.iyi"
+if ! "$IYI" build --prelude empty --no-debug -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1 ||
+   ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1; then
+  echo "  $name: compilation failed"
+  status=1
+else
+  timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/$name.native"; then
+    echo "  $name: native signature verification failed"
+    status=1
+  else
+    timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
+    if [ "$ns" -ne "$hs" ] || [ $((hs & 255)) -ne 35 ] ||
+       ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out" ||
+       [ "$(< "$WORK/$name.hosted.out")" != "213" ]; then
+      echo "  $name: hosted/native status or output differs"
+      status=1
+    else
+      echo "  $name: hosted and native output 213, status 35"
+    fi
+  fi
 fi
 
 # A mutant that cannot build is invalid, not a caught regression. The marker
@@ -466,6 +498,8 @@ else
     '      unless pinned.nil?' '      unless true' -- super_check || status=1
   prove_mutation "super types its body with static self" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '    instantiate_call_target(node, scope, scope, target_def, false)' '    instantiate_call_target(node, @program.def_owner(target_def).as(Type), @program.def_owner(target_def).as(Type), target_def, false)' -- super_check || status=1
+  prove_mutation "super permits argument dispatch" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '      if arms.matches.size > 1' '      if false' -- super_check || status=1
   prove_mutation "super forwards an omitted default without its guard" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     'DefaultArguments.forwards?(target_def, node.args.size)' 'false && DefaultArguments.forwards?(target_def, node.args.size)' -- super_check || status=1
   prove_mutation "lowering refuses super as previous_def" "$REPO/src/compiler/lower/call.iyi" \
@@ -665,7 +699,7 @@ prove_mutation "an inherited dispatch arm loses its defining owner" "$REPO/src/c
 prove_mutation "a nil receiver is not accepted" "$REPO/src/compiler/lower/call.iyi" \
   '  return owner if owner.is_a?(NilType)' '  pending_visit_node("nil receiver") if owner.is_a?(NilType)' -- lower_calls_check || status=1
 prove_mutation "an aggregate dispatch argument remains a pointer" "$REPO/src/compiler/lower/call.iyi" \
-  '      passed = to_rhs(low, passed, arg_types[i]) if passed_by_value?(arg_types[i]) && passed.type.pointer?' '      passed = values[i]' -- lower_calls_check || status=1
+  '      passed = to_rhs(low, passed, params[i]) if passed_by_value?(params[i]) && passed.type.pointer?' '      passed = values[i]' -- lower_calls_check || status=1
 prove_mutation "a nil block call collects its body value" "$REPO/src/compiler/lower/phi.iyi" \
   '    if @needs_value && !@node_type.is_a?(NilType) && !@node_type.is_a?(VoidType)' '    if @needs_value' -- lower_calls_check || status=1
 prove_mutation "an aggregate dispatch result uses a value phi" "$REPO/src/compiler/lower/call.iyi" \
@@ -676,12 +710,36 @@ prove_mutation "a typed block declaration is refused" "$REPO/src/compiler/lower/
     pending_visit_node("typed block declaration")
   end' -- lower_calls_check || status=1
 prove_mutation "primitive dispatch loses its receiver" "$REPO/src/compiler/lower/call.iyi" \
-  '      prim_values = [self_value] of Value' '      prim_values = [] of Value' -- lower_calls_check || status=1
-prove_mutation "virtual class dispatch is expanded into concrete primitives" "$REPO/src/compiler/lower/call.iyi" \
-  '    if all_class' '    if false' -- lower_calls_check || status=1
+  '      prim_values = [self_value.as(Value)] of Value' '      prim_values = [] of Value' -- lower_calls_check || status=1
 prove_mutation "enum dispatch receivers are refused" "$REPO/src/compiler/lower/call.iyi" \
   '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType) && !owner.is_a?(EnumType))' \
   '  if owner.is_a?(MetaclassType) || (owner.is_a?(ModuleType) && !owner.is_a?(ClassType))' -- lower_calls_check || status=1
+prove_mutation "dispatch drops the argument type test" "$REPO/src/compiler/lower/call.iyi" \
+  '        matches = low.builder.bitwise_and(matches, match_type_id(low, arg_types[i], params[i], arg_tids[i]))' \
+  '        matches = int1(low, 1_i64)' -- lower_calls_check || status=1
+prove_mutation "dispatch drops the argument downcast" "$REPO/src/compiler/lower/call.iyi" \
+  '        passed = downcast(low, passed, params[i], arg_types[i], true)' \
+  '        passed = values[i]' -- lower_calls_check || status=1
+prove_mutation "dispatch evaluates an argument in every arm" "$REPO/src/compiler/lower/call.iyi" \
+  '      passed = values[i]' '      visit_node(low, arguments[i])
+      passed = values[i]' -- lower_calls_check || status=1
+prove_mutation "named arguments lose written order" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      named.each { |arg| arguments << arg.value }' '      named.reverse_each { |arg| arguments << arg.value }' -- lower_calls_check || status=1
+prove_mutation "typing mutates the written argument list" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    CallExpansion.new(target, arguments)' '    node.args = arguments
+    CallExpansion.new(target, arguments)' -- lower_calls_check || status=1
+prove_mutation "named argument match types are dropped" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      result << arg.type' '      result << arg.type if false' -- lower_calls_check || status=1
+prove_mutation "magic arguments precede named arguments" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      arguments << materialized_magic(node, value.as(MagicConstant))' \
+  '      arguments.unshift(materialized_magic(node, value.as(MagicConstant)))' -- lower_calls_check || status=1
+prove_mutation "lowering ignores recorded argument order" "$REPO/src/compiler/lower/call.iyi" \
+  '  low.analysed.call_arguments[node]? || node.args' '  node.args' -- lower_calls_check || status=1
+prove_mutation "recursion keys omit the written overload signature" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    key = key + "|signature(" + restrictions.join(",") + ")"' '    key = key + ""' -- lower_calls_check || status=1
+prove_mutation "subtype groups use the base match" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      groups[i].each { |match| result << match }' \
+  '      base_matches.matches.each { |match| result << match }' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
