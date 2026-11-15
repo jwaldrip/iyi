@@ -4,6 +4,7 @@ end
 class A
   include Marker
 end
+
 class B
   include Marker
 end

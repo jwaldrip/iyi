@@ -21,6 +21,7 @@ class Base
     pick(b: mark(98), a: value)
   end
 end
+
 class Child < Base
 end
 

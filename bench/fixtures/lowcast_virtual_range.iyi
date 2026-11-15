@@ -1,12 +1,16 @@
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
+
 abstract class Node
 end
+
 class A < Node
 end
+
 class B < Node
 end
+
 class Other
 end
 
@@ -27,4 +31,5 @@ def check(n : Int32) : Int32
     3
   end
 end
+
 LibC.exit(check(1) &+ check(2) &+ check(3))

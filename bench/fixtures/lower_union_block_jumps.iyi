@@ -9,11 +9,11 @@ def show(value : (Int32 | Bool)) : Nil
   nil
 end
 
-def yield_union
+def yield_union(&)
   yield
 end
 
-def return_union(flag : Bool)
+def return_union(flag : Bool, &)
   yield
   return(flag ? 73 : false)
 end

@@ -11,6 +11,7 @@ struct User
   def initialize(@a : Int32, @b : Int32)
   end
 end
+
 impl Greet for User
   def greet : Int32
     @a &+ @b
@@ -21,6 +22,7 @@ struct Robot
   def initialize(@id : Int32)
   end
 end
+
 impl Greet for Robot
   def greet : Int32
     @id &* 2
@@ -30,6 +32,7 @@ end
 class Holder
   def initialize(@item : Greet)
   end
+
   def item : Greet
     @item
   end

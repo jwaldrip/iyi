@@ -5,12 +5,15 @@ end
 
 class Counter
   @value : Int32
+
   def initialize
     @value = 0
   end
+
   def increment
     @value = @value &+ 1
   end
+
   def value : Int32
     @value
   end

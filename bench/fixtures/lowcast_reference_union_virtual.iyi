@@ -1,18 +1,24 @@
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
+
 module Mark
 end
+
 abstract class Node
 end
+
 class A < Node
   include Mark
 end
+
 class B < Node
   include Mark
 end
+
 class C < Node
 end
+
 def choose(flag : Bool)
   if flag
     A.new
@@ -20,6 +26,7 @@ def choose(flag : Bool)
     B.new
   end
 end
+
 def use(flag : Bool)
   item = choose(flag)
   if item.is_a?(Mark)
@@ -29,5 +36,6 @@ def use(flag : Bool)
   end
   x
 end
+
 use(true)
 LibC.exit(9)

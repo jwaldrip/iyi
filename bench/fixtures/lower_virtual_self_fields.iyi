@@ -15,10 +15,11 @@ end
 
 def update(flag : Bool) : Int32
   object = if flag
-    Holder.new(41)
-  else
-    Child.new(41)
-  end
+             Holder.new(41)
+           else
+             Child.new(41)
+           end
   object.increment
 end
+
 update(false)

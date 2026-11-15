@@ -6,6 +6,7 @@ end
 struct Loc
   def initialize(@n : Int32)
   end
+
   def n : Int32
     @n
   end

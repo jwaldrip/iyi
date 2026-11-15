@@ -142,6 +142,7 @@ pub abstract class GenericInstanceType < Type
   def initialize(program : SemanticProgram, @generic_type : Type, @type_vars : Hash(String, Type), @type_args : Array(Type) = [] of Type)
     super(program, @generic_type.namespace, @generic_type.name)
   end
+
   # Hosted types.cr:2369-2372 resolves each generic parent in this instance.
   def parents : Array(Type)
     result = [] of Type
@@ -152,7 +153,6 @@ pub abstract class GenericInstanceType < Type
     end
     result
   end
-
 
   def generic_instance? : Bool
     true

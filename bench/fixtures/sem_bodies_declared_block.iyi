@@ -1,4 +1,4 @@
-def with_value
+def with_value(&)
   yield
 end
 

@@ -5,4 +5,5 @@ macro array_any
     puts 0
   {% end %}
 end
+
 array_any

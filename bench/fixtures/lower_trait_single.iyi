@@ -13,13 +13,16 @@ struct User
   def initialize(@n : Int32)
   end
 end
+
 impl Loud for User
   def shout : Int32
     @n
   end
+
   def twice : Int32
     @n &* 2
   end
+
   def one : Int32
     1
   end
@@ -32,10 +35,12 @@ end
 trait Badge
   abstract def code : Int32
 end
+
 class Owner
   def initialize(@id : Int32)
   end
 end
+
 impl Badge for Owner
   def code : Int32
     @id &+ 1

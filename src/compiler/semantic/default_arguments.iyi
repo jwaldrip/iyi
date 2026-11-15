@@ -108,11 +108,11 @@ pub class DefaultArguments
     end
     original = rec_def.body
     expanded_body : ASTNode = if original.is_a?(Primitive)
-                                original.clone
-                              else
-                                body << original.clone
-                                Expressions.new(body)
-                              end
+      original.clone
+    else
+      body << original.clone
+      Expressions.new(body)
+    end
     wrapper = Def.new(new_name, new_args, expanded_body, copy_node(rec_def.receiver), copy_arg(rec_def.block_arg), copy_node(rec_def.return_type), rec_def.macro_def, rec_def.abstract, nil, nil, copy_free_vars(rec_def.free_vars), rec_def.uses_block_arg)
     wrapper.calls_super = rec_def.calls_super
     wrapper.calls_initialize = rec_def.calls_initialize

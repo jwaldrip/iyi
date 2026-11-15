@@ -22,4 +22,5 @@ def number(kind : Kind) : Int32
     3
   end
 end
+
 number(Kind::First) &+ number(Kind::Second) &+ number(Kind::Third)

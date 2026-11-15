@@ -5,10 +5,11 @@ end
 
 class First
 end
+
 class Second
 end
 
-def invoke(flag : Bool)
+def invoke(flag : Bool, &)
   yield flag
 end
 

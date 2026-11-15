@@ -1,6 +1,5 @@
-
 class CensusParent
-  def compute : Int32
+  def compute(&) : Int32
     yield 7
   end
 end

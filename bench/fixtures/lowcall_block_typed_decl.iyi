@@ -3,7 +3,7 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-def run
+def run(&)
   yield
 end
 

@@ -6,6 +6,7 @@ struct ConstMaker
       7
     end
   end
+
   VALUE = Inner.new
 end
 
