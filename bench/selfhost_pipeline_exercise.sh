@@ -190,15 +190,20 @@ if [ "${SELFHOST_PIPELINE_RAISE:-0}" = "1" ]; then
   : > "$FLOOR.new"
   echo "# selfhost pipeline floor: <repo file> <phase reached>. A phase may only rise." >> "$FLOOR.new"
   echo "# Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh (keeps the higher phase)." >> "$FLOOR.new"
-  for k in $(printf '%s\n' "${!measured[@]}" | sort); do
+  floor_keys=("${!measured[@]}")
+  if [ "$SKIP_COMPILE_NATIVE" -eq 1 ] && awk -v root="$COMPILE_NATIVE_ROOT" '$1 == root {found=1} END {exit !found}' "$FLOOR"; then
+    floor_keys+=("$COMPILE_NATIVE_ROOT")
+  fi
+  for k in $(printf '%s\n' "${floor_keys[@]}" | sort); do
+    if [ "$SKIP_COMPILE_NATIVE" -eq 1 ] && [ "$k" = "$COMPILE_NATIVE_ROOT" ]; then
+      awk -v root="$COMPILE_NATIVE_ROOT" '$1 == root {print}' "$FLOOR" >> "$FLOOR.new"
+      continue
+    fi
     keep="${measured[$k]}"
     prev="$(awk -v k="$k" '$1 == k { print $2 }' "$FLOOR" 2>/dev/null)"
     if [ -n "$prev" ] && [ "$(rank "$prev")" -gt "$(rank "$keep")" ]; then keep="$prev"; fi
     echo "$k $keep" >> "$FLOOR.new"
   done
-  if [ "$SKIP_COMPILE_NATIVE" -eq 1 ]; then
-    awk -v root="$COMPILE_NATIVE_ROOT" '$1 == root {print}' "$FLOOR" >> "$FLOOR.new"
-  fi
   mv "$FLOOR.new" "$FLOOR"
   echo "  floor written: $(printf '%s\n' "${!measured[@]}" | wc -l | awk '{print $1}') rows"
 fi
@@ -266,9 +271,12 @@ for root in $ROOTS; do
     table_ok=0
   fi
 done
+if [ "$SKIP_COMPILE_NATIVE" -eq 1 ]; then
+  echo "  SKIPPED PIPELINE.md comparison and update: its table requires the full root run"
+fi
 if [ "$table_ok" -eq 1 ]; then
   if [ "$SKIP_COMPILE_NATIVE" -eq 1 ]; then
-    echo "  SKIPPED PIPELINE.md comparison and update: its table requires the full root run"
+    :
   elif ! awk '/<!-- table:begin/ { b++ } END { exit b != 1 }' "$PIPE_MD"; then
     echo "  FAIL: src/compiler/PIPELINE.md has no single table block (markers missing)"
     status=1
