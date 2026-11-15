@@ -1411,10 +1411,16 @@ pub class MainVisitor < TypeNodeHost
 
   # A local's storage includes the types written to it.
   def merge_var_union(name : String, type : Type) : Nil
-    if previous = @var_unions[name]?
-      @var_unions[name] = @program.type_merge(previous, type)
+    # A yielded block writes captured locals in the caller's storage, not the
+    # callee being typed (hosted codegen.cr:2562-2583, call.cr block context).
+    unions = @var_unions
+    if owner = @var_owners[name]?
+      unions = owner.unions
+    end
+    if previous = unions[name]?
+      unions[name] = @program.type_merge(previous, type)
     else
-      @var_unions[name] = type
+      unions[name] = type
     end
     nil
   end
@@ -2441,7 +2447,9 @@ pub class MainVisitor < TypeNodeHost
       callee_var_owners = @var_owners
       if owner = @block_owners[blk]?
         if routed = owner.var_owners
-          @var_owners = routed
+          @var_owners = routed.dup
+          # Block parameters shadow the caller even when their names coincide.
+          blk.args.each { |arg| @var_owners.delete(arg.name) }
         end
         @current_def = owner.def_node
         @return_types = owner.return_types
