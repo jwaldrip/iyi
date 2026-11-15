@@ -47,6 +47,15 @@ check_arms() {
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_numeric.iyi" "$REPO/src" widen > "$WORK/numeric" || return 1
   printf '%s\n' 'arms=1 cover=true' 'main#widen:Int64' > "$WORK/expected"
   cmp -s "$WORK/numeric" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_unresolved.iyi" "$REPO/src" consume > "$WORK/unresolved" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#consume:Int32' > "$WORK/expected"
+  cmp -s "$WORK/unresolved" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_unresolved_partial.iyi" "$REPO/src" consume > "$WORK/unresolved-partial" || return 1
+  printf '%s\n' 'arms=1 cover=false' 'main#consume:Int32' > "$WORK/expected"
+  cmp -s "$WORK/unresolved-partial" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_unresolved_only.iyi" "$REPO/src" consume > "$WORK/unresolved-only" || return 1
+  printf '%s\n' 'arms=0 cover=false' 'error=undefined constant MissingType' > "$WORK/expected"
+  cmp -s "$WORK/unresolved-only" "$WORK/expected" || return 1
 }
 
 check_arms || exit 1
@@ -81,4 +90,7 @@ prove_mutation 'module-only walk does not search the superclass' "$REPO/src/comp
 prove_mutation 'unmatched numeric calls receive an autocast pass' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '    return found if found.error || !found.empty? || !NumericAutocast.any?(args, arg_types)' \
   '    return found' -- check_arms || status=1
+prove_mutation 'unresolved restrictions are reported only when no arm matches' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    return Matches.new(matches, false, first_error) if matches.empty? && first_error' \
+  '    return Matches.new(matches, false, first_error) if first_error' -- check_arms || status=1
 exit "$status"
