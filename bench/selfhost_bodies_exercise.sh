@@ -503,6 +503,13 @@ prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" 
       if ot = child_type(obj)
         rec_type = ot
       else
+        # Total analysis still records independent argument nodes when the
+        # receiver cannot be typed. The call itself remains unresolved.
+        if @total
+          node.args.each do |arg|
+            arg.accept(self)
+          end
+        end
         @needs_type_filters = saved_call_ntf
         @type_filters = nil
         return false
@@ -522,6 +529,13 @@ prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" 
       if ot = child_type(obj)
         rec_type = ot
       else
+        # Total analysis still records independent argument nodes when the
+        # receiver cannot be typed. The call itself remains unresolved.
+        if @total
+          node.args.each do |arg|
+            arg.accept(self)
+          end
+        end
         @needs_type_filters = saved_call_ntf
         @type_filters = nil
         return false

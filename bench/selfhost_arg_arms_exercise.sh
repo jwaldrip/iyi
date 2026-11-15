@@ -35,7 +35,46 @@ check_arms() {
   cmp -s "$WORK/named" "$WORK/expected" || return 1
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_named_new_mismatch.iyi" "$REPO/src" new > "$WORK/named-mismatch" || return 1
   printf '%s\n' 'arms=0 cover=false' > "$WORK/expected"
-  cmp -s "$WORK/named-mismatch" "$WORK/expected"
+  cmp -s "$WORK/named-mismatch" "$WORK/expected" || return 1
+  for kind in module trait; do
+    "$WORK/probe" "$REPO/bench/fixtures/sem_arms_${kind}_arg.iyi" "$REPO/src" show > "$WORK/$kind" || return 1
+    printf '%s\n' 'arms=2 cover=true' 'main#show:A' 'main#show:(A | B)' > "$WORK/expected"
+    cmp -s "$WORK/$kind" "$WORK/expected" || return 1
+  done
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_module_walk.iyi" "$REPO/src" select modules > "$WORK/modules" || return 1
+  printf '%s\n' 'arms=1 cover=false' 'Label#select:String' > "$WORK/expected"
+  cmp -s "$WORK/modules" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_numeric.iyi" "$REPO/src" widen > "$WORK/numeric" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#widen:Int64' > "$WORK/expected"
+  cmp -s "$WORK/numeric" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_numeric_ambiguous.iyi" "$REPO/src" widen > "$WORK/numeric-ambiguous" || return 1
+  printf '%s\n' 'arms=0 cover=false' 'error=ambiguous call, implicit cast of 1 matches all of Int64, UInt64' > "$WORK/expected"
+  cmp -s "$WORK/numeric-ambiguous" "$WORK/expected" || return 1
+  "$IYI" run "$REPO/bench/fixtures/sem_arms_numeric_ambiguous.iyi" > "$WORK/ambiguous-oracle" 2>&1 && return 1
+  grep -Fq 'ambiguous call, implicit cast of 1 matches all of Int64, UInt64' "$WORK/ambiguous-oracle" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_numeric_parent.iyi" "$REPO/src" widen > "$WORK/numeric-parent" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'Child#widen:Int64' > "$WORK/expected"
+  cmp -s "$WORK/numeric-parent" "$WORK/expected" || return 1
+  "$IYI" run "$REPO/bench/fixtures/sem_arms_numeric_parent.iyi" > "$WORK/numeric-parent-oracle" 2>&1 || return 1
+  grep -Fxq 1 "$WORK/numeric-parent-oracle" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_unresolved.iyi" "$REPO/src" consume > "$WORK/unresolved" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#consume:Int32' > "$WORK/expected"
+  cmp -s "$WORK/unresolved" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_unresolved_partial.iyi" "$REPO/src" consume > "$WORK/unresolved-partial" || return 1
+  printf '%s\n' 'arms=1 cover=false' 'main#consume:Int32' > "$WORK/expected"
+  cmp -s "$WORK/unresolved-partial" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_unresolved_only.iyi" "$REPO/src" consume > "$WORK/unresolved-only" || return 1
+  printf '%s\n' 'arms=0 cover=false' 'error=undefined constant MissingType' > "$WORK/expected"
+  cmp -s "$WORK/unresolved-only" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_block_output.iyi" "$REPO/src" produce > "$WORK/block" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#produce:' > "$WORK/expected"
+  cmp -s "$WORK/block" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_capture_output.iyi" "$REPO/src" capture > "$WORK/capture" || return 1
+  printf '%s\n' 'arms=1 cover=true' 'main#capture:' > "$WORK/expected"
+  cmp -s "$WORK/capture" "$WORK/expected" || return 1
+  "$WORK/probe" "$REPO/bench/fixtures/sem_arms_block_unbound.iyi" "$REPO/src" produce > "$WORK/block-unbound" || return 1
+  printf '%s\n' 'arms=0 cover=false' 'error=undefined constant V' > "$WORK/expected"
+  cmp -s "$WORK/block-unbound" "$WORK/expected" || return 1
 }
 
 check_arms || exit 1
@@ -64,4 +103,25 @@ prove_mutation 'generic match retains its metaclass owner' "$REPO/src/compiler/s
 prove_mutation 'named argument types participate in matching' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '      named_types = collected' \
   '      named_types = nil' -- check_arms || status=1
+prove_mutation 'module-only walk does not search the superclass' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      return Matches.new(matches, CallCover.all?(signature, matches)) if walk == ArmWalk::Modules && matches.size > level_start' \
+  '      return Matches.new(matches, CallCover.all?(signature, matches)) if false' -- check_arms || status=1
+prove_mutation 'unmatched numeric calls receive an autocast pass' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    return found if found.error || !found.empty? || !NumericAutocast.any?(args, arg_types)' \
+  '    return found' -- check_arms || status=1
+prove_mutation 'unresolved restrictions are reported only when no arm matches' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    return Matches.new(matches, false, first_error) if matches.empty? && first_error' \
+  '    return Matches.new(matches, false, first_error) if first_error' -- check_arms || status=1
+prove_mutation 'autocast compares every viable overload' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '          return Matches.new(matches, true) if arm.exact && signature.autocast_nodes.nil?' \
+  '          return Matches.new(matches, true) if arm.exact' -- check_arms || status=1
+prove_mutation 'a single successful autocast covers its call' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    return Matches.new(widened.matches, true) if widened.error.nil? && widened.matches.size == 1' \
+  '    return Matches.new(widened.matches, false) if widened.error.nil? && widened.matches.size == 1' -- check_arms || status=1
+prove_mutation 'autocast stops after the first matching owner level' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      if signature.autocast_nodes && matches.size > level_start' \
+  '      if false' -- check_arms || status=1
+prove_mutation 'a supplied block can bind free names in its output' "$REPO/src/compiler/semantic/match.iyi" \
+  '                    deferred = FreeBindings.mentions?(output, [free_names[j]])' \
+  '                    deferred = false' -- check_arms || status=1
 exit "$status"
