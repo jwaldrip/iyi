@@ -227,6 +227,20 @@ elif ! grep -Fq "expected argument #1 to 'consume'" "$WORK/uncovered.hosted.log"
   echo "  uncovered union: expected argument diagnostic missing"
   status=1
 fi
+free_dispatch="$REPO/bench/fixtures/lowcallwait_dispatch_free_vars.iyi"
+if ! "$IYI" build --prelude empty -o "$WORK/free_dispatch.hosted" "$free_dispatch" > "$WORK/free_dispatch.hosted.log" 2>&1; then
+  echo "  free-variable dispatch: hosted compiler unexpectedly refused"
+  status=1
+elif "$WORK/port" emit "$free_dispatch" "$WORK/lowcall_super.oracle.ll" > "$WORK/free_dispatch.out" 2> "$WORK/free_dispatch.err"; then
+  echo "  free-variable dispatch: port unexpectedly accepted"
+  status=1
+elif ! grep -Fq 'not ported: an argument dispatch into a def with free variables (hosted semantic/call.cr instantiate binds them from the match)' "$WORK/free_dispatch.err"; then
+  echo "  free-variable dispatch: expected port limitation missing"
+  status=1
+else
+  echo "  free-variable dispatch: hosted accepted; port explicitly refused"
+fi
+
 
 echo
 echo "== 3. End to end: each fixture the port lowers identically, built natively and run"
