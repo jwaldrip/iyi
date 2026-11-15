@@ -1252,14 +1252,18 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     end
     return
   end
-  if cond_node.is_a?(IsA) && low.analysed.expansions[cond_node]?.nil?
-    # The hosted cleanup replaces a type test the object's type decides with a literal (cleanup_transformer.cr
-    # transform_is_a_or_responds_to: the test is true when the filtered type is the object's type, false when
-    # nothing is left). The branch the test cannot take is never lowered: it may read a variable the test's own
-    # filtering narrowed away, which has no type.
-    decided = static_is_a(low, cond_node.as(IsA))
+  test_node = cond_node
+  negated = false
+  while test_node.is_a?(Not)
+    negated = !negated
+    test_node = test_node.as(Not).exp
+  end
+  if test_node.is_a?(IsA) && low.analysed.expansions[test_node]?.nil?
+    # Hosted cleanup_transformer.cr:2175-2227,2233-2276 folds the type
+    # test before selecting a branch, including under logical negation.
+    decided = static_is_a(low, test_node.as(IsA))
     unless decided.nil?
-      folded_obj = cond_node.as(IsA).obj
+      folded_obj = test_node.as(IsA).obj
       unless folded_obj.is_a?(Var) || folded_obj.is_a?(InstanceVar) || folded_obj.is_a?(ClassVar)
         folded_wants = low.needs_value
         low.needs_value = false
@@ -1267,13 +1271,32 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
         low.needs_value = folded_wants
         return if block_ended?(low)
       end
-      if decided.as(Bool)
+      taken = negated ? !decided.as(Bool) : decided.as(Bool)
+      if taken
         codegen_node(low, then_node)
       else
         codegen_node(low, else_node)
       end
       return
     end
+  end
+  # Hosted cleanup propagates the truthiness of expanded && and || through
+  # their temporary assignments (cleanup_transformer.cr:208-240,444-476,
+  # 2175-2227). Still evaluate the condition for its effects before taking the
+  # sole reachable branch.
+  settled = static_condition(low, cond_node)
+  unless settled.nil?
+    wants = low.needs_value
+    low.needs_value = false
+    codegen_node(low, cond_node)
+    low.needs_value = wants
+    return if block_ended?(low)
+    if settled.as(Bool)
+      codegen_node(low, then_node)
+    else
+      codegen_node(low, else_node)
+    end
+    return
   end
 
   wants = low.needs_value
@@ -1338,6 +1361,46 @@ pub def static_is_a(low : Lowerer, node : IsA) : Bool?
   filtered = TypeIntersect.common_descendent(low.analysed.program, ot, ct)
   return false if filtered.nil?
   return true if filtered.as(Type).full_name == ot.full_name
+  nil
+end
+
+# The truthiness carried by hosted cleanup through logical expansions. Nil
+# means the expression still needs its runtime branch.
+pub def static_condition(low : Lowerer, node : ASTNode) : Bool?
+  return node.as(BoolLiteral).value if node.is_a?(BoolLiteral)
+  return false if node.is_a?(NilLiteral) || node.is_a?(Nop)
+  if node.is_a?(Not)
+    value = static_condition(low, node.as(Not).exp)
+    return nil if value.nil?
+    return !value.as(Bool)
+  end
+  if node.is_a?(IsA) && low.analysed.expansions[node]?.nil?
+    return static_is_a(low, node.as(IsA))
+  end
+  if node.is_a?(Assign)
+    return static_condition(low, node.as(Assign).value)
+  end
+  if node.is_a?(And) || node.is_a?(Or)
+    if expanded = low.analysed.expansions[node]?
+      return static_condition(low, expanded)
+    end
+  end
+  if node.is_a?(If)
+    branch = node.as(If)
+    left = static_condition(low, branch.cond)
+    if branch.from_and
+      right = static_condition(low, branch.then)
+      return false if left == false || right == false
+      return true if left == true && right == true
+    elsif branch.from_or
+      right = static_condition(low, branch.else)
+      return true if left == true || right == true
+      return false if left == false && right == false
+    end
+  end
+  if type = low.analysed.type_of?(node)
+    return false if type.nil_type?
+  end
   nil
 end
 
