@@ -27,6 +27,8 @@ def recursive_inferred_nullable(n : Int32)
     nil
   elsif n == 1
     "value"
+  elsif n == 2
+    2
   else
     recursive_inferred_nullable(n - 1)
   end
