@@ -399,8 +399,8 @@ else
 fi
 
 compare_all() {
-  "$1" > "$WORK/iyi_mut_raw.out" 2>&1 || return 1
-  python3 - "$REPO" "$WORK/iyi_mut_raw.out" "$WORK/iyi_mut.out" <<'PY'
+  "$1" > "$WORK/iyi_mut_raw.out" 2>&1 || { echo "  mutant did not run"; return 0; }
+  python3 - "$REPO" "$WORK/iyi_mut_raw.out" "$WORK/iyi_mut.out" <<'PY' || return 0
 import re, sys
 repo, src, dst = sys.argv[1], sys.argv[2], sys.argv[3]
 t = open(src).read()
@@ -420,7 +420,11 @@ echo
 echo "== 3. Mutation proofs: each one must make the comparison above fail"
 
 check_command_mutant() {
-  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_command_exercise.iyi" >/dev/null 2>&1 || return 1
+  if ! "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_command_exercise.iyi" >"$WORK/mut-build.log" 2>&1; then
+    echo "  mutant did not compile; it cannot count as caught"
+    cat "$WORK/mut-build.log"
+    return 0
+  fi
   compare_all "$WORK/mut-exercise"
 }
 
@@ -432,9 +436,9 @@ prove_mutation "build prefix matching stops accepting prefixes" "$DRIVER" \
   -- check_command_mutant || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "dropping format option stops advertising or parsing -f" "$DRIVER" \
-  'parser.on("-f #{allowed_formats.join("|")}"' \
-  'if false; parser.on("-f #{allowed_formats.join("|")}"' \
+prove_mutation "format option description changes" "$DRIVER" \
+  'format_desc = "Output format: #{allowed_formats[0]} (default), #{rest.join(", ")}"' \
+  'format_desc = "changed format description"' \
   -- check_command_mutant || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
