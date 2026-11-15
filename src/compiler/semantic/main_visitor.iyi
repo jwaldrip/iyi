@@ -1719,7 +1719,9 @@ pub class MainVisitor < TypeNodeHost
   # Outside a def (top level, a fun body) nothing is spliced here.
   def def_inline_scope_name : String
     if scope = @scope
-      return scope.full_name
+      # Hosted macros/interpreter.cr:735-737 exposes the instance type of a
+      # metaclass and strips virtuality from @type.
+      return TypeQueries.instance_type(scope).devirtualize.full_name
     end
     ""
   end

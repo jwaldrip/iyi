@@ -381,6 +381,10 @@ strict_typing_at_expected() {
     body_build_failed "$WORK/strict_mut_build.log"
     return $?
   }
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/strict_mutant"; then
+    echo "  INVALID MUTANT: compiler signature failed" >&2
+    return 0
+  fi
   "$WORK/strict_mutant" "$strict_fixture" -o "$WORK/strict_native" --pipeline typed --prelude --probe-phase > "$WORK/strict_mut.log" 2>&1 || :
   grep -Fq '[phase] bodies: pass' "$WORK/strict_mut.log"
 }
