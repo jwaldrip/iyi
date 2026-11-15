@@ -29,5 +29,6 @@ samples/iyi/visited.iyi run-equal
 samples/iyi/webapp.iyi run-equal
 samples/iyi/workers.iyi run-equal
 bench/fixtures/native_whole/quoted_name.iyi run-equal
+bench/fixtures/native_whole/wide_division.iyi run-equal
 bench/fixtures/native_whole/wide_result.iyi run-equal
 src/compiler/tools/parse.iyi run-equal

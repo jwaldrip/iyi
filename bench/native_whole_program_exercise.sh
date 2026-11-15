@@ -330,7 +330,7 @@ still_runs() {
   [ "${result%%$'\t'*}" = "run-equal" ]
 }
 unmutated=1
-for src in samples/iyi/hello.iyi "$FIX/wide_result.iyi" "$FIX/quoted_name.iyi" samples/iyi/cores.iyi; do
+for src in samples/iyi/hello.iyi "$FIX/wide_result.iyi" "$FIX/wide_division.iyi" "$FIX/quoted_name.iyi" samples/iyi/cores.iyi; do
   awk -v p="$src" '$1 == p && $2 == "run-equal" { found = 1 } END { exit !found }' "$measured" || unmutated=0
 done
 if [ "$unmutated" -ne 1 ]; then
@@ -347,9 +347,14 @@ else
     'return [symbol_address(g.name, false, false)] if g.tls != TlsModel::None' -- still_runs native samples/iyi/hello.iyi || status=1
   prove_mutation "a ret after a naked function's template is refused" src/compiler/native/aarch64/isel.iyi \
     '      if i.op == Op::Ret
-        lower_ret(i)
         next
-      end' '' -- still_runs native samples/iyi/hello.iyi || status=1
+      end' '      if i.op == Op::Ret
+        fail("a ret is refused")
+        return @mf
+      end' -- still_runs native samples/iyi/hello.iyi || status=1
+  prove_mutation "wide unsigned division helper is absent" src/compiler/native/driver.iyi \
+    '"__iyi_native_udivti3", "__iyi_native_umodti3", "__iyi_native_divti3", "__iyi_native_modti3"].each do |helper|' \
+    '"__iyi_native_umodti3", "__iyi_native_divti3", "__iyi_native_modti3"].each do |helper|' -- still_runs native "$FIX/wide_division.iyi" || status=1
   prove_mutation "a wide internal result is never passed in memory" src/compiler/native/lower.iyi \
     'gprs > desc.integer_args.size || fprs > desc.fp_args.size' 'false' -- still_runs native "$FIX/wide_result.iyi" || status=1
   prove_mutation "a quote escaped in a name ends the name" src/compiler/ir/parser.iyi \
