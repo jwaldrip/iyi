@@ -99,6 +99,9 @@ module CompileNative
     keep_going = false
     stub_refused = false
     stub_also = [] of String
+    shard = 0
+    shards = 1
+    shard_requested = false
     i = 3
     while i < args.size
       if args[i] == "--target" && i + 1 < args.size
@@ -116,6 +119,17 @@ module CompileNative
       elsif args[i] == "--keep-going"
         keep_going = true
         i = i + 1
+      elsif args[i] == "--probe-shard" && i + 1 < args.size
+        parts = args[i + 1].split('/')
+        fail("--probe-shard expects i/n") unless parts.size == 2
+        first = parts[0].to_i?
+        total = parts[1].to_i?
+        fail("--probe-shard expects positive integers i/n with i <= n") if first.nil? || total.nil?
+        shard = first.as(Int32) - 1
+        shards = total.as(Int32)
+        fail("--probe-shard expects n >= 2 and 1 <= i <= n") if shards < 2 || shard < 0 || shard >= shards
+        shard_requested = true
+        i = i + 2
       elsif args[i] == "--stub-refused"
         stub_refused = true
         i = i + 1
@@ -149,6 +163,8 @@ module CompileNative
     end
     fail("--stub-refused requires --pipeline typed") if stub_refused && !typed
     fail("--stub-also requires --stub-refused") if !stub_also.empty? && !stub_refused
+    fail("--probe-shard requires --pipeline typed --probe-phase --keep-going") if shard_requested && !(typed && probe && keep_going)
+    fail("--probe-shard cannot be used with --stub-refused") if shard_requested && stub_refused
     if asked_llvm
       STDERR.puts(Backend.no_backend_message(target))
       LibC.exit(1)
@@ -173,6 +189,8 @@ module CompileNative
       config.keep_going = keep_going
       config.stub_refused = stub_refused
       config.stub_also = stub_also
+      config.probe_shard = shard
+      config.probe_shards = shards
       loader = Loader.new
       loader.load_prelude = prelude
       compiler = Compiler.new(config, loader, NativeBackend.new)

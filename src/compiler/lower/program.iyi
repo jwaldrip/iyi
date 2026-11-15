@@ -36,6 +36,7 @@ import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
+import compiler/lower/type_id::{LowerTypeIds}
 import compiler/lower/context::{Lowerer}
 import compiler/lower/lower::{codegen_program, emit_probe_well_known, lower_def_probe}
 import compiler/lower/primitives::{primitive_name}
@@ -488,7 +489,7 @@ end
 # The lowering column of the table (PIPELINE.md): every reached def's instance lowered alone into one module, the way the
 # lowering reaches it (lower_def_probe). A def is lowered clean when each of its instances lowers with no refusal. A
 # lowering refusal names its def, not a node: the lowering carries no location yet.
-pub def lowering_table(typed : TypedProgram, triple : String, root : String, names : Array(String), refused : Array(String), origins : Hash(String, String)? = nil, census : Bool = false) : Array(String)
+pub def lowering_table(typed : TypedProgram, triple : String, root : String, names : Array(String), refused : Array(String), origins : Hash(String, String)? = nil, census : Bool = false, shard : Int32 = 0, shards : Int32 = 1) : Array(String)
   made = Module.for_target(root, Target.new(triple))
   if made.is_a?(LayoutError)
     return ["table: #{root} defs-lowered-clean=not-measured (#{made.as(LayoutError).to_s})"]
@@ -501,18 +502,33 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   counts = [] of Int32
   examples = [] of String
   if example = emit_probe_well_known(m, typer, typed.visitor, census)
+    if shard == 0
     reason = "a reached pool: loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)"
     reasons << reason
     counts << 1
     examples << example
     sites["reached-pool"] = true
     refused << "lowering\t#{example}\tlowering core\t#{reason}"
+    end
   end
   origin_reasons = [] of String
   origin_counts = [] of Int32
   origin_examples = [] of String
   origin_probes = Hash(String, Bool).new
+  shared_ids : LowerTypeIds? = nil
+  if shards > 1
+    ids = LowerTypeIds.new
+    ids.assign_all(typed.prog.object_type)
+    shared_ids = ids
+  end
+  instance_index = 0
   typed.visitor.typed_instances.each do |inst|
+    if shards > 1
+      refused << "probe-manifest\t#{instance_index}\t#{instance_label(inst.definition, inst.self_type, inst.arg_types)}"
+    end
+    current_index = instance_index
+    instance_index += 1
+    next if current_index % shards != shard
     d = inst.definition
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
     # neither probes it nor counts it, so it is no refusal row and no clean def.
@@ -523,7 +539,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     m.functions.each { |fn| before << fn.name }
     probe_lowerer = Lowerer.new(m, typer, typed.visitor)
     outcome = group do |g|
-      task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m, probe_lowerer) }
+      task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m, probe_lowerer, shared_ids) }
       task.value
     end
     failed = false
@@ -534,6 +550,15 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     elsif !outcome.nil?
       failed = true
       message = outcome.as(String)
+    end
+    if shards > 1
+      label = instance_label(d, inst.self_type, inst.arg_types)
+      location = "unknown"
+      if loc = d.location
+        location = "#{loc.filename}:#{loc.line_number}"
+      end
+      reason = failed ? first_line(message) : ""
+      refused << "probe-shard\t#{current_index}\t#{label}\t#{location}\t#{d.name}\t#{failed ? "failed" : "clean"}\t#{reason}"
     end
     unless failed
       # Find the same instantiated return type the probe passes to target_def_fun.
@@ -556,6 +581,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
           names << name unless fn.declaration? || d.body.is_a?(InstanceVar)
         end
       end
+    discard_probe_functions(m, before) if shards > 1 && !failed
     end
     if failed
       discard_probe_functions(m, before)
@@ -613,7 +639,11 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   seen_label = Hash(String, Bool).new
   failed_label = Hash(String, Bool).new
   labels = [] of String
+  instance_index = 0
   typed.visitor.typed_instances.each do |inst|
+    current_index = instance_index
+    instance_index += 1
+    next if current_index % shards != shard
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
     # neither probes it nor counts it, so it is no refusal row and no clean def.
     next unless primitive_name(inst.definition.body).nil?

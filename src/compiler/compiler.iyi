@@ -55,6 +55,8 @@ pub struct CompilerConfig
   property keep_going : Bool
   property stub_refused : Bool
   property stub_also : Array(String)
+  property probe_shard : Int32 = 0
+  property probe_shards : Int32 = 1
 
   def initialize(
     @output_filename : String = "a.out",
@@ -330,9 +332,14 @@ pub class Compiler
       refused = [] of String
       refusal_table(typed, root_name, refused).each { |line| puts line }
       names = [] of String
-      lowering_table(typed, triple, root_name, names, refused, nil, @config.probe_phase).each { |line| puts line }
+      lowering_table(typed, triple, root_name, names, refused, nil, @config.probe_phase, @config.probe_shard, @config.probe_shards).each { |line| puts line }
       File.write(@config.output_filename + ".names", names.uniq.join("\n") + "\n")
       File.write(@config.output_filename + ".refusals", refused.join("\n") + "\n")
+      if @config.probe_shards > 1
+        puts "table: #{root_name} probe-shard=#{@config.probe_shard + 1}/#{@config.probe_shards}"
+        STDOUT.flush
+        return CompileResult.new(@config.output_filename, "", resolved_modules)
+      end
       STDOUT.flush
     end
 
