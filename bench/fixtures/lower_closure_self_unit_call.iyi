@@ -1,6 +1,6 @@
+@[Unsafe("declares the external process exit")]
 module fixtures/lower_closure_self_unit_call
 
-@[Unsafe("declares the external process exit")]
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
