@@ -75,6 +75,10 @@ pub def literal_body?(body : ASTNode) : Bool
   body.is_a?(Nop) || body.is_a?(NilLiteral) || body.is_a?(BoolLiteral) || body.is_a?(NumberLiteral) || body.is_a?(CharLiteral)
 end
 
+def call_args(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Array(ASTNode)
+  low.analysed.call_arguments[node]? || node.args
+end
+
 pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Nil
   ret_type = low.analysed.type_of?(node)
   raise "BUG: the analysed program has no type for the call to #{node.name} (hosted call.cr: visit(Call))" if ret_type.nil?
@@ -118,7 +122,10 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   if single_dispatch && !primitive.nil? && !single_dispatch.as(DispatchTarget).receiver.is_a?(VirtualType)
     pending_visit_node("a primitive dispatched on trait receiver #{single_dispatch.as(DispatchTarget).receiver.full_name} (hosted call.cr: trait dispatch)")
   end
-  if (node.args.size != def_node.args.size || def_node.splat_index != nil) && primitive != "proc_call"
+  if primitive && low.analysed.call_arguments[node]?
+    pending_visit_node("a primitive called with named arguments or an omitted magic default (hosted cleanup_transformer.cr:776-783)")
+  end
+  if (call_args(low, node).size != def_node.args.size || def_node.splat_index != nil) && primitive != "proc_call"
     pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
   end
   unless primitive.nil?
@@ -363,9 +370,10 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
   if node.super? || node.previous_def?
     pending_visit_node("super or previous_def dispatched over #{runtime_type.full_name}")
   end
+  arguments = call_args(low, node)
   receiver_dynamic = runtime_type.is_a?(UnionType) || runtime_type.is_a?(VirtualType)
   arg_types = [] of Type
-  node.args.each do |arg|
+  arguments.each do |arg|
     t = low.analysed.type_of?(arg)
     raise "BUG: dispatched argument has no type" if t.nil?
     at = t.as(Type)
@@ -377,11 +385,14 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
       pending_visit_node("a dispatched abstract def #{arm.definition.name} on #{arm.receiver.full_name}")
     end
     if prim = primitive_name(arm.definition.body)
+      if low.analysed.call_arguments[node]?
+        pending_visit_node("a primitive called with named arguments or an omitted magic default (hosted cleanup_transformer.cr:776-783)")
+      end
       if prim.starts_with?("pointer_") || prim == "load_atomic" || prim == "store_atomic" || prim == "atomicrmw" || prim == "cmpxchg" || prim == "tuple_indexer_known_index" || prim == "enum_new"
         pending_visit_node("a dispatched primitive def #{arm.definition.name} on #{arm.receiver.full_name} requires AST operands")
       end
     end
-    if node.args.size != arm.definition.args.size || !arm.definition.splat_index.nil?
+    if arguments.size != arm.definition.args.size || !arm.definition.splat_index.nil?
       pending_visit_node("a dispatched call with default arguments or a splat")
     end
   end
@@ -437,7 +448,7 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
   end
   values = [] of Value
   arg_tids = [] of Value
-  node.args.each_with_index do |arg, i|
+  arguments.each_with_index do |arg, i|
     low.needs_value = true
     visit_node(low, arg)
     if block_ended?(low)
@@ -472,7 +483,7 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     params = arm.arg_types || arg_types
     i = 0
     while i < arg_types.size
-      unless dispatch_autocast?(node.args[i], arg_types[i])
+      unless dispatch_autocast?(arguments[i], arg_types[i])
         matches = low.builder.bitwise_and(matches, match_type_id(low, arg_types[i], params[i], arg_tids[i]))
       end
       i += 1
@@ -1161,9 +1172,10 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
   arg_types = [] of Type
   values = [] of Value
   wants = low.needs_value
+  arguments = call_args(low, node)
   i = 0
-  while i < node.args.size
-    arg_node = node.args[i]
+  while i < arguments.size
+    arg_node = arguments[i]
     at_type = low.analysed.type_of?(arg_node)
     raise "BUG: the analysed program has no type for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)" if at_type.nil?
     at = at_type.as(Type)

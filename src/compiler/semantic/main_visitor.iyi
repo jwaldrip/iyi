@@ -74,6 +74,14 @@ pub class DispatchTarget
   end
 end
 
+pub class CallExpansion
+  getter target : Def
+  getter arguments : Array(ASTNode)
+
+  def initialize(@target : Def, @arguments : Array(ASTNode))
+  end
+end
+
 # One cached instantiation (hosted DefInstance, Call#instantiate): the typed clone of a def
 # whose body typing finished, and the type that body evaluates to. A call with the same key takes
 # both, so the body is not typed again and the call site records the clone the lowering reads.
@@ -260,6 +268,7 @@ pub class MainVisitor < TypeNodeHost
   property untyped_reasons : NodeMap(String)
   property call_target_defs : NodeMap(Def)
   property call_dispatch_targets : NodeMap(Array(DispatchTarget))
+  property call_arguments : NodeMap(Array(ASTNode))
   property current_def : Def?
   property super_barrier : String? = nil
   property current_call_block : Block?
@@ -405,6 +414,7 @@ pub class MainVisitor < TypeNodeHost
     @untyped_reasons = NodeMap(String).new
     @call_target_defs = NodeMap(Def).new
     @call_dispatch_targets = NodeMap(Array(DispatchTarget)).new
+    @call_arguments = NodeMap(Array(ASTNode)).new
     @var_unions = Hash(String, Type).new
     @def_var_unions = NodeMap(Hash(String, Type)).new
     @nil_candidates = Set(String).new
@@ -4260,43 +4270,14 @@ pub class MainVisitor < TypeNodeHost
     literal
   end
 
-  # Fill a trailing run of magic defaults from this call's coordinates.
-  def defaults_magic_arguments(node : Call, target_def : Def) : Bool
-    i = node.args.size
-    while i < target_def.args.size
-      value = target_def.args[i].default_value
-      return false unless value.is_a?(MagicConstant)
-      node.args << materialized_magic(node, value.as(MagicConstant))
-      i += 1
-    end
-    true
-  end
-
-  # After wrapper selection, every omitted magic default is a literal of this call.
-  # A named expansion clones the raw default; materialize that clone before visiting it.
-  def defaults_expand_call(node : Call, definition : Def) : Def?
+  # Preserve the written call. The expansion takes explicit values in source
+  # order; only omitted magic values are materialized at the call site.
+  def call_expansion(node : Call, definition : Def) : CallExpansion?
     target = definition
-    if named = node.named_args
-      if DefaultArguments.supported?(definition, node.args, named)
-        original = node.args.size
-        node.args = DefaultArguments.expand(definition, node.args, named)
-        i = original
-        while i < node.args.size
-          arg = node.args[i]
-          if arg.is_a?(MagicConstant)
-            arg = materialized_magic(node, arg.as(MagicConstant))
-            node.args[i] = arg
-          elsif child_type(arg).nil?
-            arg.accept(self)
-          end
-          i += 1
-        end
-        return definition
-      end
-    end
-    if node.named_args.nil? && (target.splat_index || (node.args.size < target.args.size && DefaultArguments.supported?(target, node.args, nil)))
+    named = node.named_args
+    if named || definition.splat_index || (node.args.size < definition.args.size && DefaultArguments.supported?(definition, node.args, nil))
       splat_names = [] of String
-      if splat_index = target.splat_index
+      if splat_index = definition.splat_index
         count = node.args.size - splat_index
         names = NormalizerProgram.new
         while count > 0
@@ -4304,20 +4285,41 @@ pub class MainVisitor < TypeNodeHost
           count -= 1
         end
       end
-      expanded = DefaultArguments.expand_for_call(target, node.args.size, nil, splat_names)
+      expanded = DefaultArguments.expand_for_call(definition, node.args.size, named, splat_names)
       if expanded.is_a?(String)
         refuse_call(node, expanded)
         return nil
       end
-      expanded.at(target)
-      @program.copy_def_owner(target, expanded)
-      target = expanded
+      target = expanded.as(Def)
+      unless target.object_id == definition.object_id
+        target.at(definition)
+        @program.copy_def_owner(definition, target)
+      end
     end
-    if node.args.size < target.args.size && !defaults_magic_arguments(node, target)
-      refuse_call(node, "not ported: omitted non-magic argument")
-      return nil
+    arguments = [] of ASTNode
+    node.args.each { |arg| arguments << arg }
+    if named
+      named.each { |arg| arguments << arg.value }
     end
-    target
+    i = arguments.size
+    while i < target.args.size
+      value = target.args[i].default_value
+      unless value.is_a?(MagicConstant)
+        refuse_call(node, "not ported: omitted non-magic argument")
+        return nil
+      end
+      arguments << materialized_magic(node, value.as(MagicConstant))
+      i += 1
+    end
+    CallExpansion.new(target, arguments)
+  end
+
+  def match_bound_types(match : Match) : Array(Type)
+    result = match.arg_types.dup
+    match.named_arg_types.each do |arg|
+      result << arg.type
+    end
+    result
   end
 
   def defaults_bind_splat(definition : Def, instantiated : Def, args : Array(ASTNode)) : Nil
@@ -4359,6 +4361,7 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Call) : Bool
+    @call_arguments.delete(node)
     if block = node.block
       @jump_block_calls[block] = node
     end
@@ -4476,7 +4479,7 @@ pub class MainVisitor < TypeNodeHost
       return false
     end
     original_def = matches[0].definition
-    @matched_call_args[node] = matches[0].arg_types
+    @matched_call_args[node] = match_bound_types(matches[0])
     if infer_class_vars
       if receiver = infer_constructor_receiver(node, rec_type, original_def)
         rec_type = receiver
@@ -4597,7 +4600,9 @@ pub class MainVisitor < TypeNodeHost
     ret_types = [] of Type
     first_target_def : Def? = nil
     dispatch_targets = [] of DispatchTarget
-    supplied_args = node.args.dup
+    supplied_args = node.args
+    written_count = supplied_args.size
+    written_count += node.named_args.as(Array(NamedArgument)).size unless node.named_args.nil?
     expanded_args : Array(ASTNode)? = nil
 
     if blk = node.block
@@ -4605,12 +4610,13 @@ pub class MainVisitor < TypeNodeHost
     end
     i = 0
     while i < arms.size
-      node.args = supplied_args.dup
+      # Each arm sees the same written nodes; expansion only adds magic values.
       arm = arms[i]
       target_def = arm.definition
       original_def = target_def
       ut = arm.owner
-      @matched_call_args[node] = arm.arg_types
+      bound_types = match_bound_types(arm)
+      @matched_call_args[node] = bound_types
       union_instance_owner : Type = ut
       if node.obj.nil?
         if declared_owner = @program.def_owner(target_def)
@@ -4618,20 +4624,30 @@ pub class MainVisitor < TypeNodeHost
         end
       end
       dkey = def_instance_key(target_def, union_instance_owner, node)
-      expanded = defaults_expand_call(node, target_def)
+      expanded = call_expansion(node, target_def)
       if expanded.nil?
         @matched_call_args.delete(node)
         return false
       end
-      target_def = expanded
+      target_def = expanded.as(CallExpansion).target
+      arguments = expanded.as(CallExpansion).arguments
       if previous_args = expanded_args
-        if previous_args.map(&.to_s) != node.args.map(&.to_s)
+        if previous_args.size != arguments.size
           refuse_call(node, "not ported: differing union call-site defaults")
           @matched_call_args.delete(node)
           return false
         end
+        j = written_count
+        while j < arguments.size
+          if previous_args[j].to_s != arguments[j].to_s
+            refuse_call(node, "not ported: differing union call-site defaults")
+            @matched_call_args.delete(node)
+            return false
+          end
+          j += 1
+        end
       else
-        expanded_args = node.args
+        expanded_args = arguments
       end
       instantiated_def = target_def.clone
       defaults_bind_splat(original_def, instantiated_def, supplied_args)
@@ -4641,7 +4657,7 @@ pub class MainVisitor < TypeNodeHost
         instantiated_def = hit.definition
         ret_t = hit.return_type
       else
-        ret_t = type_method_body(instantiated_def, union_instance_owner, node.args, node.block, node, dkey, node)
+        ret_t = type_method_body(instantiated_def, union_instance_owner, arguments, node.block, node, dkey, node)
       end
       if ret_t.nil?
         @matched_call_args.delete(node)
@@ -4650,11 +4666,20 @@ pub class MainVisitor < TypeNodeHost
       if first_target_def.nil?
         first_target_def = instantiated_def
       end
-      dispatch_targets << DispatchTarget.new(ut, instantiated_def, ret_t.as(Type), arm.arg_types)
+      j = bound_types.size
+      while j < arguments.size
+        magic_type = child_type(arguments[j])
+        raise "BUG: materialized magic argument has no type" if magic_type.nil?
+        bound_types << magic_type.as(Type)
+        j += 1
+      end
+      dispatch_targets << DispatchTarget.new(ut, instantiated_def, ret_t.as(Type), bound_types)
       ret_types << ret_t
       i = i + 1
     end
-    node.args = expanded_args || supplied_args
+    if arguments = expanded_args
+      @call_arguments[node] = arguments if node.named_args || arguments.size != node.args.size
+    end
     @matched_call_args.delete(node)
 
     if td = first_target_def
@@ -4759,9 +4784,11 @@ pub class MainVisitor < TypeNodeHost
 
   def instantiate_call_target(node : Call, rec_type : Type, instance_owner : Type, original_def : Def, trait_receiver : Bool) : Bool
     dkey = def_instance_key(original_def, instance_owner, node)
-    expanded = defaults_expand_call(node, original_def)
+    expanded = call_expansion(node, original_def)
     return false if expanded.nil?
-    target_def = expanded
+    target_def = expanded.as(CallExpansion).target
+    arguments = expanded.as(CallExpansion).arguments
+    @call_arguments[node] = arguments if node.named_args || arguments.size != node.args.size
     instantiated_def = target_def.clone
     defaults_bind_splat(original_def, instantiated_def, node.args)
     @program.copy_def_owner(target_def, instantiated_def)
@@ -4777,7 +4804,7 @@ pub class MainVisitor < TypeNodeHost
       if blk = node.block
         @block_breaks[blk] = [] of Type?
       end
-      body_ret = type_method_body(instantiated_def, instance_owner, node.args, node.block, nil, dkey, node)
+      body_ret = type_method_body(instantiated_def, instance_owner, arguments, node.block, nil, dkey, node)
     end
     if trait_receiver && body_ret
       @call_dispatch_targets[node] = [DispatchTarget.new(rec_type, instantiated_def, body_ret)] of DispatchTarget
@@ -4786,6 +4813,8 @@ pub class MainVisitor < TypeNodeHost
     if ret_type
       set_type(node, ret_type)
       @unreachable = true if ret_type.is_a?(NoReturnType)
+    else
+      @call_arguments.delete(node)
     end
     @type_filters = nil
     false
@@ -5057,6 +5086,7 @@ pub class MainVisitor < TypeNodeHost
     inner.untyped_reasons = @untyped_reasons
     inner.call_target_defs = @call_target_defs
     inner.call_dispatch_targets = @call_dispatch_targets
+    inner.call_arguments = @call_arguments
     inner.lib_call_targets = @lib_call_targets
     inner.expansions = @expansions
     inner.target_consts = @target_consts
