@@ -122,6 +122,14 @@ roundtrip_check() {
   done
   return 0
 }
+# LLVM writes a type before a function personality; our printer emits its
+# canonical untyped spelling after parsing it.
+personality_check() {
+  local bin="$1" out
+  out=$("$bin" print bench/fixtures/ir/accept/personality_typed.ir 2>&1) || return 1
+  echo "$out" | grep -qF 'personality @personality'
+}
+
 
 # Decimal floating-point constants must be read as the bit patterns they name. Non-zero when any is not.
 decimal_check() {
@@ -350,6 +358,7 @@ echo "refused $count malformed fixtures under their rules"
 echo "== 5b. the ModuleID header is ignored and the module is named by source_filename; the rejected literals and intrinsics are refused"
 out=$("$DRV" print bench/fixtures/ir/accept/moduleid.ir 2>&1) || fail "moduleid.ir: $out"
 echo "$out" | grep -q '^source_filename = "moduleid.iyi"$' || fail "moduleid.ir does not keep source_filename as its module identifier: $out"
+personality_check "$DRV" || fail "personality_typed.ir: LLVM's typed personality was not preserved"
 decimal_check "$DRV" || fail "decimal_float.ir: a decimal floating-point constant is not read as its bit pattern: $("$DRV" print bench/fixtures/ir/accept/decimal_float.ir 2>&1)"
 llvm_float_check "$DRV" || fail "llvm_float.ir: a float constant in LLVM's double form is not read as the float's bits: $("$DRV" print bench/fixtures/ir/accept/llvm_float.ir 2>&1)"
 named_types_check "$DRV" || fail "named_types.ir: a named type nothing mentions is written, or a mentioned one is not: $("$DRV" print bench/fixtures/ir/accept/named_types.ir 2>&1 | grep ' = type ')"
@@ -511,6 +520,15 @@ prove_mutation "printer: the unwind word of inline asm is not written" \
   '    text += " unwind" if inline_asm.unwind' \
   '    text += " unwind_" if inline_asm.unwind' \
   roundtrip_check
+prove_mutation "parser: a typed personality is not consumed" \
+  src/compiler/ir/parser.iyi \
+  '        if c.ident?("ptr")
+          parse_type(c, mod.types)
+        end' \
+  '        if false && c.ident?("ptr")
+          parse_type(c, mod.types)
+        end' \
+  personality_check
 prove_mutation "parser: a decimal constant of type float keeps the double's bit pattern" \
   src/compiler/ir/parser.iyi \
   'type.float32? ? single_bits(value) : double_bits(value)' \

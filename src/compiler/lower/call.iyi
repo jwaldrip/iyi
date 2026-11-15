@@ -49,9 +49,11 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/block::{NoReturnPhi, alloca_local, copy_vars, join_pointer}
 import compiler/lower/locals::{LocalOrder}
+import compiler/lower/closure::{allocate_closure}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
-import compiler/lower/cast::{to_rhs, type_id_value, upcast, downcast, pointer_of_value, type_id_of_value, mixed_type_id_of_pointer, match_type_id}
+import compiler/lower/cast::{assign, to_rhs, type_id_value, upcast, downcast, pointer_of_value, type_id_of_value, mixed_type_id_of_pointer, match_type_id}
 import compiler/lower/ensure::{set_ensure_exception_handler}
+import compiler/semantic/closures::{ClosureFacts}
 import compiler/lower/fun::{block_ended?, def_context_type, target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
@@ -751,7 +753,18 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   block_ctx.return_target = caller.return_target
   block_ctx.block_node = caller.block_node
   block_ctx.block_context = caller.block_context
-  allocate_block_vars(low, block, block_ctx.vars)
+  block_ctx.copy_closure_from(caller)
+  block_ctx.macro_origin = caller.macro_origin
+  captured = [] of String
+  facts = caller.closure_facts
+  block_frame = facts.nil? ? nil : facts.frame?(block.as(ASTNode))
+  if bf = block_frame
+    bf.closured.each do |var|
+      captured << var.name
+      block_ctx.vars.delete(var.name)
+    end
+  end
+  allocate_block_vars(low, block, block_ctx.vars, captured)
 
   # The inlined def's frame (hosted `with_cloned_context`): the block it yields to, the block's
   # context, and the phi the value and the `break`s of the call go to. Passed-by-value results merge
@@ -779,8 +792,19 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
       frame.vars["self"] = LowerVar.new(sv.as(Value), st, !self_by_pointer?(st))
     end
   end
-  allocate_def_vars(low, def_node, arg_types, frame.vars)
+  def_facts = ClosureFacts.new(low.analysed)
+  def_closure = def_facts.analyse_def(def_node, self_type)
+  frame.closure_facts = def_facts
+  def_captured = [] of String
+  def_closure.closured.each { |var| def_captured << var.name }
+  allocate_def_vars(low, def_node, arg_types, frame.vars, def_captured)
+  allocate_closure(low, def_closure)
   copy_args(low, def_node, arg_types, values, frame.vars)
+  if bf = block_frame
+    low.context = block_ctx
+    allocate_closure(low, bf, caller)
+    low.context = frame
+  end
 
   low.needs_value = true
   visit_node(low, def_node.body)
@@ -815,11 +839,11 @@ end
 # makes them: an alloca for each, named by the variable, in the alloca block. An argument shadows a
 # caller variable of the same name (hosted `undef_vars`). A block argument never yielded to has the nil
 # type, as the hosted `var.type? || @program.nil`.
-pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, LowerVar)) : Nil
+pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, LowerVar), captured : Array(String) = [] of String) : Nil
   i = 0
   while i < block.args.size
     arg = block.args[i]
-    if arg.name != "_"
+    if arg.name != "_" && !captured.includes?(arg.name)
       t = low.analysed.type_of?(arg.as(ASTNode))
       nil_t = low.analysed.program.nil_type
       alloca_local(low, vars, arg.name, t.nil? ? nil_t : t.as(Type))
@@ -830,6 +854,7 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
   block.body.accept(collector)
   collector.vars.each do |var|
     name = var.name
+    next if captured.includes?(name)
     t = low.analysed.type_of?(var)
     raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
     unless vars[name]?
@@ -841,20 +866,21 @@ end
 # The def's arguments, then its locals, as the hosted `alloca_vars(target_def.vars)` makes them before
 # the arguments are copied: every argument gets an alloca (the inlined def's arguments are not read in
 # place), and each local assigned in the body gets one, in the order its first assignment is met.
-pub def allocate_def_vars(low : Lowerer, def_node : Def, arg_types : Array(Type), vars : Hash(String, LowerVar)) : Nil
+pub def allocate_def_vars(low : Lowerer, def_node : Def, arg_types : Array(Type), vars : Hash(String, LowerVar), captured : Array(String) = [] of String) : Nil
   i = 0
   while i < def_node.args.size
     arg = def_node.args[i]
     if arg.name == "_"
       pending_visit_node("an argument named _ in an inlined def (hosted create_local_copy_of_arg)")
     end
-    alloca_local(low, vars, arg.name, arg_types[i])
+    alloca_local(low, vars, arg.name, arg_types[i]) unless captured.includes?(arg.name)
     i += 1
   end
   collector = LocalOrder.new(low.analysed)
   def_node.body.accept(collector)
   collector.vars.each do |var|
     name = var.name
+    next if captured.includes?(name)
     t = low.analysed.type_of?(var)
     raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
     unless vars[name]?
@@ -880,10 +906,18 @@ pub def copy_args(low : Lowerer, def_node : Def, arg_types : Array(Type), values
       value = values[i]
       stored = value.type.pointer? ? to_rhs(low, value, t) : value
       store_aligned(low, stored, temp)
-      loaded = load_aligned(low, ir, temp, "")
-      store_aligned(low, loaded, v.pointer)
+      if v.closure_slot
+        assign(low, v.pointer, v.type, t, temp)
+      else
+        loaded = load_aligned(low, ir, temp, "")
+        store_aligned(low, loaded, v.pointer)
+      end
     else
-      store_aligned(low, values[i], v.pointer)
+      if v.closure_slot
+        assign(low, v.pointer, v.type, t, values[i])
+      else
+        store_aligned(low, values[i], v.pointer)
+      end
     end
     i += 1
   end

@@ -21,7 +21,7 @@ module compiler/lower/fun
 # The body is lowered through the dispatch the lowering installed (`BodyVisit`,
 # context.iyi), because iyi refuses an import cycle and the dispatch imports this file.
 
-import compiler/syntax/ast::{ASTNode, Arg, Assign, ClassDef, Def, ModuleDef, ProcLiteral, Var}
+import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, ClassDef, Def, ModuleDef, PointerOf, ProcLiteral, Var}
 import compiler/syntax/visitor::{Visitor}
 import compiler/ir/function::{Function, Linkage}
 import compiler/ir/inst::{Attribute, Block, CallConv}
@@ -31,6 +31,9 @@ import compiler/ir/module::{Module}
 import compiler/lower/cast::{assign, to_rhs, upcast}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
 import compiler/lower/locals::{preallocate_locals}
+import compiler/lower/closure::{allocate_closure, setup_closure_vars}
+import compiler/semantic/closures::{ClosureFacts}
+import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/instance_var::{self_by_pointer?}
 import compiler/lower/typer::{passed_by_value?}
@@ -315,7 +318,7 @@ end
 # `new_entry_block` makes them, `self` (when the owner is passed as self) and each parameter a value
 # read where it arrives (hosted `already_loaded`), the body, and the return. The caller's state is put
 # back afterwards (hosted `old_position`, `old_alloca_block`, `old_needs_value`).
-pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType, ret : Type, class_owner : Type? = nil) : Function
+pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType, ret : Type, class_owner : Type? = nil, closure_source : LowerContext? = nil) : Function
   fn = declared_or_defined_fun(low, name, fn_type)
   low.emitting[name] = true
   fn.call_convention = def_convention(name)
@@ -334,7 +337,17 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   low.entry_block = nil
   low.new_entry_block
 
-  first = 0
+  if source = closure_source
+    setup_closure_vars(low, source, fn.param(0))
+    # A proc parameter shadows an outer capture of the same name.
+    target.args.each { |arg| low.current_context.vars.delete(arg.name) }
+    low.current_context.closure_facts = source.closure_facts
+  else
+    facts = ClosureFacts.new(low.analysed)
+    frame = facts.analyse_def(target, self_type)
+    low.current_context.closure_facts = facts
+  end
+  first = closure_source.nil? ? 0 : 1
   if st = self_type
     self_param = fn.param(0)
     fn.name_param(self_param, "self")
@@ -348,8 +361,16 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   if block_arg = target.block_arg
     local_skip << block_arg.name
   end
+  if closure_source.nil?
+    captured = low.current_context.closure_facts.as(ClosureFacts).analyse_def(target, self_type)
+    captured.closured.each { |var| local_skip << var.name }
+  end
   preallocate_locals(low, target.body, local_skip)
-  assigned = collect_assigned_vars(target.body)
+  if closure_source.nil?
+    frame = low.current_context.closure_facts.as(ClosureFacts).analyse_def(target, self_type)
+    allocate_closure(low, frame)
+  end
+  assigned = collect_assigned_vars(target.body, low.analysed)
   i = 0
   while i < target.args.size
     arg = target.args[i]
@@ -474,29 +495,42 @@ pub def function_attributes(m : Module) : Nil
   end
 end
 
-# Collects variable names assigned anywhere in a def's body (excluding nested defs/types/proc literals).
-# Hosted `target_def_var.assigned_to?` (fun.cr:1000).
+# Arguments assigned or addressed need a local slot: pointerof can mutate the
+# value through the returned pointer, just as the hosted assigned_to? does.
 private class AssignedVarCollector < Visitor
   getter names : Set(String)
 
-  def initialize
+  def initialize(@analysed : MainVisitor)
     @names = Set(String).new
   end
 
   def visit_any(node : ASTNode) : Bool
     return false if node.is_a?(Def) || node.is_a?(ClassDef) || node.is_a?(ModuleDef) || node.is_a?(ProcLiteral)
+    if expanded = @analysed.expansions[node]?
+      expanded.accept(self)
+      return false
+    end
+    if node.is_a?(Call)
+      if expanded = node.as(Call).expanded
+        expanded.accept(self)
+        return false
+      end
+    end
     if node.is_a?(Assign)
       t = node.as(Assign).target
       if t.is_a?(Var)
         @names.add(t.as(Var).name)
       end
+    elsif node.is_a?(PointerOf)
+      t = node.as(PointerOf).exp
+      @names.add(t.as(Var).name) if t.is_a?(Var)
     end
     true
   end
 end
 
-private def collect_assigned_vars(body : ASTNode) : Set(String)
-  collector = AssignedVarCollector.new
+private def collect_assigned_vars(body : ASTNode, analysed : MainVisitor) : Set(String)
+  collector = AssignedVarCollector.new(analysed)
   body.accept(collector)
   collector.names
 end
@@ -514,6 +548,16 @@ pub def create_local_copy_of_arg(low : Lowerer, name : String, arg_type : Type, 
     end
   end
   return if var_type.is_a?(VoidType)
+  if slot = low.current_context.vars[name]?
+    value = param
+    if passed_by_value?(arg_type)
+      spill = low.alloca(low.typer.llvm_type(arg_type), "")
+      store_aligned(low, param, spill)
+      value = spill
+    end
+    assign(low, slot.pointer, slot.type, arg_type, value)
+    return
+  end
   needs_copy = assigned_to || var_type.full_name != arg_type.full_name
   if needs_copy
     pointer = low.alloca(low.typer.llvm_type(var_type), name)
