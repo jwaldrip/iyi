@@ -560,6 +560,12 @@ pub class NumberLiteral < ASTNode
 
   def to_s(sb : StringBuilder) : Nil
     sb << @value
+    # Hosted syntax/to_s.cr:75-100 preserves non-default numeric kinds.
+    if @kind != NumberKind::I32
+      if @kind != NumberKind::F64 || (!@value.includes?(".") && !@value.includes?("e"))
+        sb << "_" << @kind.to_s
+      end
+    end
   end
 end
 
