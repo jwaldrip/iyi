@@ -503,8 +503,8 @@ end
 # The dynamic type id of a reference object (hosted `object_type_id`, type_id.cr:30-36).
 pub def object_type_id(low : Lowerer, value : Value) : Value
   if low.typer.iyi_layout
-    neg4 = low.builder.const_int(low.module.types.int64, -4_i64)
-    slot = low.builder.gep(low.module.types.int8, value, [neg4] of Value, "type_id")
+    neg4 = low.builder.const_int(low.module.types.int32, -4_i64)
+    slot = low.builder.inbounds_gep(low.module.types.int8, value, [neg4] of Value, "type_id")
     return load_aligned(low, low.module.types.int32, slot)
   end
   load_aligned(low, low.module.types.int32, value)

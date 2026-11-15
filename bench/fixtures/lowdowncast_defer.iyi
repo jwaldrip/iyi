@@ -1,0 +1,26 @@
+class Node
+end
+
+class First < Node
+end
+
+class Second < Node
+end
+
+def choose(n : Int32) : Node
+  if n == 0
+    First.new
+  else
+    Second.new
+  end
+end
+
+def cleanup : Nil
+end
+
+def cast_node(node : Node) : First
+  defer cleanup
+  node.as(First)
+end
+
+cast_node(choose(0))
