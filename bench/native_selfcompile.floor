@@ -43,7 +43,6 @@ src/compiler/lower/block.iyi parse
 src/compiler/lower/call.iyi parse
 src/compiler/lower/cast.iyi parse
 src/compiler/lower/class_var.iyi parse
-src/compiler/lower/closure.iyi parse
 src/compiler/lower/cond.iyi parse
 src/compiler/lower/const.iyi parse
 src/compiler/lower/context.iyi parse
@@ -119,7 +118,6 @@ src/compiler/semantic/call_error.iyi parse
 src/compiler/semantic/call_nodes.iyi parse
 src/compiler/semantic/cleanup.iyi parse
 src/compiler/semantic/closures.iyi parse
-src/compiler/semantic/cover.iyi parse
 src/compiler/semantic/default_arguments.iyi parse
 src/compiler/semantic/definition_typing.iyi parse
 src/compiler/semantic/inline_macros.iyi parse

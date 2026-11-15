@@ -6,13 +6,13 @@ import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{Type, NamedType, ModuleType, SemanticProgram, NonGenericModuleType, NonGenericClassType, EnumType, MetaclassType, TraitType, GenericTraitType, GenericClassType, GenericModuleType, UnionType, NoReturnType, VoidType, TopLevelVisitor, normalize_path}
 import compiler/semantic/match::{CallMatch}
-import compiler/types/types::{GenericClassInstanceType, TypeQueries, VirtualType}
+import compiler/types/types::{GenericClassInstanceType}
 import compiler/types/rendering::{TypeRenderer}
 import compiler/types/lookup::{TypeLookup}
 import compiler/semantic/type_nodes::{type_node_system}
 import std/unicode::{Unicode}
 
-VAR_PREFIX     = "__iyi_dt_"
+VAR_PREFIX = "__iyi_dt_"
 WITNESS_PREFIX = "IyiDefTypeWitness_"
 
 pub def append_definition_probes(prog : SemanticProgram, root : ASTNode, user_files : Set(String)) : Nil
@@ -113,7 +113,6 @@ class DefinitionProbeRunner
       next if splat == index && arg.name.empty?
       written = arg.restriction
       return nil unless written
-      return nil if virtual_self_probe?(lookup_scope, written)
       resolved = resolve(lookup_scope, written)
       return nil unless resolved
       text : String? = nil
@@ -150,7 +149,6 @@ class DefinitionProbeRunner
     call.named_args = named_arguments unless named_arguments.empty?
     returned : Type? = nil
     if written = definition.return_type
-      return nil if virtual_self_probe?(lookup_scope, written)
       returned = resolve(lookup_scope, written)
     end
     checks_return = false
@@ -234,14 +232,6 @@ class DefinitionProbeRunner
     resolved = resolve(trait_type, written)
     return nil unless resolved && instantiable?(resolved) && nameable?(resolved)
     TypeRenderer.render(resolved.devirtualize)
-  end
-
-  # Hosted definition_typing.cr:298-314 interpolates the resolved Self into
-  # the synthetic source. For a type with subclasses Self resolves to a
-  # virtual type (type_lookup.cr:430-448), whose trailing + cannot be parsed;
-  # the hosted parser rescue leaves that definition caller-typed.
-  def virtual_self_probe?(scope : ModuleType, written : ASTNode) : Bool
-    written.is_a?(Self) && TypeQueries.virtual_type(scope).is_a?(VirtualType)
   end
 
   def resolve(scope : ModuleType, written : ASTNode) : Type?

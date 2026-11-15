@@ -32,9 +32,7 @@ import compiler/lower/symbols::{symbol_index}
 import compiler/lower/cast::{to_lhs, type_id_value}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/types/types::{TupleInstanceType}
-import compiler/types/types::{IntegerType}
-import compiler/semantic/math_interpreter::{MathInterpreter, MathValue}
-import compiler/semantic/top_level::{EnumType, ModuleType, SemanticProgram, Type}
+import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
 
 # The type of self in the function being lowered, or the program at the top level:
 # class_var_scope uses this when no class body is open. Constants use path_const.
@@ -77,26 +75,7 @@ pub def literal_value(low : Lowerer, const : Compiler::Semantic::TopLevel::Const
   if float_const?(const)
     return nil
   end
-  value = literal_node_value(low, const.value)
-  return value unless value.nil?
-  type = low.analysed.type_of?(const.value)
-  if type.nil?
-    return nil
-  end
-  name = type.as(Type).full_name
-  integer = name == "Int8" || name == "Int16" || name == "Int32" || name == "Int64" || name == "Int128" ||
-            name == "UInt8" || name == "UInt16" || name == "UInt32" || name == "UInt64" || name == "UInt128"
-  return nil unless integer || type.is_a?(IntegerType) || type.is_a?(EnumType)
-  result = MathInterpreter.new.interpret(const.value)
-  return nil unless result.is_a?(MathValue)
-  # Hosted codegen/types.cr:230-233 interprets integer and enum initializers.
-  # The IR constant carries the low 64-bit bit pattern.
-  return nil if type.as(Type).full_name == "Int128" || type.as(Type).full_name == "UInt128"
-  bits = result.as(MathValue).value
-  if bits > 9223372036854775807_i128
-    bits = bits - 18446744073709551616_i128
-  end
-  low.builder.const_int(low.typer.llvm_type(type.as(Type)), bits.to_i64)
+  literal_node_value(low, const.value)
 end
 
 # The value of a literal node (a Bool, Char or integer literal) as an IR constant of the type the analysis gave it;
