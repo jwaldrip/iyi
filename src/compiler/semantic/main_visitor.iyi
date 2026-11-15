@@ -2933,6 +2933,7 @@ pub class MainVisitor < TypeNodeHost
       end
       return Matches.new([] of Match, false, NumericAutocast.ambiguity(value, names))
     end
+    return Matches.new(widened.matches, true) if widened.error.nil? && widened.matches.size == 1
     widened
   end
 
@@ -3028,11 +3029,11 @@ pub class MainVisitor < TypeNodeHost
             arm = Match.new(match.definition, match.arg_types, owner, match.defining, match.exact, match.named_arg_types, match.declared, match.bound)
           end
           matches << arm
-          return Matches.new(matches, true) if arm.exact
+          return Matches.new(matches, true) if arm.exact && signature.autocast_nodes.nil?
         end
       end
       return Matches.new(matches, CallCover.all?(signature, matches)) if walk == ArmWalk::Modules && matches.size > level_start
-      return Matches.new(matches, true) if CallCover.all?(signature, matches)
+      return Matches.new(matches, true) if signature.autocast_nodes.nil? && CallCover.all?(signature, matches)
     end
     return Matches.new(matches, false, first_error) if matches.empty? && first_error
     Matches.new(matches, CallCover.all?(signature, matches))
