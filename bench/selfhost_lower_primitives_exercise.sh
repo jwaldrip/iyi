@@ -287,8 +287,10 @@ prove_mutation "Pointer#malloc falls back to the other program allocator kind wh
 if [ ! -f "$WORK/alloc_mut_built" ]; then echo "  NOT PROVEN: fallback-to-other-kind mutant failed to build"; status=1; fi
 # The baseline: the unmutated port must pass the check, or every mutation below is caught for the wrong reason.
 lower_primitives_check || { echo "  baseline: the unmutated primitives do not pass the check"; status=1; }
-prove_mutation "virtual metaclass identity ignores the dynamic id" "$REPO/src/compiler/lower/cast.iyi" \
-  '  return value if rt.is_a?(VirtualMetaclassType)' '  return type_id_value(low, rt) if rt.is_a?(VirtualMetaclassType)' -- lower_primitives_check || status=1
+prove_mutation "a concrete metaclass type id is loaded twice" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    if t1.is_a?(MetaclassType) || t1.is_a?(VirtualMetaclassType)
+      low.last = recv' '    if t1.is_a?(MetaclassType) || t1.is_a?(VirtualMetaclassType)
+      low.last = type_id_value(low, t1)' -- lower_primitives_check || status=1
 prove_mutation "binary union operand is not refused" "$REPO/src/compiler/lower/primitives.iyi" \
   '    if p1.type.key != low.typer.llvm_type(t1).key || p2.type.key != low.typer.llvm_type(t2).key' '    if false' -- lower_primitives_check || status=1
 prove_mutation "the wrapping add is a subtraction" "$REPO/src/compiler/lower/primitives.iyi" \
