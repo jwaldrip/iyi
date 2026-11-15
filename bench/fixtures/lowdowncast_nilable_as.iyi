@@ -19,6 +19,7 @@ def cast_node(node : Node) : First?
   stored = node
   stored.as?(First)
 end
+
 if cast_node(choose(0)).nil?
   1
 elsif cast_node(choose(1)).nil?

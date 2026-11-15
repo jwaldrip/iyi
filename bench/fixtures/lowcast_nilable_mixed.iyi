@@ -1,8 +1,10 @@
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
+
 class Box
 end
+
 def choose(flag : Bool) : Box?
   if flag
     Box.new
@@ -10,6 +12,7 @@ def choose(flag : Bool) : Box?
     nil
   end
 end
+
 def check(flag : Bool) : Int32
   x = false
   x = choose(flag)
@@ -21,4 +24,5 @@ def check(flag : Bool) : Int32
     100
   end
 end
+
 LibC.exit(check(false) &+ check(true))

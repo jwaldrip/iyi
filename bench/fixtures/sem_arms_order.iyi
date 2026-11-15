@@ -1,7 +1,9 @@
 abstract class Node
 end
+
 class A < Node
 end
+
 class B < Node
 end
 
@@ -16,4 +18,5 @@ end
 def make(flag : Bool) : Node
   flag ? A.new.as(Node) : B.new.as(Node)
 end
+
 puts show(make(true))

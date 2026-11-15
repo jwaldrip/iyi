@@ -12,4 +12,5 @@ class Maker
     Cell(Int32).new(7).value
   end
 end
+
 Maker.new.make

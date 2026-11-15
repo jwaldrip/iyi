@@ -15,12 +15,13 @@ def choose(flag : Bool) : Int32
   a = Point.new(18)
   b = Point.new(4)
   c = if flag
-    a
-  else
-    b
-  end
+        a
+      else
+        b
+      end
   a.set(40)
   b.set(50)
   c.x
 end
+
 choose(true)

@@ -4,13 +4,13 @@ lib LibC
 end
 
 struct Left
-  def run
+  def run(&)
     yield 1
   end
 end
 
 struct Right
-  def run
+  def run(&)
     yield 2
   end
 end

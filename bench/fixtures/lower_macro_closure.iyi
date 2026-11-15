@@ -11,4 +11,5 @@ def read_value
   reader = make_reader
   reader.call
 end
+
 LibC.exit(read_value &- 42)

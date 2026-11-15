@@ -37,7 +37,6 @@ import compiler/lower/typer::{passed_by_value?}
 import compiler/types/indirection::{TypeIndirection}
 import compiler/types/types::{TupleInstanceType}
 
-
 # The phi of a branch whose value never arrives: a block call or a yield whose type is NoReturn. The
 # hosted `Phi#add` with a NoReturn node type (phi.cr:40-55) emits `unreachable` for every value added, and
 # no branch reaches an exit block. The frame's return phi and the yield's phi are this one in that case.

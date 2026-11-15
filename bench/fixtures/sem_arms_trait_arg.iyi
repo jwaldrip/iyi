@@ -3,10 +3,13 @@ end
 
 class A
 end
+
 class B
 end
+
 impl Marker for A
 end
+
 impl Marker for B
 end
 

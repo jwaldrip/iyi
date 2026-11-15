@@ -6,6 +6,7 @@ end
 enum Kind
   One
   Two
+
   def ==(other : Kind) : Bool
     value == other.value
   end

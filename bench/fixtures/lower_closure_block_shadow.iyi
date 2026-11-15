@@ -2,7 +2,7 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-def once(value : Int32)
+def once(value : Int32, &)
   yield value
 end
 

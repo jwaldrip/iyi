@@ -28,19 +28,19 @@ class UnionSlot
   end
 end
 
-def send_union(flag : Bool)
+def send_union(flag : Bool, &)
   yield(flag ? 67 : false)
 end
 
-def yield_union
+def yield_union(&)
   yield
 end
 
-def break_union
+def break_union(&)
   yield
 end
 
-def finish_union(flag : Bool)
+def finish_union(flag : Bool, &)
   yield
   flag ? 70 : false
 end

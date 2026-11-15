@@ -28,4 +28,5 @@ def classify(n : Int32) : Int32
     4
   end
 end
+
 LibC.exit(classify(1) &+ classify(2) &+ classify(3))

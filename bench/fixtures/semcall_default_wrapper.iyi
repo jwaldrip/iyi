@@ -10,7 +10,7 @@ def wrap_magic(a : Int32, line = __LINE__)
   nil
 end
 
-def wrap_yield(a : Int32, b = 2)
+def wrap_yield(a : Int32, b = 2, &)
   yield a
 end
 

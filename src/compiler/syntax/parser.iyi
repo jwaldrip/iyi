@@ -1750,12 +1750,12 @@ pub class Parser < Lexer
         sub_location = @token.location
         sub_var, found_nested_splat, sub_unpack = parse_block_param(nested_splat, all_names)
         sub_expression : ASTNode = if sub_unpack
-                                     Expressions.new(sub_unpack).at(sub_location)
-                                   elsif sub_var.name == "_"
-                                     Underscore.new.at(sub_location)
-                                   else
-                                     sub_var
-                                   end
+          Expressions.new(sub_unpack).at(sub_location)
+        elsif sub_var.name == "_"
+          Underscore.new.at(sub_location)
+        else
+          sub_var
+        end
         if found_nested_splat && !nested_splat
           sub_expression = Splat.new(sub_expression).at(sub_location)
         end

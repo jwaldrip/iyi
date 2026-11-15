@@ -15,6 +15,7 @@ macro exception_runtime
     LibC.exit(99)
   end
 end
+
 exception_runtime
 
 def deferred(flag : Bool) : Int32

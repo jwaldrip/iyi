@@ -1,4 +1,4 @@
-def bool_or_break(flag : Bool)
+def bool_or_break(flag : Bool, &)
   yield
   flag ? 2 : false
 end

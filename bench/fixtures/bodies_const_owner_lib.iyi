@@ -6,5 +6,6 @@ pub struct ForeignMaker
       7
     end
   end
+
   VALUE = Inner.new
 end

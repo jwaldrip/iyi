@@ -583,7 +583,6 @@ private def collect_assigned_vars(body : ASTNode, analysed : MainVisitor) : Set(
   collector.names
 end
 
-
 # The hosted `create_local_copy_of_arg` (fun.cr:945-1043) for a def parameter: allocates a local
 # slot and copies the parameter into it when assigned inside the body or passed by value (or widened
 # into a variable union); otherwise reads the parameter directly (`already_loaded = true`).

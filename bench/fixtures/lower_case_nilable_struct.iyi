@@ -23,5 +23,6 @@ def choose(n : Int32) : Point?
     Point.new(7)
   end
 end
+
 v = choose(1)
 v.nil? ? 0 : v.as(Point).x

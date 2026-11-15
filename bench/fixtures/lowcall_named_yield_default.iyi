@@ -8,7 +8,7 @@ def mark(value : Int32) : Int32
   value
 end
 
-def each_pair(first = 1, second = 2)
+def each_pair(first = 1, second = 2, &)
   yield first &+ second
 end
 

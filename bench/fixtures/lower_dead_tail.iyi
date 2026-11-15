@@ -27,7 +27,7 @@ def both_break(flag : Bool) : Int32
   hits
 end
 
-def give(value : Int32) : Int32
+def give(value : Int32, &) : Int32
   yield value
 end
 
@@ -55,13 +55,13 @@ end
 
 def restore(flag : Bool, other : Bool) : Int32
   result = if flag
-    while true
-      return 8
-    end
-    99
-  else
-    other ? 21 : 22
-  end
+             while true
+               return 8
+             end
+             99
+           else
+             other ? 21 : 22
+           end
   result
 end
 

@@ -1,4 +1,4 @@
-def run
+def run(&)
   yield 7
 end
 

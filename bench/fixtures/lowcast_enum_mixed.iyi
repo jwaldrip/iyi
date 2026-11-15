@@ -1,12 +1,15 @@
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
+
 enum Vis : UInt8
   Hidden = 7
+
   def ==(other : Vis) : Bool
     value == other.value
   end
 end
+
 def use(value : Vis, flag : Bool) : Int32
   x = 1
   if flag
@@ -18,4 +21,5 @@ def use(value : Vis, flag : Bool) : Int32
     1
   end
 end
+
 LibC.exit(use(Vis::Hidden, true))

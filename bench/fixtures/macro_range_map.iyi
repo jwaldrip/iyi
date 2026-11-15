@@ -5,4 +5,5 @@ macro range_map
     puts 0
   {% end %}
 end
+
 range_map

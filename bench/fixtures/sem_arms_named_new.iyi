@@ -1,6 +1,7 @@
 class Stream
   def initialize(fd : Int64, buffer_size : Int32 = 4096, sync : Bool = false)
   end
+
   def initialize(name : String)
   end
 end

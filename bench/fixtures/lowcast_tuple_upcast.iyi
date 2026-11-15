@@ -18,4 +18,5 @@ def check(flag : Bool) : Int32
     value[0] &+ 5
   end
 end
+
 LibC.exit(check(true) &+ check(false))

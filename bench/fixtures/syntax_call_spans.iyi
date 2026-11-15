@@ -3,7 +3,7 @@ empty()
 multiline(
   123
 )
-receiver.empty()
+receiver.empty
 receiver.multiline(
   456
 )

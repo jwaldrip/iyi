@@ -4,6 +4,7 @@ end
 
 class Parent
 end
+
 class Child < Parent
 end
 
@@ -11,6 +12,7 @@ def inspect_class(x : Parent) : Int32
   x.class
   7
 end
+
 def choose(flag : Bool) : Int32
   x = flag ? Child.new : Parent.new
   inspect_class(x)

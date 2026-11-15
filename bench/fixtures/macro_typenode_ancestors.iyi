@@ -17,4 +17,5 @@ class MacroDescendant < MacroAncestor
     {% end %}
   end
 end
+
 puts MacroDescendant.new.value
