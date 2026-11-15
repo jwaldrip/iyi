@@ -11,5 +11,5 @@ class BlockBox(T)
   end
 end
 
-box = BlockBox.new(7) { |n| n + 1 }
+box = BlockBox.new(7) { |n| n }
 value = box.value

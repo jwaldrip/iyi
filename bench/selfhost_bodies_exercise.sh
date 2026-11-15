@@ -328,6 +328,19 @@ block_parameter_shadow_at_expected() {
 block_parameter_shadow_at_expected || status=1
 prove_mutation "block parameter overwrites the caller's flow type" "$MAIN_VISITOR" \
   '          next if shadowed' '          nil' -- block_parameter_shadow_at_expected || status=1
+block_generic_inference_matches() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/block_generic_mut_build.log" 2>&1; then
+    body_build_failed "$WORK/block_generic_mut_build.log"
+    return $?
+  fi
+  local fx="$REPO/bench/fixtures/sem_bodies_block_generic_inference.iyi"
+  "$ORACLE" "$fx" > "$WORK/block_generic.hosted" 2>/dev/null || return 1
+  "$MUT_TD" "$fx" "$REPO/src" > "$WORK/block_generic.port" 2>/dev/null || return 1
+  diff -q "$WORK/block_generic.hosted" "$WORK/block_generic.port" >/dev/null
+}
+prove_mutation "generic constructor inference uses the block result" "$MAIN_VISITOR" \
+  'if FreeBindings.unbound?(output, names, bound.as(Hash(String, Type)))' \
+  'if false && FreeBindings.unbound?(output, names, bound.as(Hash(String, Type)))' -- block_generic_inference_matches || status=1
 alias_members_at_expected() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/alias_mut_build.log" 2>&1 || {
     body_build_failed "$WORK/alias_mut_build.log"
