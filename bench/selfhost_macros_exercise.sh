@@ -470,6 +470,8 @@ fi
 
 # The host triple is the hosted compiler's own. A fixture names another with a
 # `# target: <triple>` line and its `-D` defines with `# define: <name>` lines.
+# `# macro-sites` selects whole-program site scanning, as SiteFinder traverses
+# ordinary expressions including TypeOf (hosted syntax/visitor.cr).
 HOST_TRIPLE="$("$WORK/dump_crystal" --host-target)"
 if [ -z "$HOST_TRIPLE" ]; then
   echo "  THE ORACLE REPORTED NO HOST TRIPLE: this gate cannot conclude anything"
@@ -485,7 +487,8 @@ fixture_args() {
   awk -v host="$HOST_TRIPLE" '
     /^# target: / { t = $3 }
     /^# define: / { d = d " -D " $3 }
-    END { printf "--target %s%s", (t == "" ? host : t), d }' "$1"
+    /^# macro-sites$/ { sites = " --sites" }
+    END { printf "--target %s%s%s", (t == "" ? host : t), d, sites }' "$1"
 }
 
 is_refusal() {
@@ -584,7 +587,24 @@ check_macros_still_match() {
   cmp -s "$WORK/mut-sites.oracle" "$WORK/mut-sites.port"
 }
 
+# This positive fixture has an inline site; macro_typeof_prelude has none.
+# The two distinguish site scanning from the macro-definition/call parser.
+check_typeof_sites() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_macros_exercise.iyi" >/dev/null 2>&1 || return 1
+  "$WORK/mut-exercise" $(fixture_args "$REPO/bench/fixtures/macro_sites_typeof.iyi") "$REPO/bench/fixtures/macro_sites_typeof.iyi" > "$WORK/a.dump" 2>/dev/null || return 1
+  "$WORK/dump_crystal" $(fixture_args "$REPO/bench/fixtures/macro_sites_typeof.iyi") "$REPO/bench/fixtures/macro_sites_typeof.iyi" > "$WORK/b.dump" 2>/dev/null || return 1
+  cmp -s "$WORK/a.dump" "$WORK/b.dump"
+}
+
 MUTATIONS_RUN=0
+
+prove_mutation "whole-program typeof fixture bypasses site scanning" "$REPO/bench/selfhost_macros_exercise.iyi" \
+  "  if sites
+    print BenchSelfhostMacrosExercise.site_dump(source, flags)" \
+  "  if false
+    print BenchSelfhostMacrosExercise.site_dump(source, flags)" \
+  -- check_typeof_sites || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "macro if condition truthiness inverted" "$INTERP" \
   "      if MacroMethods.truthy?(c)
