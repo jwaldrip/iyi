@@ -1,0 +1,3 @@
+alias CycleBox = Pointer(CycleBox)
+
+1
