@@ -32,7 +32,7 @@ import compiler/lower/helpers::{at_terminator?, llvm_nil, load_aligned, store_al
 import compiler/lower/layouts::{has_inner_pointers?}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
-import compiler/lower/typer::{primitive_kind, passed_by_value?}
+import compiler/lower/typer::{primitive_kind, passed_by_value?, reference_union?}
 import compiler/lower/unions::{mixed_union_value_area}
 import compiler/semantic/top_level::{EnumType, MetaclassType, NilType, Type, UnionType, VoidType}
 import compiler/syntax/ast::{ASTNode, Var}
@@ -117,6 +117,15 @@ def stack_pointer?(pointer : Value) : Bool
   false
 end
 
+# Aliases can resolve to a plain UnionType, whose layout is nevertheless
+# mixed when any member is not a reference (hosted union representation).
+def specialize_mixed_union(type : Type) : Type
+  if type.is_a?(UnionType) && !type.is_a?(MixedUnionType) && !type.is_a?(NilableProcType) && !reference_union?(type.as(UnionType))
+    return MixedUnionType.new(type.program, type.as(UnionType).union_types)
+  end
+  type
+end
+
 pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type, value : Value) : Nil
   return if at_terminator?(low) || TypeQueries.no_return?(value_type)
   begin_fn = low.module.get_function?("__iyi_write_barrier_begin")
@@ -156,8 +165,8 @@ end
 def assign_unbarriered(low : Lowerer, pointer : Value, target : Type, value_type : Type, value : Value) : Nil
   # Hosted cast.cr 73-85: an ended block or NoReturn value produces no store.
   return if at_terminator?(low) || TypeQueries.no_return?(value_type)
-  target = TypeIndirection.remove_indirection(target)
-  value_type = TypeIndirection.remove_indirection(value_type)
+  target = specialize_mixed_union(TypeIndirection.remove_indirection(target))
+  value_type = specialize_mixed_union(TypeIndirection.remove_indirection(value_type))
   if target.full_name == value_type.full_name
     return if target.nil_type?
     stored = value.type.pointer? ? to_rhs(low, value, target) : value
@@ -435,8 +444,8 @@ end
 pub def upcast(low : Lowerer, value : Value, from : Type, to : Type) : Value
   # Hosted upcast (cast.cr:540): an ended block has no value to convert.
   return llvm_nil(low) if at_terminator?(low)
-  f = TypeIndirection.remove_indirection(from)
-  t = TypeIndirection.remove_indirection(to)
+  f = specialize_mixed_union(TypeIndirection.remove_indirection(from))
+  t = specialize_mixed_union(TypeIndirection.remove_indirection(to))
   return value if f.full_name == t.full_name
   if t.is_a?(MetaclassType) || t.is_a?(VirtualMetaclassType) || t.is_a?(VirtualType) || t.is_a?(ReferenceUnionType)
     return value
@@ -479,6 +488,8 @@ end
 # The hosted `downcast_distinct`, for mixed unions and reference/nilable pointers. A nil target
 # is nil; any other unsupported source is refused by name.
 pub def downcast_distinct(low : Lowerer, value : Value, to_type : Type, from_type : Type) : Value
+  to_type = specialize_mixed_union(TypeIndirection.remove_indirection(to_type))
+  from_type = specialize_mixed_union(TypeIndirection.remove_indirection(from_type))
   if to_type.is_a?(NilType)
     return llvm_nil(low)
   end

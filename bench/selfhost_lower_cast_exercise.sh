@@ -190,6 +190,17 @@ nilable_downcast_check() {
 nilable_downcast_check || { echo "  baseline: nilable reference downcast differs"; status=1; }
 prove_mutation "nilable reference downcast reads the local slot instead of its value" "$REPO/src/compiler/lower/lower.iyi" \
   '    down_source = last_value' '    down_source = low.current_context.vars[node.obj.as(Var).name].pointer' -- nilable_downcast_check || status=1
+alias_union_native_check() {
+  "$IYI" build -o "$WORK/alias-stage1" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/alias-build.log" 2>&1 || return 1
+  codesign -v --strict "$WORK/alias-stage1" || return 1
+  "$WORK/alias-stage1" "$REPO/bench/fixtures/lowcast_struct_union_nil.iyi" -o "$WORK/alias-native" --pipeline typed --prelude > "$WORK/alias-native.log" 2>&1 || return 1
+  codesign -v --strict "$WORK/alias-native" || return 1
+  "$WORK/alias-native"
+  [ "$?" -eq 10 ]
+}
+alias_union_native_check || { echo "  baseline: native aliased struct union differs"; status=1; }
+prove_mutation "aliased struct union loses mixed representation" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if type.is_a?(UnionType) && !type.is_a?(MixedUnionType) && !type.is_a?(NilableProcType) && !reference_union?(type.as(UnionType))' '  if false' -- alias_union_native_check || status=1
 cast_fixture=compatible_virtual
 new_cast_check || { echo "  baseline: compatible virtual union differs"; status=1; }
 prove_mutation "compatible virtual union member is refused" "$REPO/src/compiler/lower/cast.iyi" \
