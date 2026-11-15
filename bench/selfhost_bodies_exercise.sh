@@ -449,17 +449,17 @@ prove_mutation "early exit in then branch narrows the rest of the body" "$MAIN_V
 prove_mutation_all "a refused body with declared return is cached" "$MAIN_VISITOR" \
   "remember_def_instance(cache_key, target_def," \
   "nil # " -- bodies_at_floor || status=1
-prove_mutation "a generic pointer restriction is not bound from the receiver" "$MAIN_VISITOR" \
-  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
-  "found = LookupError.new(\"unbound\")" -- bodies_at_floor || status=1
-prove_mutation "a splat call is not resolved by the calls lookup" "$MAIN_VISITOR" \
-  "    return nil if target.error
-    target.definition" \
-  "    return nil if target.error
-    nil" -- bodies_at_floor || status=1
-prove_mutation "a union restriction is not instantiated from its members" "$MAIN_VISITOR" \
-  "      return union_restriction_type(restriction.as(Union), rec_type)" \
-  "      return nil" -- bodies_at_floor || status=1
+prove_mutation "a generic pointer restriction is not bound from the receiver" "$REPO/src/compiler/semantic/restrictions.iyi" \
+  "            arg = ArgRestriction.lookup_bound(ts, scope, arg_node, owner)" \
+  "            arg = ArgRestriction.lookup_bound(ts, scope, arg_node, owner)
+            arg = LookupError.new(\"unbound\") if arg.is_a?(Type)" -- bodies_at_floor || status=1
+prove_mutation "a splat call is not resolved by the calls lookup" "$REPO/src/compiler/semantic/match.iyi" \
+  "    splat = definition.splat_index" \
+  "    splat = definition.splat_index
+    return MatchAttempt.none unless splat.nil?" -- bodies_at_floor || status=1
+prove_mutation "a union restriction is not instantiated from its members" "$REPO/src/compiler/semantic/restrictions.iyi" \
+  "      return ArgRestriction.lookup_union(ts, scope, node.as(Union), owner)" \
+  "      return LookupError.new(\"unbound union\")" -- bodies_at_floor || status=1
 prove_mutation "pointer_set types the assigned value" "$MAIN_VISITOR" \
   "set_type(node, pst)" \
   "set_type(node, @program.nil_type)" -- bodies_at_floor || status=1
@@ -482,9 +482,11 @@ prove_mutation "typeof inside type arguments yields the instance type" "$REPO/sr
 prove_mutation "enum members have the enum type" "$MAIN_VISITOR" \
   "        set_type(node, enum_type)" \
   "        set_type(node, @program.int32_type)" -- bodies_at_floor || status=1
-prove_mutation "a generic union member retains its arguments" "$MAIN_VISITOR" \
-  "    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
-  "    found = @program.lookup_type_node?(restriction, @current_type) || LookupError.new(\"not found\")" -- bodies_at_floor || status=1
+prove_mutation "a generic union member retains its arguments" "$REPO/src/compiler/semantic/restrictions.iyi" \
+  "      member = ArgRestriction.lookup_bound(ts, scope, node.types[i], owner)" \
+  "      member_node = node.types[i]
+      member_node = member_node.as(Generic).name if member_node.is_a?(Generic)
+      member = ArgRestriction.lookup_bound(ts, scope, member_node, owner)" -- bodies_at_floor || status=1
 type_lookup_at_expected() {
   if ! "$IYI" build -o "$WORK/type_lookup_probe" "$REPO/bench/selfhost_type_lookup_probe.iyi" > "$WORK/type_lookup_probe.build.log" 2>&1; then
     body_build_failed "$WORK/type_lookup_probe.build.log"

@@ -3124,7 +3124,7 @@ pub class MainVisitor < TypeNodeHost
       next if defs.nil?
       ordered = [] of Def
       defs.as(Array(Def)).each do |definition|
-        next if definition.abstract
+        next if definition.abstract && !owner.is_a?(TraitType)
         next unless CallMatch.yields?(definition) == !call_node.block.nil?
         if call_node.named_args.nil? && definition.splat_index.nil?
           next if args.size < min_args_count(definition) || args.size > definition.args.size
