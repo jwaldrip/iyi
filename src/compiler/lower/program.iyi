@@ -129,12 +129,12 @@ private def iyi_object_layout?(prog : SemanticProgram) : Bool
 end
 
 # The lowering phase: the program's IR module for the target, with its entry and the rest of the program.
-pub def lower_program(typed : TypedProgram, triple : String, name : String) : Module
+pub def lower_program(typed : TypedProgram, triple : String, name : String, stub_defs : Hash(String, String)? = nil, stubbed_defs : Hash(String, String)? = nil, context_out : Array(Lowerer)? = nil) : Module
   made = Module.for_target(name, Target.new(triple))
   raise made.as(LayoutError).to_s if made.is_a?(LayoutError)
   m = made.as(Module)
   typer = LowerTyper.new(m.types, m.layout, iyi_object_layout?(typed.prog))
-  codegen_program(typed.root, typed.visitor, typer, m)
+  codegen_program(typed.root, typed.visitor, typer, m, stub_defs, stubbed_defs, context_out)
   m
 end
 
@@ -487,7 +487,7 @@ end
 # The lowering column of the table (PIPELINE.md): every reached def's instance lowered alone into one module, the way the
 # lowering reaches it (lower_def_probe). A def is lowered clean when each of its instances lowers with no refusal. A
 # lowering refusal names its def, not a node: the lowering carries no location yet.
-pub def lowering_table(typed : TypedProgram, triple : String, root : String, names : Array(String), refused : Array(String)) : Array(String)
+pub def lowering_table(typed : TypedProgram, triple : String, root : String, names : Array(String), refused : Array(String), origins : Hash(String, String)? = nil) : Array(String)
   made = Module.for_target(root, Target.new(triple))
   if made.is_a?(LayoutError)
     return ["table: #{root} defs-lowered-clean=not-measured (#{made.as(LayoutError).to_s})"]
@@ -557,6 +557,23 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
       if ctx = probe_lowerer.context
         origin = ctx.fun.name
       end
+      if collected = origins
+        if ctx = probe_lowerer.context
+          # The probe can fail in an inline host or a nested callee. Record the
+          # actual IR function, not the instance whose probe reached it.
+          fn_name = ctx.fun.name
+          probe_name = probe_function_name(typed, d, inst.self_type, inst.arg_types)
+          attribution = "nested callee or inline/proc host"
+          if fn_name == probe_name
+            attribution = "probed def"
+          elsif fn_name.starts_with?("~")
+            attribution = "proc body"
+          end
+          if !collected.has_key?(fn_name) || attribution == "probed def"
+            collected[fn_name] = "#{reason}\tattribution=#{attribution}\tprobe=#{instance_label(d, inst.self_type, inst.arg_types)}"
+          end
+        end
+      end
       pair = "#{origin} | #{reason}"
       probe_key = "#{pair}|#{instance_label(d, inst.self_type, inst.arg_types)}"
       unless origin_probes.has_key?(probe_key)
@@ -609,6 +626,18 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   ranked_rows(root, "lowering", reasons, counts, examples).each { |line| lines << line }
   ranked_rows(root, "origin", origin_reasons, origin_counts, origin_examples).each { |line| lines << line }
   lines
+end
+
+# The function name for the probed instantiation, including its captured block.
+def probe_function_name(typed : TypedProgram, d : Def, self_type : Type?, args : Array(Type)) : String
+  body_type = typed.visitor.type_of?(d.body)
+  return "" if body_type.nil?
+  ret = typed.visitor.type_of?(d) || body_type
+  block_type : Type? = nil
+  if block_arg = d.block_arg
+    block_type = typed.visitor.type_of?(block_arg.as(ASTNode)) if d.uses_block_arg?
+  end
+  mangled_name(d.name, self_type, args, ret.as(Type), nil, block_type, typed.visitor.program.def_owner(d))
 end
 
 # Where a lowering refusal is, for one table row: its def, with the receiver type it was lowered for.

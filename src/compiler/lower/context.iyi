@@ -183,6 +183,9 @@ pub class Lowerer
   # Names this lowerer is in the middle of emitting. A recursive call finds the function
   # here. A leftover from a probe that died is not: that lowerer is gone.
   property emitting : Hash(String, Bool)
+  # Diagnostic builds only: emitted function name to refusal and attribution.
+  property stub_defs : Hash(String, String)
+  property stubbed_defs : Hash(String, String)
   # The funs with a body the program never calls (hosted @unused_fun_defs): each is declared at its visit and its body is
   # emitted at the end of the module (emit_unused_fun_defs).
   property unused_fun_defs : Array(FunDef)
@@ -231,6 +234,8 @@ pub class Lowerer
     @last_unique = 0_i64
     @fun_defs_done = Hash(String, Bool).new
     @emitting = Hash(String, Bool).new
+    @stub_defs = Hash(String, String).new
+    @stubbed_defs = Hash(String, String).new
     @unused_fun_defs = [] of FunDef
     @proc_counts = Hash(String, Int32).new
     @ensure_nodes = [] of ExceptionHandler
