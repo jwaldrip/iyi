@@ -632,8 +632,10 @@ block_decl_check() {
     touch "$WORK/general-mutation.invalid"
     return 1
   fi
-  "$WORK/block-decl-mut" lower "$REPO/bench/fixtures/lowdecl_typedecl_block.iyi" "$WORK/lowdecl_typedecl_block.oracle.ll" > "$WORK/block-decl-mut.out" 2>/dev/null || return 1
-  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-decl-mut.out"
+  for name in lowdecl_typedecl_block lowdecl_typedecl_block_widen; do
+    "$WORK/block-decl-mut" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/block-decl-mut.out" 2>/dev/null || return 1
+    awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-decl-mut.out" || return 1
+  done
 }
 prove_mutation "a block declaration allocates its initializer type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '        set_type(v, decl_type)
@@ -685,8 +687,10 @@ uncovered_mutation_check() {
 if uncovered_check "$WORK/port"; then
   prove_mutation "uncovered argument combinations are accepted" "$REPO/src/compiler/semantic/main_visitor.iyi" \
     '    found = lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    trace_arg_dispatch(receiver, node.name, node.args, node, found, nil)
     unless found.cover_all?' \
     '    found = lookup_call_arms(receiver, receiver, node.name, node.args, node, ArmWalk::Parents, infer_class_vars)
+    trace_arg_dispatch(receiver, node.name, node.args, node, found, nil)
     unless true' -- uncovered_mutation_check || status=1
 else
   echo "  FAIL: uncovered union baseline did not refuse"
