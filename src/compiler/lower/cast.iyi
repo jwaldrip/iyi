@@ -159,6 +159,7 @@ def assign_unbarriered(low : Lowerer, pointer : Value, target : Type, value_type
   target = TypeIndirection.remove_indirection(target)
   value_type = TypeIndirection.remove_indirection(value_type)
   if target.full_name == value_type.full_name
+    return if target.nil_type?
     stored = value.type.pointer? ? to_rhs(low, value, target) : value
     store_aligned(low, stored, pointer)
     return
