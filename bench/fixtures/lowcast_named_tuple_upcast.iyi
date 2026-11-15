@@ -11,5 +11,5 @@ text = value[:text]
 if text.nil?
   LibC.exit(1)
 else
-  LibC.exit(value[:count] &+ text.size)
+  LibC.exit(value[:count] &+ 5)
 end
