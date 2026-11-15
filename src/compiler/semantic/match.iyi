@@ -1,12 +1,12 @@
 module compiler/semantic/match
 
-import compiler/syntax/ast::{ASTNode, Call, Def, NumberLiteral, ProcNotation, Splat, Yield}
+import compiler/syntax/ast::{ASTNode, Call, Def, Generic, NumberLiteral, ProcNotation, Splat, Yield}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{GenericClassType, MetaclassType, ModuleType, NoReturnType, SemanticProgram, Type}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError}
-import compiler/types/types::{NamedArgumentType}
+import compiler/types/types::{GenericInstanceType, NamedArgumentType}
 
 # The name, argument types, named arguments and block of a call: the hosted
 # CallSignature (record in method_lookup.cr). It lives here, not in
@@ -241,6 +241,14 @@ pub class CallMatch
       else
         restricted = ts.restrict(arg_type, allowed.as(Type))
         restricted = allowed.as(Type) if arg_type.is_a?(NoReturnType)
+        # Hosted GenericInstanceType#restrict compares each type argument against
+        # its written restriction (iyi/semantic/restrictions.cr:1185-1277).
+        # The literal itself retains its inferred element type.
+        if restricted.nil? && written.is_a?(Generic) && arg_type.is_a?(GenericInstanceType)
+          generic_match = ArgRestriction.restrict_argument(ts, defining, written.as(Generic), arg_type, owner, match_free, bound)
+          return MatchAttempt.failed(generic_match.error.to_s) if generic_match.error
+          restricted = generic_match.type
+        end
         if restricted.nil?
           nodes = signature.autocast_nodes
           if nodes && i < nodes.size && NumericAutocast.accepts?(nodes[i], arg_type, allowed.as(Type))
@@ -283,6 +291,11 @@ pub class CallMatch
           allowed = allowed_found.type
           if allowed
             restricted = ts.restrict(element, allowed.as(Type))
+            if restricted.nil? && splat_restriction.is_a?(Generic) && element.is_a?(GenericInstanceType)
+              generic_match = ArgRestriction.restrict_argument(ts, defining, splat_restriction.as(Generic), element, owner, match_free, bound)
+              return MatchAttempt.failed(generic_match.error.to_s) if generic_match.error
+              restricted = generic_match.type
+            end
             return MatchAttempt.none if restricted.nil?
             element = restricted.as(Type)
           end
@@ -317,6 +330,12 @@ pub class CallMatch
         if !allowed.nil?
           restricted = ts.restrict(value, allowed.as(Type))
           restricted = allowed.as(Type) if named_arg.type.is_a?(NoReturnType)
+          written_named = definition.args[index].restriction
+          if restricted.nil? && written_named.is_a?(Generic) && value.is_a?(GenericInstanceType)
+            generic_match = ArgRestriction.restrict_argument(ts, defining, written_named.as(Generic), value, owner, match_free, bound)
+            return MatchAttempt.failed(generic_match.error.to_s) if generic_match.error
+            restricted = generic_match.type
+          end
           if restricted.nil?
             nodes = signature.named_autocast_nodes
             if nodes && named_i < nodes.size && NumericAutocast.accepts?(nodes[named_i], value, allowed.as(Type))
