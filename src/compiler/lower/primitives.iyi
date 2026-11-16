@@ -37,6 +37,7 @@ import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{IntPredicate, RealPredicate, Attribute, Inst, Op, CallAux, CallConv, Ordering, Block}
 import compiler/types/unification::{TypeUnification}
 import compiler/lower/cast::{assign, downcast, type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
+import compiler/lower/cast::{type_id_global}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -1697,6 +1698,12 @@ pub def allocate_malloc_class(low : Lowerer, t : Type) : Value
   end
   zero_memory(low, ptr, struct_ir)
   run_instance_vars_initializers(low, t, ptr)
+  if block_ended?(low)
+    # The hosted allocator still declares the type-id global even when an
+    # initializer terminates before its load and store.
+    type_id_global(low, t)
+    return ptr
+  end
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   slot = low.builder.inbounds_gep(struct_ir, ptr, [zero, zero] of Value)
   store_aligned(low, type_id_value(low, t), slot)

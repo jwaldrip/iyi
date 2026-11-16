@@ -1142,6 +1142,7 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
   low.needs_value = true
   codegen_node(low, node.value)
   low.needs_value = wants
+  return if block_ended?(low)
   value = low.last
   raise "BUG: the assigned value left no value (hosted codegen.cr: codegen_assign)" if value.nil?
   v = value.as(Value)

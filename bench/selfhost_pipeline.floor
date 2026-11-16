@@ -65,6 +65,8 @@ bench/fixtures/lowcall_inherited_lexical_owner.iyi run-equal
 bench/fixtures/lowcall_inherited_new.iyi run-equal
 bench/fixtures/lowcall_inherited_owner.iyi run-equal
 bench/fixtures/lowcall_inherited_shadowed_const.iyi run-equal
+bench/fixtures/lowcall_ivar_initializer_noreturn.iyi run-equal
+bench/fixtures/lowcall_ivar_initializer_noreturn_struct.iyi run-equal
 bench/fixtures/lowcall_ivar_initializers.iyi run-equal
 bench/fixtures/lowcall_link_framework.iyi native
 bench/fixtures/lowcall_meta_args.iyi run-equal

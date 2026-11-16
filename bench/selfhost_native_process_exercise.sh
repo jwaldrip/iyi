@@ -127,6 +127,25 @@ if run_monitored "$WORK/stage1" build -o "$WORK/invalid-native" "$invalid" > "$W
 fi
 echo '  incompatible generic initializer: rejected'
 
+terminating="$REPO/bench/fixtures/ivar_initializer_noreturn_arena.iyi"
+if ! run_monitored "$IYI" build -o "$WORK/terminating-hosted" "$terminating" > "$WORK/terminating-hosted.build" 2>&1; then
+  echo 'FAIL: hosted terminating arena initializer did not build'; cat "$WORK/terminating-hosted.build"; exit 1
+fi
+if ! run_monitored "$WORK/stage1" build -o "$WORK/terminating-native" "$terminating" > "$WORK/terminating-native.build" 2>&1 ||
+   ! codesign -v --strict "$WORK/terminating-native"; then
+  echo 'FAIL: native terminating arena initializer did not build and sign'; cat "$WORK/terminating-native.build"; exit 1
+fi
+hosted_status=0
+native_status=0
+run_timed 120 "$WORK/terminating-hosted" > "$WORK/terminating-hosted.out" 2> "$WORK/terminating-hosted.err" || hosted_status=$?
+run_timed 120 "$WORK/terminating-native" > "$WORK/terminating-native.out" 2> "$WORK/terminating-native.err" || native_status=$?
+if [ "$hosted_status" -ne 7 ] || [ "$native_status" -ne 7 ] ||
+   ! cmp "$WORK/terminating-hosted.out" "$WORK/terminating-native.out" ||
+   ! cmp "$WORK/terminating-hosted.err" "$WORK/terminating-native.err"; then
+  echo 'FAIL: terminating arena initializer did not exit 7'; cat "$WORK/terminating-native.out" "$WORK/terminating-native.err"; exit 1
+fi
+echo '  terminating arena initializer: hosted and native exit 7'
+
 
 if ! run_monitored "$WORK/stage1" build -o "$WORK/probe" "$probe" > "$WORK/probe.build" 2>&1; then
   echo 'FAIL: native process probe did not build'; cat "$WORK/probe.build"; exit 1
