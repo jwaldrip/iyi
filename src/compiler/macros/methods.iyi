@@ -498,6 +498,19 @@ pub class MacroMethods
         return BoolLiteral.new(str.value.empty?)
       when "upcase"
         return StringLiteral.new(str.value.upcase)
+      when "chomp"
+        if block
+          return refuse("macro 'StringLiteral#chomp' is not expected to be invoked with a block, but a block was given")
+        end
+        if named = named_args
+          named.each_key do |name|
+            return refuse("no parameter named '#{name}'")
+          end
+        end
+        unless args.empty?
+          return refuse("wrong number of arguments for macro 'StringLiteral#chomp' (given #{args.size}, expected 0)")
+        end
+        return StringLiteral.new(str.value.chomp('\n'))
       when "downcase"
         return StringLiteral.new(str.value.downcase)
       when "capitalize"
