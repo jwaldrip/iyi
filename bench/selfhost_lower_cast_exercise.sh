@@ -514,7 +514,7 @@ else
   prove_mutation "the value area is field zero" "$REPO/src/compiler/lower/cast.iyi" \
     "  index = low.builder.const_int(low.module.types.int32, 1_i64)" "  index = low.builder.const_int(low.module.types.int32, 0_i64)" -- cast_check || status=1
   prove_mutation "the type id load is not aligned" "$REPO/src/compiler/lower/cast.iyi" \
-    "  load_aligned(low, low.module.types.int32, global.as(Global))" "  low.builder.load(low.module.types.int32, global.as(Global))" -- cast_check || status=1
+    "  load_aligned(low, low.module.types.int32, type_id_global(low, t))" "  low.builder.load(low.module.types.int32, type_id_global(low, t))" -- cast_check || status=1
 fi
 
 echo
