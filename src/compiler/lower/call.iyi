@@ -82,6 +82,45 @@ def call_args(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Array(ASTNode
   low.analysed.call_arguments[node]? || node.args
 end
 
+def never_made_call?(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Bool
+  if obj = node.obj
+    return true if low.analysed.type_of?(obj).is_a?(NoReturnType)
+  end
+  return true if node.args.any? { |arg| low.analysed.type_of?(arg).is_a?(NoReturnType) }
+  if named = node.named_args
+    return true if named.any? { |arg| low.analysed.type_of?(arg.value).is_a?(NoReturnType) }
+  end
+  false
+end
+
+def lower_never_made_operand(low : Lowerer, operand : ASTNode) : Bool
+  wants = low.needs_value
+  low.needs_value = true
+  visit_node(low, operand)
+  low.needs_value = wants
+  return false unless block_ended?(low) || low.analysed.type_of?(operand).is_a?(NoReturnType)
+  low.builder.unreachable unless block_ended?(low)
+  low.last = llvm_nil(low)
+  true
+end
+
+# Hosted cleanup_transformer.cr:700-718 retains only the operands evaluated
+# before the first NoReturn one. Such a call has no target definition.
+def lower_never_made_call(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Nil
+  if obj = node.obj
+    return if lower_never_made_operand(low, obj)
+  end
+  node.args.each do |arg|
+    return if lower_never_made_operand(low, arg)
+  end
+  if named = node.named_args
+    named.each do |arg|
+      return if lower_never_made_operand(low, arg.value)
+    end
+  end
+  raise "BUG: a never-made call has no NoReturn operand"
+end
+
 pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Nil
   ret_type = low.analysed.type_of?(node)
   raise "BUG: the analysed program has no type for the call to #{node.name} (hosted call.cr: visit(Call))" if ret_type.nil?
@@ -94,6 +133,10 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       pending_visit_node("a block passed to a lib fun (hosted call.cr: codegen_extern_call)")
     end
     codegen_lib_call(low, node, ret)
+    return
+  end
+  if never_made_call?(low, node)
+    lower_never_made_call(low, node)
     return
   end
 

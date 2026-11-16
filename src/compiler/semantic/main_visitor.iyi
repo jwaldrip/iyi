@@ -116,6 +116,7 @@ pub class RecursiveFrame
   getter definition : Def
   property cyclic : Bool = false
   property estimating : Bool = false
+  property estimate : Type? = nil
 
   def initialize(@key : String?, @definition : Def, @stack_key : String)
   end
@@ -3988,6 +3989,13 @@ pub class MainVisitor < TypeNodeHost
     entry_mark = @speculation.entries.size
     taint_mark = @speculation.taint
     result = type_method_body_in_file(target_def, body_receiver, args, block, site, cache_key, old_current_type, call_node)
+    # A failed inference must not leave the recursive seed in the cache.
+    if result.nil? && target_def.return_type.nil?
+      if abandoned = cache_key
+        @def_instances.delete(abandoned)
+        @speculation.dirty_keys.delete(abandoned)
+      end
+    end
     if k = cache_key
       entries = @speculation.entries
       if entries.size > entry_mark && entries[entry_mark].key == k
@@ -4248,30 +4256,32 @@ pub class MainVisitor < TypeNodeHost
       return nil
     end
 
-    # A def typed again while its body is being typed is a recursive call: it takes
-    # the declared return type, or the call is refused. The depth bounds a chain of
-    # instantiations whose argument types keep growing.
+    # Recursive spellings share the active definition and its current estimate.
+    # The depth bounds instantiations whose argument types keep growing.
     key = instance_key(rec_type, target_def, args, block, call_node)
     if @typing_stack.includes?(key)
-      # A positional and a named spelling have different cache keys, so an
-      # active recursive call still needs its already-bound clone here
-      # (hosted call.cr:625-630).
-      if call = call_node
-        @speculation.recursive_frames.each do |frame|
-          if frame.stack_key == key
-            @call_target_defs[call] = frame.definition
-            break
-          end
+      active : RecursiveFrame? = nil
+      @speculation.recursive_frames.each do |frame|
+        if frame.stack_key == key
+          active = frame
+          break
         end
+      end
+      if active.nil?
+        return refuse_recursion(site, target_def, "a recursive call reached '#{target_def.name}' before its frame")
+      end
+      frame = active.as(RecursiveFrame)
+      if call = call_node
+        @call_target_defs[call] = frame.definition
       end
       if rt = target_def.return_type
         return return_contract(rt, rec_type, target_def)
       end
-      # No declared return type: until the body's own type is known the recursive
-      # call contributes nothing to a merge, so it is NoReturn (the bottom of the
-      # merge). The hosted pass gets the same answer from the non-recursive returns
-      # (bench/fixtures/sem_bodies_recursive.iyi: count(true) is Int32).
-      return @program.no_return_type
+      unless frame.cyclic
+        frame.cyclic = true
+        @speculation.depth = @speculation.depth + 1
+      end
+      return frame.estimating ? frame.estimate : nil
     end
     if @typing_stack.size >= 256
       return refuse_recursion(site, target_def, "instantiation depth exceeded at '#{target_def.name}'")
@@ -4500,6 +4510,7 @@ pub class MainVisitor < TypeNodeHost
         @current_yield_nodes = [] of Yield if block
         assumed = estimate || @program.no_return_type
         remember_def_instance(cache_key, target_def, commit_pass ? assumed : estimate)
+        recursive_frame.estimate = commit_pass ? assumed : estimate
         @super_barrier = nil
         body.as(ASTNode).accept(self)
         @super_barrier = saved_super_barrier
@@ -5091,6 +5102,17 @@ pub class MainVisitor < TypeNodeHost
     type_node_metaclass(ts.instantiate_type(generic.as(GenericClassType), ordered))
   end
 
+  # Hosted call.cr:78-80,94-114: no method lookup follows an operand that never returns.
+  def receives_no_return?(node : Call, rec_type : Type) : Bool
+    return true if !node.obj.nil? && rec_type.is_a?(NoReturnType)
+    return false if rec_type.is_a?(LibType)
+    return true if node.args.any? { |arg| type_of?(arg).is_a?(NoReturnType) }
+    if named = node.named_args
+      return true if named.any? { |arg| type_of?(arg.value).is_a?(NoReturnType) }
+    end
+    false
+  end
+
   def visit(node : Call) : Bool
     @call_arguments.delete(node)
     if block = node.block
@@ -5150,6 +5172,16 @@ pub class MainVisitor < TypeNodeHost
       named.each do |arg|
         arg.value.accept(self)
       end
+    end
+    if receives_no_return?(node, rec_type)
+      @needs_type_filters = saved_call_ntf
+      @call_receivers.delete(node)
+      @call_target_defs.delete(node)
+      @call_dispatch_targets.delete(node)
+      set_type(node, @program.no_return_type)
+      @unreachable = true
+      @type_filters = nil
+      return false
     end
     # A narrowed-out local has no value on this path. Hosted leaves dependent
     # calls untyped rather than treating that local as a method or a bad argument.
