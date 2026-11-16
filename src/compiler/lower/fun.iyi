@@ -32,7 +32,7 @@ import compiler/lower/cast::{assign, to_rhs, upcast}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
 import compiler/lower/locals::{preallocate_locals}
 import compiler/lower/closure::{allocate_closure, closure_self_type, setup_closure_vars}
-import compiler/semantic/closures::{ClosureFacts}
+import compiler/semantic/closures::{ClosureFacts, ClosureFrame}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/lower/helpers::{load_aligned, store_aligned, unique_global_name}
 import compiler/lower/instance_var::{self_by_pointer?}
@@ -399,14 +399,27 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   if block_arg = target.block_arg
     local_skip << block_arg.name
   end
-  if closure_source.nil?
-    captured = low.current_context.closure_facts.as(ClosureFacts).analyse_def(target, self_type)
-    captured.closured.each { |var| local_skip << var.name }
-  end
+  known = low.current_context.closure_facts.as(ClosureFacts)
+  # A closure literal keeps the frame recorded by its enclosing walk.
+  found = closure_source.nil? ? known.analyse_def(target, self_type) : known.frame?(target)
+  raise "BUG: a closure literal has no closure frame (closures.iyi visit(ProcLiteral))" if found.nil?
+  own = found.as(ClosureFrame)
+  own.closured.each { |var| local_skip << var.name }
   preallocate_locals(low, target.body, local_skip)
-  if closure_source.nil?
-    frame = low.current_context.closure_facts.as(ClosureFacts).analyse_def(target, self_type)
-    allocate_closure(low, frame)
+  if source = closure_source
+    if own.closured.empty? && !own.self_closured
+      low.current_context.copy_closure_from(source)
+      low.current_context.closure_ptr = fn.param(0)
+    else
+      # Hosted fun.cr:472-481 reaches the parent through this function's
+      # context parameter, never through an SSA value in the enclosing function.
+      parent = LowerContext.new(fn, fn_type, source.type, Hash(String, LowerVar).new)
+      parent.copy_closure_from(source)
+      parent.closure_ptr = fn.param(0)
+      allocate_closure(low, own, parent)
+    end
+  else
+    allocate_closure(low, own)
   end
   assigned = collect_assigned_vars(target.body, low.analysed)
   i = 0

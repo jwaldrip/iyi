@@ -51,6 +51,30 @@ class Counter
   end
 end
 
+class Gate
+  def initialize(@closed : Int32)
+  end
+
+  def closed : Int32
+    @closed
+  end
+
+  def close(by : Int32) : Int32
+    @closed = @closed &+ by
+  end
+
+  def closer : Proc(Int32, Int32)
+    keep_int do |value|
+      defer {@closed = @closed &+ value}
+      next @closed
+    end
+  end
+end
+
+def keep_gate(&block : Gate -> Int32) : Proc(Gate, Int32)
+  block
+end
+
 plain = ->(value : Int32) {
   result = once(5) do |value|
     local = value &+ 3
@@ -135,6 +159,45 @@ LibC.exit(20) unless nested_f.call(1) == 8
 
 any_f = keep_any { |value| next value &+ 1 }
 LibC.exit(21) unless any_f.call(1) == 2
+
+free_defer = keep_gate do |gate|
+  defer {gate.close(1)}
+  next gate.closed &+ 10
+end
+shared_gate = Gate.new(0)
+LibC.exit(22) unless free_defer.call(shared_gate) == 10 && shared_gate.closed == 1
+LibC.exit(23) unless free_defer.call(shared_gate) == 11 && shared_gate.closed == 2
+
+seen = 0
+step = 100
+step_reader = -> { step }
+shadowed = keep_int do |step|
+  defer {seen = seen &+ step}
+  step &* 2
+end
+LibC.exit(24) unless shadowed.call(3) == 6 && seen == 3
+LibC.exit(25) unless shadowed.call(4) == 8 && seen == 7 && step_reader.call == 100
+
+tally = Gate.new(0)
+yielded_defer = keep_int do |value|
+  once(value) do |item|
+    defer {tally.close(item)}
+    next item &+ 1
+  end
+end
+LibC.exit(26) unless yielded_defer.call(5) == 6 && tally.closed == 5
+
+held = Gate.new(5)
+closer = held.closer
+LibC.exit(27) unless closer.call(3) == 5 && held.closed == 8
+
+offset = 50
+maker = ->(base : Int32) {
+  local = base &+ 1
+  keep_int { |value| value &+ local &+ offset }
+}
+made = maker.call(1)
+LibC.exit(28) unless made.call(10) == 62
 
 halt = -> { once(3) { |value| code = LibC.exit(value &- 3) } }
 halt.call

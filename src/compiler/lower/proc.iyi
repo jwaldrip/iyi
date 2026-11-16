@@ -1,8 +1,8 @@
 module compiler/lower/proc
 
 # A proc literal carries a context for captured locals or self; capture-free
-# literals use null. Yielded blocks share that context; nested proc literals
-# remain refused.
+# literals use null. Yielded blocks share that context. A defer's generated
+# cleanup has its own closure; written nested proc literals remain refused.
 
 import compiler/foundation/location::{Location}
 import compiler/ir/types::{IrType}
@@ -98,6 +98,11 @@ pub class ProcScan < Visitor
         expanded.accept(self)
         return false
       end
+    end
+    if node.is_a?(ProcLiteral) && node.as(ProcLiteral).def.iyi_defer?
+      # The normalizer also leaves the deferred expression inline in the
+      # handler's ensure, so this scan still sees any unsupported written form.
+      return false
     end
     if node.is_a?(ProcLiteral) || node.is_a?(Def) || node.is_a?(ClassDef) || node.is_a?(ModuleDef)
       @refused = "a nested proc, def or class inside a proc literal (hosted closure)" if @refused.nil?
