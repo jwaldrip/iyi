@@ -16,7 +16,8 @@ module compiler/lower/cast
 #   - `to_lhs` and `to_rhs` (hosted codegen.cr): a load from a pointer unless the type is passed
 #     by value (a tuple or a mixed union, whose value is its aggregate).
 #   - `downcast` from a mixed union to a nil, a Bool, or any other type (hosted
-#     `downcast_distinct(MixedUnionType)`): the value area is read at the target's type.
+#     `downcast_distinct(MixedUnionType)`): the value area is read at the target's type;
+#     numeric argument casts already accepted by the semantic matcher use unchecked conversion.
 #   - `type_id_value`: the type id of a type, read from its global `@"<Name>:type_id"` as the
 #     hosted `type_id` does (an internal constant global, loaded).
 # Refused by name: union copies requiring compatible-member casts or different alignment,
@@ -32,7 +33,7 @@ import compiler/lower/helpers::{at_terminator?, llvm_nil, load_aligned, store_al
 import compiler/lower/layouts::{has_inner_pointers?}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
-import compiler/lower/typer::{primitive_kind, passed_by_value?, reference_union?}
+import compiler/lower/typer::{primitive_kind, primitive_bytes, passed_by_value?, reference_union?}
 import compiler/lower/unions::{mixed_union_value_area}
 import compiler/semantic/top_level::{EnumType, MetaclassType, NilType, Type, UnionType, VoidType}
 import compiler/syntax/ast::{ASTNode, Var}
@@ -505,6 +506,27 @@ end
 pub def downcast_distinct(low : Lowerer, value : Value, to_type : Type, from_type : Type) : Value
   to_type = specialize_mixed_union(TypeIndirection.remove_indirection(to_type))
   from_type = specialize_mixed_union(TypeIndirection.remove_indirection(from_type))
+  # Hosted downcast_distinct uses unchecked numeric conversion for arguments
+  # whose automatic cast was already accepted by the semantic matcher.
+  from_kind = primitive_kind(from_type)
+  to_kind = primitive_kind(to_type)
+  if from_kind == "int" && to_kind == "int"
+    target_ir = low.typer.llvm_type(to_type)
+    return value if value.type == target_ir
+    if primitive_bytes(from_type) < primitive_bytes(to_type)
+      return from_type.full_name.starts_with?("U") ? low.builder.zext(value, target_ir) : low.builder.sext(value, target_ir)
+    end
+    return low.builder.trunc(value, target_ir)
+  end
+  if from_kind == "int" && to_kind == "float"
+    target_ir = low.typer.llvm_type(to_type)
+    return from_type.full_name.starts_with?("U") ? low.builder.ui_to_fp(value, target_ir) : low.builder.si_to_fp(value, target_ir)
+  end
+  if from_kind == "float" && to_kind == "float"
+    target_ir = low.typer.llvm_type(to_type)
+    return value if value.type == target_ir
+    return primitive_bytes(from_type) < primitive_bytes(to_type) ? low.builder.fp_ext(value, target_ir) : low.builder.fp_trunc(value, target_ir)
+  end
   if to_type.is_a?(NilType)
     return llvm_nil(low)
   end
