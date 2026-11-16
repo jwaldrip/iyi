@@ -97,13 +97,15 @@ passed=0
 KNOWN_DIVERGED="lower_string_nonascii lower_name_pointer_union"
 e2e=""
 required_wide="lowconst_wide_unsigned lowconst_wide_fold lowconst_wide_signed lower_wide_literal"
+required_proc_self="lower_closure_self_class lower_closure_self_struct lower_closure_self_nested lower_closure_self_unit_call lower_closure_counter lowprim_proc_call"
+proc_executed=""
 wide_lowered=""
 wide_executed=""
 module_same=0
 module_differ=0
 diverged=0
 waiting=0
-for fixture in "$REPO"/bench/fixtures/lower_*.iyi "$REPO"/bench/fixtures/lowdecl_nested_case_block.iyi "$REPO"/bench/fixtures/lowconst_*.iyi; do
+for fixture in "$REPO"/bench/fixtures/lower_*.iyi "$REPO"/bench/fixtures/lowdecl_nested_case_block.iyi "$REPO"/bench/fixtures/lowconst_*.iyi "$REPO"/bench/fixtures/lowprim_proc_call.iyi; do
   name="$(basename "$fixture" .iyi)"
   # lower_headed_late is proved in section 2c against the arena prelude. The empty-prelude
   # loop names its proc Proc(Base, Base); the port, having made the virtual type, names Base+.
@@ -166,6 +168,12 @@ for name in $required_wide; do
     *) echo "  $name: FAIL, required full module did not match"; status=1 ;;
   esac
 done
+for name in $required_proc_self; do
+  case " $e2e " in
+    *" $name "*) echo "  $name: required proc module matches" ;;
+    *) echo "  $name: FAIL, required proc module did not match"; status=1 ;;
+  esac
+done
 echo "  fixtures: $passed passed, $diverged diverged, $waiting waiting (named above)"
 if [ "$diverged" -gt 0 ]; then
   status=1
@@ -207,6 +215,18 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
     if [ "$ns" = "$hs" ] && cmp -s "$WORK/$name.native.out" "$WORK/$name.hosted.out"; then
       echo "  $name: native executable runs to the hosted result (status $hs, stdout identical)"
       e2e_pass=$((e2e_pass + 1))
+      case " $required_proc_self " in
+        *" $name "*)
+          expected=0
+          [ "$name" = lowprim_proc_call ] && expected=7
+          if [ "$hs" -eq "$expected" ]; then
+            proc_executed="$proc_executed $name"
+          else
+            echo "  $name: FAIL, expected status $expected"
+            status=1
+          fi
+          ;;
+      esac
       if [ "$hs" = 7 ]; then
         case " $required_wide " in
           *" $name "*) wide_executed="$wide_executed $name" ;;
@@ -229,6 +249,12 @@ for name in $required_wide; do
   case " $wide_executed " in
     *" $name "*) echo "  $name: required native and hosted status 7 matched" ;;
     *) echo "  $name: FAIL, required native execution did not match status 7"; status=1 ;;
+  esac
+done
+for name in $required_proc_self; do
+  case " $proc_executed " in
+    *" $name "*) echo "  $name: required proc executable matched" ;;
+    *) echo "  $name: FAIL, required proc executable was not proved"; status=1 ;;
   esac
 done
 
@@ -376,6 +402,43 @@ lower_core_check() {
   done
   return 0
 }
+
+# A failed mutant build or unrelated refusal is not a caught parity change.
+proc_ir_mutant_check() {
+  local name="$1"
+  if ! "$IYI" build -o "$WORK/proc-ir-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/proc-ir-mut.build.log" 2>&1; then
+    echo "INVALID: proc IR mutant driver did not build"
+    return 0
+  fi
+  if ! "$WORK/proc-ir-mut" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/proc-ir-mut.out" 2>&1; then
+    echo "INVALID: proc IR mutant could not lower $name"
+    return 0
+  fi
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] == b[2] && b[2] > 0 && c[2] == 1) ok=1 } END { exit !ok }' "$WORK/proc-ir-mut.out"
+}
+
+proc_result_standin_mutant_check() {
+  if ! "$IYI" build -o "$WORK/proc-st-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/proc-st-mut.build.log" 2>&1; then
+    echo "INVALID: proc return stand-in mutant driver did not build"
+    return 0
+  fi
+  if "$WORK/proc-st-mut" lower "$REPO/bench/fixtures/lower_closure_self_class.iyi" "$WORK/lower_closure_self_class.oracle.ll" > "$WORK/proc-st-mut.out" 2>&1; then
+    return 0
+  fi
+  if awk '/undefined method .count. for Int32/ { found=1 } END { exit !found }' "$WORK/proc-st-mut.out"; then
+    return 1
+  fi
+  echo "INVALID: proc return stand-in mutant failed for another reason"
+  return 0
+}
+
+prove_mutation "captured parameter names lose priority to closure fields" "$REPO/src/compiler/lower/fun.iyi" \
+  'fn.name_param(fn.param(first + i), target.args[i].name)' 'nil' -- proc_ir_mutant_check lower_closure_self_nested || status=1
+prove_mutation "aggregate proc call joins values instead of branch-local addresses" "$REPO/src/compiler/lower/primitives.iyi" \
+  'aggregate = passed_by_value?(result_type)' 'aggregate = false' -- proc_ir_mutant_check lower_closure_self_struct || status=1
+prove_mutation "proc call stand-in always returns Int32" "$REPO/bench/lib/primitive_stand_in.iyi" \
+  'proc_call = primitive_def("call", [Arg.new("args", nil, Splat.new(Path.new("T")))] of Arg, Path.new("R"), "proc_call")' \
+  'proc_call = primitive_def("call", [Arg.new("args", nil, Splat.new(Path.new("T")))] of Arg, Path.new("Int32"), "proc_call")' -- proc_result_standin_mutant_check || status=1
 
 folded_const_check() {
   if ! "$IYI" build -o "$WORK/const-fold-mut" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/const-fold-mut.log" 2>&1; then

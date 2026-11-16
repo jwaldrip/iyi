@@ -344,6 +344,24 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
     return fn
   end
 
+  # Hosted codegen_fun_signature names parameters before any block, local
+  # alloca or captured-variable GEP can claim the same name.
+  first = closure_source.nil? ? 0 : 1
+  if self_type
+    fn.name_param(fn.param(0), "self")
+    first = 1
+  end
+  i = 0
+  while i < target.args.size
+    fn.name_param(fn.param(first + i), target.args[i].name)
+    i += 1
+  end
+  if target.uses_block_arg?
+    block_arg = target.block_arg
+    raise "BUG: captured block parameter is missing" if block_arg.nil?
+    fn.name_param(fn.param(first + target.args.size), block_arg.as(Arg).name)
+  end
+
   saved = low.save_function_state
   ctx_type = def_context_type(self_type, class_owner)
   if source = closure_source
@@ -370,12 +388,9 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
     frame = facts.analyse_def(target, self_type)
     low.current_context.closure_facts = facts
   end
-  first = closure_source.nil? ? 0 : 1
   if st = self_type
     self_param = fn.param(0)
-    fn.name_param(self_param, "self")
     low.current_context.vars["self"] = LowerVar.new(self_param, st, !self_by_pointer?(st))
-    first = 1
   end
   # Hosted alloca_non_closured_vars allocates the def's locals before copying
   # arguments or emitting expressions, including temporary aggregate spills.
@@ -399,7 +414,6 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
     arg = target.args[i]
     arg_type = arg_types[i]
     param = fn.param(i + first)
-    fn.name_param(param, arg.name)
     create_local_copy_of_arg(low, arg.name, arg_type, param, assigned.includes?(arg.name))
     i += 1
   end
@@ -410,7 +424,6 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
     block_type = low.analysed.type_of?(block_arg.as(ASTNode))
     raise "BUG: captured block parameter has no type" if block_type.nil?
     param = fn.param(first + target.args.size)
-    fn.name_param(param, block_arg.as(Arg).name)
     create_local_copy_of_arg(low, block_arg.as(Arg).name, block_type.as(Type), param, assigned.includes?(block_arg.as(Arg).name))
   end
 
