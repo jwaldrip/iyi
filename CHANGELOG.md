@@ -6,8 +6,9 @@
 - Typed local declarations retain the initializer's storage type instead of
   widening it to the written restriction. Methods emitted during class
   initialization retain their instance-variable assignments.
-- Nested yielded blocks contribute writes to their enclosing block's local
-  storage types, preserving nilable references and lexical shadowing.
+- Yielded blocks keep their own storage unions, including nested writes and
+  reassigned arguments. Nil-bound locals reset at each block or inlined-method
+  entry. Unreachable locals retain the hosted compiler's Nil storage.
 - Nil-valued conditions lower to false, including negation, while retaining
   the condition expression's side effects.
 

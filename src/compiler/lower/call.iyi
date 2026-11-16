@@ -48,7 +48,7 @@ import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/block::{NoReturnPhi, alloca_local, join_pointer}
-import compiler/lower/locals::{LocalOrder}
+import compiler/lower/locals::{LocalOrder, reset_nil_slot, reset_nilable_locals}
 import compiler/lower/closure::{allocate_closure}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
 import compiler/lower/cast::{assign, to_rhs, type_id_value, upcast, downcast, pointer_of_value, type_id_of_value, mixed_type_id_of_pointer, match_type_id}
@@ -916,6 +916,10 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   end
   block_ctx = LowerContext.new(caller.fun, caller.fun_type, caller.type, block_vars)
   block_ctx.top_level = caller.top_level
+  if owner = low.analysed.block_owners[block]?
+    block_ctx.var_unions = owner.local_storage.unions
+    block_ctx.nil_resets = owner.local_storage.nil_resets
+  end
   block_ctx.return_type = caller.return_type
   block_ctx.return_phi = caller.return_phi
   block_ctx.return_target = caller.return_target
@@ -948,6 +952,8 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   frame.block_node = block
   frame.block_context = block_ctx
   frame.return_target = node
+  frame.var_unions = low.analysed.def_var_unions[def_node]?
+  frame.nil_resets = low.analysed.def_nil_resets[def_node]?
   if noreturn
     frame.return_phi = NoReturnPhi.new
   else
@@ -974,6 +980,7 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
     low.context = frame
   end
 
+  reset_nilable_locals(low)
   low.needs_value = true
   visit_node(low, def_node.body)
   finish_block_call_body(low, phi, body_t.as(Type), ret)
@@ -991,19 +998,20 @@ end
 # caller variable of the same name (hosted `undef_vars`). A block argument never yielded to has the nil
 # type, as the hosted `var.type? || @program.nil`.
 pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, LowerVar), captured : Array(String) = [] of String) : Nil
+  owner = low.analysed.block_owners[block]?
+  storage_types = owner.nil? ? nil : owner.local_storage.unions
   i = 0
   while i < block.args.size
     arg = block.args[i]
     if arg.name != "_" && !captured.includes?(arg.name)
       t = low.analysed.type_of?(arg.as(ASTNode))
+      if table = storage_types
+        t = table[arg.name]? || t
+      end
       nil_t = low.analysed.program.nil_type
       alloca_local(low, vars, arg.name, t.nil? ? nil_t : t.as(Type))
     end
     i += 1
-  end
-  nested : Hash(String, Type)? = nil
-  if owner = low.analysed.block_owners[block]?
-    nested = owner.nested_storage.unions
   end
   collector = LocalOrder.new(low.analysed)
   block.body.accept(collector)
@@ -1013,9 +1021,9 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
     # Hosted codegen.cr:2562 allocates block.vars at their merged storage type,
     # not the flow type of the first assignment encountered in the block.
     t = collector.types[name]?
-    raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
-    storage = t.as(Type)
-    if table = nested
+    # Hosted alloca_non_closured_vars gives untyped, unreachable locals Nil storage.
+    storage = t.nil? ? low.analysed.program.nil_type : t.as(Type)
+    if table = storage_types
       if written = table[name]?
         storage = low.analysed.program.type_merge(storage, written)
       end
@@ -1024,6 +1032,9 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
     # A retained slot belongs to an outer variable the block writes.
     unless vars[name]?
       alloca_local(low, vars, name, storage)
+      if owner && owner.local_storage.nil_resets.includes?(name) && storage.nilable?
+        reset_nil_slot(low, vars[name].pointer, storage)
+      end
     end
   end
 end
@@ -1032,13 +1043,22 @@ end
 # the arguments are copied: every argument gets an alloca (the inlined def's arguments are not read in
 # place), and each local assigned in the body gets one, in the order its first assignment is met.
 pub def allocate_def_vars(low : Lowerer, def_node : Def, arg_types : Array(Type), vars : Hash(String, LowerVar), captured : Array(String) = [] of String) : Nil
+  storage_types = low.analysed.def_var_unions[def_node]?
   i = 0
   while i < def_node.args.size
     arg = def_node.args[i]
     if arg.name == "_"
       pending_visit_node("an argument named _ in an inlined def (hosted create_local_copy_of_arg)")
     end
-    alloca_local(low, vars, arg.name, arg_types[i]) unless captured.includes?(arg.name)
+    unless captured.includes?(arg.name)
+      storage = arg_types[i]
+      if table = storage_types
+        if written = table[arg.name]?
+          storage = low.analysed.program.type_merge(storage, written)
+        end
+      end
+      alloca_local(low, vars, arg.name, storage)
+    end
     i += 1
   end
   collector = LocalOrder.new(low.analysed)
@@ -1047,10 +1067,16 @@ pub def allocate_def_vars(low : Lowerer, def_node : Def, arg_types : Array(Type)
     name = var.name
     next if captured.includes?(name)
     t = collector.types[name]?
-    raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
-    next if t.as(Type).is_a?(NoReturnType)
+    # A narrowed-out branch may declare a local without ever typing its value.
+    storage = t.nil? ? low.analysed.program.nil_type : t.as(Type)
+    if table = storage_types
+      if written = table[name]?
+        storage = low.analysed.program.type_merge(storage, written)
+      end
+    end
+    next if storage.is_a?(NoReturnType)
     unless vars[name]?
-      alloca_local(low, vars, name, t.as(Type))
+      alloca_local(low, vars, name, storage)
     end
   end
 end
@@ -1072,16 +1098,16 @@ pub def copy_args(low : Lowerer, def_node : Def, arg_types : Array(Type), values
       value = values[i]
       stored = value.type.pointer? ? to_rhs(low, value, t) : value
       store_aligned(low, stored, temp)
-      if v.closure_slot
+      if v.closure_slot || v.type.full_name != t.full_name
         assign(low, v.pointer, v.type, t, temp)
       else
         loaded = load_aligned(low, ir, temp, "")
         store_aligned(low, loaded, v.pointer)
       end
     else
-      if v.closure_slot
+      if v.closure_slot || v.type.full_name != t.full_name
         assign(low, v.pointer, v.type, t, values[i])
-      else
+      elsif !t.nil_type?
         store_aligned(low, values[i], v.pointer)
       end
     end

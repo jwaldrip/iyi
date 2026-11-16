@@ -36,6 +36,7 @@ import compiler/semantic/top_level::{NilType, NoReturnType, Type, VoidType}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/types/indirection::{TypeIndirection}
 import compiler/types/types::{TupleInstanceType}
+import compiler/lower/locals::{reset_nilable_locals}
 
 # The phi of a branch whose value never arrives: a block call or a yield whose type is NoReturn. The
 # hosted `Phi#add` with a NoReturn node type (phi.cr:40-55) emits `unreachable` for every value added, and
@@ -173,6 +174,8 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
   body.block_context = caller.block_context
   body.copy_closure_from(caller)
   body.macro_origin = caller.macro_origin
+  body.var_unions = caller.var_unions
+  body.nil_resets = caller.nil_resets
 
   # A `while` around the call is not the target of a `break` or `next` written in the block.
   saved_next = low.loop_next
@@ -185,6 +188,7 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
   low.context = body
   low.needs_value = wants
   set_ensure_exception_handler(low, block)
+  reset_nilable_locals(low)
   visit_node(low, block.body)
   if noreturn
     unless block_ended?(low)

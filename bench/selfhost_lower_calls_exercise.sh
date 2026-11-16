@@ -735,9 +735,9 @@ block_storage_check() {
   "$WORK/block-storage-mut" lower "$REPO/bench/fixtures/lowdecl_block_branch_storage.iyi" "$WORK/lowdecl_block_branch_storage.oracle.ll" > "$WORK/block-storage-mut.out" 2>/dev/null || return 1
   awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-storage-mut.out"
 }
-prove_mutation "block locals retain only the first assignment type" "$REPO/src/compiler/lower/locals.iyi" \
-  '          @types[var.name] = @analysed.program.type_merge(previous, type)' \
-  '          @types[var.name] = previous' -- block_storage_check || status=1
+prove_mutation "block locals retain only the first assignment type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      unions[name] = @program.type_merge(previous, type)' \
+  '      unions[name] = previous' -- block_storage_check || status=1
 
 block_loop_rw_check() {
   if ! "$IYI" build -o "$WORK/block-loop-rw-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-loop-rw-mut.build.log" 2>&1; then
@@ -788,8 +788,8 @@ prove_mutation "a block local misses its nested blocks' writes" "$REPO/src/compi
   '        storage = low.analysed.program.type_merge(storage, written)' \
   '        storage = storage' -- block_nested_storage_check || status=1
 prove_mutation "a nested block writes into its yielding def's storage" "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  '        @current_nested_storage = owner.nested_storage' \
-  '        @current_nested_storage = nil' -- block_nested_storage_check || status=1
+  '        @var_unions = owner.local_storage.unions' \
+  '        @var_unions = callee_var_unions' -- block_nested_storage_check || status=1
 
 uncovered_mutation_check() {
   if ! "$IYI" build -o "$WORK/uncovered-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/uncovered-mut.build.log" 2>&1; then

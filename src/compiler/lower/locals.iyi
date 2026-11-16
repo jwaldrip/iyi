@@ -95,6 +95,17 @@ pub def reset_nil_slot(low : Lowerer, pointer : Value, type : Type) : Nil
   nil
 end
 
+# Hosted reset_nilable_vars runs at every block yield or inlined-def entry.
+pub def reset_nilable_locals(low : Lowerer) : Nil
+  if resets = low.current_context.nil_resets
+    low.current_context.vars.each do |name, var|
+      if resets.includes?(name) && var.type.nilable?
+        assign(low, var.pointer, var.type, low.analysed.program.nil_type, llvm_nil(low))
+      end
+    end
+  end
+end
+
 pub def preallocate_locals(low : Lowerer, body : ASTNode, skip : Array(String)) : Nil
   collector = LocalOrder.new(low.analysed)
   body.accept(collector)
