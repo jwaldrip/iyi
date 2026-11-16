@@ -469,30 +469,36 @@ else
   echo "  uninferred generic: hosted compiler could not infer T"
 fi
 
-# Generated new has a different expansion from hosted; compare its run only.
-name=lowcallrun_named_new
-fixture="$REPO/bench/fixtures/$name.iyi"
-if ! "$IYI" build --prelude empty --no-debug -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1 ||
-   ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1; then
-  echo "  $name: compilation failed"
-  status=1
-else
-  timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
-  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/$name.native"; then
-    echo "  $name: native signature verification failed"
+# Named constructor parameters use different temporary names; compare their runs.
+for name in lowcallrun_named_new lowcallrun_new_default_shapes lowcallrun_new_overload_dispatch; do
+  case "$name" in
+    lowcallrun_named_new) want_status=35; want_output=213 ;;
+    lowcallrun_new_default_shapes) want_status=63; want_output=21A3AB4CD567EF ;;
+    lowcallrun_new_overload_dispatch) want_status=3; want_output="" ;;
+  esac
+  fixture="$REPO/bench/fixtures/$name.iyi"
+  if ! "$IYI" build --prelude empty --no-debug -o "$WORK/$name.hosted" "$fixture" > "$WORK/$name.hosted.log" 2>&1 ||
+     ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/$name.native" --pipeline typed > "$WORK/$name.native.log" 2>&1; then
+    echo "  $name: compilation failed"
     status=1
   else
-    timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
-    if [ "$ns" -ne "$hs" ] || [ $((hs & 255)) -ne 35 ] ||
-       ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out" ||
-       [ "$(< "$WORK/$name.hosted.out")" != "213" ]; then
-      echo "  $name: hosted/native status or output differs"
+    timeout 30 "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1; hs=$?
+    if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/$name.native"; then
+      echo "  $name: native signature verification failed"
       status=1
     else
-      echo "  $name: hosted and native output 213, status 35"
+      timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
+      if [ "$ns" -ne "$hs" ] || [ $((hs & 255)) -ne "$want_status" ] ||
+         ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out" ||
+         [ "$(< "$WORK/$name.hosted.out")" != "$want_output" ]; then
+        echo "  $name: hosted/native status or output differs"
+        status=1
+      else
+        echo "  $name: hosted and native output '$want_output', status $want_status"
+      fi
     fi
   fi
-fi
+done
 
 fixture="$REPO/bench/fixtures/lowcallwait_super_forwarded_default.iyi"
 if ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$fixture" -o "$WORK/super_default.native" --pipeline typed > "$WORK/super_default.native.log" 2>&1; then
@@ -643,6 +649,31 @@ lower_calls_check() {
   done
   return 0
 }
+
+prove_mutation "a generated new evaluates defaults before allocating" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    if @program.generated_new?(definition) && definition.double_splat.nil? && (named || definition.splat_index || node.args.size != definition.args.size)' \
+  '    if false' -- lower_calls_check || status=1
+prove_mutation "a forwarded initialize loses its definition location" "$REPO/src/compiler/semantic/new.iyi" \
+  '    init.at(anchor)' '    anchor' -- lower_calls_check || status=1
+
+overload_dispatch_check() {
+  if ! "$IYI" build -o "$WORK/overload.check.tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/overload.check.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    echo "INVALID MUTANT: overload compiler did not build"
+    return 0
+  fi
+  rm -f "$WORK/overload.check.exe"
+  IYI_PATH="$REPO/src" "$WORK/overload.check.tool" "$REPO/bench/fixtures/lowcallrun_new_overload_dispatch.iyi" -o "$WORK/overload.check.exe" --pipeline typed > "$WORK/overload.check.log" 2>&1 || return 1
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/overload.check.exe"; then
+    touch "$WORK/general-mutation.invalid"
+    return 0
+  fi
+  local result
+  timeout 30 "$WORK/overload.check.exe" > "$WORK/overload.check.out" 2>&1; result=$?
+  [ "$result" -eq 3 ] && [ ! -s "$WORK/overload.check.out" ]
+}
+prove_mutation "constructor overload wrappers share a typing frame" "$REPO/src/compiler/semantic/new.iyi" \
+  '    return restriction.clone' '    return nil' -- overload_dispatch_check || status=1
 cleanup_probe_ok() {
   if ! "$IYI" build -o "$WORK/cleanup_probe" "$REPO/bench/selfhost_probe_cleanup.iyi" > "$WORK/cleanup_probe.build.log" 2>&1; then
     echo "INVALID MUTANT: cleanup probe failed to build" >&2
@@ -1128,9 +1159,9 @@ prove_mutation "an unqualified class-method call loses its class owner" "$REPO/s
 prove_mutation "a generic metaclass call passes no self type id" "$REPO/src/compiler/lower/call.iyi" \
   '      self_value = type_id_value(low, recv_type)' '      self_value = nil' -- lower_calls_check || status=1
 prove_mutation "a builtin metaclass receiver is refused" "$REPO/src/compiler/lower/call.iyi" \
-  '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)' '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""' -- lower_calls_check || status=1
+  '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType) || inst.is_a?(EnumType)) && !inst.is_a?(NilType)' '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType) || inst.is_a?(EnumType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""' -- lower_calls_check || status=1
 prove_mutation "an implicit builtin class call is refused" "$REPO/src/compiler/lower/call.iyi" \
-  '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)' '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""' -- lower_calls_check || status=1
+  '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType) || ct.is_a?(EnumType)) && !ct.is_a?(NilType)' '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType) || ct.is_a?(EnumType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""' -- lower_calls_check || status=1
 prove_mutation "a computed metaclass receiver is not evaluated" "$REPO/src/compiler/lower/call.iyi" \
   '      unless node.obj.as(ASTNode).is_a?(Path)' '      if false' -- lower_calls_check || status=1
 prove_mutation "a captured block precedes self in the call" "$REPO/src/compiler/lower/call.iyi" \

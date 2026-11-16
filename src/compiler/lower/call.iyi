@@ -281,7 +281,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     if low.current_context.vars["self"]?.nil?
       # A non-generic class method has no self argument. An unqualified call to
       # another method on its own metaclass uses the same class owner.
-      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)
+      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType) || ct.is_a?(EnumType)) && !ct.is_a?(NilType)
         if ct.as(ModuleType).metaclass.defs[node.name]?
           class_owner = ct
         elsif target = low.analysed.target_def?(node)
@@ -725,9 +725,9 @@ pub def implicit_self_value(low : Lowerer) : Value
   sv.as(LowerVar).pointer
 end
 
-# The receiver's type, which is the owner of the method the call reaches (hosted `target_def.owner`). A
-# receiver that is a metaclass, a union, a virtual type or nil is refused by name, and so is a method
-# the receiver's type does not define itself (inherited, so the owner is a superclass).
+# The receiver's type is the method's owner (hosted `target_def.owner`).
+# Class, module and enum metaclasses use their class-method owner; instance
+# receivers are checked against the analysed target below.
 pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
   if recorded = low.analysed.call_receiver?(node)
     return recorded
@@ -741,14 +741,13 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
     if owner.is_a?(GenericClassInstanceMetaclassType)
       return owner
     end
-    # A class method of a non-generic class or module, called on the constant path that names it (`Sched.go`).
-    # The hosted code does not evaluate the path, and the method is the metaclass's own def (an inherited one is
-    # refused: the hosted target owner is the superclass).
+    # A class method of a non-generic class, module or enum passes no self.
+    # The analysed target can also name a def inherited by the metaclass.
     inst = owner.as(MetaclassType).instance_type
     if inst.is_a?(GenericClassType)
       pending_visit_node("the receiver of #{node.name} is the uninstantiated generic #{owner.full_name}: typing has not instantiated the owner")
     end
-    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)
+    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType) || inst.is_a?(EnumType)) && !inst.is_a?(NilType)
       pending_visit_node("a class method call on #{owner.full_name} (hosted call.cr: prepare_call_args, a generic or builtin metaclass)")
     end
     if owner.as(MetaclassType).defs[node.name]?.nil?

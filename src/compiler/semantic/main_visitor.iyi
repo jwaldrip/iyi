@@ -36,7 +36,7 @@ import compiler/semantic/method_lookup::{ArmWalk, Matches, MethodLookup}
 import compiler/semantic/cover::{CallCover}
 import compiler/semantic/call::{CallRecalculation}
 import compiler/semantic/call_error::{CallError}
-import compiler/semantic/new::{define_new_methods}
+import compiler/semantic/new::{define_new_methods, expand_new_default_arguments}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 
 # One construct the body typing could not type or refused, as the pipeline's
@@ -692,6 +692,7 @@ pub class MainVisitor < TypeNodeHost
     end
     nil
   end
+
   # A method written in an included generic module binds that module's
   # parameters, even when the receiver is a different generic class.
   def included_module_instance(owner : Type, wanted : Type, seen : Set(UInt64)) : GenericModuleInstanceType?
@@ -730,7 +731,6 @@ pub class MainVisitor < TypeNodeHost
     end
     nil
   end
-
 
   # The type a type node names under `owner`. A generic instance binds its type
   # parameter names to its type arguments (`T` is UInt64 in Pointer(UInt64)), and a
@@ -1487,6 +1487,7 @@ pub class MainVisitor < TypeNodeHost
     @scope = old_scope
     nil
   end
+
   # Initializer expressions have fresh locals and class-method self, not the
   # locals of the surrounding type body.
   def type_instance_var_initializer(value : ASTNode, owner : ModuleType) : Nil
@@ -1595,7 +1596,6 @@ pub class MainVisitor < TypeNodeHost
     end
     nil
   end
-
 
   def visit(node : Assign) : Bool
     # iyi: a constant whose value is one macro node is typed where a read of it types the value (visit(Path) expands
@@ -4987,10 +4987,14 @@ pub class MainVisitor < TypeNodeHost
 
   # Preserve the written call. The expansion takes explicit values in source
   # order; only omitted magic values are materialized at the call site.
+  # Generated new forwards written arguments; initialize evaluates its defaults.
   def call_expansion(node : Call, definition : Def) : CallExpansion?
     target = definition
     named = node.named_args
-    if named || definition.splat_index || (node.args.size < definition.args.size && DefaultArguments.supported?(definition, node.args, nil))
+    if @program.generated_new?(definition) && definition.double_splat.nil? && (named || definition.splat_index || node.args.size != definition.args.size)
+      target = expand_new_default_arguments(definition, node.args.size, named)
+      @program.copy_def_owner(definition, target)
+    elsif named || definition.splat_index || (node.args.size < definition.args.size && DefaultArguments.supported?(definition, node.args, nil))
       splat_names = [] of String
       if splat_index = definition.splat_index
         count = node.args.size - splat_index
