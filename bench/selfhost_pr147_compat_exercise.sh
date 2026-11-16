@@ -171,6 +171,13 @@ prove_mutation() {
     echo "  [$label] NOT CAUGHT: the probes still pass with the fix reverted"
     return 1
   fi
+  if ! grep -q '^  Phase summary: ' "$WORK/mutation.log" ||
+     ! grep -Eq ' (REJECTED|REGRESSION)([[:space:]]|$)' "$WORK/mutation.log"; then
+    cp "$WORK/mutation.orig" "$file"; MUT_FILE=""
+    echo "  [$label] NOT CAUGHT: the phase probes did not complete with a rejection or regression"
+    cat "$WORK/mutation.log"
+    return 1
+  fi
   cp "$WORK/mutation.orig" "$file"; MUT_FILE=""
   echo "  [$label] caught: $(grep -m1 -E 'REJECTED|REGRESSION|FAILED' "$WORK/mutation.log" | sed 's/^ *//' | cut -c1-120)"
   return 0
@@ -242,6 +249,7 @@ if [ "$probes_only" -eq 0 ]; then
   if "$IYI" build --no-codegen "$cycle" > "$WORK/hosted-cycle.log" 2>&1 ||
      ! grep -Fq 'infinite recursive definition of alias' "$WORK/hosted-cycle.log"; then
     echo "FAIL: hosted compiler did not reject the alias cycle"
+    cat "$WORK/hosted-cycle.log"
     status=1
   else
     echo "  hosted compiler rejects a cycle; the optional resolver reports a miss"
