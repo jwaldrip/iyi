@@ -55,6 +55,14 @@ check_refusal() {
   [ "$result" -ne 0 ] && [ ! -e "$WORK/refused" ] && grep -Fq "$message" "$WORK/refused.log"
 }
 
+check_refusal_mutant() {
+  if ! build_compiler; then
+    echo 'INVALID: refusal mutant compiler failed to build'
+    return 0
+  fi
+  check_refusal "$1" "$2"
+}
+
 # An unsupported primitive must be refused. The mutant is caught only if it
 # produces an executable, rather than failing to compile for another reason.
 check_primitive_refusal_mutant() {
@@ -181,7 +189,7 @@ check_barrier_mutant() {
 
 build_compiler || { cat "$WORK/build.log"; exit 1; }
 status=0
-for fixture in lower_closure_top_level lower_closure_nested_block lower_pointerof_arg lower_pointerof_proc_arg lower_macro_closure lower_macro_proc_locations lower_closure_self_class lower_closure_self_struct lower_closure_self_nested lower_closure_self_unit_call closure_forward_recursion; do
+for fixture in lower_closure_top_level lower_closure_nested_block lower_proc_yielded_blocks lowcall_recursive_named_mixed_inferred lowcall_noreturn_operand lower_pointerof_arg lower_pointerof_proc_arg lower_macro_closure lower_macro_proc_locations lower_closure_self_class lower_closure_self_struct lower_closure_self_nested lower_closure_self_unit_call closure_forward_recursion; do
   "$IYI" build --prelude empty -o "$WORK/host" "bench/fixtures/$fixture.iyi" > "$WORK/host.build.log" 2>&1 || { cat "$WORK/host.build.log"; exit 1; }
   "$WORK/host" > "$WORK/host.out" 2>&1 || exit 1
   cp "$WORK/host.out" "$WORK/host-$fixture.out"
@@ -208,6 +216,7 @@ for fixture in closure_gc_marking closure_gc_marking_self; do
 done
 check_refusal closure_self_refuse_primitive 'closure over self of Int32' || { cat "$WORK/refused.log"; exit 1; }
 check_refusal closure_self_refuse_nested 'proc literal: a nested proc, def or class inside a proc literal (hosted closure)' || { cat "$WORK/refused.log"; exit 1; }
+check_refusal noreturn_dead_instance_refuse "undefined method 'missing_method' for Int32" || { cat "$WORK/refused.log"; exit 1; }
 echo 'unsupported primitive self and nested proc: refused without an output binary'
 prove_mutation 'program closure facts omitted' "$REPO/src/compiler/lower/lower.iyi" \
   'low.current_context.closure_facts = facts' 'low.current_context.closure_facts = nil' -- check_mutant lower_closure_top_level || status=1
@@ -243,4 +252,12 @@ prove_mutation 'unit call incorrectly captures self' "$REPO/src/compiler/semanti
 prove_mutation 'primitive self is not refused' "$REPO/src/compiler/lower/closure.iyi" \
   'refuse_port("closure over self of #{st.full_name}: only a class or a struct passed by pointer is ported (hosted malloc_closure, codegen.cr:2661-2668)")' \
   'return st' -- check_primitive_refusal_mutant || status=1
+prove_mutation 'typing-stack recursion answers NoReturn' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  'return frame.estimating ? frame.estimate : nil' 'return @program.no_return_type' -- check_mutant lowcall_recursive_named_mixed_inferred || status=1
+prove_mutation 'abandoned instance keeps its provisional NoReturn' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '@def_instances.delete(abandoned)' 'nil' -- check_refusal_mutant noreturn_dead_instance_refuse "undefined method 'missing_method' for Int32" || status=1
+prove_mutation 'call on a NoReturn receiver is looked up' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  'return true if !node.obj.nil? && rec_type.is_a?(NoReturnType)' 'nil' -- check_mutant lowcall_noreturn_operand || status=1
+prove_mutation 'never-made call lowered as a call' "$REPO/src/compiler/lower/call.iyi" \
+  '    lower_never_made_call(low, node)' '    nil' -- check_mutant lowcall_noreturn_operand || status=1
 exit "$status"

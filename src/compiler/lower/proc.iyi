@@ -1,7 +1,8 @@
 module compiler/lower/proc
 
 # A proc literal carries a context for captured locals or self; capture-free
-# literals use null. Blocks and nested literals remain explicitly refused.
+# literals use null. Yielded blocks share that context; nested proc literals
+# remain refused.
 
 import compiler/foundation/location::{Location}
 import compiler/ir/types::{IrType}
@@ -97,10 +98,6 @@ pub class ProcScan < Visitor
         expanded.accept(self)
         return false
       end
-    end
-    if node.is_a?(Compiler::Syntax::Ast::Block)
-      @refused = "a block inside a proc literal (hosted closure over the block context, lower/block.iyi)" if @refused.nil?
-      return false
     end
     if node.is_a?(ProcLiteral) || node.is_a?(Def) || node.is_a?(ClassDef) || node.is_a?(ModuleDef)
       @refused = "a nested proc, def or class inside a proc literal (hosted closure)" if @refused.nil?
@@ -210,7 +207,7 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
 
   body_t = low.analysed.type_of?(node.def.body)
   raise "BUG: the analysed program has no type for a proc literal's body (hosted codegen.cr: visit(ProcLiteral))" if body_t.nil?
-  if body_t.as(Type).full_name != proc.return_type.full_name && !proc.return_type.nil_type?
+  if body_t.as(Type).full_name != proc.return_type.full_name && !proc.return_type.nil_type? && !body_t.as(Type).is_a?(NoReturnType)
     refuse_port("a proc literal whose body is #{body_t.as(Type).full_name} and returns #{proc.return_type.full_name} (hosted upcast of the return, not ported)")
   end
 

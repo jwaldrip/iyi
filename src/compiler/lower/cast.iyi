@@ -469,6 +469,10 @@ pub def upcast(low : Lowerer, value : Value, from : Type, to : Type) : Value
     return low.builder.const_null(low.typer.llvm_type(t)) if f.is_a?(NilType)
     return value
   end
+  # Hosted upcast_distinct(NilableProcType, NilType): both proc fields are null.
+  if t.is_a?(NilableProcType) && f.is_a?(NilType)
+    return make_nilable_fun(low, t.as(NilableProcType).proc_type)
+  end
   if t.is_a?(NilableProcType) && f.is_a?(ProcInstanceType)
     return value
   end

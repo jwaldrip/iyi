@@ -1,0 +1,74 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def once(value : Int32, &)
+  yield value
+end
+
+def twice(value : Int32, &)
+  first = yield value
+  second = yield(value &+ 1)
+  first &+ second
+end
+
+def captured_reader : Proc(Int32)
+  value = 40
+  -> {
+    first = once(2) { |value| value &+ 5 }
+    second = once(3) { |value| value &+ 6 }
+    value &+ first &+ second
+  }
+end
+
+def captured_counter : Proc(Int32)
+  count = 10
+  -> {
+    twice(1) { |delta| count = count &+ delta }
+    count
+  }
+end
+
+class Counter
+  def initialize(@value : Int32)
+  end
+
+  def reader : Proc(Int32)
+    -> { once(3) { |delta| @value &+ delta } }
+  end
+end
+
+plain = ->(value : Int32) {
+  result = once(5) do |value|
+    local = value &+ 3
+    once(local) { |inner| inner &+ 1 }
+  end
+  result &+ value
+}
+LibC.exit(1) unless plain.call(7) == 16
+LibC.exit(2) unless captured_reader.call == 56
+counter = captured_counter
+LibC.exit(3) unless counter.call == 13
+LibC.exit(4) unless counter.call == 16
+LibC.exit(5) unless Counter.new(20).reader.call == 23
+
+next_value = -> { twice(1) { |value| next value &+ 4 } }
+LibC.exit(6) unless next_value.call == 11
+break_value = -> { twice(1) { |value| break value &+ 5 } }
+LibC.exit(7) unless break_value.call == 6
+return_value = -> {
+  once(4) { |value| return value &+ 3 }
+  99
+}
+LibC.exit(8) unless return_value.call == 7
+only_return = -> { once(4) { |value| return value &+ 3 } }
+LibC.exit(9) unless only_return.call == 7
+
+flag = 0
+nil_writer = -> { once(1) { |value| flag = flag &+ value }; nil }
+result = nil_writer.call
+LibC.exit(10) unless flag == 1
+LibC.exit(11) if result
+
+halt = -> { once(3) { |value| code = LibC.exit(value &- 3) } }
+halt.call

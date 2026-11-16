@@ -280,17 +280,21 @@ pub def codegen_primitive_proc_call(low : Lowerer, node : Call, receiver_type : 
   ret_type = low.typer.llvm_type(result_type)
   aggregate = passed_by_value?(result_type)
   phi_type = aggregate ? low.module.types.ptr(0) : ret_type
-  phi = LowerPhi.new(wants, phi_type)
+  phi = TypeQueries.no_return?(result_type) ? nil : LowerPhi.new(wants && !ret_type.void?, phi_type, result_type)
   low.builder.position_at_end(null_block)
   plain_type = low.module.types.func(params, ret_type)
   plain = low.builder.call_aux(CallAux.new(plain_type, CallConv::Iyi), fun_ptr, args)
-  plain_value : Value = plain
-  if wants && aggregate
-    slot = low.alloca(ret_type, "")
-    store_aligned(low, plain, slot)
-    plain_value = slot
+  if merge = phi
+    plain_value : Value = plain
+    if wants && aggregate
+      slot = low.alloca(ret_type, "")
+      store_aligned(low, plain, slot)
+      plain_value = slot
+    end
+    merge.add(low, plain_value, false)
+  else
+    low.builder.unreachable
   end
-  phi.add(low, plain_value, false)
   low.builder.position_at_end(context_block)
   closure_params = [low.module.types.ptr] of IrType
   params.each { |param| closure_params << param }
@@ -298,14 +302,19 @@ pub def codegen_primitive_proc_call(low : Lowerer, node : Call, receiver_type : 
   args.each { |arg| closure_args << arg }
   closure_type = low.module.types.func(closure_params, ret_type)
   closure = low.builder.call_aux(CallAux.new(closure_type, CallConv::Iyi), fun_ptr, closure_args)
-  closure_value : Value = closure
-  if wants && aggregate
-    slot = low.alloca(ret_type, "")
-    store_aligned(low, closure, slot)
-    closure_value = slot
+  if merge = phi
+    closure_value : Value = closure
+    if wants && aggregate
+      slot = low.alloca(ret_type, "")
+      store_aligned(low, closure, slot)
+      closure_value = slot
+    end
+    merge.add(low, closure_value, true)
+    merge.close(low)
+  else
+    low.builder.unreachable
+    low.last = llvm_nil(low)
   end
-  phi.add(low, closure_value, true)
-  phi.close(low)
 end
 
 # Hosted primitives.cr 1272-1317: a literal tuple index names a field; a
