@@ -277,10 +277,10 @@ pub def codegen_primitive_proc_call(low : Lowerer, node : Call, receiver_type : 
   is_null = low.builder.icmp(IntPredicate::EQ, ctx, low.builder.const_null_pointer)
   low.builder.cond_br(is_null, null_block, context_block)
   result_type = proc_type.return_type
-  ret_type = low.typer.llvm_return_type(result_type)
+  ret_type = low.typer.llvm_type(result_type)
   aggregate = passed_by_value?(result_type)
   phi_type = aggregate ? low.module.types.ptr(0) : ret_type
-  phi = TypeQueries.no_return?(result_type) ? nil : LowerPhi.new(wants && !ret_type.void?, phi_type)
+  phi = TypeQueries.no_return?(result_type) ? nil : LowerPhi.new(wants && !ret_type.void?, phi_type, result_type)
   low.builder.position_at_end(null_block)
   plain_type = low.module.types.func(params, ret_type)
   plain = low.builder.call_aux(CallAux.new(plain_type, CallConv::Iyi), fun_ptr, args)
