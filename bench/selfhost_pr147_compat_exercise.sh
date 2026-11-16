@@ -95,6 +95,34 @@ verify_binary() {
   [ "$(uname -s)" != Darwin ] || codesign -v --strict "$1"
 }
 
+# A successful semantic probe must reach verified, non-empty IR on every host.
+# Native executables remain part of this proof on the supported Darwin target.
+prove_valid_alias() {
+  local fixture="$1" name="$2" label="$3"
+  if ! "$IYI" build --no-codegen "$fixture" > "$WORK/hosted-$name.log" 2>&1; then
+    echo "FAIL: hosted compiler refused $label"
+    cat "$WORK/hosted-$name.log"
+    return 1
+  fi
+  if ! "$WORK/typed_compile" "$fixture" -o "$WORK/$name.ir" --pipeline typed --prelude --probe-phase --emit ir > "$WORK/port-$name.log" 2>&1 ||
+     ! grep -Fxq '[phase] verify: pass' "$WORK/port-$name.log" || [ ! -s "$WORK/$name.ir" ]; then
+    echo "FAIL: typed compiler did not produce verified IR for $label"
+    cat "$WORK/port-$name.log"
+    return 1
+  fi
+  if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
+    if ! "$WORK/typed_compile" "$fixture" -o "$WORK/$name.native" --pipeline typed --prelude --probe-phase > "$WORK/native-$name.log" 2>&1 ||
+       ! grep -Fxq '[phase] link: pass' "$WORK/native-$name.log" || ! verify_binary "$WORK/$name.native" ||
+       ! "$WORK/$name.native" > "$WORK/run-$name.log" 2>&1; then
+      echo "FAIL: native build or execution for $label"
+      cat "$WORK/native-$name.log"
+      [ ! -f "$WORK/run-$name.log" ] || cat "$WORK/run-$name.log"
+      return 1
+    fi
+  fi
+  echo "  $label accepted by both compilers; typed IR verified"
+}
+
 
 # Copies the hosted front end's dumper heredoc out of an existing gate script, unchanged.
 # The marker is matched by pattern, so no gate name is spelled out here.
@@ -229,30 +257,33 @@ if [ "$probes_only" -eq 0 ]; then
     recursive_pointer="$REPO/bench/fixtures/pr147_alias_recursive_pointer.iyi"
     if "$IYI" build --no-codegen "$strict" > "$WORK/hosted-strict.log" 2>&1; then
       echo "FAIL: hosted compiler accepted the unresolved alias"
+      cat "$WORK/hosted-strict.log"
       status=1
     elif "$WORK/typed_compile" "$strict" -o "$WORK/strict" --pipeline typed --prelude --probe-phase > "$WORK/port-strict.log" 2>&1; then
       echo "FAIL: typed compiler accepted the referenced unresolved alias"
+      cat "$WORK/port-strict.log"
       status=1
     elif ! grep -Fxq 'Error: undefined constant ::MissingLibrary::Thing' "$WORK/hosted-strict.log" ||
          ! grep -Fxq 'Error: undefined constant ::MissingLibrary::Thing' "$WORK/port-strict.log"; then
       echo "FAIL: hosted and typed unresolved alias errors differ"
-      status=1
-    elif ! "$IYI" build --no-codegen "$chain" > "$WORK/hosted-chain.log" 2>&1 ||
-         ! "$WORK/typed_compile" "$chain" -o "$WORK/chain" --pipeline typed --prelude --probe-phase > "$WORK/port-chain.log" 2>&1; then
-      echo "FAIL: a valid alias chain was refused"
+      cat "$WORK/hosted-strict.log" "$WORK/port-strict.log"
       status=1
     else
-      echo "  strict referenced alias refuses with hosted error; valid chain builds"
+      echo "  strict referenced alias refuses with hosted error"
     fi
+    prove_valid_alias "$chain" chain "valid alias chain" || status=1
     if "$IYI" build --no-codegen "$unused" > "$WORK/hosted-unused.log" 2>&1; then
       echo "FAIL: hosted compiler accepted the unused unresolved alias"
+      cat "$WORK/hosted-unused.log"
       status=1
     elif "$WORK/typed_compile" "$unused" -o "$WORK/unused" --pipeline typed --prelude --probe-phase > "$WORK/port-unused.log" 2>&1; then
       echo "FAIL: typed compiler accepted the unused unresolved alias"
+      cat "$WORK/port-unused.log"
       status=1
     elif ! grep -Fxq 'Error: undefined constant ::MissingLibrary::Thing' "$WORK/hosted-unused.log" ||
          ! grep -Fxq 'Error: undefined constant ::MissingLibrary::Thing' "$WORK/port-unused.log"; then
       echo "FAIL: unused alias diagnostics differ"
+      cat "$WORK/hosted-unused.log" "$WORK/port-unused.log"
       status=1
     else
       echo "  unused unresolved alias refuses with the hosted error"
@@ -263,17 +294,12 @@ if [ "$probes_only" -eq 0 ]; then
        ! grep -Fxq 'Error: infinite recursive definition of alias CycleA' "$WORK/hosted-cycle.log" ||
        ! grep -Fxq 'Error: infinite recursive definition of alias CycleA' "$WORK/port-cycle.log"; then
       echo "FAIL: strict alias cycle did not reject with the hosted error (status $cycle_status)"
+      cat "$WORK/hosted-cycle.log" "$WORK/port-cycle.log"
       status=1
     else
       echo "  strict alias cycle refuses with the hosted error"
     fi
-    if ! "$IYI" build --no-codegen "$recursive_pointer" > "$WORK/hosted-recursive-pointer.log" 2>&1 ||
-       ! "$WORK/typed_compile" "$recursive_pointer" -o "$WORK/recursive-pointer" --pipeline typed --prelude --probe-phase > "$WORK/port-recursive-pointer.log" 2>&1; then
-      echo "FAIL: a valid recursive pointer alias was refused"
-      status=1
-    else
-      echo "  recursive pointer alias is accepted by both compilers"
-    fi
+    prove_valid_alias "$recursive_pointer" recursive-pointer "recursive pointer alias" || status=1
   fi
 fi
 

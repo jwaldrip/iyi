@@ -76,10 +76,14 @@ echo
 echo "== 3. Guarded mutation proofs (patch, rebuild, the gate must fail)"
 MUTATIONS_RUN=0
 
-# Rebuilds the driver from the patched source and compares every fixture. A
-# build failure, a run failure, or any divergence is the catch (non-zero).
+# Rebuild the driver from the patched source and compare the fixtures. A build
+# failure is not a behavioral catch.
 check_calls_diverge() {
-  "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_semantic_calls_exercise.iyi" >/dev/null 2>&1 || return 1
+  if ! "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_semantic_calls_exercise.iyi" >"$WORK/mutation-build.log" 2>&1; then
+    echo "mutation failed to build, not a behavioral catch"
+    cat "$WORK/mutation-build.log"
+    return 0
+  fi
   local fixture
   for fixture in "$REPO"/bench/fixtures/semcall_*.iyi; do
     if [ "$#" -gt 0 ] && [ "$fixture" != "$REPO/$1" ]; then
@@ -105,6 +109,38 @@ check_forward_lookup_diverge() {
   grep -Fq 'lookup_choose(LookupValue) -> String' "$WORK/forward_o.out" || return 0
   grep -Fq 'lookup_choose(LookupSpecific) -> Int32' "$WORK/forward_m.out" || return 0
   cmp -s "$WORK/forward_o.out" "$WORK/forward_m.out"
+}
+
+# The ordinary lookup uses declaration-time ordering. Require both drivers to
+# run and the baseline to agree before accepting this specific wrong target.
+check_specificity_diverge() {
+  local fixture="$REPO/bench/fixtures/semcall_overloads.iyi"
+  if ! "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_semantic_calls_exercise.iyi" >"$WORK/specificity-build.log" 2>&1; then
+    echo "mutation failed to build, not a behavioral catch"
+    cat "$WORK/specificity-build.log"
+    return 0
+  fi
+  if ! "$WORK/oracle" "$fixture" > "$WORK/specificity-oracle.out" 2>"$WORK/specificity-oracle.err" ||
+     ! "$WORK/port" "$fixture" > "$WORK/specificity-port.out" 2>"$WORK/specificity-port.err" ||
+     ! "$WORK/port_m" "$fixture" > "$WORK/specificity-mutant.out" 2>"$WORK/specificity-mutant.err"; then
+    echo "specificity fixture did not run, not a behavioral catch"
+    for log in "$WORK"/specificity-*.err; do [ ! -f "$log" ] || cat "$log"; done
+    return 0
+  fi
+  if ! cmp -s "$WORK/specificity-oracle.out" "$WORK/specificity-port.out"; then
+    echo "unmutated port did not match the hosted oracle"
+    diff -u "$WORK/specificity-oracle.out" "$WORK/specificity-port.out"
+    return 0
+  fi
+  if ! grep -F 'identify(instance(Dog)) =>' "$WORK/specificity-oracle.out" > "$WORK/specificity-expected" ||
+     ! grep -Fq 'identify(Dog) -> String' "$WORK/specificity-expected" ||
+     ! grep -F 'identify(instance(Dog)) =>' "$WORK/specificity-mutant.out" > "$WORK/specificity-actual" ||
+     ! grep -Fq 'identify(Animal) -> String' "$WORK/specificity-actual"; then
+    echo "mutation did not select the broad overload for the Dog call"
+    cat "$WORK/specificity-oracle.out" "$WORK/specificity-mutant.out"
+    return 0
+  fi
+  cmp -s "$WORK/specificity-oracle.out" "$WORK/specificity-mutant.out"
 }
 check_tuple_cache_mutation() {
   "$IYI" build -o "$WORK/tuple_cache_m" "$REPO/bench/selfhost_tuple_index_cache_exercise.iyi" >/dev/null 2>&1 || {
@@ -244,7 +280,7 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a splat parameter takes none of the arguments past its prefix" "$MATCH_FILE" \
   "        matched << element" \
-  "        i = i" \
+  "        matched << element if false" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -260,10 +296,15 @@ prove_mutation "a def with a block argument does not yield" "$MATCH_FILE" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "the less specific of two overloads is chosen" "$LOOKUP_FILE" \
-  "      return false if !a.declared[k].subtype_of?(b.declared[k])" \
-  "      return false if !b.declared[k].subtype_of?(a.declared[k])" \
-  -- check_calls_diverge || status=1
+if prove_mutation "the less specific of two overloads is chosen" "$REPO/src/compiler/semantic/top_level.iyi" \
+  '            break if DeclarationOrder.before?(a_def, l[at], self, yields)' \
+  '            break if false && DeclarationOrder.before?(a_def, l[at], self, yields)' \
+  -- check_specificity_diverge; then
+  printf '      hosted: '; cat "$WORK/specificity-expected"
+  printf '      mutated: '; cat "$WORK/specificity-actual"
+else
+  status=1
+fi
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a private method called with an explicit receiver is allowed" "$CALL_FILE" \
