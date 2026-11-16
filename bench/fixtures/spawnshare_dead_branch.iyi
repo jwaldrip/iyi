@@ -2,7 +2,7 @@
 def nil_input(input : String?)
   group do |g|
     if text = input
-      g.spawn { text.size } # hosted: none; site: dead_then
+      g.spawn { 1 } # hosted: none; site: dead_then
     else
       g.spawn { 1 } # hosted: parallel; site: live_else
     end
