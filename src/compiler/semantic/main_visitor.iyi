@@ -1820,10 +1820,10 @@ pub class MainVisitor < TypeNodeHost
         v = node.var.as(Var)
         stored = proc_compatible ? decl_type : val_type
         @vars[v.name] = stored
-        # Hosted main_visitor.cr:436-456 freezes the local's declared type;
-        # the initializer still determines its current flow type.
-        set_type(v, decl_type)
-        merge_var_union(v.name, decl_type) unless stored.is_a?(NoReturnType)
+        # Hosted type_assign binds storage to the value; the written type
+        # constrains assignments without widening the initializer's storage.
+        set_type(v, stored)
+        merge_var_union(v.name, stored) unless stored.is_a?(NoReturnType)
       elsif node.var.is_a?(InstanceVar)
         ivar_node = node.var.as(InstanceVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)

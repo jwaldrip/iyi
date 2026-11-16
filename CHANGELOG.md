@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- Typed local declarations retain the initializer's storage type instead of
+  widening it to the written restriction. Methods emitted during class
+  initialization retain their instance-variable assignments.
+
 - Captured callbacks return `next` values from their own proc, including when
   created inside a loop or yielded block. Their `defer` cleanups run on normal
   exits and panic, with live locals and the parent context preserved. Arguments

@@ -64,6 +64,8 @@ end
 # True while the class body of a class is being lowered, at the top of the program (a declaration or an
 # assignment that initialises a class variable is written there).
 pub def in_class_body?(low : Lowerer) : Bool
+  # A function emitted while visiting a class declaration has its own body.
+  return false unless low.current_context.top_level
   ct = low.current_context.type
   if ct.is_a?(ModuleType) && !ct.is_a?(SemanticProgram)
     return false

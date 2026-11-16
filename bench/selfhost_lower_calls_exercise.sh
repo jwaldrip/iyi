@@ -718,14 +718,14 @@ block_decl_check() {
     touch "$WORK/general-mutation.invalid"
     return 1
   fi
-  for name in lowdecl_typedecl_block lowdecl_typedecl_block_widen lowdecl_typedecl_block_nested lowdecl_typedecl_block_later_nil; do
+  for name in lowdecl_typedecl_block lowdecl_typedecl_block_widen lowdecl_typedecl_block_nested lowdecl_typedecl_block_later_nil lowdecl_typedecl_reference; do
     "$WORK/block-decl-mut" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/block-decl-mut.out" 2>/dev/null || return 1
     awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-decl-mut.out" || return 1
   done
 }
-prove_mutation "a block declaration allocates its declared type rather than its initializer" "$REPO/src/compiler/lower/locals.iyi" \
-  '      record(declaration.var, written_type)' \
-  '      record(declaration.var)' -- block_decl_check || status=1
+prove_mutation "a typed local keeps its initializer's storage type" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        stored = proc_compatible ? decl_type : val_type' \
+  '        stored = decl_type' -- block_decl_check || status=1
 
 block_storage_check() {
   if ! "$IYI" build -o "$WORK/block-storage-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-storage-mut.build.log" 2>&1; then
