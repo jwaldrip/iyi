@@ -21,6 +21,10 @@ def keep_nil(&block : Bool -> Nil) : Proc(Bool, Nil)
   block
 end
 
+def keep_any(&block : Int32 -> U) : Proc(Int32, U) forall U
+  block
+end
+
 def captured_reader : Proc(Int32)
   value = 40
   -> {
@@ -117,6 +121,20 @@ saved_defer = keep_int do |value|
   next value &+ 1
 end
 LibC.exit(18) unless saved_defer.call(4) == 5 && cleanups == 1
+
+loop_f = keep_int { |value| value }
+i = 0
+while i < 2
+  loop_f = keep_int { |value| next value &+ 1 if value > 0; value }
+  i = i &+ 1
+end
+LibC.exit(19) unless loop_f.call(1) == 2 && i == 2
+
+nested_f = once(2) { |outer| keep_int { |value| next value &+ 7 } }
+LibC.exit(20) unless nested_f.call(1) == 8
+
+any_f = keep_any { |value| next value &+ 1 }
+LibC.exit(21) unless any_f.call(1) == 2
 
 halt = -> { once(3) { |value| code = LibC.exit(value &- 3) } }
 halt.call

@@ -163,8 +163,9 @@ pub class BlockOwner
   getter writer_type : ModuleType?
   getter var_owners : Hash(String, LocalStorage)?
   getter untyped_locals : Hash(String, String)?
+  getter jump_proc : Def?
 
-  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil, @writer_type : ModuleType? = nil, @var_owners : Hash(String, LocalStorage)? = nil, @untyped_locals : Hash(String, String)? = nil)
+  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil, @writer_type : ModuleType? = nil, @var_owners : Hash(String, LocalStorage)? = nil, @untyped_locals : Hash(String, String)? = nil, @jump_proc : Def? = nil)
   end
 end
 
@@ -353,6 +354,9 @@ pub class MainVisitor < TypeNodeHost
   # Jump boundaries are AST identities, not the value-collection stacks.
   property jump_block_calls : NodeMap(Call) = NodeMap(Call).new
   property jump_block : Block? = nil
+  # A captured block's `next` returns from its proc when no inner jump boundary applies.
+  # Keep this separate from current_def, which carries the writer's lookup bindings.
+  property jump_proc : Def? = nil
   property jump_whiles : Array(While) = [] of While
   property block_may_repeat : Bool = false
   # The record of each call on a lib (see visit_lib_call): the fun, the result type and the
@@ -1103,7 +1107,7 @@ pub class MainVisitor < TypeNodeHost
 
   # iyi: `break` and `next` never complete, so they are NoReturn. The value they carry is typed
   # first (the hosted pass binds it): a `break` to the call whose block is being typed, a `next`
-  # to the block (see visit(Yield) and call_result).
+  # to the block or captured proc (see visit(Yield) and call_result).
   def visit(node : Break) : Bool
     if @handler_direct_exit
       return handler_defer_exit(node, "break") if @handler_inside_defer
@@ -1118,6 +1122,8 @@ pub class MainVisitor < TypeNodeHost
       node.target = target
     elsif block = @jump_block
       node.target = @jump_block_calls[block]?
+    elsif @jump_proc
+      return refuse(node, "can't break from captured block, try using `next`.")
     end
     if bts = @break_types
       bts << value_t
@@ -1143,8 +1149,8 @@ pub class MainVisitor < TypeNodeHost
       node.target = target
     elsif block = @jump_block
       node.target = block
-    elsif current = @current_def
-      node.target = current if current.captured_block?
+    elsif proc_def = @jump_proc
+      node.target = proc_def
     end
     if nts = @next_types
       nts << value_t
@@ -2707,6 +2713,12 @@ pub class MainVisitor < TypeNodeHost
       return handler_defer_exit(node, node.from_propagate ? "!" : "return")
     end
     return refuse(node, "can't return from ensure") if @handler_inside_ensure
+    if @jump_proc
+      if node.from_propagate
+        return refuse(node, "`!` can't propagate out of a block that runs as a proc\n\n`!` in a block returns from the method the block is written in (SPEC.md III.1.2), and this block is captured: it is kept and called later, maybe by a task, after that method may have returned. Answer the error as the block's value, `next` it, and read it where the value arrives, through `task.value` or the typed group; or handle it here.")
+      end
+      return refuse(node, "can't return from captured block, use next")
+    end
     value_t : Type? = @program.nil_type
     if exp = node.exp
       exp.accept(self)
@@ -2838,6 +2850,7 @@ pub class MainVisitor < TypeNodeHost
       old_next_types = @next_types
       old_return_types = @return_types
       old_def_node = @current_def
+      old_jump_proc = @jump_proc
       @break_types = @block_breaks[blk]?
       @next_types = [] of Type?
       callee_block = @current_call_block
@@ -2857,6 +2870,7 @@ pub class MainVisitor < TypeNodeHost
           blk.args.each { |arg| @var_owners.delete(arg.name) }
         end
         @current_def = owner.def_node
+        @jump_proc = owner.jump_proc
         @return_types = owner.return_types
         @current_call_block = owner.call_block
         @current_block_context_vars = owner.context_vars
@@ -2868,6 +2882,7 @@ pub class MainVisitor < TypeNodeHost
           @current_type = writer_type
         end
       else
+        @jump_proc = nil
         @return_types = nil
         @current_call_block = nil
         @current_block_context_vars = nil
@@ -2956,6 +2971,7 @@ pub class MainVisitor < TypeNodeHost
       @next_types = old_next_types
       @return_types = old_return_types
       @current_def = old_def_node
+      @jump_proc = old_jump_proc
       @vars = old_vars
       @scope = old_scope
 
@@ -4167,9 +4183,58 @@ pub class MainVisitor < TypeNodeHost
                 enter_file_scope(blk)
                 saved_super_barrier = @super_barrier
                 @super_barrier = "a captured block"
+                literal_args = [] of Arg
+                input_types.each_with_index do |input_type, index|
+                  name = index < blk.args.size ? blk.args[index].name : "__arg#{index}"
+                  literal_arg = Arg.new(name)
+                  set_type(literal_arg, input_type)
+                  literal_args << literal_arg
+                end
+                literal_def = Def.new("->", literal_args, blk.body).at(blk)
+                literal_def.captured_block = true
+                saved_proc = @jump_proc
+                saved_proc_block = @jump_block
+                saved_proc_whiles = @jump_whiles
+                saved_proc_next_types = @next_types
+                saved_proc_break_types = @break_types
+                saved_proc_return_types = @return_types
+                saved_proc_while_break_vars = @while_break_vars
+                saved_proc_unreachable = @unreachable
+                saved_proc_type_filters = @type_filters
+                saved_proc_needs_type_filters = @needs_type_filters
+                saved_proc_handler_direct_exit = @handler_direct_exit
+                saved_proc_handler_inside_ensure = @handler_inside_ensure
+                saved_proc_handler_inside_defer = @handler_inside_defer
+                proc_nexts = [] of Type?
+                @jump_proc = literal_def
+                @jump_block = nil
+                @jump_whiles = [] of While
+                @next_types = proc_nexts
+                @break_types = nil
+                @return_types = nil
+                @while_break_vars = [] of Array(Hash(String, Type))
+                @unreachable = false
+                @type_filters = nil
+                @needs_type_filters = 0
+                @handler_direct_exit = false
+                @handler_inside_ensure = false
+                @handler_inside_defer = false
                 blk.body.accept(self)
                 @super_barrier = saved_super_barrier
-                block_type = child_type(blk.body)
+                block_type = merge_jump_values(child_type(blk.body), proc_nexts)
+                @jump_proc = saved_proc
+                @jump_block = saved_proc_block
+                @jump_whiles = saved_proc_whiles
+                @next_types = saved_proc_next_types
+                @break_types = saved_proc_break_types
+                @return_types = saved_proc_return_types
+                @while_break_vars = saved_proc_while_break_vars
+                @unreachable = saved_proc_unreachable
+                @type_filters = saved_proc_type_filters
+                @needs_type_filters = saved_proc_needs_type_filters
+                @handler_direct_exit = saved_proc_handler_direct_exit
+                @handler_inside_ensure = saved_proc_handler_inside_ensure
+                @handler_inside_defer = saved_proc_handler_inside_defer
                 @vars = saved_vars
                 @current_type = saved_type
                 @program.current_imports = saved_imports
@@ -4206,15 +4271,6 @@ pub class MainVisitor < TypeNodeHost
                     set_type(blk, @program.no_return_type)
                   end
                   result_type = resolved_output || bt
-                  literal_args = [] of Arg
-                  input_types.each_with_index do |input_type, index|
-                    name = index < blk.args.size ? blk.args[index].name : "__arg#{index}"
-                    literal_arg = Arg.new(name)
-                    set_type(literal_arg, input_type)
-                    literal_args << literal_arg
-                  end
-                  literal_def = Def.new("->", literal_args, blk.body).at(blk)
-                  literal_def.captured_block = true
                   literal = ProcLiteral.new(literal_def)
                   if call = call_node
                     literal.at(call)
@@ -4288,8 +4344,10 @@ pub class MainVisitor < TypeNodeHost
     end
 
     saved_jump_block = @jump_block
+    saved_jump_proc = @jump_proc
     saved_jump_whiles = @jump_whiles
     @jump_block = nil
+    @jump_proc = nil
     @jump_whiles = [] of While
     old_vars = @vars
     old_handler_vars = @handler_vars
@@ -4340,7 +4398,7 @@ pub class MainVisitor < TypeNodeHost
         writer_owners = old_var_owners.dup
         writer_storage = LocalStorage.new(old_var_unions, old_nil_candidates, old_nil_resets)
         @vars.each_key { |name| writer_owners[name] = writer_storage unless writer_owners.has_key?(name) }
-        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope, writer_type, writer_owners, old_untyped_locals)
+        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope, writer_type, writer_owners, old_untyped_locals, saved_jump_proc)
       end
     end
 
@@ -4597,6 +4655,7 @@ pub class MainVisitor < TypeNodeHost
     @unreachable = old_unreachable
     @while_break_vars = old_while_break_vars
     @jump_block = saved_jump_block
+    @jump_proc = saved_jump_proc
     @jump_whiles = saved_jump_whiles
     @typing_stack.pop
     if error = recursive_error
@@ -5873,11 +5932,9 @@ pub class MainVisitor < TypeNodeHost
     # Unlike a fun body, the literal's body inherits its enclosing scope
     # (hosted main_visitor.cr 1416-1423).
     inner.scope = @scope
-    inner.current_def = def_node if def_node.captured_block?
     inner.super_barrier = "a proc literal"
     # Returns from the literal or its yielded blocks belong to this proc.
     inner.return_types = [] of Type?
-    inner.next_types = inner.return_types if def_node.captured_block?
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(node)
