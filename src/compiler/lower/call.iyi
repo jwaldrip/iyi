@@ -1162,7 +1162,8 @@ pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret 
             pt = lib_fun.arg_types[i]
           end
           check_lib_aggregate(pt, "argument")
-          params << low.typer.llvm_type(pt)
+          # Extra arguments stay variadic at the call site, outside the declared signature.
+          params << low.typer.llvm_type(pt) if fixed
           values << v.as(Value)
         end
       end
