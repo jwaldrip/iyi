@@ -1343,6 +1343,7 @@ end
 
 pub class Const < NamedType
   property value : ASTNode
+  getter initializer_id : UInt64
   property declared_type : ASTNode?
   property value_source : String?
   # Enum member constants have the enum's type, not their integer storage type.
@@ -1361,6 +1362,7 @@ pub class Const < NamedType
   end
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @value : ASTNode)
+    @initializer_id = @value.object_id
     super(program, namespace, name)
   end
 

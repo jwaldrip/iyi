@@ -45,16 +45,15 @@ pub def path_const(low : Lowerer, node : Path) : Compiler::Semantic::TopLevel::C
   low.analysed.target_const?(node)
 end
 
-# The constant an assignment declares: the analysis made its Const from this initialiser (top_level.iyi visit(Assign),
-# const_initializers), so the initialiser's identity finds it with no name lookup. The bare name of the target is not
-# resolved from the program scope, where the lowering of a module-level assignment stands, so a namespaced target
-# (`Outer::S = 1`) would be refused by it.
+# Match the original initializer even after macro expansion replaces Const#value.
+# Resolving only the target's bare name from the lowering scope would lose
+# namespaced assignments such as `Outer::S = 1`.
 pub def assigned_const(low : Lowerer, node : Assign) : Compiler::Semantic::TopLevel::Const?
   id = node.value.object_id
   inits = low.analysed.program.const_initializers
   i = 0
   while i < inits.size
-    if inits[i].value.object_id == id
+    if inits[i].initializer_id == id
       return inits[i]
     end
     i = i + 1
