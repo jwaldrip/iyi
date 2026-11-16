@@ -181,7 +181,7 @@ check_barrier_mutant() {
 
 build_compiler || { cat "$WORK/build.log"; exit 1; }
 status=0
-for fixture in lower_closure_top_level lower_closure_nested_block lower_pointerof_arg lower_pointerof_proc_arg lower_macro_closure lower_macro_proc_locations lower_closure_self_class lower_closure_self_struct lower_closure_self_nested lower_closure_self_unit_call; do
+for fixture in lower_closure_top_level lower_closure_nested_block lower_pointerof_arg lower_pointerof_proc_arg lower_macro_closure lower_macro_proc_locations lower_closure_self_class lower_closure_self_struct lower_closure_self_nested lower_closure_self_unit_call closure_forward_recursion; do
   "$IYI" build --prelude empty -o "$WORK/host" "bench/fixtures/$fixture.iyi" > "$WORK/host.build.log" 2>&1 || { cat "$WORK/host.build.log"; exit 1; }
   "$WORK/host" > "$WORK/host.out" 2>&1 || exit 1
   cp "$WORK/host.out" "$WORK/host-$fixture.out"
@@ -213,6 +213,8 @@ prove_mutation 'program closure facts omitted' "$REPO/src/compiler/lower/lower.i
   'low.current_context.closure_facts = facts' 'low.current_context.closure_facts = nil' -- check_mutant lower_closure_top_level || status=1
 prove_mutation 'yielded block loses closure context' "$REPO/src/compiler/lower/block.iyi" \
   'body.copy_closure_from(caller)' 'nil' -- check_mutant lower_closure_nested_block || status=1
+prove_mutation 'forwarded closure cache uses node identity' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      key = key + block_key(origin, blk, call_node)' '      key = key + "&#{blk.node_id}"' -- check_self_behavior_mutant closure_forward_recursion || status=1
 prove_mutation 'macro proc loses call-site location' "$REPO/src/compiler/lower/proc.iyi" \
   'place = low.current_context.macro_origin || node.location' 'place = node.location' -- check_macro_mutant || status=1
 prove_mutation 'address-taken parameter is not spilled' "$REPO/src/compiler/lower/fun.iyi" \

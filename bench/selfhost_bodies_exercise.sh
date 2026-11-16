@@ -133,6 +133,12 @@ if [ "${named_cache_count:-}" != 8 ]; then status=1; fi
 fanout_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_named_recursion_fanout.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
 echo "  named recursion fanout: ${fanout_count:-none} (expected 5)"
 if [ "${fanout_count:-}" != 5 ]; then status=1; fi
+forward_recursion_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_forward_recursion.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
+echo "  forwarded recursion: ${forward_recursion_count:-none} (expected 4)"
+if [ "${forward_recursion_count:-}" != 4 ]; then status=1; fi
+forward_controls_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_forward_controls.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
+echo "  forwarded block controls: ${forward_controls_count:-none} (expected 7)"
+if [ "${forward_controls_count:-}" != 7 ]; then status=1; fi
 
 echo
 echo "== 2d. Program defs share instances across callers without shadowing methods"
@@ -491,6 +497,20 @@ recursion_targets_ok() {
   "$recursion_probe" "$REPO/bench/fixtures/lowcall_recursive_named_mixed.iyi" "$REPO/src" > "$WORK/recursion_mixed.txt" 2>"$WORK/recursion_mixed.err" || return 1
   awk '/^recursive_named_mixed target=.* typed-params Bool,Bool$/ { id = $2; if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 1 && kinds == 1) }' "$WORK/recursion_mixed.txt"
 }
+forward_recursion_targets_ok() {
+  "$recursion_probe" "$REPO/bench/fixtures/sem_bodies_forward_recursion.iyi" "$REPO/src" > "$WORK/forward_recursion_targets.txt" 2>"$WORK/forward_recursion_targets.err" || return 1
+  awk '/^forward_walk target=.* typed-params (Int32|String),Bool$/ { id = $2; if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 4 && kinds == 2) }' "$WORK/forward_recursion_targets.txt" || return 1
+  awk '/^forward_depth target=.* typed-params Bool$/ { id = $2; if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 2 && kinds == 1) }' "$WORK/forward_recursion_targets.txt" || return 1
+  "$recursion_probe" "$REPO/bench/fixtures/sem_bodies_forward_controls.iyi" "$REPO/src" > "$WORK/forward_control_targets.txt" 2>"$WORK/forward_control_targets.err" || return 1
+  awk '/^control_mixed target=.* typed-params Bool,Bool$/ { id = $2; if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 2 && kinds == 1) }' "$WORK/forward_control_targets.txt"
+}
+if forward_recursion_targets_ok; then
+  echo "  forwarded recursive calls share the matching in-progress instance"
+else
+  echo "  RECURSION: forwarded calls have incorrect target identity"
+  cat "$WORK/forward_recursion_targets.txt" "$WORK/forward_control_targets.txt" 2>/dev/null
+  status=1
+fi
 if recursion_targets_ok; then
   echo "  recursive calls share the in-progress typed instance"
 else
@@ -538,6 +558,78 @@ named_keys_at_expected() {
   count=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_named_recursion_fanout.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${count:-}" = 5 ]
 }
+forward_keys_at_expected() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/forward_keys_build.log" 2>&1; then
+    body_build_failed "$WORK/forward_keys_build.log"
+    return $?
+  fi
+  for name in sem_bodies_forward_recursion sem_bodies_forward_controls; do
+    fixture="$REPO/bench/fixtures/$name.iyi"
+    case "$name" in
+      sem_bodies_forward_recursion) expected=4 ;;
+      sem_bodies_forward_controls) expected=7 ;;
+    esac
+    if ! "$MUT_TD" --instances "$fixture" "$REPO/src" > "$WORK/forward_instances.txt" 2>"$WORK/forward_instances.err"; then
+      echo "INVALID MUTANT: typed dump failed to run for $name" >&2
+      cat "$WORK/forward_instances.err" >&2
+      if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+      return 1
+    fi
+    count=$(awk '/^typed instances:/ { print $3 }' "$WORK/forward_instances.txt")
+    [ "${count:-}" = "$expected" ] || return 1
+    "$ORACLE" "$fixture" > "$WORK/forward_hosted.txt" 2>"$WORK/forward_hosted.err" || return 1
+    if ! "$MUT_TD" "$fixture" "$REPO/src" > "$WORK/forward_port.txt" 2>"$WORK/forward_port.err"; then
+      echo "INVALID MUTANT: typed dump failed to run for $name" >&2
+      cat "$WORK/forward_port.err" >&2
+      if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+      return 1
+    fi
+    sort "$WORK/forward_hosted.txt" > "$WORK/forward_hosted.sorted"
+    sort "$WORK/forward_port.txt" > "$WORK/forward_port.sorted"
+    diff -u "$WORK/forward_hosted.sorted" "$WORK/forward_port.sorted" || return 1
+  done
+}
+forward_keys_at_expected || status=1
+prove_mutation "forwarded block uses fresh node identity" "$MAIN_VISITOR" \
+  '    if callee.uses_block_arg?' '    if false && callee.uses_block_arg?' -- forward_keys_at_expected || status=1
+prove_mutation "forwarded stack key uses node identity" "$MAIN_VISITOR" \
+  '      key = key + block_key(target_def, blk, call_node)' '      key = key + "&#{blk.node_id}"' -- forward_keys_at_expected || status=1
+prove_mutation "forwarded cache key uses node identity" "$MAIN_VISITOR" \
+  '      key = key + block_key(origin, blk, call_node)' '      key = key + "&#{blk.node_id}"' -- forward_keys_at_expected || status=1
+prove_mutation "yielding callees share forwarded block identity" "$MAIN_VISITOR" \
+  '    if callee.uses_block_arg?' '    if true' -- forward_keys_at_expected || status=1
+prove_mutation "written captured blocks share identity" "$MAIN_VISITOR" \
+  '    "&#{block.node_id}"' '    callee.uses_block_arg? ? "&written" : "&#{block.node_id}"' -- forward_keys_at_expected || status=1
+forward_components_at_expected() {
+  if ! "$IYI" build -o "$WORK/forward_components" "$REPO/bench/fixtures/bodies_forward_block_key_probe.iyi" > "$WORK/forward_components_build.log" 2>&1; then
+    body_build_failed "$WORK/forward_components_build.log"
+    return $?
+  fi
+  if "$WORK/forward_components" > "$WORK/forward_components.log" 2>&1; then
+    grep -Fxq 'forwarded block key components and identity controls: passed' "$WORK/forward_components.log"
+    return $?
+  fi
+  if grep -Eq 'argument type was omitted from a key|return type was omitted from a key|virtual argument type was erased|virtual return type was erased|same forwarded proc type did not share both keys|written blocks were merged|yielding blocks were merged' "$WORK/forward_components.log"; then
+    cat "$WORK/forward_components.log"
+    return 1
+  fi
+  echo "INVALID MUTANT: forward component probe failed unexpectedly" >&2
+  cat "$WORK/forward_components.log" >&2
+  if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+  return 1
+}
+forward_components_at_expected || status=1
+prove_mutation "forwarded proc argument type is omitted" "$MAIN_VISITOR" \
+  '                    parts << "#{text.bytesize}:#{text}"' '                    nil' -- forward_components_at_expected || status=1
+prove_mutation "forwarded proc return type is omitted" "$MAIN_VISITOR" \
+  '                  text = proc_type.as(ProcInstanceType).return_type.full_name
+                  parts << "#{text.bytesize}:#{text}"' \
+  '                  text = proc_type.as(ProcInstanceType).return_type.full_name
+                  nil' -- forward_components_at_expected || status=1
+prove_mutation "forwarded proc argument type is devirtualized" "$MAIN_VISITOR" \
+  '                    text = arg_type.full_name' '                    text = arg_type.devirtualize.full_name' -- forward_components_at_expected || status=1
+prove_mutation "forwarded proc return type is devirtualized" "$MAIN_VISITOR" \
+  '                  text = proc_type.as(ProcInstanceType).return_type.full_name' '                  text = proc_type.as(ProcInstanceType).return_type.devirtualize.full_name' -- forward_components_at_expected || status=1
 prove_mutation "a call with named arguments is not cached" "$MAIN_VISITOR" \
   '      key = key + "|named(" + entries.join(",") + ")"' \
   '      return nil' -- named_keys_at_expected || status=1

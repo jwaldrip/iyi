@@ -1430,6 +1430,8 @@ pub class Parser < Lexer
 
         if named_tuple_start?
           named_args = parse_named_args(allow_newline: true)
+          # Hosted parse_call_args_named_args permits a trailing &block.
+          next if @token.type == TokenKind::OP_AMP
           check(TokenKind::OP_RPAREN)
           break
         end
@@ -1526,6 +1528,8 @@ pub class Parser < Lexer
 
       if named_tuple_start?
         named_args = parse_named_args(allow_newline: false)
+        # The unparenthesized form permits the same trailing &block.
+        next if @token.type == TokenKind::OP_AMP
         end_location = named_args.last.value.end_location || token_end_location
         break
       end
