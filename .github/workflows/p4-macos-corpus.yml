@@ -1,0 +1,30 @@
+name: P4 macOS corpus with supported LLVM
+on:
+  push:
+    branches: [p4-macos-corpus-remediation]
+permissions: {}
+jobs:
+  corpus:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install supported LLVM and compiler
+        shell: bash
+        run: |
+          brew list --versions crystal >/dev/null || brew install crystal
+          brew list --versions llvm@20 >/dev/null || brew install llvm@20
+          echo "LLVM_CONFIG=$(brew --prefix llvm@20)/bin/llvm-config" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$(brew --prefix bdw-gc)/lib" >> "$GITHUB_ENV"
+          "$(brew --prefix llvm@20)/bin/llvm-config" --version
+      - name: Compare master and change
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python native_corpus_probe.py
