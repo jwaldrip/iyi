@@ -1,3 +1,4 @@
+@[Unsafe("reports proc control-flow failures through the process exit status")]
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
