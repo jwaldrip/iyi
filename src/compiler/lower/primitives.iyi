@@ -47,6 +47,7 @@ import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
+import compiler/semantic/top_level::{InstanceVarInitializer}
 import compiler/types/indirection::{TypeIndirection}
 import compiler/types/types::{GenericClassInstanceType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, TupleInstanceType, TypeQueries, VirtualType, VirtualMetaclassType}
 import compiler/lower/helpers::{store_aligned, load_aligned}
@@ -55,6 +56,10 @@ import compiler/lower/headed::{headed?, headed_candidate?}
 import compiler/lower/layouts::{has_inner_pointers?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/types/indirection::{TypeIndirection}
+import compiler/lower/context::{BodyVisit, LowerContext}
+import compiler/lower/fun::{block_ended?}
+import compiler/lower/instance_var::{instance_var_pointer, instance_var_type}
+import compiler/lower/locals::{preallocate_locals}
 
 # An integer operand as the hosted codegen reads it: its width in bytes, its signedness and
 # its IR type. A mixed-signedness operation biases one operand to the other signedness at the
@@ -1613,14 +1618,8 @@ def pow2_f64(k : Int32) : Float64
   value
 end
 
-# The hosted `codegen_primitive_allocate` for the `allocate` primitive that the generated `new`
-# calls (`_ = allocate`). `t` is the instance type of the metaclass the call is on (the Point in
-# `Point.new`), and the value is a pointer to a fresh instance, zeroed. Ported for a struct: an
-# alloca of the struct type, zeroed by the hosted `llvm.memset` (codegen.cr `pre_initialize_aggregate`
-# and `memset`, the pointer argument with alignment 4). Refused by name: a class (the arena or malloc
-# path, the header type id, and `__iyi_new`, codegen.cr allocate_aggregate 2758-2798) and a virtual
-# type (the hosted upcast of the instance). The header store is decided from codegen.cr 2790-2806,
-# not from the core's pointer function, which covers fields only.
+# Allocate and clear the instance, then run its declared defaults before
+# initialize. The arena and malloc paths retain their respective id layouts.
 pub def primitive_allocate(low : Lowerer, t : Type) : Value
   # The hosted allocate_aggregate takes the instance type. A metaclass (the class-method context of `new`) is
   # unwrapped to its instance type here, so the class's pointerful check reads a class, not a metaclass.
@@ -1638,6 +1637,7 @@ pub def primitive_allocate(low : Lowerer, t : Type) : Value
   struct_ir = low.typer.llvm_type(inst)
   ptr = low.alloca(struct_ir, "")
   zero_memory(low, ptr, struct_ir)
+  run_instance_vars_initializers(low, inst, ptr)
   ptr
 end
 
@@ -1671,6 +1671,7 @@ pub def allocate_arena_class(low : Lowerer, t : Type) : Value
   new_fn = iyi_new_function(low)
   ptr = low.builder.call(new_fn.fn_type, new_fn, [size, tid, flags] of Value, "")
   zero_memory(low, ptr, struct_ir) unless pointerful
+  run_instance_vars_initializers(low, t, ptr)
   ptr
 end
 
@@ -1691,13 +1692,55 @@ pub def allocate_malloc_class(low : Lowerer, t : Type) : Value
     back4 = low.builder.const_int(low.module.types.int64, -4_i64)
     id_slot = low.builder.inbounds_gep(low.module.types.int8, ptr, [back4] of Value)
     store_aligned(low, type_id_value(low, t), id_slot)
+    run_instance_vars_initializers(low, t, ptr)
     return ptr
   end
   zero_memory(low, ptr, struct_ir)
+  run_instance_vars_initializers(low, t, ptr)
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   slot = low.builder.inbounds_gep(struct_ir, ptr, [zero, zero] of Value)
   store_aligned(low, type_id_value(low, t), slot)
   ptr
+end
+
+# Lower each prepared default with class-method self and fresh local storage.
+# The field store goes through assign, including its GC write barrier.
+pub def run_instance_vars_initializers(low : Lowerer, real : Type, ptr : Value) : Nil
+  low.analysed.allocation_initializer_chain(real).each do |type|
+    entries = low.analysed.instance_vars_initializers_of?(type)
+    if entries.nil?
+      raise "BUG: instance variable initializers were not prepared for #{type.full_name}"
+    end
+    entries.as(Array(InstanceVarInitializer)).each do |init|
+      saved_context = low.context
+      saved_needs_value = low.needs_value
+      saved_last = low.last
+      cur = low.current_context
+      meta = if real.is_a?(GenericClassInstanceType)
+               real.as(GenericClassInstanceType).metaclass
+             else
+               real.as(ClassType).metaclass
+             end
+      low.context = LowerContext.new(cur.fun, cur.fun_type, meta, Hash(String, LowerVar).new)
+      preallocate_locals(low, init.value, [] of String)
+      low.needs_value = true
+      low.body_visitor.as(BodyVisit).visit_body(low, init.value)
+      value = low.last
+      ended = block_ended?(low)
+      low.context = saved_context
+      low.needs_value = saved_needs_value
+      if ended
+        low.last = saved_last
+        return
+      end
+      raise "BUG: instance variable initializer #{init.name} left no value" if value.nil?
+      value_type = low.analysed.type_of?(init.value)
+      raise "BUG: instance variable initializer #{init.name} has no type" if value_type.nil?
+      assign(low, instance_var_pointer(low, real, init.name, ptr), instance_var_type(real, init.name), value_type.as(Type), value.as(Value))
+      low.last = saved_last
+    end
+  end
+  nil
 end
 
 # The hosted `iyi_gc_arena?` (gc_layouts.cr 48), the allocator the prelude selects. The port has no

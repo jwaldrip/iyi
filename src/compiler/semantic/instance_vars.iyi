@@ -5,6 +5,8 @@ import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, BoolLiteral, Ch
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ClassType, DeclaredIvar, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
+import compiler/semantic/top_level::{InstanceVarInitializer, MetaclassType}
+import compiler/syntax/ast::{VisibilityModifier}
 import compiler/semantic/type_nodes::{type_node_system}
 
 # Instance variables typed only by assignment, as the hosted front end declares
@@ -518,6 +520,41 @@ def nonnil_includes?(og : OwnerGuesses, name : String) : Bool
   false
 end
 
+# Only body-level declarations initialize each allocation. In particular, an
+# assignment inside a method, block or unexpanded macro is not a default.
+class InstanceInitializerCollector < Visitor
+  def initialize(@program : SemanticProgram, @owner : ModuleType)
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    node.is_a?(Expressions) || node.is_a?(VisibilityModifier) ||
+      node.is_a?(Call) || node.is_a?(Assign) || node.is_a?(TypeDeclaration)
+  end
+
+  def visit(node : Call) : Bool
+    if expanded = node.expanded
+      expanded.accept(self)
+    end
+    false
+  end
+
+  def visit(node : Assign) : Bool
+    if node.target.is_a?(InstanceVar)
+      @program.instance_var_initializers << InstanceVarInitializer.new(@owner, node.target.as(InstanceVar).name, node.value)
+    end
+    false
+  end
+
+  def visit(node : TypeDeclaration) : Bool
+    if node.var.is_a?(InstanceVar)
+      if value = node.value
+        @program.instance_var_initializers << InstanceVarInitializer.new(@owner, node.var.as(InstanceVar).name, value)
+      end
+    end
+    false
+  end
+end
+
 # Declares the guessed variables of one class, after its superclasses.
 def declare_guessed(program : SemanticProgram, owners : Array(OwnerGuesses), og : OwnerGuesses) : Nil
   og.order.each do |name|
@@ -543,12 +580,19 @@ end
 # instead of the unbound `Array(T)`.
 def re_resolve_explicit_ivars(program : SemanticProgram) : Nil
   type_node_system(program)
+  program.resolve_pending_generic_superclasses
 end
 
 # Process each owner from the root of the hierarchy: written declarations
 # precede inferred ones for that owner, before moving to a subclass (hosted
 # type_declaration_processor.cr:245-264).
 pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
+  program.instance_var_initializers.clear
+  program.type_bodies.each do |body|
+    next if body.type.is_a?(MetaclassType)
+    body.body.accept(InstanceInitializerCollector.new(program, body.type))
+  end
+
   # A bare declarations-only load has not installed the type system yet. Its
   # generic declarations previously recorded the base type first, then kept
   # the written restriction for resolution when its arguments became visible.

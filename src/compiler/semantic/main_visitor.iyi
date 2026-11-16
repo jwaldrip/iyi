@@ -10,6 +10,7 @@ import compiler/macros/interpreter::{MacroFailure, MacroFreeBinding}
 import compiler/semantic/inline_macros::{InlineMacroLedger, expand_inline_macro, splice_body_node, splice_inline_sites}
 import compiler/semantic/macro_bindings::{MacroBindings}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
+import compiler/semantic/top_level::{InstanceVarInitializer}
 import compiler/semantic/top_level::{NoReturnType}
 import compiler/semantic/top_level::{LibFun, LibType}
 import compiler/semantic/top_level::{VoidType}
@@ -300,6 +301,9 @@ pub class MainVisitor < TypeNodeHost
   property current_type : ModuleType
   property scope : Type?
   property vars : Hash(String, Type)
+  # Only while typing a generic module's initializer: module parameters may
+  # differ from the allocating class's own parameters.
+  property initializer_type_vars : Hash(String, Type)? = nil
   property node_types : NodeMap(Type)
   property untyped_reasons : NodeMap(String)
   property call_target_defs : NodeMap(Def)
@@ -333,6 +337,8 @@ pub class MainVisitor < TypeNodeHost
   property typed_instances : Array(TypedInstance)
   # Every finished instantiation by its key (see def_instance_key). Shared with a fun body's visitor.
   property def_instances : Hash(String, DefInstance)
+  # Per-concrete-type initializers, shared by every visitor typing this program.
+  property instance_var_initializer_lists : Hash(UInt64, Array(InstanceVarInitializer))
 
   # The values the body being typed returns (`return`), and the values a `break` (of the call
   # whose block it is) and a `next` (of that block) carry while they are collected. nil where
@@ -471,6 +477,7 @@ pub class MainVisitor < TypeNodeHost
     @refusals = [] of Refusal
     @typed_instances = [] of TypedInstance
     @def_instances = Hash(String, DefInstance).new
+    @instance_var_initializer_lists = Hash(UInt64, Array(InstanceVarInitializer)).new
   end
 
   def set_type(node : ASTNode, type : Type) : Type
@@ -581,6 +588,16 @@ pub class MainVisitor < TypeNodeHost
   # raises here (the trunk's lookup raises on an unresolved name): the caller records
   # the refusal on its node. Generic receivers bind their type parameters as lookup_under does.
   def lookup_declared?(node : ASTNode, owner : Type?) : Type?
+    if @current_def.nil?
+      if bindings = @initializer_type_vars
+        found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bindings)
+        return found.as(Type) unless found.is_a?(LookupError)
+      end
+    end
+    if instance = current_module_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)
+      return found.as(Type) unless found.is_a?(LookupError)
+    end
     if receiver_instance(owner).nil?
       return @program.lookup_type_node?(node, @current_type)
     end
@@ -674,6 +691,45 @@ pub class MainVisitor < TypeNodeHost
     end
     nil
   end
+  # A method written in an included generic module binds that module's
+  # parameters, even when the receiver is a different generic class.
+  def included_module_instance(owner : Type, wanted : Type, seen : Set(UInt64)) : GenericModuleInstanceType?
+    current = owner
+    current = current.as(VirtualType).base_type if current.is_a?(VirtualType)
+    current = current.as(MetaclassType).instance_type if current.is_a?(MetaclassType)
+    return nil if seen.includes?(current.object_id)
+    seen.add(current.object_id)
+    if current.is_a?(GenericModuleInstanceType)
+      instance = current.as(GenericModuleInstanceType)
+      return instance if instance.generic_type.object_id == wanted.object_id
+    end
+    parents = if current.is_a?(GenericInstanceType)
+                current.as(GenericInstanceType).parents
+              elsif current.is_a?(ModuleType)
+                current.as(ModuleType).parents
+              else
+                [] of Type
+              end
+    parents.each do |parent|
+      if found = included_module_instance(parent, wanted, seen)
+        return found
+      end
+    end
+    nil
+  end
+
+  def current_module_instance(owner : Type?) : GenericModuleInstanceType?
+    return nil if owner.nil?
+    if cd = @current_def
+      if defining = @program.def_owner(cd)
+        if defining.is_a?(GenericModuleType)
+          return included_module_instance(owner.as(Type), defining, Set(UInt64).new)
+        end
+      end
+    end
+    nil
+  end
+
 
   # The type a type node names under `owner`. A generic instance binds its type
   # parameter names to its type arguments (`T` is UInt64 in Pointer(UInt64)), and a
@@ -688,6 +744,12 @@ pub class MainVisitor < TypeNodeHost
         return o.as(Type) unless o.is_a?(SemanticProgram)
       end
     end
+    if @current_def.nil?
+      if bindings = @initializer_type_vars
+        found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bindings)
+        return found.as(Type) unless found.is_a?(LookupError)
+      end
+    end
     if instance = current_trait_instance(owner)
       found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)
       return found.as(Type) unless found.is_a?(LookupError)
@@ -697,6 +759,10 @@ pub class MainVisitor < TypeNodeHost
         found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)
         return found.as(Type) unless found.is_a?(LookupError)
       end
+    end
+    if instance = current_module_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)
+      return found.as(Type) unless found.is_a?(LookupError)
     end
     if instance = receiver_instance(owner)
       found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)
@@ -1118,6 +1184,16 @@ pub class MainVisitor < TypeNodeHost
       end
       return refuse(node, "unsupported TupleIndexer scope")
     end
+    if node.name == "allocate"
+      if sc = @scope
+        if sc.is_a?(MetaclassType)
+          instance = sc.as(MetaclassType).instance_type
+          if instance.is_a?(NonGenericClassType) || instance.is_a?(GenericClassInstanceType)
+            prepare_allocation_initializers(instance)
+          end
+        end
+      end
+    end
     if cd = @current_def
       if primitive_type = @program.primitive_return_type(cd)
         set_type(node, primitive_type)
@@ -1410,6 +1486,115 @@ pub class MainVisitor < TypeNodeHost
     @scope = old_scope
     nil
   end
+  # Initializer expressions have fresh locals and class-method self, not the
+  # locals of the surrounding type body.
+  def type_instance_var_initializer(value : ASTNode, owner : ModuleType) : Nil
+    old_scope = @scope
+    old_vars = @vars
+    @scope = owner.metaclass
+    @vars = Hash(String, Type).new
+    value.accept(self)
+    @scope = old_scope
+    @vars = old_vars
+    nil
+  end
+
+  def instance_vars_initializers_of?(type : Type) : Array(InstanceVarInitializer)?
+    @instance_var_initializer_lists[type.object_id]?
+  end
+
+  # The registry holds only declarations owned by each link in this chain.
+  # The hosted late-generic path can copy a non-generic ancestor's defaults and
+  # execute them twice; allocations here execute each declaration once.
+  def allocation_initializer_chain(real : Type) : Array(Type)
+    chain = [] of Type
+    current : Type? = real
+    while current
+      type = current.as(Type)
+      if type.is_a?(NonGenericClassType)
+        chain << type
+        current = type.as(NonGenericClassType).superclass
+      elsif type.is_a?(GenericClassInstanceType)
+        chain << type
+        current = type.as(GenericClassInstanceType).superclass
+      else
+        break
+      end
+    end
+    chain.reversed
+  end
+
+  # Class parents include their superclass. Only modules belong to this link;
+  # superclass initializers are handled by the chain itself.
+  def collect_initializer_modules(type : Type, owners : Set(UInt64), bindings : Hash(UInt64, GenericModuleInstanceType), seen : Set(UInt64)) : Nil
+    return if seen.includes?(type.object_id)
+    seen.add(type.object_id)
+    if type.is_a?(GenericModuleInstanceType)
+      instance = type.as(GenericModuleInstanceType)
+      owners.add(instance.generic_type.object_id)
+      bindings[instance.generic_type.object_id] = instance unless bindings[instance.generic_type.object_id]?
+      instance.parents.each { |parent| collect_initializer_modules(parent, owners, bindings, seen) }
+    elsif type.is_a?(NonGenericModuleType) || type.is_a?(GenericModuleType) || type.is_a?(TraitType)
+      mod = type.as(ModuleType)
+      owners.add(mod.object_id)
+      mod.parents.each { |parent| collect_initializer_modules(parent, owners, bindings, seen) }
+    end
+    nil
+  end
+
+  def prepare_allocation_initializers(real : Type) : Nil
+    allocation_initializer_chain(real).each do |type|
+      next if @instance_var_initializer_lists[type.object_id]?
+      entries = [] of InstanceVarInitializer
+      # Install even an empty list before typing: an initializer may allocate its
+      # own type, and the lowerer must distinguish prepared-empty from missing.
+      @instance_var_initializer_lists[type.object_id] = entries
+      owners = Set(UInt64).new
+      bindings = Hash(UInt64, GenericModuleInstanceType).new
+      seen = Set(UInt64).new
+      if type.is_a?(GenericClassInstanceType)
+        instance = type.as(GenericClassInstanceType)
+        owners.add(instance.generic_type.object_id)
+        instance.parents.each { |parent| collect_initializer_modules(parent, owners, bindings, seen) }
+        instance.included_modules.each { |parent| collect_initializer_modules(parent, owners, bindings, seen) }
+        meta = instance.metaclass
+      else
+        cls = type.as(NonGenericClassType)
+        owners.add(cls.object_id)
+        cls.parents.each { |parent| collect_initializer_modules(parent, owners, bindings, seen) }
+        meta = cls.metaclass
+      end
+      @program.instance_var_initializers.each do |entry|
+        next unless owners.includes?(entry.owner.object_id)
+        generic = entry.owner.is_a?(GenericClassType) || entry.owner.is_a?(GenericModuleType)
+        value = generic ? entry.value.clone : entry.value
+        if generic || type_of?(value).nil?
+          inner = sub_visitor(Hash(String, Type).new).as(MainVisitor)
+          inner.scope = meta
+          inner.current_type = entry.owner
+          if binding = bindings[entry.owner.object_id]?
+            inner.initializer_type_vars = binding.type_vars
+          end
+          value.accept(inner)
+        end
+        ivar = if type.is_a?(GenericClassInstanceType)
+                 type.as(GenericClassInstanceType).lookup_instance_var?(entry.name)
+               else
+                 type.as(NonGenericClassType).lookup_instance_var?(entry.name)
+               end
+        raise "BUG: #{type.full_name} has no instance variable #{entry.name}" if ivar.nil?
+        if val_type = type_of?(value)
+          declared = ivar.as(MetaTypeVar).type
+          unless val_type.subtype_of?(declared)
+            refuse(value, "instance variable '#{entry.name}' of #{type.full_name} must be #{declared.full_name}, not (#{declared.full_name} | #{val_type.full_name})")
+          end
+        end
+        entries << InstanceVarInitializer.new(entry.owner, entry.name, value)
+      end
+    end
+    nil
+  end
+
 
   def visit(node : Assign) : Bool
     # iyi: a constant whose value is one macro node is typed where a read of it types the value (visit(Path) expands
@@ -1418,7 +1603,13 @@ pub class MainVisitor < TypeNodeHost
     if node.target.is_a?(Path) && (node.value.is_a?(MacroIf) || node.value.is_a?(MacroFor) || node.value.is_a?(MacroExpression))
       return false
     end
-    if node.target.is_a?(ClassVar)
+    if node.target.is_a?(InstanceVar) && @current_def.nil? && @scope.nil? && !@current_type.is_a?(SemanticProgram)
+      if @current_type.is_a?(GenericClassType) || @current_type.is_a?(GenericModuleType)
+        set_type(node, @program.nil_type)
+        return false
+      end
+      type_instance_var_initializer(node.value, @current_type)
+    elsif node.target.is_a?(ClassVar)
       type_class_var_initializer(node.value)
     else
       node.value.accept(self)
@@ -1586,8 +1777,15 @@ pub class MainVisitor < TypeNodeHost
       return refuse(node, "undefined constant #{declared_base_name(node.declared_type)}")
     end
     decl_type = decl_found.as(Type)
-    if val = node.value
-      if node.var.is_a?(ClassVar)
+    val = node.value
+    if node.var.is_a?(InstanceVar) && @current_def.nil? && @scope.nil? &&
+       (@current_type.is_a?(GenericClassType) || @current_type.is_a?(GenericModuleType))
+      val = nil
+    end
+    if val
+      if node.var.is_a?(InstanceVar) && @current_def.nil? && @scope.nil? && !@current_type.is_a?(SemanticProgram)
+        type_instance_var_initializer(val, @current_type)
+      elsif node.var.is_a?(ClassVar)
         type_class_var_initializer(val)
       else
         val.accept(self)
@@ -1713,6 +1911,22 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Path) : Bool
+    if @current_def.nil? && !node.global && node.names.size == 1
+      if bindings = @initializer_type_vars
+        if bound = bindings[node.names.first]?
+          if @in_type_args == 0
+            if meta = type_node_metaclass(bound)
+              set_type(node, meta)
+            else
+              return refuse(node, "expected a type with a metaclass, not #{bound.full_name}")
+            end
+          else
+            set_type(node, bound)
+          end
+          return false
+        end
+      end
+    end
     if !node.global && node.names.size == 1
       if cd = @current_def
         if free = @def_free_types[cd]?
@@ -1724,6 +1938,22 @@ pub class MainVisitor < TypeNodeHost
             end
             return false
           end
+        end
+      end
+    end
+    if !node.global && node.names.size == 1
+      if instance = current_module_instance(@scope)
+        if bound = instance.type_vars[node.names.first]?
+          if @in_type_args == 0
+            if meta = type_node_metaclass(bound)
+              set_type(node, meta)
+            else
+              return refuse(node, "expected a type with a metaclass, not #{bound.full_name}")
+            end
+          else
+            set_type(node, bound)
+          end
+          return false
         end
       end
     end
@@ -3027,14 +3257,16 @@ pub class MainVisitor < TypeNodeHost
 
   # Hosted method_lookup.cr:71-108 and 217-243: retain a separate level for
   # each owner so cover and module stopping happen at the same boundaries.
-  def collect_arm_levels(type : Type, name : String, walk : ArmWalk, levels : Array(Type), visited : Set(String)) : Nil
+  # A generic instance metaclass can have the same printed name as its
+  # generic metaclass parent; both levels still need to be visited.
+  def collect_arm_levels(type : Type, name : String, walk : ArmWalk, levels : Array(Type), visited : Set(UInt64)) : Nil
     actual = type
     actual = actual.as(VirtualType).base_type if actual.is_a?(VirtualType)
     declaring = actual.is_a?(GenericInstanceType) ? actual.as(GenericInstanceType).generic_type : actual
     return nil unless declaring.is_a?(ModuleType)
     mod = declaring.as(ModuleType)
-    return nil if visited.includes?(actual.full_name)
-    visited.add(actual.full_name)
+    return nil if visited.includes?(actual.object_id)
+    visited.add(actual.object_id)
     levels << actual
     return nil unless MethodLookup.walks_parents?(mod, name)
     parents = actual.is_a?(GenericInstanceType) ? actual.as(GenericInstanceType).parents : mod.parents
@@ -3078,7 +3310,7 @@ pub class MainVisitor < TypeNodeHost
     signature = CallSignature.new(name, arg_types, named_types, !call_node.block.nil?)
     signature.infer_class_vars = infer_class_vars
     levels = [] of Type
-    collect_arm_levels(lookup_in, name, walk, levels, Set(String).new)
+    collect_arm_levels(lookup_in, name, walk, levels, Set(UInt64).new)
     if call_node.obj.nil?
       has_candidates = false
       levels.each do |level|
@@ -5733,6 +5965,7 @@ pub class MainVisitor < TypeNodeHost
     inner.refusal_stream = @refusal_stream
     inner.typed_instances = @typed_instances
     inner.def_instances = @def_instances
+    inner.instance_var_initializer_lists = @instance_var_initializer_lists
     inner.def_var_unions = @def_var_unions
     inner.def_nil_resets = @def_nil_resets
     inner.def_free_types = @def_free_types

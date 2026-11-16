@@ -23,6 +23,10 @@ pub class TypeSystem < TypeHook
     @instances = TypeInstances.new(@program)
     register_builtin_types
     @program.merge_hook = self
+    # Generic superclass templates must bind before field declarations create
+    # early instances of their subclass.
+    @program.resolve_pending_generic_superclasses
+    @program.resolve_pending_generic_includes
     @program.resolve_declared_types
   end
 
