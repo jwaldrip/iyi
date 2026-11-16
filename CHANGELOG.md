@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- Native spawn classification recognizes writes and field addresses in
+  original instance methods, and examines cast operands for captured values.
+  Spawn collection and pool reach skip branches whose conditions are known
+  false from an exact Nil type. Unproven placements and reached pools remain
+  refused.
+
 - The hosted-built stage-one command entry routes `build` and `run` through
   the native typed pipeline, refuses unimplemented options and verbs, and
   protects resolved sources from being replaced by output. Native linking

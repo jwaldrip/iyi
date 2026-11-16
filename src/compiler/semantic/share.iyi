@@ -1,28 +1,201 @@
 module compiler/semantic/share
 
-import compiler/syntax/ast::{Def}
+import compiler/syntax/ast::{ASTNode, Assign, Call, ClassDef, Def, InstanceVar, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, ModuleDef, MultiAssign, OpAssign, PointerOf}
+import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, MetaTypeVar, MetaclassType, ModuleType, NilType, NonGenericClassType, Type, TypeDefType, UnionType}
 import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, PointerInstanceType, PrimitiveType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, TypeQueries, VirtualMetaclassType, VirtualType}
 
-# A nil answer means no witness was found, not that the type is Share. This is
-# the structural subset of the hosted Share check: mutation body and macro scans,
-# artifact provenance and the remaining hosted rules are not implemented here.
-pub def share_witness(type : Type) : String?
-  ShareWitness.new.witness(type)
+# A nil answer means no witness was found, not that the type is Share. This
+# subset does not expand macros per type, scan typed-instance fallbacks, track
+# artifact provenance, or add the declaring-module suffix to a reason.
+pub class ShareFacts
+  @mutations : Hash(UInt64, Hash(String, String))
+
+  def initialize
+    @mutations = Hash(UInt64, Hash(String, String)).new
+  end
+
+  def witness(type : Type) : String?
+    ShareWitness.new(self).witness(type)
+  end
+
+  # Typing an inherited def can give self the owner's virtual type. A witness
+  # on its base is safe only if no possible dynamic subclass is trusted.
+  def witness_for_self(type : Type) : String?
+    if type.is_a?(VirtualType)
+      base = type.as(VirtualType).base_type
+      return nil if share_trusted_type?(base)
+      TypeQueries.all_subclasses(base).each do |subclass|
+        return nil if share_trusted_type?(subclass)
+      end
+      return ShareWitness.new(self).structural(base)
+    end
+    witness(type)
+  end
+
+  def mutations(type : Type) : Hash(String, String)
+    id = type.object_id
+    if cached = @mutations[id]?
+      return cached
+    end
+
+    owners = [] of Type
+    collect_owners(type, owners, Set(UInt64).new)
+    macro_names = Set(String).new
+    type.program.macros.each { |name, _| macro_names.add(name) }
+    owners.each do |owner|
+      if module_owner = definition_owner(owner)
+        module_owner.macros.each { |name, _| macro_names.add(name) }
+      end
+    end
+
+    found = Hash(String, String).new
+    owners.each do |owner|
+      if module_owner = definition_owner(owner)
+        module_owner.defs.each do |name, list|
+          list.each do |definition|
+            if name.ends_with?("=") && name != "==" && name != "!=" && name != "[]=" && name != "<=" && name != ">="
+              field = "@#{name.rchop('=')}"
+              found[field] = "given a setter `#{name}`" unless found.has_key?(field)
+            end
+            next if name == "initialize"
+            scanner = MutationScanner.new(type, macro_names)
+            definition.body.accept(scanner)
+            scanner.fields.each do |field|
+              found[field] = "assigned in `#{name}`" unless found.has_key?(field)
+            end
+            scanner.addressed.each do |field|
+              found[field] = "given out by `pointerof` in `#{name}`" unless found.has_key?(field)
+            end
+          end
+        end
+      end
+    end
+    @mutations[id] = found
+    found
+  end
+
+  def definition_owner(type : Type) : ModuleType?
+    if type.is_a?(GenericInstanceType)
+      generic = type.as(GenericInstanceType).generic_type
+      return generic.as(ModuleType) if generic.is_a?(ModuleType)
+    elsif type.is_a?(ModuleType)
+      return type.as(ModuleType)
+    end
+    nil
+  end
+
+  def collect_owners(type : Type, owners : Array(Type), visited : Set(UInt64)) : Nil
+    id = type.object_id
+    return if visited.includes?(id)
+    visited.add(id)
+    owners << type
+    if type.is_a?(GenericInstanceType)
+      instance = type.as(GenericInstanceType)
+      instance.parents.each { |parent| collect_owners(parent, owners, visited) }
+      if instance.is_a?(GenericClassInstanceType)
+        class_instance = instance.as(GenericClassInstanceType)
+        if superclass = class_instance.superclass
+          collect_owners(superclass, owners, visited)
+        end
+        class_instance.included_modules.each { |parent| collect_owners(parent, owners, visited) }
+      end
+    elsif type.is_a?(ModuleType)
+      owner = type.as(ModuleType)
+      owner.parents.each { |parent| collect_owners(parent, owners, visited) }
+      if owner.is_a?(ClassType)
+        if superclass = owner.as(ClassType).superclass
+          collect_owners(superclass, owners, visited)
+        end
+      end
+    end
+    nil
+  end
 end
 
-# Typing an inherited def can give self the owner's virtual type. A witness on
-# its base is safe for self only if no possible dynamic subclass is trusted.
-pub def share_witness_for_self(type : Type) : String?
-  if type.is_a?(VirtualType)
-    base = type.as(VirtualType).base_type
-    return nil if share_trusted_type?(base)
-    TypeQueries.all_subclasses(base).each do |subclass|
-      return nil if share_trusted_type?(subclass)
-    end
-    return ShareWitness.new.structural(base)
+# Read original def bodies only. A macro argument is not necessarily executed,
+# and a typed clone may have been expanded for a different instantiation.
+class MutationScanner < Visitor
+  getter fields : Set(String)
+  getter addressed : Set(String)
+
+  def initialize(@scope : Type, @macro_names : Set(String))
+    @fields = Set(String).new
+    @addressed = Set(String).new
   end
-  share_witness(type)
+
+  def note(target : ASTNode) : Nil
+    @fields.add(target.as(InstanceVar).name) if target.is_a?(InstanceVar)
+    nil
+  end
+
+  def visit(node : Assign) : Bool
+    note(node.target)
+    true
+  end
+
+  def visit(node : OpAssign) : Bool
+    note(node.target)
+    true
+  end
+
+  def visit(node : MultiAssign) : Bool
+    node.targets.each { |target| note(target) }
+    true
+  end
+
+  def visit(node : PointerOf) : Bool
+    exp = node.exp
+    @addressed.add(exp.as(InstanceVar).name) if exp.is_a?(InstanceVar)
+    true
+  end
+
+  def visit(node : Call) : Bool
+    return false if node.expanded
+    if node.obj.nil? && !node.super? && !node.previous_def?
+      return false if @macro_names.includes?(node.name)
+      scope = @scope
+      scope = scope.as(GenericInstanceType).generic_type if scope.is_a?(GenericInstanceType)
+      return false if scope.is_a?(ModuleType) && scope.as(ModuleType).lookup_call_macro?(node)
+    end
+    true
+  end
+
+  def visit(node : ClassDef) : Bool
+    false
+  end
+
+  def visit(node : ModuleDef) : Bool
+    false
+  end
+
+  def visit(node : Macro) : Bool
+    false
+  end
+
+  def visit(node : MacroExpression) : Bool
+    false
+  end
+
+  def visit(node : MacroFor) : Bool
+    false
+  end
+
+  def visit(node : MacroIf) : Bool
+    false
+  end
+
+  def visit(node : MacroLiteral) : Bool
+    false
+  end
+
+  def visit(node : MacroVar) : Bool
+    false
+  end
+
+  def visit(node : MacroVerbatim) : Bool
+    false
+  end
 end
 
 def share_trusted_type?(type : Type) : Bool
@@ -35,7 +208,7 @@ end
 class ShareWitness
   @visited : Set(UInt64)
 
-  def initialize
+  def initialize(@facts : ShareFacts)
     @visited = Set(UInt64).new
   end
 
@@ -116,11 +289,10 @@ class ShareWitness
       return nil
     end
 
-    setters = Set(String).new
-    collect_setters(type, setters, Set(UInt64).new)
+    mutations = @facts.mutations(type)
     fields.each do |name, var|
-      if setters.includes?(name)
-        return "#{type}'s field #{name} is given a setter `#{name.lchop('@')}=`"
+      if how = mutations[name]?
+        return "#{type}'s field #{name} is #{how}"
       end
       if var_type = var.type?
         if why = witness(var_type)
@@ -131,47 +303,4 @@ class ShareWitness
     nil
   end
 
-  def collect_setters(type : Type, fields : Set(String), visited : Set(UInt64)) : Nil
-    id = type.object_id
-    return if visited.includes?(id)
-    visited.add(id)
-
-    if type.is_a?(GenericInstanceType)
-      instance = type.as(GenericInstanceType)
-      generic = instance.generic_type
-      if generic.is_a?(ModuleType)
-        add_setters(generic.as(ModuleType).defs, fields)
-      end
-      if instance.is_a?(GenericClassInstanceType)
-        class_instance = instance.as(GenericClassInstanceType)
-        if superclass = class_instance.superclass
-          collect_setters(superclass, fields, visited)
-        end
-        class_instance.included_modules.each do |parent|
-          collect_setters(parent, fields, visited)
-        end
-      end
-      instance.parents.each { |parent| collect_setters(parent, fields, visited) }
-    elsif type.is_a?(ModuleType)
-      owner = type.as(ModuleType)
-      add_setters(owner.defs, fields)
-      if owner.is_a?(ClassType)
-        if superclass = owner.as(ClassType).superclass
-          collect_setters(superclass, fields, visited)
-        end
-      end
-      owner.parents.each { |parent| collect_setters(parent, fields, visited) }
-    end
-    nil
-  end
-
-  def add_setters(defs : Hash(String, Array(Def)), fields : Set(String)) : Nil
-    defs.each do |name, list|
-      next if list.empty?
-      next unless name.ends_with?("=")
-      next if name == "==" || name == "!=" || name == "[]=" || name == "<=" || name == ">="
-      fields.add("@#{name.rchop('=')}")
-    end
-    nil
-  end
 end
