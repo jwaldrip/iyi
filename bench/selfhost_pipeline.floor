@@ -96,6 +96,7 @@ bench/fixtures/lowcall_nested.iyi run-equal
 bench/fixtures/lowcall_nil.iyi run-equal
 bench/fixtures/lowcall_nil_method.iyi run-equal
 bench/fixtures/lowcall_noreturn.iyi run-equal
+bench/fixtures/lowcall_noreturn_operand.iyi run-equal
 bench/fixtures/lowcall_pick.iyi run-equal
 bench/fixtures/lowcall_recursion_mutual.iyi run-equal
 bench/fixtures/lowcall_recursion_state.iyi run-equal
@@ -106,6 +107,7 @@ bench/fixtures/lowcall_recursive_inferred_loop.iyi run-equal
 bench/fixtures/lowcall_recursive_named_default.iyi run-equal
 bench/fixtures/lowcall_recursive_named_inferred.iyi run-equal
 bench/fixtures/lowcall_recursive_named_mixed.iyi run-equal
+bench/fixtures/lowcall_recursive_named_mixed_inferred.iyi run-equal
 bench/fixtures/lowcall_recv_arg.iyi run-equal
 bench/fixtures/lowcall_recv_block.iyi run-equal
 bench/fixtures/lowcall_recv_self.iyi run-equal
@@ -212,6 +214,7 @@ bench/fixtures/lower_probe_reuse.iyi bodies
 bench/fixtures/lower_proc_class_scope.iyi run-equal
 bench/fixtures/lower_proc_implicit_self.iyi run-equal
 bench/fixtures/lower_proc_literal.iyi run-equal
+bench/fixtures/lower_proc_yielded_blocks.iyi declarations
 bench/fixtures/lower_return.iyi run-equal
 bench/fixtures/lower_return_bare.iyi run-equal
 bench/fixtures/lower_return_last.iyi run-equal
