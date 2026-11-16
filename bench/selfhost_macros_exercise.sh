@@ -825,8 +825,8 @@ prove_mutation "range for loop drops its inclusive end" "$INTERP" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "raise location moved to the brace" "$PARSER" \
-  "exp.location = tag_loc" \
-  "exp.location = open_loc" \
+  "parser.column_number = tag_loc.column_number" \
+  "parser.column_number = open_loc.column_number" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
