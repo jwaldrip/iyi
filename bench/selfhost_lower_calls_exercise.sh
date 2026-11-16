@@ -761,6 +761,21 @@ block_branch_rw_check() {
 prove_mutation "one yield overwrites another yield's entry flow" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '            ctx[k] = @program.type_merge(ctx[k], new_v)' '            ctx[k] = new_v' -- block_branch_rw_check || status=1
 
+block_lexical_locals_check() {
+  if ! "$IYI" build -o "$WORK/block-lexical-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-lexical-mut.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/block-lexical-mut" lower "$REPO/bench/fixtures/lowcall_block_lexical_locals.iyi" "$WORK/lowcall_block_lexical_locals.oracle.ll" > "$WORK/block-lexical-mut.out" 2> "$WORK/block-lexical-mut.err" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-lexical-mut.out"
+}
+prove_mutation "a block inherits later caller locals" "$REPO/src/compiler/lower/call.iyi" \
+  '      block_vars[name] = var if name == "self" || writer_vars.has_key?(name)' \
+  '      block_vars[name] = var' -- block_lexical_locals_check || status=1
+prove_mutation "a fun visitor loses block writer ownership" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    inner.block_owners = @block_owners' \
+  '    inner.block_owners = NodeMap(BlockOwner).new' -- block_lexical_locals_check || status=1
+
 uncovered_mutation_check() {
   if ! "$IYI" build -o "$WORK/uncovered-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/uncovered-mut.build.log" 2>&1; then
     touch "$WORK/uncovered.invalid"
