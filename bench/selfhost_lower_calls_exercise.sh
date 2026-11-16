@@ -43,6 +43,45 @@ normalize_switches() {
     END { if (in_switch || bad) exit 1 }
   '
 }
+
+# Hosted in? splat formals use file-hashed temporary names; the port names
+# them $splat_N. Rename only those formal SSA names and their uses, separately
+# for each in? function, before comparing every instruction.
+normalize_splat_formals() {
+  awk '
+    function replace_name(line, from, to,   result, tail, at, following) {
+      result = ""; tail = line
+      while ((at = index(tail, from)) > 0) {
+        following = substr(tail, at + length(from), 1)
+        if (following != "" && following ~ /[[:alnum:]$_.-]/) {
+          result = result substr(tail, 1, at + length(from) - 1)
+        } else {
+          result = result substr(tail, 1, at - 1) to
+        }
+        tail = substr(tail, at + length(from))
+      }
+      return result tail
+    }
+    /^define / {
+      for (key in names) delete names[key]
+      count = 0; rest = $0
+      if (index($0, "#in?<") > 0) {
+        while (match(rest, /%__temp_[0-9a-f]+_[0-9]+/)) {
+          name = substr(rest, RSTART, RLENGTH)
+          following = substr(rest, RSTART + RLENGTH, 1)
+          if ((following == "" || following !~ /[[:alnum:]$_.-]/) && !(name in names))
+            names[name] = "%$splat_" ++count
+          rest = substr(rest, RSTART + RLENGTH)
+        }
+      }
+    }
+    {
+      for (key in names) $0 = replace_name($0, key, names[key])
+      print
+    }
+    /^}$/ { for (key in names) delete names[key] }
+  '
+}
 switch_result="$(printf '  switch i32 %%x, label %%else [\n    i32 1, label %%a\n    i32 2, label %%b\n  ]\n' | normalize_switches)"
 if [ "$switch_result" != '  switch i32 %x, label %else [ i32 1, label %a, i32 2, label %b ]' ] ||
    printf 'switch i32 %%x, label %%else [\n i32 1, label %%a\n' | normalize_switches >/dev/null ||
@@ -87,8 +126,9 @@ for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi "$REPO"/bench/fixtures/lowde
     diverged=$((diverged + 1))
     continue
   fi
-  if ! awk "$CALL_TYPES" "$WORK/$name.ll" | normalize_switches > "$WORK/$name.oracle.ll"; then
-    echo "  $name: malformed switch in hosted module"
+  if ! awk "$CALL_TYPES" "$WORK/$name.ll" | normalize_switches > "$WORK/$name.oracle.pre-splat.ll" ||
+     ! normalize_splat_formals < "$WORK/$name.oracle.pre-splat.ll" > "$WORK/$name.oracle.ll"; then
+    echo "  $name: malformed hosted module normalization"
     diverged=$((diverged + 1))
     continue
   fi
@@ -225,18 +265,18 @@ elif ! grep -Fq "expected argument #1 to 'consume'" "$WORK/uncovered.hosted.log"
   echo "  uncovered union: expected argument diagnostic missing"
   status=1
 fi
-free_dispatch="$REPO/bench/fixtures/lowcallwait_dispatch_free_vars.iyi"
+free_dispatch="$REPO/bench/fixtures/lowcallwait_dispatch_free_vars_block.iyi"
 if ! "$IYI" build --prelude empty -o "$WORK/free_dispatch.hosted" "$free_dispatch" > "$WORK/free_dispatch.hosted.log" 2>&1; then
-  echo "  free-variable dispatch: hosted compiler unexpectedly refused"
+  echo "  block-bound free-variable dispatch: hosted compiler unexpectedly refused"
   status=1
 elif "$WORK/port" emit "$free_dispatch" "$WORK/lowcall_super.oracle.ll" > "$WORK/free_dispatch.out" 2> "$WORK/free_dispatch.err"; then
-  echo "  free-variable dispatch: port unexpectedly accepted"
+  echo "  block-bound free-variable dispatch: port unexpectedly accepted"
   status=1
-elif ! grep -Fq 'not ported: an argument dispatch into a def with free variables (hosted semantic/call.cr instantiate binds them from the match)' "$WORK/free_dispatch.err"; then
-  echo "  free-variable dispatch: expected port limitation missing"
+elif ! grep -Fq 'not ported: a dispatch whose arms bind free variables from the block they share (hosted semantic/call.cr match_block_arg binds them per match from the merged block)' "$WORK/free_dispatch.err"; then
+  echo "  block-bound free-variable dispatch: expected port limitation missing"
   status=1
 else
-  echo "  free-variable dispatch: hosted accepted; port explicitly refused"
+  echo "  block-bound free-variable dispatch: hosted accepted; port explicitly refused"
 fi
 
 
@@ -718,6 +758,32 @@ triple_check() {
   "$IYI" build -o "$WORK/triple-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/triple-mut.build.log" 2>&1 || { touch "$WORK/general-mutation.invalid"; return 1; }
   "$WORK/triple-mut" triple > "$WORK/triple-mut.out" 2>&1
 }
+
+free_dispatch_check() {
+  local label="${1:-baseline}"
+  if ! "$IYI" build -o "$WORK/free-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/free-mut-$label.build.log" 2>&1; then
+    cat "$WORK/free-mut-$label.build.log" > "$WORK/free-dispatch.invalid"
+    return 1
+  fi
+  "$WORK/free-mut" lower "$REPO/bench/fixtures/lowcall_dispatch_free_vars.iyi" "$WORK/lowcall_dispatch_free_vars.oracle.ll" > "$WORK/free-mut-$label.out" 2> "$WORK/free-mut-$label.err" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/free-mut-$label.out"
+}
+if free_dispatch_check; then
+  prove_mutation "dispatch arms share a cached definition" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '      dkey = def_instance_key(target_def, union_instance_owner, node)' \
+    '      dkey = def_instance_key(arms[0].definition, arms[0].owner, node)' -- free_dispatch_check identity || status=1
+  prove_mutation "dispatch arms share the first arm's argument bindings" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '      bound_types = match_bound_types(arm)' \
+    '      bound_types = match_bound_types(arms[0])' -- free_dispatch_check binding || status=1
+else
+  echo "  FAIL: free-variable dispatch baseline differs from the hosted module"
+  status=1
+fi
+if [ -e "$WORK/free-dispatch.invalid" ]; then
+  echo "  FAIL: a free-variable dispatch mutation did not compile; behavioral detection is unproven"
+  cat "$WORK/free-dispatch.invalid"
+  status=1
+fi
 
 super_check() {
   if ! "$IYI" build -o "$WORK/super_mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/super_mut.build.log" 2>&1; then

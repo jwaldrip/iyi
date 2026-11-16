@@ -33,6 +33,7 @@ bench/fixtures/lowcall_default_yield.iyi run-equal
 bench/fixtures/lowcall_dispatch_arg_once.iyi run-equal
 bench/fixtures/lowcall_dispatch_by_value_arg.iyi run-equal
 bench/fixtures/lowcall_dispatch_enum.iyi run-equal
+bench/fixtures/lowcall_dispatch_free_vars.iyi run-equal
 bench/fixtures/lowcall_dispatch_inherited.iyi run-equal
 bench/fixtures/lowcall_dispatch_inherited_sibling.iyi run-equal
 bench/fixtures/lowcall_dispatch_named_arg.iyi run-equal
