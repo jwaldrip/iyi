@@ -36,7 +36,7 @@ import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, Generic, MacroLite
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{IntPredicate, RealPredicate, Attribute, Inst, Op, CallAux, CallConv, Ordering, Block}
 import compiler/types/unification::{TypeUnification}
-import compiler/lower/cast::{assign, type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
+import compiler/lower/cast::{assign, downcast, type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -329,7 +329,9 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
   if address_receiver.is_a?(Var)
     variable = low.current_context.vars[address_receiver.as(Var).name]?
     if variable && !variable.already_loaded
-      value = variable.pointer
+      # The slot can hold a mixed union even when this read is a tuple.
+      # Match visit(Var): use the narrowed payload address, not the union tag.
+      value = downcast(low, variable.pointer, typ, variable.type, false)
     end
   end
   if value.nil?
