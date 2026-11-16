@@ -213,8 +213,9 @@ prove_mutation 'program closure facts omitted' "$REPO/src/compiler/lower/lower.i
   'low.current_context.closure_facts = facts' 'low.current_context.closure_facts = nil' -- check_mutant lower_closure_top_level || status=1
 prove_mutation 'yielded block loses closure context' "$REPO/src/compiler/lower/block.iyi" \
   'body.copy_closure_from(caller)' 'nil' -- check_mutant lower_closure_nested_block || status=1
-prove_mutation 'forwarded closure cache uses node identity' "$REPO/src/compiler/semantic/main_visitor.iyi" \
-  '      key = key + block_key(origin, blk, call_node)' '      key = key + "&#{blk.node_id}"' -- check_self_behavior_mutant closure_forward_recursion || status=1
+prove_mutation 'forwarded closure loses its captured environment' "$REPO/src/compiler/lower/proc.iyi" \
+  '  ctx = closure ? source.closure_ptr.as(Value) : low.builder.const_null(low.module.types.ptr(0)).as(Value)' \
+  '  ctx = low.builder.const_null(low.module.types.ptr(0)).as(Value)' -- check_self_behavior_mutant closure_forward_recursion || status=1
 prove_mutation 'macro proc loses call-site location' "$REPO/src/compiler/lower/proc.iyi" \
   'place = low.current_context.macro_origin || node.location' 'place = node.location' -- check_macro_mutant || status=1
 prove_mutation 'address-taken parameter is not spilled' "$REPO/src/compiler/lower/fun.iyi" \
