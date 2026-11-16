@@ -8,6 +8,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 . "$REPO/bench/lib/mutation.sh"
 corpus="$REPO/bench/fixtures/spawnshare_corpus.iyi"
+branch="$REPO/bench/fixtures/spawnshare_dead_branch.iyi"
 process="$REPO/bench/fixtures/spawnshare_process.iyi"
 
 run_monitored() {
@@ -36,8 +37,8 @@ lines = source.read_text().splitlines()
 sites = {}
 for number, line in enumerate(lines, 1):
     if re.search(r'\bg\.spawn\b', line):
-        if kind == 'corpus':
-            match = re.search(r'# hosted: (stays|parallel)(; gap: in-def macro)?', line)
+        if kind in ('corpus', 'branch'):
+            match = re.search(r'# hosted: (stays|parallel|none)(; gap: in-def macro)?', line)
             if not match:
                 raise SystemExit(f'FAIL {source.name}:{number}: missing hosted annotation')
             sites[number] = (match.group(1), bool(match.group(2)))
@@ -63,6 +64,11 @@ for line in native_path.read_text().splitlines():
 for number, (expected, gap) in sites.items():
     host = notes.get(number, [])
     native = verdicts.get(number, [])
+    if expected == 'none':
+        if host or native:
+            raise SystemExit(f'FAIL {source.name}:{number}: dead spawn was recorded: {host!r} {native!r}')
+        print(f'{source.name}:{number}: hosted=none native=none')
+        continue
     if not host or not native:
         raise SystemExit(f'FAIL {source.name}:{number}: missing hosted note or native verdict: {host!r} {native!r}')
     if expected == 'stays':
@@ -105,10 +111,37 @@ check_fixture() {
   fi
 }
 
+# The sidecar's lowering row is the site the pool reach walk actually reports.
+reach_is() {
+  python3 - "$branch" "$1" "$2" <<'PY'
+import pathlib, re, sys
+source, sidecar = map(pathlib.Path, sys.argv[1:3])
+label = sys.argv[3]
+sites = [i for i, line in enumerate(source.read_text().splitlines(), 1)
+         if re.search(r'; site: ' + re.escape(label) + r'\s*$', line)]
+if len(sites) != 1:
+    raise SystemExit(f'FAIL: expected one fixture site for {label}, got {sites}')
+reached = []
+for line in sidecar.read_text().splitlines():
+    cols = line.split('\t')
+    if (len(cols) >= 4 and cols[0] == 'lowering' and cols[2] == 'lowering core'
+            and cols[3].startswith('spawn classification is not ported')):
+        reached.append(cols[1])
+if len(reached) != 1:
+    raise SystemExit(f'FAIL: expected one pool-reach refusal, got {reached!r}')
+match = re.match(r'^(.*):(\d+):(\d+)$', reached[0])
+if not match or pathlib.Path(match.group(1)).name != source.name or int(match.group(2)) != sites[0]:
+    raise SystemExit(f'FAIL: expected reached site {label} at {source.name}:{sites[0]}, got {reached[0]}')
+print(f'pool reach: {label} at {source.name}:{sites[0]}')
+PY
+}
+
 if ! build_compiler "$WORK/compiler" "$WORK/compiler.log"; then
   echo 'FAIL: native compiler tool did not build'; cat "$WORK/compiler.log"; exit 1
 fi
 check_fixture "$corpus" "$corpus" corpus || exit 1
+check_fixture "$branch" "$branch" branch || exit 1
+reach_is "$WORK/branch.refusals" live_else || exit 1
 
 # A broken compiler build or interrupted probe is invalid, not a caught mutant.
 # The check returns nonzero only after the mutant compiled and the exact Assign
@@ -148,5 +181,64 @@ PY
 }
 prove_mutation 'instance assignment witness removed' "$REPO/src/compiler/semantic/share.iyi" \
   '    note(node.target)' '    # assignment witness deliberately omitted' -- check_assign_mutation || exit 1
+
+# A control is caught only if its compiler builds, its sidecar completes, and
+# the reported reach moves to the exact site predicted by that mutation.
+check_reach_mutation() {
+  local wanted="$1" tag="$2"
+  if ! build_compiler "$WORK/$tag-compiler" "$WORK/$tag.build"; then
+    echo "INVALID: $tag compiler did not build"; cat "$WORK/$tag.build"; return 0
+  fi
+  native_probe "$WORK/$tag-compiler" "$branch" "$WORK/$tag" > "$WORK/$tag.log" 2>&1
+  if [ ! -f "$WORK/$tag.names" ] || [ ! -f "$WORK/$tag.refusals" ]; then
+    echo "INVALID: $tag did not produce a complete sidecar"; tail -n 30 "$WORK/$tag.log"; return 0
+  fi
+  if reach_is "$WORK/$tag.refusals" "$wanted"; then
+    echo "compiled $tag mutant moved reach to $wanted"
+    return 1
+  fi
+  echo "INVALID: $tag did not move reach to $wanted"
+  return 0
+}
+
+prove_mutation 'pool reach visits the Nil-dead then arm' "$REPO/src/compiler/semantic/spawn_placement.iyi" \
+  '  def visit(node : If) : Bool
+    node.cond.accept(self)
+    truth = static_truthiness(@visitor, node.cond)
+    node.then.accept(self) unless truth == -1
+    node.else.accept(self) unless truth == 1
+    false
+  end
+
+  def visit(node : Path)' \
+  '  def visit(node : If) : Bool
+    node.cond.accept(self)
+    truth = literal_truthiness(node.cond)
+    node.then.accept(self) unless truth == -1
+    node.else.accept(self) unless truth == 1
+    false
+  end
+
+  def visit(node : Path)' -- check_reach_mutation dead_then reach-dead || exit 1
+
+prove_mutation 'pool reach drops the live else arm' "$REPO/src/compiler/semantic/spawn_placement.iyi" \
+  '  def visit(node : If) : Bool
+    node.cond.accept(self)
+    truth = static_truthiness(@visitor, node.cond)
+    node.then.accept(self) unless truth == -1
+    node.else.accept(self) unless truth == 1
+    false
+  end
+
+  def visit(node : Path)' \
+  '  def visit(node : If) : Bool
+    node.cond.accept(self)
+    truth = static_truthiness(@visitor, node.cond)
+    node.then.accept(self) unless truth == -1
+    node.else.accept(self) unless truth != 0
+    false
+  end
+
+  def visit(node : Path)' -- check_reach_mutation nilable_then reach-else || exit 1
 check_fixture "$process" "$REPO/src/std/process.iyi" process || exit 1
 printf '%s\n' 'spawn Share placement: hosted/native comparisons and mutation passed'

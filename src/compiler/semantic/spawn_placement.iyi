@@ -2,7 +2,7 @@ module compiler/semantic/spawn_placement
 
 import compiler/syntax/ast::{ASTNode, Assign, Block, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, Def, Expressions, FunDef, If, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, ModuleDef, Next, NilableCast, NilLiteral, NodeMap, Nop, Not, NumberLiteral, Path, Primitive, ProcLiteral, Return, Self, StringLiteral, SymbolLiteral, Var, While, Yield}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{MetaclassType, ModuleType, NoReturnType, SemanticProgram, Type}
+import compiler/semantic/top_level::{MetaclassType, ModuleType, NilType, NoReturnType, SemanticProgram, Type}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/closures::{ClosureFacts, ClosureFrame}
 import compiler/semantic/share::{ShareFacts}
@@ -110,6 +110,21 @@ def literal_truthiness(node : ASTNode) : Int32
     return -1
   elsif node.is_a?(Not)
     return 0 - literal_truthiness(node.as(Not).exp)
+  end
+  0
+end
+
+# Hosted cleanup and native lowering both discard the then arm when the
+# condition's value is exactly Nil. Assignment conditions take their value's
+# truthiness, not the assignment node's type.
+def static_truthiness(visitor : MainVisitor, node : ASTNode) : Int32
+  literal = literal_truthiness(node)
+  return literal unless literal == 0
+  if node.is_a?(Assign)
+    return static_truthiness(visitor, node.as(Assign).value)
+  end
+  if type = visitor.type_of?(node)
+    return -1 if type.is_a?(NilType)
   end
   0
 end
@@ -308,6 +323,14 @@ class SpawnSiteCollector < Visitor
       end
     end
     true
+  end
+
+  def visit(node : If) : Bool
+    node.cond.accept(self)
+    truth = static_truthiness(@visitor, node.cond)
+    node.then.accept(self) unless truth == -1
+    node.else.accept(self) unless truth == 1
+    false
   end
 
   def visit(node : Def) : Bool
@@ -737,7 +760,7 @@ class SpawnWitnessWalk
   end
 end
 
-# This is a conservative graph walk: only literal-dead branches are pruned.
+# This conservative graph walk prunes only statically false or true branches.
 # Defs and typed-used constants are visited once, and a proven pool call wins
 # over any earlier unproven placement.
 class PoolReachWalk < Visitor
@@ -841,7 +864,7 @@ class PoolReachWalk < Visitor
 
   def visit(node : If) : Bool
     node.cond.accept(self)
-    truth = literal_truthiness(node.cond)
+    truth = static_truthiness(@visitor, node.cond)
     node.then.accept(self) unless truth == -1
     node.else.accept(self) unless truth == 1
     false
