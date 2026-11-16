@@ -104,11 +104,12 @@ pub class MacroMethods
   # A string literal as the hosted compiler writes it: quoted, with its quotes,
   # backslashes and line breaks escaped.
   def self.string_text(value : String) : String
-    sb = StringBuilder.new
+    sb = ::String::Builder.new(value.bytesize + 2)
     sb << "\""
     i = 0
     while i < value.bytesize
-      c = value.byte_at(i).unsafe_chr
+      byte = value.byte_at(i)
+      c = byte.unsafe_chr
       if c == '"' || c == '\\'
         sb << "\\"
         sb << c
@@ -119,7 +120,7 @@ pub class MacroMethods
       elsif c == '\t'
         sb << "\\t"
       else
-        sb << c
+        sb.write_byte(byte)
       end
       i = i + 1
     end

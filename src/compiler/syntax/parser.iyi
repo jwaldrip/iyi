@@ -899,6 +899,7 @@ pub class Parser < Lexer
           next
         end
 
+        name_location = @token.location
         name = @token.value.empty? ? @token.type.to_s : @token.value
         name_end = token_end_location
         next_token
@@ -920,6 +921,7 @@ pub class Parser < Lexer
         res = Call.new(res, name, args, block, block_arg, named_args).at(location)
         res.end_location = (block ? block.end_location : nil) || (call_args ? call_args.end_location : nil) || name_end
         res.has_parentheses = has_parens
+        res.name_location = name_location
       when TokenKind::OP_BANG
         res = Propagate.new(res).at(location)
         next_token

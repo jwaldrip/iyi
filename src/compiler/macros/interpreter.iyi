@@ -240,7 +240,9 @@ pub class MacroInterpreter
     if @failure.nil?
       line = 0
       column = 0
-      if loc = node.location
+      loc = node.location
+      loc = node.as(Call).name_location || loc if node.is_a?(Call)
+      if loc
         line = loc.line_number
         column = loc.column_number
       end

@@ -275,8 +275,10 @@ pub class MacroParser
         scanner.skip_whitespace
         expr_loc = scanner.location_at(scanner.pos)
         expr_text = scanner.find_matching_delimiter('}', '}').strip
-        exp = Parser.new(expr_text).parse
-        exp.location = expr_loc
+        parser = Parser.new(expr_text)
+        parser.line_number = expr_loc.line_number
+        parser.column_number = expr_loc.column_number
+        exp = parser.parse
         site = MacroExpression.new(exp, output: true)
         site.location = open_loc
         pieces << site
@@ -342,8 +344,10 @@ pub class MacroParser
           verbatim_node = MacroVerbatim.new(MacroLiteral.new(parse_verbatim_raw(scanner)))
           pieces << verbatim_node
         else
-          exp = Parser.new(tag_text).parse
-          exp.location = tag_loc
+          parser = Parser.new(tag_text)
+          parser.line_number = tag_loc.line_number
+          parser.column_number = tag_loc.column_number
+          exp = parser.parse
           site = MacroExpression.new(exp, output: false)
           site.location = open_loc
           pieces << site
