@@ -223,6 +223,10 @@ pub class GenericClassInstanceType < GenericInstanceType
     end
   end
 
+  def superclass_metaclass : ModuleType
+    metaclass
+  end
+
   def subtype_of?(other : Type) : Bool
     return true if self == other
     target = other.devirtualize
@@ -293,6 +297,13 @@ pub class GenericClassInstanceType < GenericInstanceType
         end
       end
     end
+    @included_modules.each do |parent|
+      if parent.is_a?(ModuleType)
+        parent.as(ModuleType).all_instance_vars.each { |k, v| all[k] = v }
+      elsif vars = parent.all_instance_vars?
+        vars.each { |k, v| all[k] = v }
+      end
+    end
     instance_vars.each do |k, v|
       all[k] = v
     end
@@ -302,6 +313,10 @@ pub class GenericClassInstanceType < GenericInstanceType
   def lookup_instance_var?(var_name : String) : MetaTypeVar?
     all_instance_vars[var_name]?
   end
+
+  def all_instance_vars? : Hash(String, MetaTypeVar)?
+    all_instance_vars
+  end
 end
 
 pub class GenericModuleInstanceType < GenericInstanceType
@@ -310,6 +325,8 @@ pub class GenericModuleInstanceType < GenericInstanceType
   def initialize(program : SemanticProgram, generic_type : Type, type_vars : Hash(String, Type), type_args : Array(Type))
     super(program, generic_type, type_vars, type_args)
     @metaclass = nil
+    @instance_vars = Hash(String, MetaTypeVar).new
+    @copied_from = Hash(String, MetaTypeVar).new
   end
 
   def module? : Bool
@@ -328,6 +345,44 @@ pub class GenericModuleInstanceType < GenericInstanceType
       @metaclass = m
       m
     end
+  end
+
+  # A module's declared field types bind against this inclusion's arguments,
+  # not the class's type variables.
+  def instance_vars : Hash(String, MetaTypeVar)
+    generic = @generic_type.as(GenericModuleType)
+    generic.instance_vars.each do |name, source|
+      unless (copied = @copied_from[name]?) && copied == source
+        if source_type = source.var_type
+          mv = MetaTypeVar.new(name, TypeQueries.replace_type_parameters(source_type, @type_vars))
+          mv.owner = self
+          @instance_vars[name] = mv
+          @copied_from[name] = source
+        end
+      end
+    end
+    @instance_vars
+  end
+
+  def all_instance_vars : Hash(String, MetaTypeVar)
+    all = Hash(String, MetaTypeVar).new
+    parents.each do |parent|
+      if parent.is_a?(ModuleType)
+        parent.as(ModuleType).all_instance_vars.each { |k, v| all[k] = v }
+      elsif vars = parent.all_instance_vars?
+        vars.each { |k, v| all[k] = v }
+      end
+    end
+    instance_vars.each { |k, v| all[k] = v }
+    all
+  end
+
+  def all_instance_vars? : Hash(String, MetaTypeVar)?
+    all_instance_vars
+  end
+
+  def lookup_instance_var?(name : String) : MetaTypeVar?
+    all_instance_vars[name]?
   end
 end
 

@@ -108,6 +108,22 @@ pub abstract class Type
   def devirtualize : Type
     self
   end
+  # A concrete generic class instance is not a ModuleType, but its metaclass
+  # is still the parent of a subclass's metaclass.
+  def superclass_metaclass : ModuleType
+    raise "BUG: #{full_name} has no superclass metaclass"
+  end
+  # Generic instances live outside ModuleType but can contribute fields through
+  # an instantiated superclass or included module.
+  def lookup_instance_var?(var_name : String) : MetaTypeVar?
+    nil
+  end
+
+  def all_instance_vars? : Hash(String, MetaTypeVar)?
+    nil
+  end
+
+
 
   # Records a place this type is declared, as the hosted pass does (`attach_doc`).
   def add_location(location : Location) : Nil
@@ -353,18 +369,14 @@ pub abstract class ModuleType < NamedType
     end
     if self.is_a?(ClassType)
       if sc = self.as(ClassType).superclass
-        if sc.is_a?(ModuleType)
-          if iv = sc.as(ModuleType).lookup_instance_var?(var_name)
-            return iv
-          end
+        if iv = sc.lookup_instance_var?(var_name)
+          return iv
         end
       end
     end
     @parents.each do |p|
-      if p.is_a?(ModuleType)
-        if iv = p.as(ModuleType).lookup_instance_var?(var_name)
-          return iv
-        end
+      if iv = p.lookup_instance_var?(var_name)
+        return iv
       end
     end
     nil
@@ -408,6 +420,8 @@ pub abstract class ModuleType < NamedType
           sc.as(ModuleType).all_instance_vars.each do |k, v|
             all_ivars[k] = v
           end
+        elsif vars = sc.all_instance_vars?
+          vars.each { |k, v| all_ivars[k] = v }
         end
       end
     end
@@ -416,6 +430,8 @@ pub abstract class ModuleType < NamedType
         p.as(ModuleType).all_instance_vars.each do |k, v|
           all_ivars[k] = v
         end
+      elsif vars = p.all_instance_vars?
+        vars.each { |k, v| all_ivars[k] = v }
       end
     end
     @instance_vars.each do |k, v|
@@ -1021,7 +1037,7 @@ pub class MetaclassType < ClassType
     elsif @instance_type.is_a?(ClassType)
       sc = @instance_type.as(ClassType).superclass
       if sc
-        meta_sc = sc.as(ModuleType).metaclass
+        meta_sc = sc.is_a?(ModuleType) ? sc.as(ModuleType).metaclass : sc.superclass_metaclass
         @superclass = meta_sc
         @parents << meta_sc
       else
@@ -1609,6 +1625,9 @@ pub class SemanticProgram < NonGenericModuleType
   getter declared_ivars : Array(DeclaredIvar)
   getter pending_ivars : Array(PendingIvar) = [] of PendingIvar
   getter declared_cvars : Array(DeclaredIvar)
+  getter instance_var_initializers : Array(InstanceVarInitializer)
+  getter pending_generic_superclasses : Array(PendingGenericSuperclass)
+  getter pending_generic_includes : Array(PendingGenericInclude)
   # iyi: the typed dump's mode. Strict (the default) refuses a name the program
   # cannot resolve, as it always has; total mode records it and goes on.
   property total_mode : Bool = false
@@ -2126,6 +2145,9 @@ pub class SemanticProgram < NonGenericModuleType
     @unions = Hash(Array(UInt64), Type).new
     @declared_ivars = [] of DeclaredIvar
     @declared_cvars = [] of DeclaredIvar
+    @instance_var_initializers = [] of InstanceVarInitializer
+    @pending_generic_superclasses = [] of PendingGenericSuperclass
+    @pending_generic_includes = [] of PendingGenericInclude
     @current_imports = Hash(String, Type).new
     @current_import_defs = Hash(String, Array(Def)).new
     @project_root = nil
@@ -2331,6 +2353,73 @@ pub class SemanticProgram < NonGenericModuleType
       return resolved
     end
     lookup_type_node(node, current_type)
+  end
+
+  # Resolve the base in the enclosing scope, but the arguments in the
+  # subclass, where that class's type parameters are visible.
+  def lookup_generic_superclass(node : Generic, base : Type, owner : ModuleType) : Type
+    if hook = @merge_hook
+      if plain_generic?(node, base)
+        args = node.type_vars.map { |arg| lookup_type_node(arg, owner) }
+        return hook.instantiate_type(base, args)
+      end
+      return lookup_superclass_node(node, owner)
+    end
+    base
+  end
+
+  def resolve_pending_generic_superclasses : Nil
+    saved_imports = @current_imports
+    @pending_generic_superclasses.each do |pending|
+      owner = pending.owner
+      old = owner.superclass
+      @current_imports = pending.imports
+      resolved = lookup_generic_superclass(pending.node, pending.base, owner)
+      if old && old != resolved
+        owner.parents.delete(old)
+        if old.is_a?(ClassType)
+          old.as(ClassType).subclasses.delete(owner)
+        end
+      end
+      owner.set_superclass(resolved, owner.superclass_display) unless old == resolved
+      if meta = owner.metaclass?
+        if old != resolved
+          class_meta = meta.as(ClassType)
+          if previous = class_meta.superclass
+            class_meta.parents.delete(previous)
+            previous.as(ClassType).subclasses.delete(class_meta) if previous.is_a?(ClassType)
+          end
+          parent_meta = resolved.is_a?(ModuleType) ? resolved.as(ModuleType).metaclass : resolved.superclass_metaclass
+          class_meta.set_superclass(parent_meta)
+        end
+      end
+    end
+    @current_imports = saved_imports
+    @pending_generic_superclasses.clear
+    nil
+  end
+
+  # Includes are prepended, so replace repeated template inclusions in reverse
+  # declaration order, retaining each inclusion's own type arguments.
+  def resolve_pending_generic_includes : Nil
+    saved_imports = @current_imports
+    @pending_generic_includes.reversed.each do |pending|
+      @current_imports = pending.imports
+      resolved = lookup_generic_superclass(pending.node, pending.base, pending.owner)
+      parents = pending.owner.parents
+      index = 0
+      while index < parents.size
+        if parents[index].object_id == pending.base.object_id
+          parents[index] = resolved
+          break
+        end
+        index += 1
+      end
+      raise "BUG: pending generic include is missing from #{pending.owner.full_name}" if index == parents.size
+    end
+    @current_imports = saved_imports
+    @pending_generic_includes.clear
+    nil
   end
 
   def lookup_type_node(node : ASTNode, current_type : ModuleType) : Type
@@ -2626,6 +2715,38 @@ pub class TypeBody
   getter imports : Hash(String, Type)
 
   def initialize(@type : ModuleType, @body : ASTNode, @imports : Hash(String, Type))
+  end
+end
+
+# A generic subclass declared before the type system is installed resolves its
+# superclass arguments once the declaration pass has installed that system.
+pub class PendingGenericSuperclass
+  getter owner : ClassType
+  getter node : Generic
+  getter base : Type
+  getter imports : Hash(String, Type)
+
+  def initialize(@owner : ClassType, @node : Generic, @base : Type, @imports : Hash(String, Type))
+  end
+end
+
+pub class PendingGenericInclude
+  getter owner : ModuleType
+  getter node : Generic
+  getter base : Type
+  getter imports : Hash(String, Type)
+
+  def initialize(@owner : ModuleType, @node : Generic, @base : Type, @imports : Hash(String, Type))
+  end
+end
+
+# One initializer written in a type body, in declaration order.
+pub class InstanceVarInitializer
+  getter owner : ModuleType
+  getter name : String
+  getter value : ASTNode
+
+  def initialize(@owner : ModuleType, @name : String, @value : ASTNode)
   end
 end
 
@@ -3040,7 +3161,11 @@ pub class TopLevelVisitor < Visitor
         g = sc_node.as(Generic)
         base_sc = @program.lookup_type_node(g.name, @current_type)
         superclass_display = "#{base_sc.full_name}(#{g.type_vars.map(&.to_s).join(", ")})"
-        superclass = @program.lookup_superclass_node(sc_node, @current_type)
+        if type.is_a?(GenericClassType)
+          superclass = @program.lookup_generic_superclass(g, base_sc, type)
+        else
+          superclass = @program.lookup_superclass_node(sc_node, @current_type)
+        end
       else
         superclass = @program.lookup_superclass_node(sc_node, @current_type)
         superclass_display = superclass.full_name
@@ -3085,6 +3210,11 @@ pub class TopLevelVisitor < Visitor
       end
 
       type.set_superclass(superclass, superclass_display)
+      if type.is_a?(GenericClassType) && node.superclass.is_a?(Generic) && @program.merge_hook.nil?
+        generic = node.superclass.as(Generic)
+        base = @program.lookup_type_node(generic.name, @current_type)
+        @program.pending_generic_superclasses << PendingGenericSuperclass.new(type, generic, base, @program.current_imports)
+      end
     end
 
     if created_new_type
@@ -3932,6 +4062,9 @@ pub class TopLevelVisitor < Visitor
     end
 
     @current_type.include(type)
+    if node.name.is_a?(Generic) && @program.merge_hook.nil?
+      @program.pending_generic_includes << PendingGenericInclude.new(@current_type, node.name.as(Generic), type, @program.current_imports)
+    end
     refuse_unported_hook(node.name, type, "included")
     false
   end

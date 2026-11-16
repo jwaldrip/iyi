@@ -1,6 +1,7 @@
 module compiler/types/instances
 
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, GenericTraitType, NonGenericModuleType, SemanticProgram, Type, VoidType}
+import compiler/semantic/top_level::{ClassType}
 import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceType, GenericTraitInstanceType, NamedArgumentType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, TypeQueries}
 
 # The instances of the type model, one object per spelling. The lookup of
@@ -30,8 +31,19 @@ pub class TypeInstances
       i = i + 1
     end
 
-    inst = GenericClassInstanceType.new(@program, generic_type, tv_map, type_args, generic_type.superclass)
+    # Cache the child before resolving its generic parent: substitution can
+    # instantiate another type and must see this same child on re-entry.
+    inst = GenericClassInstanceType.new(@program, generic_type, tv_map, type_args)
     @generic_cache[key] = inst
+    if superclass = generic_type.superclass
+      resolved = TypeQueries.replace_type_parameters(superclass, tv_map)
+      inst.superclass = resolved
+      if resolved.is_a?(GenericClassInstanceType)
+        resolved.as(GenericClassInstanceType).subclasses << inst
+      elsif resolved.is_a?(ClassType)
+        resolved.as(ClassType).subclasses << inst
+      end
+    end
     # The instance includes what its generic type includes, so each such module
     # records the instance as an includer (the hosted instance's `include`).
     inst.parents.each do |parent|

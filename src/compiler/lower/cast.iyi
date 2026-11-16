@@ -42,7 +42,7 @@ import compiler/types/types::{MixedUnionType, NamedTupleInstanceType, NilablePro
 
 # Hosted type_id.cr 168-169 names the global using the codegen spelling of
 # the type, including virtual and generic arguments.
-pub def type_id_value(low : Lowerer, t : Type) : Value
+pub def type_id_global(low : Lowerer, t : Type) : Global
   name = "#{TypeRenderer.render(t, codegen: true)}:type_id"
   global = low.module.get_global?(name)
   if global.nil?
@@ -52,7 +52,11 @@ pub def type_id_value(low : Lowerer, t : Type) : Value
     made.initializer = low.builder.const_int(low.module.types.int32, low.type_ids.type_id(t).to_i64)
     global = made
   end
-  load_aligned(low, low.module.types.int32, global.as(Global))
+  global.as(Global)
+end
+
+pub def type_id_value(low : Lowerer, t : Type) : Value
+  load_aligned(low, low.module.types.int32, type_id_global(low, t))
 end
 
 # The pointer to a mixed union's type id word (hosted `union_type_id`: field 0).
