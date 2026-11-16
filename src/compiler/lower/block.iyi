@@ -57,13 +57,6 @@ impl BranchPhi for NoReturnPhi
   end
 end
 
-# A copy of a variable table (hosted `context.vars.dup`): the same variables, a new table.
-pub def copy_vars(vars : Hash(String, LowerVar)) : Hash(String, LowerVar)
-  out = Hash(String, LowerVar).new
-  vars.each { |name, var| out[name] = var }
-  out
-end
-
 # The hosted `alloca_non_closured_vars` for one variable: an alloca named by the variable, in the
 # function's alloca block, and the variable in the table. A void or NoReturn variable has no alloca in
 # the hosted code, and is refused here until a caller needs it.

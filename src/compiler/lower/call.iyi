@@ -47,7 +47,7 @@ import compiler/ir/function::{Function, Global, TlsModel}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
-import compiler/lower/block::{NoReturnPhi, alloca_local, copy_vars, join_pointer}
+import compiler/lower/block::{NoReturnPhi, alloca_local, join_pointer}
 import compiler/lower/locals::{LocalOrder}
 import compiler/lower/closure::{allocate_closure}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
@@ -872,9 +872,9 @@ end
 
 # The hosted `codegen_call_with_block` (call.cr:356) for a def that does not use its block argument.
 # It may still name or annotate that argument. The arguments and receiver are already evaluated.
-# The block's own variables (its arguments and its locals) are made in a copy of the
-# caller's variables, the way the hosted code makes them before it clones the context. The def's body
-# is then inlined in a frame of its own: `self` (when there is a receiver) and the def's arguments and
+# The block sees the caller variables visible where it was written, plus self.
+# Its arguments and local declarations get fresh slots, as hosted undef_vars and
+# alloca_non_closured_vars require. The def's body is inlined in its own frame: self, arguments and
 # locals are bound there, and each `yield` in the body runs the block (block.iyi). The value of the
 # body is the call's value, merged by a phi (hosted `Phi.open(self, node)`, which always wants a value).
 # Passed-by-value results are merged by address.
@@ -894,8 +894,27 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   caller = low.current_context
   noreturn = ret.is_a?(NoReturnType)
 
-  # The block's variables, in a copy of the caller's (hosted `context.vars = old_block_context.vars.dup`).
-  block_ctx = LowerContext.new(caller.fun, caller.fun_type, caller.type, copy_vars(caller.vars))
+  # Only names visible where the block was written belong to its caller.
+  # A later local may already have an alloca, but it cannot own a block local.
+  writer_vars = if owner = low.analysed.block_owners[block]?
+                  owner.var_owners
+                else
+                  nil
+                end
+  block_vars = Hash(String, LowerVar).new
+  if writer_vars
+    caller.vars.each do |name, var|
+      block_vars[name] = var if name == "self" || writer_vars.has_key?(name)
+    end
+  else
+    place = if location = block.location
+              location.to_s
+            else
+              "<no source location>"
+            end
+    raise "BUG: block passed to #{def_node.name} at #{place} has no recorded writer variables"
+  end
+  block_ctx = LowerContext.new(caller.fun, caller.fun_type, caller.type, block_vars)
   block_ctx.top_level = caller.top_level
   block_ctx.return_type = caller.return_type
   block_ctx.return_phi = caller.return_phi
@@ -992,6 +1011,7 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
     t = collector.types[name]?
     raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
     next if t.as(Type).is_a?(NoReturnType)
+    # A retained slot belongs to an outer variable the block writes.
     unless vars[name]?
       alloca_local(low, vars, name, t.as(Type))
     end

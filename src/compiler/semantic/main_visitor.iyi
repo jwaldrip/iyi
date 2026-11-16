@@ -149,7 +149,7 @@ pub class SpeculationLedger
 end
 
 # The def a block is written in, and the return values of its body (hosted: a `return` in a
-# block leaves the def the block is written in).
+# block leaves the def the block is written in). Lowering reads var_owners to keep lexical slots separate.
 pub class BlockOwner
   getter def_node : Def?
   getter return_types : Array(Type?)?
@@ -6054,7 +6054,7 @@ pub class MainVisitor < TypeNodeHost
     visit_uninitialized_var(self, node)
   end
 
-  # The visitor of a fun body: the same node types and errors, its own locals.
+  # The visitor of a fun body: its own locals, sharing the maps lowering reads.
   def sub_visitor(vars : Hash(String, Type)) : TypeNodeHost
     inner = MainVisitor.new(@program, @speculation)
     inner.vars = vars
@@ -6065,6 +6065,7 @@ pub class MainVisitor < TypeNodeHost
     inner.call_target_defs = @call_target_defs
     inner.call_dispatch_targets = @call_dispatch_targets
     inner.call_arguments = @call_arguments
+    inner.block_owners = @block_owners
     inner.lib_call_targets = @lib_call_targets
     inner.expansions = @expansions
     inner.target_consts = @target_consts
