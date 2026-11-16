@@ -64,5 +64,11 @@ LibC.exit(8) unless return_value.call == 7
 only_return = -> { once(4) { |value| return value &+ 3 } }
 LibC.exit(9) unless only_return.call == 7
 
+flag = 0
+nil_writer = -> { once(1) { |value| flag = flag &+ value }; nil }
+result = nil_writer.call
+LibC.exit(10) unless flag == 1
+LibC.exit(11) if result
+
 halt = -> { once(3) { |value| code = LibC.exit(value &- 3) } }
 halt.call
