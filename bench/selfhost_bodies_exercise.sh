@@ -1106,7 +1106,7 @@ untyped_call_arguments_safe() {
     body_build_failed "$WORK/untyped_call_build.log"
     return $?
   fi
-  codesign -v --strict "$WORK/untyped_call_tool" || return 1
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/untyped_call_tool"; then return 1; fi
   "$WORK/untyped_call_tool" "$REPO/bench/fixtures/sem_bodies_untyped_call_argument.iyi" \
     -o "$WORK/untyped_call" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/untyped_call.log" 2>&1 || true
   grep -Fq '[phase] bodies: pass' "$WORK/untyped_call.log" || return 1
@@ -1127,9 +1127,10 @@ generic_alias_restriction_safe() {
     body_build_failed "$WORK/alias_build.log"
     return $?
   fi
-  codesign -v --strict "$WORK/alias_tool" || return 1
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/alias_tool"; then return 1; fi
   "$WORK/alias_tool" "$REPO/bench/fixtures/sem_bodies_generic_alias_restriction.iyi" \
-    -o "$WORK/alias_probe" --pipeline typed --prelude --probe-phase > "$WORK/alias_probe.log" 2>&1
+    -o "$WORK/alias_probe.ll" --pipeline typed --prelude --probe-phase --emit ir > "$WORK/alias_probe.log" 2>&1 || return 1
+  [ -s "$WORK/alias_probe.ll" ] && grep -Fq '[phase] verify: pass' "$WORK/alias_probe.log"
 }
 generic_alias_restriction_safe || status=1
 CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing -o "$WORK/alias_types_oracle" "$REPO/bench/selfhost_semantic_types_oracle.cr" > "$WORK/alias_types_oracle_build.log" 2>&1 || { cat "$WORK/alias_types_oracle_build.log"; exit 1; }

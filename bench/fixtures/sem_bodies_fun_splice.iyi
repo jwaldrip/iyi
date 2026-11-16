@@ -5,11 +5,12 @@ def inner_def(x : Int32) : Int32
 end
 
 # A fun's macro body is visited and expanded before its branch's call is typed.
+# Both arms call declared code: the port's typed dump analyses this fixture without a prelude.
 fun splice_entry(x : Int32) : Int32
   {% if flag?(:darwin) %}
     inner_def(x)
   {% else %}
-    inner_def(x + 1)
+    inner_def(4)
   {% end %}
 end
 
