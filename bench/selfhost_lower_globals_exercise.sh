@@ -219,7 +219,7 @@ echo "== 3b. Real prelude Atomic class variable"
 atomic_fixture="$REPO/bench/fixtures/aggregate_cvar_atomic.iyi"
 if codesign -v --strict "$WORK/compile_native" > "$WORK/atomic-signature.log" 2>&1 &&
    "$IYI" build -o "$WORK/atomic-hosted" "$atomic_fixture" > "$WORK/atomic-hosted.log" 2>&1 &&
-   "$WORK/compile_native" "$atomic_fixture" -o "$WORK/atomic-native" --pipeline typed --prelude > "$WORK/atomic-native.log" 2>&1 &&
+   IYI_PATH="$REPO/src" "$WORK/compile_native" "$atomic_fixture" -o "$WORK/atomic-native" --pipeline typed --prelude > "$WORK/atomic-native.log" 2>&1 &&
    codesign -v --strict "$WORK/atomic-native" >> "$WORK/atomic-signature.log" 2>&1; then
   timeout 30 "$WORK/atomic-hosted" > "$WORK/atomic-hosted.out" 2>&1; hs=$?
   timeout 30 "$WORK/atomic-native" > "$WORK/atomic-native.out" 2>&1; ns=$?
@@ -243,9 +243,14 @@ fi
 echo
 echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires every fixture to match the
-# hosted module exactly. It returns 0 only on the unmutated behaviour.
+# hosted module exactly. A build failure marks the gate invalid and cannot count as a caught mutation.
 lowglob_check() {
-  "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port_m.build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port_m.build.log" 2>&1; then
+    echo "INVALID PROOF: global-lowering driver did not compile"
+    cat "$WORK/port_m.build.log"
+    : > "$WORK/invalid-build"
+    return 0
+  fi
   "$WORK/port_m" normalizer-check > /dev/null 2>&1 || return 1
   ( . "$REPO/bench/lib/lower_oracle.sh"; oracle_call_checks "$WORK/port_m" ) || return 1
   for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
@@ -260,7 +265,7 @@ lowglob_check() {
   return 0
 }
 echo "  the mutation check passes on the unmutated code:"
-if lowglob_check; then
+if lowglob_check && [ ! -e "$WORK/invalid-build" ]; then
   echo "    unmutated: every fixture identical"
 prove_mutation "a program global is incorrectly stripped as a build constant" "$REPO/bench/lib/lower_gate.iyi" \
   "        if destination.starts_with?(prefix) && identity_names.includes?(destination[prefix.size..-1])" "        if destination.includes?(marker)" -- lowglob_check || status=1
@@ -315,13 +320,13 @@ prove_mutation "a namespaced class variable loses its qualified owner" "$REPO/sr
   "  owner.full_name + cvar_suffix(name)" \
   "  owner.name + cvar_suffix(name)" -- lowglob_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
-  "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
-  "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1
+  "    return low.builder.const_int(ir, text.to_i64)" \
+  "    return low.builder.const_int(ir, text.to_i64 + 1_i64)" -- lowglob_check || status=1
 prove_mutation "a true Bool constant is false" "$REPO/src/compiler/lower/const.iyi" \
   "      return int1(low, 1_i64)" "      return int1(low, 0_i64)" -- lowglob_check || status=1
-prove_mutation "a literal integer constant is refused rather than inlined" "$REPO/src/compiler/lower/const.iyi" \
-  "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
-  "    return nil" -- lowglob_check || status=1
+prove_mutation "a literal constant is initialized at runtime rather than inlined" "$REPO/src/compiler/lower/const.iyi" \
+  "  return value unless value.nil?" \
+  "  return nil unless value.nil?" -- lowglob_check || status=1
 prove_mutation "the initialiser is not called at the assignment" "$REPO/src/compiler/lower/const.iyi" \
   '  low.builder.call(ft, fn.as(Function), [] of Value, "")' \
   '  low.builder.const_int(low.module.types.int(1), 0_i64)' -- lowglob_check || status=1
@@ -378,6 +383,7 @@ else
   echo "    FAIL: the unmutated code does not pass the check; mutations were not run"
   status=1
 fi
+[ ! -e "$WORK/invalid-build" ] || status=1
 
 
 echo

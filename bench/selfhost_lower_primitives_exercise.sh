@@ -89,13 +89,13 @@ e2e_waiting_on() {
 }
 for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
   name="$(basename "$fixture" .iyi)"
-  oracle_options=()
+  oracle_options=(--prelude empty)
   if [ "$name" = "lowprim_atomic_rmw" ]; then
     # Otherwise the hosted module is printed after LLVM has expanded atomicrmw to a cmpxchg loop.
-    oracle_options=(--mattr +lse)
+    oracle_options+=(--mattr +lse)
     echo "  $name: oracle uses --mattr +lse to preserve atomicrmw in the emitted module"
   fi
-  if ! "$IYI" build --prelude empty "${oracle_options[@]}" --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
+  if ! "$IYI" build "${oracle_options[@]}" --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
     echo "  $name: the hosted compiler did not emit its module (see $WORK/$name.oracle.log)"
     diverged=$((diverged + 1))
     continue
