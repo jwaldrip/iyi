@@ -65,7 +65,7 @@ class Gate
 
   def closer : Proc(Int32, Int32)
     keep_int do |value|
-      defer {@closed = @closed &+ value}
+      defer @closed = @closed &+ value
       next @closed
     end
   end
@@ -141,7 +141,7 @@ LibC.exit(17) unless saved_loop.call(3) == 3
 
 cleanups = 0
 saved_defer = keep_int do |value|
-  defer {cleanups = cleanups &+ 1}
+  defer cleanups = cleanups &+ 1
   next value &+ 1
 end
 LibC.exit(18) unless saved_defer.call(4) == 5 && cleanups == 1
@@ -161,7 +161,7 @@ any_f = keep_any { |value| next value &+ 1 }
 LibC.exit(21) unless any_f.call(1) == 2
 
 free_defer = keep_gate do |gate|
-  defer {gate.close(1)}
+  defer gate.close(1)
   next gate.closed &+ 10
 end
 shared_gate = Gate.new(0)
@@ -172,7 +172,7 @@ seen = 0
 step = 100
 step_reader = -> { step }
 shadowed = keep_int do |step|
-  defer {seen = seen &+ step}
+  defer seen = seen &+ step
   step &* 2
 end
 LibC.exit(24) unless shadowed.call(3) == 6 && seen == 3
@@ -181,7 +181,7 @@ LibC.exit(25) unless shadowed.call(4) == 8 && seen == 7 && step_reader.call == 1
 tally = Gate.new(0)
 yielded_defer = keep_int do |value|
   once(value) do |item|
-    defer {tally.close(item)}
+    defer tally.close(item)
     next item &+ 1
   end
 end

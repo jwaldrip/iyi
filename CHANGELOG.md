@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- Captured callbacks return `next` values from their own proc, including when
+  created inside a loop or yielded block. Their `defer` cleanups run on normal
+  exits and panic, with live locals and the parent context preserved. Arguments
+  shadow outer captures. Written nested proc literals remain refused.
+
 - Native spawn classification recognizes writes and field addresses in
   original instance methods, and examines cast operands for captured values.
   Spawn collection and pool reach skip branches whose conditions are known

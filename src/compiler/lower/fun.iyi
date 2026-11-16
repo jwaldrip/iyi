@@ -378,15 +378,18 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   low.entry_block = nil
   low.new_entry_block
 
+  facts = if source = closure_source
+            source.closure_facts.as(ClosureFacts)
+          else
+            ClosureFacts.new(low.analysed)
+          end
+  # A closure literal keeps the frame recorded by its enclosing walk.
+  found = closure_source.nil? ? facts.analyse_def(target, self_type) : facts.frame?(target)
+  raise "BUG: a closure literal has no closure frame (closures.iyi visit(ProcLiteral))" if found.nil?
+  own = found.as(ClosureFrame)
+  low.current_context.closure_facts = facts
   if source = closure_source
-    setup_closure_vars(low, source, fn.param(0))
-    # A proc parameter shadows an outer capture of the same name.
-    target.args.each { |arg| low.current_context.vars.delete(arg.name) }
-    low.current_context.closure_facts = source.closure_facts
-  else
-    facts = ClosureFacts.new(low.analysed)
-    frame = facts.analyse_def(target, self_type)
-    low.current_context.closure_facts = facts
+    setup_closure_vars(low, source, fn.param(0), local_frame: own)
   end
   if st = self_type
     self_param = fn.param(0)
@@ -399,11 +402,6 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   if block_arg = target.block_arg
     local_skip << block_arg.name
   end
-  known = low.current_context.closure_facts.as(ClosureFacts)
-  # A closure literal keeps the frame recorded by its enclosing walk.
-  found = closure_source.nil? ? known.analyse_def(target, self_type) : known.frame?(target)
-  raise "BUG: a closure literal has no closure frame (closures.iyi visit(ProcLiteral))" if found.nil?
-  own = found.as(ClosureFrame)
   own.closured.each { |var| local_skip << var.name }
   preallocate_locals(low, target.body, local_skip)
   if source = closure_source

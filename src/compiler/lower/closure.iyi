@@ -114,14 +114,24 @@ pub def allocate_closure(low : Lowerer, frame : ClosureFrame, parent : LowerCont
   end
 end
 
-pub def setup_closure_vars(low : Lowerer, source : LowerContext, ptr : Value, overwrite : Bool = true, include_parent : Bool = true) : Nil
+pub def setup_closure_vars(low : Lowerer, source : LowerContext, ptr : Value, overwrite : Bool = true, include_parent : Bool = true, local_frame : ClosureFrame? = nil) : Nil
   layout = source.closure_type
   raise "BUG: missing closure layout" if layout.nil?
   zero = low.builder.const_int(low.module.types.int32, 0_i64).as(Value)
   i = 0
   while i < source.closure_names.size
-    index = low.builder.const_int(low.module.types.int32, i.to_i64).as(Value)
     name = source.closure_names[i]
+    # Hosted fun.cr:863-870 excludes an outer capture shadowed by this
+    # function's own unclosured argument or local before emitting its GEP.
+    if own = local_frame
+      if binding = own.local?(name)
+        unless binding.captured
+          i += 1
+          next
+        end
+      end
+    end
+    index = low.builder.const_int(low.module.types.int32, i.to_i64).as(Value)
     if overwrite || low.current_context.vars[name]?.nil?
       slot = low.builder.inbounds_gep(layout.as(IrType), ptr, [zero, index] of Value, name)
       var = LowerVar.new(slot, source.closure_types[i], false)
@@ -134,7 +144,7 @@ pub def setup_closure_vars(low : Lowerer, source : LowerContext, ptr : Value, ov
     index = low.builder.const_int(low.module.types.int32, source.closure_names.size.to_i64).as(Value)
     slot = low.builder.inbounds_gep(layout.as(IrType), ptr, [zero, index] of Value, "parent_ptr")
     outer_ptr = load_aligned(low, low.module.types.ptr(0), slot, "parent")
-    setup_closure_vars(low, parent, outer_ptr, false)
+    setup_closure_vars(low, parent, outer_ptr, false, true, local_frame)
   elsif include_parent && (st = source.closure_self)
     if overwrite || low.current_context.vars["self"]?.nil?
       self_index = source.closure_names.size

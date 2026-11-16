@@ -3,7 +3,7 @@ def keep_int(&block : Int32 -> Int32) : Proc(Int32, Int32)
 end
 
 saved = keep_int do |value|
-  defer {late = -> { value }}
+  defer late = -> { value }
   value
 end
 puts saved.call(1)

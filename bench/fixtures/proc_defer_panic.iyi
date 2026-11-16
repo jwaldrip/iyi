@@ -11,7 +11,7 @@ base = 40
 value = 1000
 outer_reader = -> { value }
 panicking = keep_int do |value|
-  defer {LibC.exit(base &+ value &- 42)}
+  defer LibC.exit(base &+ value &- 42)
   raise "a panic inside a captured callback"
 end
 panicking.call(2)
