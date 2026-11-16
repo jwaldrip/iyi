@@ -1361,7 +1361,7 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
       merge_type = low.typer.llvm_type(merged_t.as(Type))
     end
   end
-  phi = LowerPhi.new(wants, merge_type)
+  phi = LowerPhi.new(wants, merge_type, merged_t)
 
   low.builder.position_at_end(then_block)
   codegen_node(low, then_node)
@@ -1881,7 +1881,7 @@ pub def codegen_nilable_cast(low : Lowerer, node : NilableCast) : Nil
     if wants
       merge_type = union_join ? low.module.types.ptr(0) : low.typer.llvm_type(resulting_type)
     end
-    phi = LowerPhi.new(wants, merge_type)
+    phi = LowerPhi.new(wants, merge_type, resulting_type)
     blocks = low.new_blocks(["matches", "doesnt_match"])
     matches_block = blocks[0]
     doesnt_match_block = blocks[1]

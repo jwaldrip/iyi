@@ -7,6 +7,7 @@ bench/fixtures/lowcall_block_branch_nilable_rw.iyi run-equal
 bench/fixtures/lowcall_block_break.iyi run-equal
 bench/fixtures/lowcall_block_break_if.iyi run-equal
 bench/fixtures/lowcall_block_break_upcast.iyi run-equal
+bench/fixtures/lowcall_block_lexical_locals.iyi run-equal
 bench/fixtures/lowcall_block_local.iyi run-equal
 bench/fixtures/lowcall_block_nested.iyi run-equal
 bench/fixtures/lowcall_block_nested_nilable_rw.iyi run-equal

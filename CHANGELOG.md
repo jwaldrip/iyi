@@ -14,6 +14,10 @@
   protects resolved sources from being replaced by output. Native linking
   writes a fresh executable inode before replacing an existing output.
 
+- Yielded blocks keep their locals separate from names declared later in the
+  caller. Writer ownership survives fun and proc visitors, and Nil-valued
+  conditionals merge control flow without emitting Nil phis.
+
 - The typed pipeline resolves omitted `fun` returns to `Nil`, lowers recorded inline macro expansions, and
   resolves nested class and module declarations in their enclosing body. Native regression executables match
   hosted results. A hosted-built native compiler compiles real-prelude hello through linking, and the
