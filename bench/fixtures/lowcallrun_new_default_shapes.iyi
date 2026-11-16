@@ -4,6 +4,11 @@ lib LibC
   fun putchar(value : Int32) : Int32
 end
 
+# Checked casts in the empty-prelude oracle must fail observably.
+def raise(message : String) : NoReturn
+  LibC.exit(97)
+end
+
 def mark(value : Int32) : Int32
   LibC.putchar(value)
   value

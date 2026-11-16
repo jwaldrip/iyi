@@ -222,6 +222,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   self_type : Type? = nil
   self_value : Value? = nil
   class_owner : Type? = nil
+  program_target = false
   unless node.obj.nil?
     recv_type = single_dispatch ? single_dispatch.as(DispatchTarget).receiver : receiver_owner(low, node)
     if single_dispatch && !recv_type.is_a?(VirtualType)
@@ -273,10 +274,12 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     if defining = low.analysed.program.def_owner(def_node)
       if defining.is_a?(ModuleType) && defining.as(ModuleType).iyi_unit
         class_owner = defining
+      elsif defining.object_id == low.analysed.program.object_id
+        program_target = true
       end
     end
   end
-  if node.obj.nil? && class_owner.nil? && !low.current_context.type.nil?
+  if node.obj.nil? && !program_target && class_owner.nil? && !low.current_context.type.nil?
     ct = low.current_context.type.as(Type)
     if low.current_context.vars["self"]?.nil?
       # A non-generic class method has no self argument. An unqualified call to
