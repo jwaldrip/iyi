@@ -44,9 +44,9 @@ def named_order(flag : Bool) : Int32
 end
 
 def nested_element(flag : Bool) : Int32
-  outer = {{true, 1}, 2}
+  outer = { {true, 1}, 2 }
   if flag
-    outer = {{8, 3}, 4}
+    outer = { {8, 3}, 4 }
     inner = outer[0]
     return inner[0] &* 100 &+ inner[1] &* 10 &+ outer[1]
   end
