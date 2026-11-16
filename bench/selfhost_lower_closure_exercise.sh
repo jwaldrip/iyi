@@ -181,7 +181,7 @@ check_barrier_mutant() {
 
 build_compiler || { cat "$WORK/build.log"; exit 1; }
 status=0
-for fixture in lower_closure_top_level lower_closure_nested_block lower_pointerof_arg lower_pointerof_proc_arg lower_macro_closure lower_macro_proc_locations lower_closure_self_class lower_closure_self_struct lower_closure_self_nested lower_closure_self_unit_call closure_forward_recursion; do
+for fixture in lower_closure_top_level lower_closure_nested_block lower_proc_yielded_blocks lower_pointerof_arg lower_pointerof_proc_arg lower_macro_closure lower_macro_proc_locations lower_closure_self_class lower_closure_self_struct lower_closure_self_nested lower_closure_self_unit_call closure_forward_recursion; do
   "$IYI" build --prelude empty -o "$WORK/host" "bench/fixtures/$fixture.iyi" > "$WORK/host.build.log" 2>&1 || { cat "$WORK/host.build.log"; exit 1; }
   "$WORK/host" > "$WORK/host.out" 2>&1 || exit 1
   cp "$WORK/host.out" "$WORK/host-$fixture.out"

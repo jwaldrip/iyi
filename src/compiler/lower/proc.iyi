@@ -1,7 +1,8 @@
 module compiler/lower/proc
 
 # A proc literal carries a context for captured locals or self; capture-free
-# literals use null. Blocks and nested literals remain explicitly refused.
+# literals use null. Yielded blocks share that context; nested proc literals
+# remain refused.
 
 import compiler/foundation/location::{Location}
 import compiler/ir/types::{IrType}
@@ -97,10 +98,6 @@ pub class ProcScan < Visitor
         expanded.accept(self)
         return false
       end
-    end
-    if node.is_a?(Compiler::Syntax::Ast::Block)
-      @refused = "a block inside a proc literal (hosted closure over the block context, lower/block.iyi)" if @refused.nil?
-      return false
     end
     if node.is_a?(ProcLiteral) || node.is_a?(Def) || node.is_a?(ClassDef) || node.is_a?(ModuleDef)
       @refused = "a nested proc, def or class inside a proc literal (hosted closure)" if @refused.nil?
