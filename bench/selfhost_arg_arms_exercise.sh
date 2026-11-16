@@ -8,8 +8,8 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 . "$REPO/bench/lib/mutation.sh"
 
-check_arms() {
-  "$IYI" build -o "$WORK/probe" "$REPO/bench/selfhost_arg_arms_probe.iyi" > "$WORK/build.log" 2>&1 || return 1
+check_arms_impl() {
+  "$IYI" build -o "$WORK/probe" "$REPO/bench/selfhost_arg_arms_probe.iyi" > "$WORK/build.log" 2>&1 || return 2
   "$WORK/probe" "$REPO/bench/fixtures/sem_arms_union_overload.iyi" "$REPO/src" consume > "$WORK/union" || return 1
   printf '%s\n' 'arms=2 cover=true' 'main#consume:Int32' 'main#consume:String' > "$WORK/expected"
   cmp -s "$WORK/union" "$WORK/expected" || return 1
@@ -132,22 +132,84 @@ check_arms() {
   done
 }
 
-check_arms || exit 1
-"$WORK/probe" "$REPO/bench/fixtures/sem_arms_proc_call.iyi" "$REPO/src" call prelude > "$WORK/proc" || exit 1
-printf '%s\n' 'arms=1 cover=true' 'Proc#call:' > "$WORK/expected"
-cmp -s "$WORK/proc" "$WORK/expected" || exit 1
-"$WORK/probe" "$REPO/bench/fixtures/lowcall_capture_none.iyi" "$REPO/src" call prelude-instances > "$WORK/captured-proc" || exit 1
-cmp -s "$WORK/captured-proc" "$WORK/expected" || exit 1
-"$IYI" build -o "$WORK/compiler" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/compiler-build.log" 2>&1 || exit 1
-if [ "$(uname -s)" = Darwin ]; then
-  codesign -v --strict "$WORK/compiler" || exit 1
+if ! (set -x; check_arms_impl) 2>"$WORK/arms.trace"; then
+  echo "FAIL: argument arms baseline"
+  tail -20 "$WORK/arms.trace"
+  for evidence in "$WORK"/*; do
+    case "$evidence" in "$WORK/probe"|"$WORK/probe.dwarf"|"$WORK/arms.trace") continue ;; esac
+    if [ -f "$evidence" ]; then
+      echo "  --- $(basename "$evidence")"
+      cat "$evidence"
+    fi
+  done
+  exit 1
 fi
-IYI_ARGDISPATCH_TRACE=1 "$WORK/compiler" "$REPO/bench/fixtures/sem_arms_nil_eq.iyi" \
-  -o "$WORK/nil" --pipeline typed --prelude --probe-phase > "$WORK/nil.log" 2>&1 || exit 1
-grep -Fq 'targets=String#==(String);Reference#==(String);Object#==((String | Nil))' "$WORK/nil.log" || exit 1
+
+# Mutation build failures are not evidence that an arm assertion caught the change.
+check_arms() {
+  local rc=0
+  check_arms_impl || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "mutation probe failed to build, not a behavioral catch"
+    cat "$WORK/build.log"
+    return 0
+  fi
+  return "$rc"
+}
+
+"$WORK/probe" "$REPO/bench/fixtures/sem_arms_proc_call.iyi" "$REPO/src" call prelude > "$WORK/proc" 2>"$WORK/proc.err" || { echo "FAIL: proc call probe"; cat "$WORK/proc.err"; exit 1; }
+printf '%s\n' 'arms=1 cover=true' 'Proc#call:' > "$WORK/expected"
+cmp -s "$WORK/proc" "$WORK/expected" || { echo "FAIL: proc call arms"; diff -u "$WORK/expected" "$WORK/proc"; exit 1; }
+"$WORK/probe" "$REPO/bench/fixtures/lowcall_capture_none.iyi" "$REPO/src" call prelude-instances > "$WORK/captured-proc" 2>"$WORK/captured-proc.err" || { echo "FAIL: captured proc probe"; cat "$WORK/captured-proc.err"; exit 1; }
+cmp -s "$WORK/captured-proc" "$WORK/expected" || { echo "FAIL: captured proc arms"; diff -u "$WORK/expected" "$WORK/captured-proc"; exit 1; }
+"$IYI" build -o "$WORK/compiler" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/compiler-build.log" 2>&1 || { echo "FAIL: typed compiler build"; cat "$WORK/compiler-build.log"; exit 1; }
+if [ "$(uname -s)" = Darwin ]; then
+  codesign -v --strict "$WORK/compiler" || { echo "FAIL: typed compiler signature"; exit 1; }
+fi
+if ! IYI_ARGDISPATCH_TRACE=1 "$WORK/compiler" "$REPO/bench/fixtures/sem_arms_nil_eq.iyi" \
+  -o "$WORK/nil.ir" --pipeline typed --prelude --probe-phase --emit ir > "$WORK/nil.log" 2>&1 ||
+   [ ! -s "$WORK/nil.ir" ] || ! grep -Fxq '[phase] verify: pass' "$WORK/nil.log" ||
+   ! grep -Fq 'targets=String#==(String);Reference#==(String);Object#==((String | Nil))' "$WORK/nil.log"; then
+  echo "FAIL: nil dispatch did not produce verified IR with the expected targets"
+  cat "$WORK/nil.log"
+  exit 1
+fi
+if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
+  if ! "$WORK/compiler" "$REPO/bench/fixtures/sem_arms_nil_eq.iyi" \
+    -o "$WORK/nil" --pipeline typed --prelude --probe-phase > "$WORK/nil-native.log" 2>&1 ||
+     ! grep -Fxq '[phase] link: pass' "$WORK/nil-native.log" || ! codesign -v --strict "$WORK/nil" ||
+     ! "$WORK/nil" > "$WORK/nil-run.log" 2>&1 || ! grep -Fxq true "$WORK/nil-run.log"; then
+    echo "FAIL: native nil dispatch build or execution"
+    cat "$WORK/nil-native.log"
+    [ ! -f "$WORK/nil-run.log" ] || cat "$WORK/nil-run.log"
+    exit 1
+  fi
+fi
+path_rc=0
 IYI_ARGDISPATCH_TRACE=1 "$WORK/compiler" "$REPO/bench/fixtures/sem_arms_path_join.iyi" \
-  -o "$WORK/path" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/path.log" 2>&1 || true
-grep -Fq 'targets=Std::Path::Path#join(String);Std::Path::Path#join(Std::Path::Path)' "$WORK/path.log" || exit 1
+  -o "$WORK/path.ir" --pipeline typed --prelude --probe-phase --keep-going --emit ir > "$WORK/path.log" 2>&1 || path_rc=$?
+if ! grep -Fxq '[phase] bodies: pass' "$WORK/path.log" ||
+   ! grep -Fq 'targets=Std::Path::Path#join(String);Std::Path::Path#join(Std::Path::Path)' "$WORK/path.log"; then
+  echo "FAIL: path dispatch did not reach the expected typed targets (status $path_rc)"
+  cat "$WORK/path.log"
+  exit 1
+fi
+if [ "$path_rc" -eq 0 ]; then
+  if [ ! -s "$WORK/path.ir" ] || ! grep -Fxq '[phase] verify: pass' "$WORK/path.log"; then
+    echo "FAIL: path dispatch produced no verified IR"
+    cat "$WORK/path.log"
+    exit 1
+  fi
+elif [ "$path_rc" -eq 1 ] &&
+     grep -Fq 'lower: fail: lower: visit(a class method call on Std::Path::Path::Kind.class' "$WORK/path.log" &&
+     grep -Fxq 'reached: bodies' "$WORK/path.log"; then
+  echo "  path dispatch passed body typing; the compiler refused later lowering:"
+  awk '/^lower: fail:/{show=1} show {print}' "$WORK/path.log"
+else
+  echo "FAIL: path dispatch compiler exited unexpectedly (status $path_rc)"
+  cat "$WORK/path.log"
+  exit 1
+fi
 status=0
 prove_mutation 'cover requires a matching arm for each combination' "$REPO/src/compiler/semantic/cover.iyi" \
   '        return true if accepted' '        return false if accepted' -- check_arms || status=1
