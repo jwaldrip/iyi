@@ -776,6 +776,21 @@ prove_mutation "a fun visitor loses block writer ownership" "$REPO/src/compiler/
   '    inner.block_owners = @block_owners' \
   '    inner.block_owners = NodeMap(BlockOwner).new' -- block_lexical_locals_check || status=1
 
+block_nested_storage_check() {
+  if ! "$IYI" build -o "$WORK/block-nested-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-nested-mut.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/block-nested-mut" lower "$REPO/bench/fixtures/lowcall_block_nested_local_writes.iyi" "$WORK/lowcall_block_nested_local_writes.oracle.ll" > "$WORK/block-nested-mut.out" 2> "$WORK/block-nested-mut.err" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-nested-mut.out"
+}
+prove_mutation "a block local misses its nested blocks' writes" "$REPO/src/compiler/lower/call.iyi" \
+  '        storage = low.analysed.program.type_merge(storage, written)' \
+  '        storage = storage' -- block_nested_storage_check || status=1
+prove_mutation "a nested block writes into its yielding def's storage" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        @current_nested_storage = owner.nested_storage' \
+  '        @current_nested_storage = nil' -- block_nested_storage_check || status=1
+
 uncovered_mutation_check() {
   if ! "$IYI" build -o "$WORK/uncovered-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/uncovered-mut.build.log" 2>&1; then
     touch "$WORK/uncovered.invalid"

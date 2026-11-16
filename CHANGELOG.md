@@ -6,6 +6,8 @@
 - Typed local declarations retain the initializer's storage type instead of
   widening it to the written restriction. Methods emitted during class
   initialization retain their instance-variable assignments.
+- Nested yielded blocks contribute writes to their enclosing block's local
+  storage types, preserving nilable references and lexical shadowing.
 
 - Captured callbacks return `next` values from their own proc, including when
   created inside a loop or yielded block. Their `defer` cleanups run on normal

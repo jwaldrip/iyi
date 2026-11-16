@@ -83,6 +83,11 @@ def fun_reached(seed : Int32) : Int32
 end
 
 fun via_fun(seed : Int32) : Int32
+  once(seed) do |part|
+    if !(part == seed)
+      LibC.exit(14)
+    end
+  end
   fun_reached(seed)
 end
 

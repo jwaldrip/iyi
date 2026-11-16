@@ -164,8 +164,11 @@ pub class BlockOwner
   getter var_owners : Hash(String, LocalStorage)?
   getter untyped_locals : Hash(String, String)?
   getter jump_proc : Def?
+  # Writes from nested blocks to this block's own locals.
+  getter nested_storage : LocalStorage
 
   def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil, @writer_type : ModuleType? = nil, @var_owners : Hash(String, LocalStorage)? = nil, @untyped_locals : Hash(String, String)? = nil, @jump_proc : Def? = nil)
+    @nested_storage = LocalStorage.new(Hash(String, Type).new, Set(String).new, Set(String).new)
   end
 end
 
@@ -316,6 +319,7 @@ pub class MainVisitor < TypeNodeHost
   property current_call_block : Block?
   property current_block_context_vars : Hash(String, Type)?
   property current_yield_nodes : Array(Yield)?
+  property current_nested_storage : LocalStorage? = nil
   property total : Bool = false
   property in_type_args : Int32 = 0
   # The depth of branches being typed that the type filters left unreachable (a branch whose condition narrowed a
@@ -2858,6 +2862,7 @@ pub class MainVisitor < TypeNodeHost
       callee_yield_nodes = @current_yield_nodes
       callee_type = @current_type
       callee_var_owners = @var_owners
+      callee_nested_storage = @current_nested_storage
       callee_untyped_locals = @untyped_locals
       if owner = @block_owners[blk]?
         if writer_untyped = owner.untyped_locals
@@ -2869,6 +2874,7 @@ pub class MainVisitor < TypeNodeHost
           # Block parameters shadow the caller even when their names coincide.
           blk.args.each { |arg| @var_owners.delete(arg.name) }
         end
+        @current_nested_storage = owner.nested_storage
         @current_def = owner.def_node
         @jump_proc = owner.jump_proc
         @return_types = owner.return_types
@@ -2882,6 +2888,7 @@ pub class MainVisitor < TypeNodeHost
           @current_type = writer_type
         end
       else
+        @current_nested_storage = nil
         @jump_proc = nil
         @return_types = nil
         @current_call_block = nil
@@ -2935,6 +2942,7 @@ pub class MainVisitor < TypeNodeHost
       @super_barrier = saved_super_barrier
       @current_type = callee_type
       @var_owners = callee_var_owners
+      @current_nested_storage = callee_nested_storage
       @untyped_locals = callee_untyped_locals
       @jump_block = saved_jump_block
       @jump_whiles = saved_jump_whiles
@@ -4194,6 +4202,7 @@ pub class MainVisitor < TypeNodeHost
                 literal_def.captured_block = true
                 saved_proc = @jump_proc
                 saved_proc_block = @jump_block
+                saved_proc_nested_storage = @current_nested_storage
                 saved_proc_whiles = @jump_whiles
                 saved_proc_next_types = @next_types
                 saved_proc_break_types = @break_types
@@ -4208,6 +4217,7 @@ pub class MainVisitor < TypeNodeHost
                 proc_nexts = [] of Type?
                 @jump_proc = literal_def
                 @jump_block = nil
+                @current_nested_storage = nil
                 @jump_whiles = [] of While
                 @next_types = proc_nexts
                 @break_types = nil
@@ -4224,6 +4234,7 @@ pub class MainVisitor < TypeNodeHost
                 block_type = merge_jump_values(child_type(blk.body), proc_nexts)
                 @jump_proc = saved_proc
                 @jump_block = saved_proc_block
+                @current_nested_storage = saved_proc_nested_storage
                 @jump_whiles = saved_proc_whiles
                 @next_types = saved_proc_next_types
                 @break_types = saved_proc_break_types
@@ -4369,12 +4380,14 @@ pub class MainVisitor < TypeNodeHost
     old_nil_candidates = @nil_candidates
     old_nil_resets = @nil_resets
     old_var_owners = @var_owners
+    old_nested_storage = @current_nested_storage
     old_untyped_locals = @untyped_locals
     @untyped_locals = Hash(String, String).new
     @var_unions = Hash(String, Type).new
     @nil_candidates = Set(String).new
     @nil_resets = Set(String).new
     @var_owners = Hash(String, LocalStorage).new
+    @current_nested_storage = nil
     old_break_types = @break_types
     old_next_types = @next_types
     old_return_types = @return_types
@@ -4396,7 +4409,9 @@ pub class MainVisitor < TypeNodeHost
       @current_yield_nodes = [] of Yield
       if blk = block
         writer_owners = old_var_owners.dup
-        writer_storage = LocalStorage.new(old_var_unions, old_nil_candidates, old_nil_resets)
+        # A nested block writes its enclosing block's locals, not the
+        # unrelated locals of the def that yields to that block.
+        writer_storage = old_nested_storage || LocalStorage.new(old_var_unions, old_nil_candidates, old_nil_resets)
         @vars.each_key { |name| writer_owners[name] = writer_storage unless writer_owners.has_key?(name) }
         @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope, writer_type, writer_owners, old_untyped_locals, saved_jump_proc)
       end
@@ -4649,6 +4664,7 @@ pub class MainVisitor < TypeNodeHost
     @nil_candidates = old_nil_candidates
     @nil_resets = old_nil_resets
     @var_owners = old_var_owners
+    @current_nested_storage = old_nested_storage
     @untyped_locals = old_untyped_locals
     @type_filters = old_type_filters
     @needs_type_filters = old_needs_type_filters
@@ -4796,6 +4812,7 @@ pub class MainVisitor < TypeNodeHost
     saved_break_types = @break_types
     saved_next_types = @next_types
     saved_jump_block = @jump_block
+    saved_nested_storage = @current_nested_storage
     saved_jump_whiles = @jump_whiles
     saved_type_filters = @type_filters
     saved_needs_type_filters = @needs_type_filters
@@ -4817,6 +4834,7 @@ pub class MainVisitor < TypeNodeHost
     @break_types = @block_breaks[blk]?
     @next_types = [] of Type?
     @jump_block = blk
+    @current_nested_storage = nil
     @jump_whiles = [] of While
     @type_filters = nil
     @needs_type_filters = 0
@@ -4844,6 +4862,7 @@ pub class MainVisitor < TypeNodeHost
     @break_types = saved_break_types
     @next_types = saved_next_types
     @jump_block = saved_jump_block
+    @current_nested_storage = saved_nested_storage
     @jump_whiles = saved_jump_whiles
     @type_filters = saved_type_filters
     @needs_type_filters = saved_needs_type_filters

@@ -1001,6 +1001,10 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
     end
     i += 1
   end
+  nested : Hash(String, Type)? = nil
+  if owner = low.analysed.block_owners[block]?
+    nested = owner.nested_storage.unions
+  end
   collector = LocalOrder.new(low.analysed)
   block.body.accept(collector)
   collector.vars.each do |var|
@@ -1010,10 +1014,16 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
     # not the flow type of the first assignment encountered in the block.
     t = collector.types[name]?
     raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
-    next if t.as(Type).is_a?(NoReturnType)
+    storage = t.as(Type)
+    if table = nested
+      if written = table[name]?
+        storage = low.analysed.program.type_merge(storage, written)
+      end
+    end
+    next if storage.is_a?(NoReturnType)
     # A retained slot belongs to an outer variable the block writes.
     unless vars[name]?
-      alloca_local(low, vars, name, t.as(Type))
+      alloca_local(low, vars, name, storage)
     end
   end
 end
