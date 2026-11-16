@@ -3584,11 +3584,9 @@ pub class MainVisitor < TypeNodeHost
     nil
   end
 
-  # The key of one instantiation: the receiver, the def name and the argument
-  # types, and for a block call the block's node. Two calls with different blocks
-  # are different instantiations (a block nested in another call's block is not a
-  # recursion of that call); the same call with the same block is.
-  def instance_key(rec_type : Type, target_def : Def, args : Array(ASTNode), block : Block?) : String
+  # Written blocks and blocks run by yielding defs keep their node identity.
+  # A captured forwarded proc is identified by its component types instead.
+  def instance_key(rec_type : Type, target_def : Def, args : Array(ASTNode), block : Block?, call_node : Call?) : String
     parts = [] of String
     args.each do |a|
       if at = child_type(a)
@@ -3616,15 +3614,15 @@ pub class MainVisitor < TypeNodeHost
     if owner = @program.def_owner(target_def)
       key = key + "^#{owner.full_name}"
     end
-    if block
-      key = key + "&#{block.node_id}"
+    if blk = block
+      key = key + block_key(target_def, blk, call_node)
     end
     key
   end
 
   # Hosted DefInstanceKey includes named argument names and types in written
-  # order (call.cr:623-630). The original def, not its per-call wrapper, is
-  # the cache identity. Named order must match the wrapper's parameter order.
+  # order (call.cr:623-630) and a captured block's type. The original def, not
+  # its per-call wrapper, is the cache identity.
   def def_instance_key(origin : Def, rec_type : Type, call_node : Call) : String?
     block = call_node.block
     return nil if block && origin.block_arg.nil?
@@ -3655,9 +3653,38 @@ pub class MainVisitor < TypeNodeHost
       key = key + "|named(" + entries.join(",") + ")"
     end
     if blk = block
-      key = key + "&#{blk.node_id}"
+      key = key + block_key(origin, blk, call_node)
     end
     key
+  end
+
+  # A call wraps &proc in a fresh Block on each visit. A capturing def uses the
+  # proc's type, but written blocks and blocks run by yielding defs need their
+  # own node because their bodies are typed in that instance.
+  def block_key(callee : Def, block : Block, call_node : Call?) : String
+    if callee.uses_block_arg?
+      if call = call_node
+        if forwarded = call.block_arg
+          if literal = block.fun_literal
+            if literal.node_id == forwarded.node_id
+              if proc_type = child_type(forwarded)
+                if proc_type.is_a?(ProcInstanceType)
+                  parts = [] of String
+                  proc_type.as(ProcInstanceType).arg_types.each do |arg_type|
+                    text = arg_type.full_name
+                    parts << "#{text.bytesize}:#{text}"
+                  end
+                  text = proc_type.as(ProcInstanceType).return_type.full_name
+                  parts << "#{text.bytesize}:#{text}"
+                  return "&proc(" + parts.join(",") + ")"
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+    "&#{block.node_id}"
   end
 
   # The cached instance for a key, or nil when there is none.
@@ -3992,7 +4019,7 @@ pub class MainVisitor < TypeNodeHost
     # A def typed again while its body is being typed is a recursive call: it takes
     # the declared return type, or the call is refused. The depth bounds a chain of
     # instantiations whose argument types keep growing.
-    key = instance_key(rec_type, target_def, args, block)
+    key = instance_key(rec_type, target_def, args, block, call_node)
     if @typing_stack.includes?(key)
       # A positional and a named spelling have different cache keys, so an
       # active recursive call still needs its already-bound clone here
