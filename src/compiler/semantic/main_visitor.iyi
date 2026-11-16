@@ -5063,13 +5063,9 @@ pub class MainVisitor < TypeNodeHost
           seen_owners.add(owner_name)
         end
       end
-      matches.each do |match|
-        if free = match.definition.free_vars
-          unless free.empty?
-            refuse_call(node, "not ported: an argument dispatch into a def with free variables (hosted semantic/call.cr instantiate binds them from the match)")
-            return false
-          end
-        end
+      if (node.block || node.block_arg) && dispatch_binds_shared_block_result?(matches)
+        refuse_call(node, "not ported: a dispatch whose arms bind free variables from the block they share (hosted semantic/call.cr match_block_arg binds them per match from the merged block)")
+        return false
       end
       if node.name == "new" && infer_class_vars && infer_constructor_receiver(node, rec_type, matches[0].definition)
         refuse_call(node, "not ported: an argument dispatch on a constructor that infers generic type variables")
@@ -5103,6 +5099,24 @@ pub class MainVisitor < TypeNodeHost
     result = instantiate_call_target(node, rec_type, instance_owner, original_def, trait_receiver)
     @matched_call_args.delete(node)
     result
+  end
+
+  # The shared block is typed incrementally, so an earlier arm could bind its
+  # output variable before later arms have contributed their block input types.
+  private def dispatch_binds_shared_block_result?(matches : Array(Match)) : Bool
+    matches.each do |match|
+      if free = match.definition.free_vars
+        next if free.empty?
+        if block_arg = match.definition.block_arg
+          if notation = block_arg.restriction.as?(ProcNotation)
+            if output = notation.output
+              return true if FreeBindings.mentions?(output, free)
+            end
+          end
+        end
+      end
+    end
+    false
   end
 
   # The receiver groups follow VirtualTypeLookup: subtype-owned definitions
