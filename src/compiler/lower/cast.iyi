@@ -18,10 +18,12 @@ module compiler/lower/cast
 #   - `downcast` from a mixed union to a nil, a Bool, or any other type (hosted
 #     `downcast_distinct(MixedUnionType)`): the value area is read at the target's type;
 #     numeric argument casts already accepted by the semantic matcher use unchecked conversion.
+#   - tuple and named-tuple narrowing: each field is downcast into fresh target storage.
 #   - `type_id_value`: the type id of a type, read from its global `@"<Name>:type_id"` as the
 #     hosted `type_id` does (an internal constant global, loaded).
 # Refused by name: union copies requiring compatible-member casts or different alignment,
-# nil into a virtual slot, indirectly passed values, and conversions not covered below.
+# non-member compatible-tuple reads from mixed unions, nil into a virtual slot, indirectly
+# passed values or tuple elements, and conversions not covered below.
 
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{Attribute, CallConv, Inst, IntPredicate, Op}
@@ -538,6 +540,12 @@ pub def downcast_distinct(low : Lowerer, value : Value, to_type : Type, from_typ
       return value
     end
   end
+  if from_type.is_a?(TupleInstanceType) && to_type.is_a?(TupleInstanceType)
+    return downcast_tuple(low, value, to_type.as(TupleInstanceType), from_type.as(TupleInstanceType))
+  end
+  if from_type.is_a?(NamedTupleInstanceType) && to_type.is_a?(NamedTupleInstanceType)
+    return downcast_named_tuple(low, value, to_type.as(NamedTupleInstanceType), from_type.as(NamedTupleInstanceType))
+  end
   # Some callers have a loaded aggregate rather than an address. Both mixed-union
   # downcast paths access fields through GEP, so materialize that value once.
   if from_type.is_a?(MixedUnionType) && !value.type.pointer?
@@ -553,6 +561,62 @@ pub def downcast_distinct(low : Lowerer, value : Value, to_type : Type, from_typ
   end
   pending_visit_node("downcast #{from_type.full_name} to #{to_type.full_name} (hosted cast.cr downcast_distinct, not ported)")
   value
+end
+
+# Hosted store_value with fresh storage: a value passed indirectly requires copy_value,
+# while a narrowed Nil uses the zero value of the Nil IR type.
+def store_downcast_element(low : Lowerer, pointer : Value, to_type : Type, from_type : Type, value : Value) : Nil
+  if low.typer.passed_indirectly?(to_type)
+    pending_visit_node("downcast element #{to_type.full_name} passed indirectly (hosted store_value, copy_value)")
+    return
+  end
+  if to_type.is_a?(NilType) && to_type.full_name != from_type.full_name
+    store_aligned(low, low.builder.const_zero(low.typer.nil_type), pointer)
+    return
+  end
+  stored = value.type.pointer? ? to_rhs(low, value, to_type) : value
+  store_aligned(low, stored, pointer)
+end
+
+def downcast_tuple(low : Lowerer, value : Value, target : TupleInstanceType, source : TupleInstanceType) : Value
+  raise "BUG: tuple sizes differ in downcast" unless target.tuple_types.size == source.tuple_types.size
+  result = low.alloca(low.typer.llvm_type(target), "")
+  from = aggregate_pointer(low, source, value)
+  i = 0
+  while i < source.tuple_types.size
+    target_ptr = aggregate_field(low, target, result, i)
+    source_ptr = aggregate_field(low, source, from, i)
+    source_type = source.tuple_types[i]
+    target_type = target.tuple_types[i]
+    loaded = to_lhs(low, source_ptr, source_type)
+    narrowed = downcast(low, loaded, target_type, source_type, true)
+    store_downcast_element(low, target_ptr, target_type, source_type, narrowed)
+    i += 1
+  end
+  result
+end
+
+def downcast_named_tuple(low : Lowerer, value : Value, target : NamedTupleInstanceType, source : NamedTupleInstanceType) : Value
+  raise "BUG: named tuple sizes differ in downcast" unless target.entries.size == source.entries.size
+  result = low.alloca(low.typer.llvm_type(target), "")
+  from = aggregate_pointer(low, source, value)
+  i = 0
+  while i < source.entries.size
+    entry = source.entries[i]
+    source_ptr = aggregate_field(low, source, from, i)
+    loaded = to_lhs(low, source_ptr, entry.type)
+    j = 0
+    while j < target.entries.size && target.entries[j].name != entry.name
+      j += 1
+    end
+    raise "BUG: named tuple key missing" if j == target.entries.size
+    target_type = target.entries[j].type
+    narrowed = downcast(low, loaded, target_type, entry.type, true)
+    target_ptr = aggregate_field(low, target, result, j)
+    store_downcast_element(low, target_ptr, target_type, entry.type, narrowed)
+    i += 1
+  end
+  result
 end
 
 # Hosted downcast_distinct_union_types: equal alignment permits reusing the
@@ -601,6 +665,16 @@ end
 # A Bool is a byte truncated to one bit; any other type is read as its embedded type (hosted
 # `to_lhs` of the area pointer, with the same passed-by-value rule).
 pub def downcast_from_mixed(low : Lowerer, value : Value, to_type : Type, from_type : MixedUnionType) : Value
+  if to_type.is_a?(TupleInstanceType) || to_type.is_a?(NamedTupleInstanceType)
+    member = false
+    from_type.union_types.each do |candidate|
+      member = true if candidate.full_name == to_type.full_name
+    end
+    unless member
+      pending_visit_node("downcast #{from_type.full_name} to #{to_type.full_name} (hosted downcast_distinct, compatible tuple member)")
+      return value
+    end
+  end
   struct_ir = low.typer.llvm_type(from_type)
   value_ptr = union_value_ptr(low, struct_ir, value)
   if primitive_kind(to_type) == "bool"

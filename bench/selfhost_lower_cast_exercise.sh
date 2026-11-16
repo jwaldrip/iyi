@@ -68,6 +68,59 @@ else
   cat "$WORK/union-representations.err"
   status=1
 fi
+if "$WORK/port" tuple_downcast_inputs > "$WORK/tuple-inputs.out" 2> "$WORK/tuple-inputs.err"; then
+  echo "  tuple and named-tuple inputs use fresh storage without extra copies; exact union members are readable"
+else
+  echo "  FAIL: tuple downcast input probe"
+  cat "$WORK/tuple-inputs.err"
+  status=1
+fi
+for mode in tuple_compatible_member named_tuple_compatible_member; do
+  case "$mode" in
+    tuple_compatible_member) expected='to Tuple(Int32, Int32) (hosted downcast_distinct, compatible tuple member)' ;;
+    named_tuple_compatible_member) expected='to NamedTuple(b: Int32, a: Int32) (hosted downcast_distinct, compatible tuple member)' ;;
+  esac
+  if "$WORK/port" "$mode" > "$WORK/$mode.out" 2> "$WORK/$mode.err"; then
+    echo "  FAIL: $mode accepted a non-member"
+    status=1
+  elif grep -Fq "$expected" "$WORK/$mode.err"; then
+    echo "  $mode refused"
+  else
+    echo "  FAIL: $mode did not reach its compatible-member refusal"
+    cat "$WORK/$mode.err"
+    status=1
+  fi
+done
+for mode in tuple_indirect_element named_tuple_indirect_element; do
+  if "$WORK/port" "$mode" > "$WORK/$mode.out" 2> "$WORK/$mode.err"; then
+    echo "  FAIL: $mode accepted an indirectly passed element"
+    status=1
+  elif grep -Fq 'downcast element Tuple(Int64, Int64' "$WORK/$mode.err" &&
+       grep -Fq 'passed indirectly (hosted store_value, copy_value)' "$WORK/$mode.err"; then
+    echo "  $mode refused"
+  else
+    echo "  FAIL: $mode did not reach its indirect-element refusal"
+    cat "$WORK/$mode.err"
+    status=1
+  fi
+done
+for mode in tuple_size_mismatch named_tuple_size_mismatch named_tuple_missing_key; do
+  case "$mode" in
+    tuple_size_mismatch) expected='BUG: tuple sizes differ in downcast' ;;
+    named_tuple_size_mismatch) expected='BUG: named tuple sizes differ in downcast' ;;
+    named_tuple_missing_key) expected='BUG: named tuple key missing' ;;
+  esac
+  if "$WORK/port" "$mode" > "$WORK/$mode.out" 2> "$WORK/$mode.err"; then
+    echo "  FAIL: $mode accepted an incompatible shape"
+    status=1
+  elif grep -Fq "$expected" "$WORK/$mode.err"; then
+    echo "  $mode refused"
+  else
+    echo "  FAIL: $mode did not reach its shape refusal"
+    cat "$WORK/$mode.err"
+    status=1
+  fi
+done
 
 # lowcast_proc_result types after s1d-bodies 5c5075083 and must pass.
 # lowcast_struct_union waits on the union-in-generic type-id spelling.
@@ -311,6 +364,27 @@ prove_mutation "named tuple widening is refused" "$REPO/src/compiler/lower/cast.
   '  if target.is_a?(NamedTupleInstanceType) && value_type.is_a?(NamedTupleInstanceType)' '  if false' -- new_cast_check || status=1
 prove_mutation "tuple upcast is refused" "$REPO/src/compiler/lower/cast.iyi" \
   '  if (t.is_a?(TupleInstanceType) && f.is_a?(TupleInstanceType)) || (t.is_a?(NamedTupleInstanceType) && f.is_a?(NamedTupleInstanceType))' '  if false' -- new_cast_check || status=1
+cast_fixture=tuple_narrow
+new_cast_check || { echo "  baseline: tuple narrowing differs"; status=1; }
+if ! awk '/^SUMMARY/ { split($4, a, "="); if (a[2] == 1) ok=1 } END { exit !ok }' "$WORK/mut.out"; then
+  echo "  baseline: tuple narrowing module differs"
+  status=1
+fi
+if grep -Eq '^  @.*: EXTRA in the port$' "$WORK/mut.out"; then
+  echo "  baseline: tuple narrowing contains extra functions"
+  status=1
+fi
+rm -f "$WORK/mut.out"
+prove_mutation "named tuple narrowing uses the source field index" "$REPO/src/compiler/lower/cast.iyi" \
+  '    target_ptr = aggregate_field(low, target, result, j)' '    target_ptr = aggregate_field(low, target, result, i)' -- new_cast_check || status=1
+if [ ! -f "$WORK/mut.out" ] || ! awk '
+  /named_order.*: differs at line/ { named=1 }
+  /^SUMMARY/ { split($2, a, "="); split($3, b, "="); if (b[2] > 0 && a[2] < b[2]) summary=1 }
+  END { exit !(named && summary) }
+' "$WORK/mut.out"; then
+  echo "  NOT PROVEN: named tuple index mutant did not produce a named_order IR difference"
+  status=1
+fi
 cast_fixture=virtual_store
 new_cast_check || { echo "  baseline: virtual assignment differs"; status=1; }
 prove_mutation "virtual target assignment is refused" "$REPO/src/compiler/lower/cast.iyi" \
