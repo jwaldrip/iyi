@@ -12,6 +12,14 @@ def twice(value : Int32, &)
   first &+ second
 end
 
+def keep_int(&block : Int32 -> Int32) : Proc(Int32, Int32)
+  block
+end
+
+def keep_nil(&block : Bool -> Nil) : Proc(Bool, Nil)
+  block
+end
+
 def captured_reader : Proc(Int32)
   value = 40
   -> {
@@ -69,6 +77,45 @@ nil_writer = -> { once(1) { |value| flag = flag &+ value }; nil }
 result = nil_writer.call
 LibC.exit(10) unless flag == 1
 LibC.exit(11) if result
+
+calls = 0
+saved_next = keep_int do |value|
+  calls = calls &+ 1
+  next value &+ 10 if value == 1
+  value &+ 20
+end
+LibC.exit(12) unless saved_next.call(1) == 11
+LibC.exit(13) unless saved_next.call(2) == 22 && calls == 2
+
+saved_only_next = keep_int { |value| next value &+ 30 }
+LibC.exit(14) unless saved_only_next.call(1) == 31
+
+saved_nil = keep_nil do |stop|
+  next if stop
+  calls = calls &+ 1
+  nil
+end
+saved_nil.call(true)
+LibC.exit(15) unless calls == 2
+saved_nil.call(false)
+LibC.exit(16) unless calls == 3
+
+saved_loop = keep_int do |limit|
+  value = 0
+  while value < limit
+    value = value &+ 1
+    next
+  end
+  next value
+end
+LibC.exit(17) unless saved_loop.call(3) == 3
+
+cleanups = 0
+saved_defer = keep_int do |value|
+  defer {cleanups = cleanups &+ 1}
+  next value &+ 1
+end
+LibC.exit(18) unless saved_defer.call(4) == 5 && cleanups == 1
 
 halt = -> { once(3) { |value| code = LibC.exit(value &- 3) } }
 halt.call

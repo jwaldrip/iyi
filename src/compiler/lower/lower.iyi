@@ -1610,8 +1610,12 @@ impl BodyVisit for CoreBody
   end
 end
 
-# The hosted `visit(Next)`: a branch to the loop's condition.
+# Hosted visit(Next): a captured block returns; a loop or yielded block branches.
 pub def codegen_next(low : Lowerer, node : Next) : Nil
+  if node.target.is_a?(Def)
+    codegen_return_node(low, node)
+    return
+  end
   if low.loop_next.nil?
     # A next outside a while goes to the block's next: its value is the yield's value (hosted next_phi).
     yield_phi = low.current_context.next_phi
@@ -1653,7 +1657,7 @@ end
 # The hosted `visit(Return)` (codegen.cr:1170-1209) evaluates the control expression
 # and upcasts it to the current function's semantic return type before returning.
 # A return at the top level has no def to leave, so it is refused by name.
-pub def codegen_return_node(low : Lowerer, node : Return) : Nil
+pub def codegen_return_node(low : Lowerer, node : Return | Next) : Nil
   if low.current_context.top_level
     pending_visit_node("return at the top level (hosted codegen.cr: visit(Return), node.target is not a Def)")
   end

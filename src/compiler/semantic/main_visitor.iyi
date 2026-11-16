@@ -5877,6 +5877,7 @@ pub class MainVisitor < TypeNodeHost
     inner.super_barrier = "a proc literal"
     # Returns from the literal or its yielded blocks belong to this proc.
     inner.return_types = [] of Type?
+    inner.next_types = inner.return_types if def_node.captured_block?
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(node)
