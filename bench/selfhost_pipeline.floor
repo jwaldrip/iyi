@@ -7,6 +7,7 @@ bench/fixtures/lowcall_block_branch_nilable_rw.iyi run-equal
 bench/fixtures/lowcall_block_break.iyi run-equal
 bench/fixtures/lowcall_block_break_if.iyi run-equal
 bench/fixtures/lowcall_block_break_upcast.iyi run-equal
+bench/fixtures/lowcall_block_lexical_locals.iyi run-equal
 bench/fixtures/lowcall_block_local.iyi run-equal
 bench/fixtures/lowcall_block_nested.iyi run-equal
 bench/fixtures/lowcall_block_nested_nilable_rw.iyi run-equal
@@ -55,6 +56,7 @@ bench/fixtures/lowcall_dispatch_virtual_global_shadowed.iyi run-equal
 bench/fixtures/lowcall_dispatch_virtual_self_fields.iyi run-equal
 bench/fixtures/lowcall_dispatch_visitor_self.iyi run-equal
 bench/fixtures/lowcall_empty_body.iyi run-equal
+bench/fixtures/lowcall_enum_class_methods.iyi run-equal
 bench/fixtures/lowcall_exit_pick.iyi run-equal
 bench/fixtures/lowcall_fun_body.iyi run-equal
 bench/fixtures/lowcall_generic_metaclass_probe.iyi run-equal
@@ -93,6 +95,7 @@ bench/fixtures/lowcall_named_shared_wrapper.iyi run-equal
 bench/fixtures/lowcall_named_yield_default.iyi run-equal
 bench/fixtures/lowcall_narrowed_block_capture.iyi run-equal
 bench/fixtures/lowcall_nested.iyi run-equal
+bench/fixtures/lowcall_new_default_layer.iyi run-equal
 bench/fixtures/lowcall_nil.iyi run-equal
 bench/fixtures/lowcall_nil_method.iyi run-equal
 bench/fixtures/lowcall_noreturn.iyi run-equal

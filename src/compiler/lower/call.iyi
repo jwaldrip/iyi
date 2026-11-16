@@ -47,7 +47,7 @@ import compiler/ir/function::{Function, Global, TlsModel}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
-import compiler/lower/block::{NoReturnPhi, alloca_local, copy_vars, join_pointer}
+import compiler/lower/block::{NoReturnPhi, alloca_local, join_pointer}
 import compiler/lower/locals::{LocalOrder}
 import compiler/lower/closure::{allocate_closure}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
@@ -222,6 +222,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   self_type : Type? = nil
   self_value : Value? = nil
   class_owner : Type? = nil
+  program_target = false
   unless node.obj.nil?
     recv_type = single_dispatch ? single_dispatch.as(DispatchTarget).receiver : receiver_owner(low, node)
     if single_dispatch && !recv_type.is_a?(VirtualType)
@@ -273,15 +274,17 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     if defining = low.analysed.program.def_owner(def_node)
       if defining.is_a?(ModuleType) && defining.as(ModuleType).iyi_unit
         class_owner = defining
+      elsif defining.object_id == low.analysed.program.object_id
+        program_target = true
       end
     end
   end
-  if node.obj.nil? && class_owner.nil? && !low.current_context.type.nil?
+  if node.obj.nil? && !program_target && class_owner.nil? && !low.current_context.type.nil?
     ct = low.current_context.type.as(Type)
     if low.current_context.vars["self"]?.nil?
       # A non-generic class method has no self argument. An unqualified call to
       # another method on its own metaclass uses the same class owner.
-      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)
+      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType) || ct.is_a?(EnumType)) && !ct.is_a?(NilType)
         if ct.as(ModuleType).metaclass.defs[node.name]?
           class_owner = ct
         elsif target = low.analysed.target_def?(node)
@@ -725,9 +728,9 @@ pub def implicit_self_value(low : Lowerer) : Value
   sv.as(LowerVar).pointer
 end
 
-# The receiver's type, which is the owner of the method the call reaches (hosted `target_def.owner`). A
-# receiver that is a metaclass, a union, a virtual type or nil is refused by name, and so is a method
-# the receiver's type does not define itself (inherited, so the owner is a superclass).
+# The receiver's type is the method's owner (hosted `target_def.owner`).
+# Class, module and enum metaclasses use their class-method owner; instance
+# receivers are checked against the analysed target below.
 pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
   if recorded = low.analysed.call_receiver?(node)
     return recorded
@@ -741,14 +744,13 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
     if owner.is_a?(GenericClassInstanceMetaclassType)
       return owner
     end
-    # A class method of a non-generic class or module, called on the constant path that names it (`Sched.go`).
-    # The hosted code does not evaluate the path, and the method is the metaclass's own def (an inherited one is
-    # refused: the hosted target owner is the superclass).
+    # A class method of a non-generic class, module or enum passes no self.
+    # The analysed target can also name a def inherited by the metaclass.
     inst = owner.as(MetaclassType).instance_type
     if inst.is_a?(GenericClassType)
       pending_visit_node("the receiver of #{node.name} is the uninstantiated generic #{owner.full_name}: typing has not instantiated the owner")
     end
-    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)
+    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType) || inst.is_a?(EnumType)) && !inst.is_a?(NilType)
       pending_visit_node("a class method call on #{owner.full_name} (hosted call.cr: prepare_call_args, a generic or builtin metaclass)")
     end
     if owner.as(MetaclassType).defs[node.name]?.nil?
@@ -870,9 +872,9 @@ end
 
 # The hosted `codegen_call_with_block` (call.cr:356) for a def that does not use its block argument.
 # It may still name or annotate that argument. The arguments and receiver are already evaluated.
-# The block's own variables (its arguments and its locals) are made in a copy of the
-# caller's variables, the way the hosted code makes them before it clones the context. The def's body
-# is then inlined in a frame of its own: `self` (when there is a receiver) and the def's arguments and
+# The block sees the caller variables visible where it was written, plus self.
+# Its arguments and local declarations get fresh slots, as hosted undef_vars and
+# alloca_non_closured_vars require. The def's body is inlined in its own frame: self, arguments and
 # locals are bound there, and each `yield` in the body runs the block (block.iyi). The value of the
 # body is the call's value, merged by a phi (hosted `Phi.open(self, node)`, which always wants a value).
 # Passed-by-value results are merged by address.
@@ -892,8 +894,27 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   caller = low.current_context
   noreturn = ret.is_a?(NoReturnType)
 
-  # The block's variables, in a copy of the caller's (hosted `context.vars = old_block_context.vars.dup`).
-  block_ctx = LowerContext.new(caller.fun, caller.fun_type, caller.type, copy_vars(caller.vars))
+  # Only names visible where the block was written belong to its caller.
+  # A later local may already have an alloca, but it cannot own a block local.
+  writer_vars = if owner = low.analysed.block_owners[block]?
+                  owner.var_owners
+                else
+                  nil
+                end
+  block_vars = Hash(String, LowerVar).new
+  if writer_vars
+    caller.vars.each do |name, var|
+      block_vars[name] = var if name == "self" || writer_vars.has_key?(name)
+    end
+  else
+    place = if location = block.location
+              location.to_s
+            else
+              "<no source location>"
+            end
+    raise "BUG: block passed to #{def_node.name} at #{place} has no recorded writer variables"
+  end
+  block_ctx = LowerContext.new(caller.fun, caller.fun_type, caller.type, block_vars)
   block_ctx.top_level = caller.top_level
   block_ctx.return_type = caller.return_type
   block_ctx.return_phi = caller.return_phi
@@ -980,6 +1001,10 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
     end
     i += 1
   end
+  nested : Hash(String, Type)? = nil
+  if owner = low.analysed.block_owners[block]?
+    nested = owner.nested_storage.unions
+  end
   collector = LocalOrder.new(low.analysed)
   block.body.accept(collector)
   collector.vars.each do |var|
@@ -989,9 +1014,16 @@ pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, Lo
     # not the flow type of the first assignment encountered in the block.
     t = collector.types[name]?
     raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
-    next if t.as(Type).is_a?(NoReturnType)
+    storage = t.as(Type)
+    if table = nested
+      if written = table[name]?
+        storage = low.analysed.program.type_merge(storage, written)
+      end
+    end
+    next if storage.is_a?(NoReturnType)
+    # A retained slot belongs to an outer variable the block writes.
     unless vars[name]?
-      alloca_local(low, vars, name, t.as(Type))
+      alloca_local(low, vars, name, storage)
     end
   end
 end

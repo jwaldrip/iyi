@@ -190,7 +190,9 @@ check_barrier_mutant() {
 build_compiler || { cat "$WORK/build.log"; exit 1; }
 status=0
 for fixture in lower_closure_top_level lower_closure_nested_block lower_proc_yielded_blocks lowcall_recursive_named_mixed_inferred lowcall_noreturn_operand lower_pointerof_arg lower_pointerof_proc_arg lower_macro_closure lower_macro_proc_locations lower_closure_self_class lower_closure_self_struct lower_closure_self_nested lower_closure_self_unit_call closure_forward_recursion; do
-  "$IYI" build --prelude empty -o "$WORK/host" "bench/fixtures/$fixture.iyi" > "$WORK/host.build.log" 2>&1 || { cat "$WORK/host.build.log"; exit 1; }
+  host_flags=(--prelude empty)
+  [ "$fixture" = lower_proc_yielded_blocks ] && host_flags=()
+  "$IYI" build "${host_flags[@]}" -o "$WORK/host" "bench/fixtures/$fixture.iyi" > "$WORK/host.build.log" 2>&1 || { cat "$WORK/host.build.log"; exit 1; }
   "$WORK/host" > "$WORK/host.out" 2>&1 || exit 1
   cp "$WORK/host.out" "$WORK/host-$fixture.out"
   if check_fixture "$fixture"; then
@@ -214,8 +216,16 @@ for fixture in closure_gc_marking closure_gc_marking_self; do
   check_mark "$fixture" || { cat "$WORK/mark.build.log" "$WORK/mark.out"; exit 1; }
   echo "$fixture: hosted and native MARKING WHITE SHADED 42"
 done
+"$IYI" build -o "$WORK/panic-host" bench/fixtures/proc_defer_panic.iyi > "$WORK/panic.host.log" 2>&1 || { cat "$WORK/panic.host.log"; exit 1; }
+"$WORK/stage1" bench/fixtures/proc_defer_panic.iyi -o "$WORK/panic-native" --pipeline typed --prelude > "$WORK/panic.native.log" 2>&1 || { cat "$WORK/panic.native.log"; exit 1; }
+codesign -v --strict "$WORK/panic-native" || exit 1
+"$WORK/panic-host" > "$WORK/panic.host.out" 2>/dev/null || exit 1
+"$WORK/panic-native" > "$WORK/panic.native.out" 2>/dev/null || exit 1
+cmp -s "$WORK/panic.host.out" "$WORK/panic.native.out" || exit 1
+echo 'proc_defer_panic: registered cleanup exits 0 with identical output'
 check_refusal closure_self_refuse_primitive 'closure over self of Int32' || { cat "$WORK/refused.log"; exit 1; }
 check_refusal closure_self_refuse_nested 'proc literal: a nested proc, def or class inside a proc literal (hosted closure)' || { cat "$WORK/refused.log"; exit 1; }
+check_refusal closure_refuse_nested_in_defer 'proc literal: a nested proc, def or class inside a proc literal (hosted closure)' || { cat "$WORK/refused.log"; exit 1; }
 check_refusal noreturn_dead_instance_refuse "undefined method 'missing_method' for Int32" || { cat "$WORK/refused.log"; exit 1; }
 echo 'unsupported primitive self and nested proc: refused without an output binary'
 prove_mutation 'program closure facts omitted' "$REPO/src/compiler/lower/lower.iyi" \

@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- Typed local declarations retain the initializer's storage type instead of
+  widening it to the written restriction. Methods emitted during class
+  initialization retain their instance-variable assignments.
+- Nested yielded blocks contribute writes to their enclosing block's local
+  storage types, preserving nilable references and lexical shadowing.
+
+- Captured callbacks return `next` values from their own proc, including when
+  created inside a loop or yielded block. Their `defer` cleanups run on normal
+  exits and panic, with live locals and the parent context preserved. Arguments
+  shadow outer captures. Written nested proc literals remain refused.
+
 - Native spawn classification recognizes writes and field addresses in
   original instance methods, and examines cast operands for captured values.
   Spawn collection and pool reach skip branches whose conditions are known
@@ -13,6 +24,10 @@
   the native typed pipeline, refuses unimplemented options and verbs, and
   protects resolved sources from being replaced by output. Native linking
   writes a fresh executable inode before replacing an existing output.
+
+- Yielded blocks keep their locals separate from names declared later in the
+  caller. Writer ownership survives fun and proc visitors, and Nil-valued
+  conditionals merge control flow without emitting Nil phis.
 
 - The typed pipeline resolves omitted `fun` returns to `Nil`, lowers recorded inline macro expansions, and
   resolves nested class and module declarations in their enclosing body. Native regression executables match

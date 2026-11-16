@@ -1,0 +1,120 @@
+@[Unsafe("reports nested block storage failures through the exit status")]
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+abstract class Answer
+  abstract def code : Int32
+end
+
+class Left < Answer
+  def code : Int32
+    3
+  end
+end
+
+class Right < Answer
+  def code : Int32
+    5
+  end
+end
+
+class Entry
+  def initialize(@name : Int32, @value : Answer?)
+  end
+
+  def name : Int32
+    @name
+  end
+
+  def value : Answer?
+    @value
+  end
+end
+
+def each_name(&)
+  yield 1
+  yield 2
+  yield 3
+end
+
+def each_entry(&)
+  yield Entry.new(1, Left.new)
+  yield Entry.new(2, nil)
+  yield Entry.new(3, Right.new)
+end
+
+def once(value : Int32, &)
+  yield value
+end
+
+def resolved : Int32
+  total = 0
+  each_name do |name|
+    answer : Answer? = nil
+    each_entry { |item| answer = item.value if item.name == name }
+    total = total &+ (answer.nil? ? 0 : answer.code)
+  end
+  total
+end
+
+def deep : Int32
+  hits = 0
+  probes = 0
+  each_name do |name|
+    seen : Answer? = nil
+    each_entry do |item|
+      once(item.name) do |wanted|
+        probes = probes &+ 1
+        seen = item.value if wanted == name
+      end
+    end
+    hits = hits &+ 1 unless seen.nil?
+  end
+  LibC.exit(20) unless probes == 9
+  hits
+end
+
+def widened : Int32
+  misses = 0
+  each_name do |name|
+    marker = 0
+    once(name) { |part| marker = nil if part == 2 }
+    misses = misses &+ 1 if marker.nil?
+  end
+  misses
+end
+
+def distinct : Int32
+  each_name do |name|
+    once(name) { |part| probe = part }
+    probe = name == 2
+    if probe
+      LibC.exit(30) unless name == 2
+    end
+  end
+  0
+end
+
+def shadowed : Int32
+  each_name do |name|
+    label = name == 1
+    once(name) { |label| label = label &+ 1 }
+    if label
+      LibC.exit(40) unless name == 1
+    end
+  end
+  0
+end
+
+picked = 0
+each_name do |name|
+  pick : Answer? = nil
+  each_entry { |item| pick = item.value if item.name == name }
+  picked = picked &+ 1 unless pick.nil?
+end
+LibC.exit(1) unless resolved == 8
+LibC.exit(2) unless deep == 2
+LibC.exit(3) unless widened == 1
+LibC.exit(4) unless picked == 2
+LibC.exit(distinct &+ shadowed)

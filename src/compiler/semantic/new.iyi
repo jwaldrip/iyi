@@ -17,6 +17,9 @@ module compiler/semantic/new
 # finds one. A generic class allocates through its own type (`Box(T).allocate`), a
 # splat type variable written as a splat.
 #
+# A call-time expansion of a generated `new` takes only the written arguments
+# and forwards them to initialize. Defaults run there, after allocation.
+#
 # The import direction is one way: this file imports top_level, and top_level never
 # imports it (iyi refuses the cycle). The main visitor calls define_new_methods.
 
@@ -34,7 +37,7 @@ end
 # The body of a generated `new` (the hosted fill_body_from_initialize): allocate,
 # call initialize with the arguments, add the finalizer, and yield the object. The
 # arguments after a splat go to initialize by name.
-pub def fill_body_from_initialize(new_def : Def, type_name : String, type_vars : Array(String)?, type_splat_index : Int32?) : Nil
+pub def fill_body_from_initialize(new_def : Def, type_name : String, type_vars : Array(String)?, type_splat_index : Int32?, located : ASTNode? = nil) : Nil
   alloc = allocate_call(type_name, type_vars, type_splat_index)
   splat_index = new_def.splat_index
   new_vars = [] of ASTNode
@@ -67,6 +70,9 @@ pub def fill_body_from_initialize(new_def : Def, type_name : String, type_vars :
   if ba = new_def.block_arg
     init.block_arg = Var.new(ba.name)
   end
+  if anchor = located
+    init.at(anchor)
+  end
 
   exps = [] of ASTNode
   exps << Assign.new(Var.new("_"), alloc)
@@ -75,6 +81,65 @@ pub def fill_body_from_initialize(new_def : Def, type_name : String, type_vars :
   exps << Var.new("_")
   new_def.body = Expressions.new(exps)
   nil
+end
+
+# The typing stack uses parameter restrictions to distinguish overloads.
+# Keep that identity while each parameter takes its already-matched type.
+def forwarded_restriction(arg : Arg) : ASTNode?
+  if restriction = arg.restriction
+    return restriction.clone
+  end
+  nil
+end
+
+# Hosted Def#expand_new_default_arguments (new.cr:255-344). Allocate first,
+# then forward the written arguments; initialize evaluates omitted defaults.
+pub def expand_new_default_arguments(definition : Def, given : Int32, named_args : Array(NamedArgument)?) : Def
+  args = [] of Arg
+  splat_index = definition.splat_index
+  before = given
+  if si = splat_index
+    before = si if si < given
+  end
+  i = 0
+  while i < before
+    args << Arg.new("__arg#{i}", nil, forwarded_restriction(definition.args[i]))
+    i += 1
+  end
+  if si = splat_index
+    k = 0
+    while k < given - si
+      args << Arg.new("__arg#{before + k}")
+      k += 1
+    end
+  end
+  name = "new"
+  forward_index : Int32? = nil
+  if named = named_args
+    args << Arg.new("")
+    forward_index = given
+    named.each_with_index do |named_arg, index|
+      name = "#{name}:#{named_arg.name}"
+      restriction : ASTNode? = nil
+      definition.args.each do |param|
+        restriction = forwarded_restriction(param) if param.external_name == named_arg.name
+      end
+      args << Arg.new("$named_#{index + 1}", nil, restriction, named_arg.name)
+    end
+  end
+  block_arg : Arg? = nil
+  if ba = definition.block_arg
+    block_arg = ba.clone.as(Arg)
+  end
+  expansion = Def.new(name, args, Nop.new, nil, block_arg, nil, false, false, forward_index, nil, nil, definition.uses_block_arg)
+  expansion.at(definition)
+  expansion.visibility = definition.visibility
+  fill_body_from_initialize(expansion, "", nil, nil, definition)
+  if index = forward_index
+    expansion.splat_index = nil
+    expansion.args.delete_at(index)
+  end
+  expansion
 end
 
 # An argless `new` for a type with no initialize in its ancestry (the hosted

@@ -220,11 +220,6 @@ pub class ClosureWalk < Visitor
     true
   end
 
-  def visit(node : Next) : Bool
-    refuse_inside_proc("next inside a captured block", true)
-    true
-  end
-
   def visit(node : Var) : Bool
     if node.name == "self"
       capture_self
