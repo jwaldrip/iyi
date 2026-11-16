@@ -5839,6 +5839,8 @@ pub class MainVisitor < TypeNodeHost
     inner.scope = @scope
     inner.current_def = def_node if def_node.captured_block?
     inner.super_barrier = "a proc literal"
+    # Returns from the literal or its yielded blocks belong to this proc.
+    inner.return_types = [] of Type?
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(node)
@@ -5846,7 +5848,7 @@ pub class MainVisitor < TypeNodeHost
     @program.current_imports = old_imports
     @program.current_import_defs = old_import_defs
     ret = declared
-    if bt = inner.child_type(body)
+    if bt = inner.merge_jump_values(inner.child_type(body), inner.return_types)
       if rt = declared
         merged = @program.type_merge(bt, rt)
         if merged != rt

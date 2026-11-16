@@ -1134,7 +1134,7 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
   # The hosted codegen_assign declares the variable before it visits the value, so its alloca comes first.
   if low.current_context.vars[target.name]?.nil?
     declared = variable_storage_type(low, target)
-    if !declared.nil?
+    if !declared.nil? && !declared.as(Type).is_a?(NoReturnType)
       declare_assign_var(low, target.name, declared.as(Type))
     end
   end
@@ -1149,6 +1149,7 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
   value_type = low.analysed.type_of?(node.value)
   raise "BUG: the analysed program has no type for the assigned value (hosted codegen.cr: codegen_assign)" if value_type.nil?
   vt = value_type.as(Type)
+  return if vt.is_a?(NoReturnType)
   if low.current_context.vars[target.name]?.nil?
     # The analysis gives the target no type: the variable takes the value's.
     declare_assign_var(low, target.name, vt)

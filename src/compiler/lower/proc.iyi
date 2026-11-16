@@ -207,7 +207,7 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
 
   body_t = low.analysed.type_of?(node.def.body)
   raise "BUG: the analysed program has no type for a proc literal's body (hosted codegen.cr: visit(ProcLiteral))" if body_t.nil?
-  if body_t.as(Type).full_name != proc.return_type.full_name && !proc.return_type.nil_type?
+  if body_t.as(Type).full_name != proc.return_type.full_name && !proc.return_type.nil_type? && !body_t.as(Type).is_a?(NoReturnType)
     refuse_port("a proc literal whose body is #{body_t.as(Type).full_name} and returns #{proc.return_type.full_name} (hosted upcast of the return, not ported)")
   end
 
