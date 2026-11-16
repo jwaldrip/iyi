@@ -17,7 +17,6 @@ import compiler/ir/inst::{IntPredicate}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer}
 import compiler/lower/helpers::{int1, load_aligned}
-import compiler/lower/pending::{refuse_port}
 import compiler/semantic/top_level::{Type, NilType, TypeDefType}
 import compiler/types/indirection::{TypeIndirection}
 import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, PointerInstanceType}
@@ -36,8 +35,7 @@ pub def cond_bool(low : Lowerer, node : ASTNode, value : Value) : Value
     return value
   end
   if ty.is_a?(NilType)
-    refuse_port("lower: codegen_cond of Nil is not ported yet (hosted cond helper folds a constant false condition, slice S2c)")
-    return value
+    return int1(low, 0_i64)
   end
   if ty.is_a?(NilableType) || ty.is_a?(NilableReferenceUnionType) || ty.is_a?(PointerInstanceType)
     return low.builder.icmp(IntPredicate::NE, value, low.builder.const_null_pointer)

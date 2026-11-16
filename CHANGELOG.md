@@ -8,6 +8,8 @@
   initialization retain their instance-variable assignments.
 - Nested yielded blocks contribute writes to their enclosing block's local
   storage types, preserving nilable references and lexical shadowing.
+- Nil-valued conditions lower to false, including negation, while retaining
+  the condition expression's side effects.
 
 - Captured callbacks return `next` values from their own proc, including when
   created inside a loop or yielded block. Their `defer` cleanups run on normal
