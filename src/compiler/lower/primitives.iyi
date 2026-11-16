@@ -270,12 +270,21 @@ pub def codegen_primitive_proc_call(low : Lowerer, node : Call, receiver_type : 
   context_block = low.new_block("ctx_is_not_null")
   is_null = low.builder.icmp(IntPredicate::EQ, ctx, low.builder.const_null_pointer)
   low.builder.cond_br(is_null, null_block, context_block)
-  ret_type = low.typer.llvm_type(proc_type.return_type)
-  phi = LowerPhi.new(wants, ret_type)
+  result_type = proc_type.return_type
+  ret_type = low.typer.llvm_type(result_type)
+  aggregate = passed_by_value?(result_type)
+  phi_type = aggregate ? low.module.types.ptr(0) : ret_type
+  phi = LowerPhi.new(wants, phi_type)
   low.builder.position_at_end(null_block)
   plain_type = low.module.types.func(params, ret_type)
   plain = low.builder.call_aux(CallAux.new(plain_type, CallConv::Iyi), fun_ptr, args)
-  phi.add(low, plain, false)
+  plain_value : Value = plain
+  if wants && aggregate
+    slot = low.alloca(ret_type, "")
+    store_aligned(low, plain, slot)
+    plain_value = slot
+  end
+  phi.add(low, plain_value, false)
   low.builder.position_at_end(context_block)
   closure_params = [low.module.types.ptr] of IrType
   params.each { |param| closure_params << param }
@@ -283,7 +292,13 @@ pub def codegen_primitive_proc_call(low : Lowerer, node : Call, receiver_type : 
   args.each { |arg| closure_args << arg }
   closure_type = low.module.types.func(closure_params, ret_type)
   closure = low.builder.call_aux(CallAux.new(closure_type, CallConv::Iyi), fun_ptr, closure_args)
-  phi.add(low, closure, true)
+  closure_value : Value = closure
+  if wants && aggregate
+    slot = low.alloca(ret_type, "")
+    store_aligned(low, closure, slot)
+    closure_value = slot
+  end
+  phi.add(low, closure_value, true)
   phi.close(low)
 end
 
