@@ -373,6 +373,26 @@ else
     echo "  block map: real-prelude native matches hosted output a-b"
   fi
 fi
+# Cached typed blocks must keep both caller flow and storage through Array#each
+# and Array#map's scratch pre-typing.
+cached_flow_fixture="$REPO/bench/fixtures/lowcallrun_block_cached_flow.iyi"
+if ! "$IYI" build --no-debug -o "$WORK/cached_flow.hosted" "$cached_flow_fixture" > "$WORK/cached_flow.hosted.log" 2>&1 ||
+   ! IYI_PATH="$REPO/src" "$WORK/compile_native" "$cached_flow_fixture" -o "$WORK/cached_flow.native" --pipeline typed --prelude > "$WORK/cached_flow.native.log" 2>&1; then
+  echo "  cached block flow: hosted or native source build failed"
+  status=1
+elif [ "$(uname -s)" = Darwin ] && { ! codesign -v --strict "$WORK/cached_flow.hosted" || ! codesign -v --strict "$WORK/cached_flow.native"; }; then
+  echo "  cached block flow: signature verification failed"
+  status=1
+else
+  timeout 30 "$WORK/cached_flow.hosted" > "$WORK/cached_flow.hosted.out" 2>&1; hs=$?
+  timeout 30 "$WORK/cached_flow.native" > "$WORK/cached_flow.native.out" 2>&1; ns=$?
+  if [ "$hs" -ne 0 ] || [ "$ns" -ne "$hs" ] || ! cmp -s "$WORK/cached_flow.hosted.out" "$WORK/cached_flow.native.out" || [ "$(< "$WORK/cached_flow.native.out")" != "$(printf '7\n4')" ]; then
+    echo "  cached block flow: hosted and native output or exit status differs"
+    status=1
+  else
+    echo "  cached block flow: real-prelude native matches hosted output 7 then 4"
+  fi
+fi
 # A class value displays its instance name, including when reached through a
 # virtual metaclass (hosted macros/interpreter.cr:735-737).
 meta_name_fixture="$REPO/bench/fixtures/runtime_metaclass_name.iyi"
@@ -818,6 +838,23 @@ prove_mutation "a block local misses its nested blocks' writes" "$REPO/src/compi
 prove_mutation "a nested block writes into its yielding def's storage" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '        @var_unions = owner.local_storage.unions' \
   '        @var_unions = callee_var_unions' -- block_nested_storage_check || status=1
+
+block_cache_check() {
+  local name="$1"
+  if ! "$IYI" build -o "$WORK/block-cache-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-cache-mut.build.log" 2>&1; then
+    touch "$WORK/general-mutation.invalid"
+    return 1
+  fi
+  "$WORK/block-cache-mut" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/block-cache-mut.out" 2> "$WORK/block-cache-mut.err" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-cache-mut.out"
+}
+prove_mutation "a reused block instance drops its writes" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '          replay_block_flow(flow)' '          flow' -- block_cache_check lowcall_block_cached_writes || status=1
+prove_mutation "a reused block instance ignores its entry flow" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    block_entry_holds?(flow)' '    true' -- block_cache_check lowcall_block_cached_entry || status=1
+prove_mutation "a reused block instance ignores its writer storage" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    return false unless flow.storage.object_id == @var_unions.object_id' \
+  '    return false unless true' -- block_cache_check lowcall_block_cached_entry || status=1
 
 uncovered_mutation_check() {
   if ! "$IYI" build -o "$WORK/uncovered-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/uncovered-mut.build.log" 2>&1; then

@@ -86,14 +86,28 @@ pub class CallExpansion
   end
 end
 
+# A cached yielded block's caller storage, referenced entry types and flow writes.
+# Storage identity keeps a retyped block from reusing writes into an old owner.
+pub class BlockFlow
+  getter storage : Hash(String, Type)
+  getter names : Array(String)
+  getter entry : Hash(String, Type)
+  getter delta : Hash(String, Type)
+
+  def initialize(@storage : Hash(String, Type), @names : Array(String), @entry : Hash(String, Type), @delta : Hash(String, Type))
+  end
+end
+
 # One cached instantiation (hosted DefInstance, Call#instantiate): the typed clone of a def
 # whose body typing finished, and the type that body evaluates to. A call with the same key takes
 # both, so the body is not typed again and the call site records the clone the lowering reads.
+# A written block's caller flow must also match before its instance can be reused.
 pub class DefInstance
   getter definition : Def
   getter return_type : Type?
+  getter block_flow : BlockFlow?
 
-  def initialize(@definition : Def, @return_type : Type?)
+  def initialize(@definition : Def, @return_type : Type?, @block_flow : BlockFlow? = nil)
   end
 end
 
@@ -135,6 +149,48 @@ pub class RecursiveClear < Visitor
     @visitor.call_arguments.delete(node)
     @visitor.call_receivers.delete(node)
     @visitor.lib_call_targets.delete(node)
+    true
+  end
+end
+
+# Locals a written block can read or write, including nested blocks and macro
+# expansions. Receiverless calls can represent local reads after expansion.
+pub class BlockNames < Visitor
+  getter names : Array(String)
+
+  def initialize(@visitor : MainVisitor)
+    @names = [] of String
+    @seen = Set(String).new
+  end
+
+  def add(name : String) : Nil
+    unless @seen.includes?(name)
+      @seen.add(name)
+      @names << name
+    end
+    nil
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    return false if node.is_a?(Def) || node.is_a?(FunDef) || node.is_a?(ClassDef) || node.is_a?(ModuleDef) || node.is_a?(LibDef) || node.is_a?(Macro) || node.is_a?(TraitDef) || node.is_a?(ImplDef) || node.is_a?(EnumDef)
+    if expanded = @visitor.expansions[node]?
+      expanded.accept(self)
+      return false
+    end
+    if node.is_a?(ProcLiteral)
+      # A proc's embedded Def is a closure body, unlike an ordinary method.
+      node.as(ProcLiteral).def.body.accept(self)
+      return false
+    elsif node.is_a?(Var)
+      add(node.as(Var).name)
+    elsif node.is_a?(Call)
+      call = node.as(Call)
+      add(call.name) if call.obj.nil?
+      if macro_expansion = call.expanded
+        macro_expansion.accept(self)
+        return false
+      end
+    end
     true
   end
 end
@@ -3953,7 +4009,8 @@ pub class MainVisitor < TypeNodeHost
     "&#{block.node_id}"
   end
 
-  # The cached instance for a key, or nil when there is none.
+  # Reuse a written block only for the caller flow and storage it was typed for,
+  # then merge its recorded writes into the caller's current flow.
   def cached_instance(key : String?) : DefInstance?
     if k = key
       if instance = @def_instances[k]?
@@ -3967,8 +4024,14 @@ pub class MainVisitor < TypeNodeHost
             break
           end
         end
+        if flow = instance.block_flow
+          return nil unless block_flow_holds?(flow)
+        end
         if @speculation.dirty_keys[k]?
           @speculation.taint = @speculation.taint + 1
+        end
+        if flow = instance.block_flow
+          replay_block_flow(flow)
         end
         return instance
       end
@@ -3976,14 +4039,60 @@ pub class MainVisitor < TypeNodeHost
     nil
   end
 
+  def block_flow_holds?(flow : BlockFlow) : Bool
+    return false unless flow.storage.object_id == @var_unions.object_id
+    block_entry_holds?(flow)
+  end
+
+  def block_entry_holds?(flow : BlockFlow) : Bool
+    flow.names.each do |name|
+      recorded = flow.entry[name]?
+      if now = @vars[name]?
+        return false if recorded.nil?
+        return false if now != recorded.as(Type)
+      else
+        return false unless recorded.nil?
+      end
+    end
+    true
+  end
+
+  # Apply the same merge as fresh body typing, using only the recorded changes.
+  def replay_block_flow(flow : BlockFlow) : Nil
+    flow.delta.each do |name, written|
+      if now = @vars[name]?
+        @vars[name] = @program.type_merge(now, written) if now != written
+      end
+    end
+    nil
+  end
+
+  def capture_block_flow(blk : Block, caller_vars : Hash(String, Type), storage : Hash(String, Type), ctx : Hash(String, Type)) : BlockFlow
+    walk = BlockNames.new(self)
+    blk.body.accept(walk)
+    entry = Hash(String, Type).new
+    walk.names.each do |name|
+      if t = caller_vars[name]?
+        entry[name] = t
+      end
+    end
+    delta = Hash(String, Type).new
+    ctx.each do |name, left|
+      if before = caller_vars[name]?
+        delta[name] = left if before != left
+      end
+    end
+    BlockFlow.new(storage, walk.names, entry, delta)
+  end
+
   # Caches a finished instance, including one with a refused body and a declared
   # return type. Its recorded refusals remain attached to the cached definition.
-  def remember_def_instance(key : String?, definition : Def, return_type : Type?) : Nil
+  def remember_def_instance(key : String?, definition : Def, return_type : Type?, block_flow : BlockFlow? = nil) : Nil
     if k = key
       unless @speculation.recursive_frames.empty? || @def_instances.has_key?(k)
         @speculation.recursive_cache_writes << k
       end
-      @def_instances[k] = DefInstance.new(definition, return_type)
+      @def_instances[k] = DefInstance.new(definition, return_type, block_flow)
     end
     nil
   end
@@ -4635,7 +4744,13 @@ pub class MainVisitor < TypeNodeHost
       @speculation.recursive_cache_writes.truncate(0, 0)
     end
 
+    block_flow : BlockFlow? = nil
     if block && (ctx_vars = @current_block_context_vars)
+      if blk = block
+        if cache_key && !target_def.uses_block_arg?
+          block_flow = capture_block_flow(blk, old_vars, old_var_unions, ctx_vars)
+        end
+      end
       ctx_vars.each do |k, new_v|
         if old_v = old_vars[k]?
           if old_v != new_v
@@ -4704,7 +4819,7 @@ pub class MainVisitor < TypeNodeHost
       if rt = target_def.return_type
         declared_ret = return_contract(rt, rec_type, target_def)
         set_type(target_def, declared_ret)
-        remember_def_instance(cache_key, target_def, declared_ret)
+        remember_def_instance(cache_key, target_def, declared_ret, block_flow)
         return declared_ret
       end
       return nil
@@ -4716,7 +4831,7 @@ pub class MainVisitor < TypeNodeHost
       # def NoReturn (hosted bindings.cr Def#map_type).
       if bt.is_a?(NoReturnType) && !error_contract?(declared_ret)
         set_type(target_def, bt)
-        remember_def_instance(cache_key, target_def, bt)
+        remember_def_instance(cache_key, target_def, bt, block_flow)
         return bt
       end
       unless return_fits?(bt, declared_ret)
@@ -4730,11 +4845,11 @@ pub class MainVisitor < TypeNodeHost
       end
       answered = retained_return(bt, declared_ret)
       set_type(target_def, answered)
-      remember_def_instance(cache_key, target_def, answered)
+      remember_def_instance(cache_key, target_def, answered, block_flow)
       answered
     else
       set_type(target_def, bt)
-      remember_def_instance(cache_key, target_def, bt)
+      remember_def_instance(cache_key, target_def, bt, block_flow)
       bt
     end
   end
@@ -5793,8 +5908,8 @@ pub class MainVisitor < TypeNodeHost
     instantiated_def : Def
     body_ret : Type? = nil
     if hit = cached_instance(dkey)
-      # A cached instance: the call records its clone and takes its return type. Its block breaks
-      # are the ones the block already collected, so they are kept.
+      # cached_instance checked the caller and merged the block's writes.
+      # The call keeps its typed clone, return type and recorded block breaks.
       instantiated_def = hit.definition
       @call_target_defs[node] = instantiated_def
       body_ret = hit.return_type

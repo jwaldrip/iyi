@@ -26,9 +26,24 @@ stage1 compiles `samples/iyi/hello.iyi` with `--pipeline typed --prelude` throug
 linking. The executable exits 0 and its stdout is byte-identical to the hosted
 build. Stage1 links only `libSystem.B.dylib`.
 
-The hosted compiler remains the bootstrap compiler. Parser compilation has
-reached body typing, but no native-built parser or compiler has been produced.
-Self-compilation and a stage2/stage3 fixed point remain unproven.
+At `16b2671a3`, hosted `bin/iyi` builds the real `src/compiler/stage1.iyi`
+command entry. That stage1 builds stage2 from the same entry, with valid
+signatures and only `libSystem.B.dylib` linked. Stage2 then fails to build stage3:
+`impl Std::Iterator::Iterator does not answer associated type Elem`.
+No stage2/stage3 fixed point is established, and the hosted compiler remains
+the default.
+
+The same revision lowers LLVM-named C bindings through the typed intrinsic
+registry rather than importing them as C symbols. Numeric, tuple-narrowing
+and intrinsic fixtures compile through the stage1 command and match hosted
+output and exit status. Unsupported intrinsic bindings fail during lowering
+and produce no executable.
+
+The cached-block flow repair moves the third build past declaration, body
+typing and lowering. Its stage2 builds from the same command entry and links
+only libSystem. Stage3 reaches the native phase, then stops at
+`rt/builtins.ir: line 14: an instruction is outside any block`. The original
+missing-associated-type failure is gone; the fixed point remains unproven.
 
 The pointer-forwarding and inline-annotation fixtures match hosted IR and return
 42. The external-global access fixture matches hosted IR and returns 7. At

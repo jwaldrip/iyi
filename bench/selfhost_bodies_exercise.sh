@@ -609,7 +609,7 @@ forward_components_at_expected() {
     grep -Fxq 'forwarded block key components and identity controls: passed' "$WORK/forward_components.log"
     return $?
   fi
-  if grep -Eq 'argument type was omitted from a key|return type was omitted from a key|virtual argument type was erased|virtual return type was erased|same forwarded proc type did not share both keys|written blocks were merged|yielding blocks were merged' "$WORK/forward_components.log"; then
+  if grep -Eq 'argument type was omitted from a key|return type was omitted from a key|virtual argument type was erased|virtual return type was erased|same forwarded proc type did not share both keys|written blocks were merged|yielding blocks were merged|same-entry proc-only cache missed|proc-only cache accepted changed entry flow' "$WORK/forward_components.log"; then
     cat "$WORK/forward_components.log"
     return 1
   fi
@@ -619,6 +619,8 @@ forward_components_at_expected() {
   return 1
 }
 forward_components_at_expected || status=1
+prove_mutation "a cached block omits its proc-only captures" "$MAIN_VISITOR" \
+  '      node.as(ProcLiteral).def.body.accept(self)' '      nil' -- forward_components_at_expected || status=1
 prove_mutation "forwarded proc argument type is omitted" "$MAIN_VISITOR" \
   '                    parts << "#{text.bytesize}:#{text}"' '                    nil' -- forward_components_at_expected || status=1
 prove_mutation "forwarded proc return type is omitted" "$MAIN_VISITOR" \

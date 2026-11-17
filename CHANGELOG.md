@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- Reused yielded-block instances validate the caller's storage and the locals
+  the block reads, then merge its recorded writes into the caller's flow.
+- LLVM-named C bindings lower through the typed intrinsic registry. Unsupported
+  signatures are refused before linking, rather than imported as C symbols.
 - Typed local declarations retain the initializer's storage type instead of
   widening it to the written restriction. Methods emitted during class
   initialization retain their instance-variable assignments.

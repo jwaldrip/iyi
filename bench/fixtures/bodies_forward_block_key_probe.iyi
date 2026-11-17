@@ -1,4 +1,4 @@
-import compiler/syntax/ast::{ASTNode, Arg, Block, Call, Def, Var}
+import compiler/syntax/ast::{ASTNode, Arg, Block, Call, Def, ProcLiteral, Var}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/top_level::{SemanticProgram, Type}
 import compiler/types/types::{ProcInstanceType, VirtualType}
@@ -53,4 +53,20 @@ written_b = Call.new(nil, "capture", [] of ASTNode, Block.new)
 raise "written blocks were merged" unless distinct_keys(keys(visitor, program, callee, written_a), keys(visitor, program, callee, written_b))
 callee.uses_block_arg = false
 raise "yielding blocks were merged" unless distinct_keys(keys(visitor, program, callee, first), keys(visitor, program, callee, second))
+
+# A proc-only capture must invalidate the enclosing yielded block's cache entry.
+flow_visitor = MainVisitor.new(program)
+flow_visitor.vars["seen"] = nil_type
+literal = ProcLiteral.new(Def.new("->", [] of Arg, Var.new("seen")))
+written = Block.new([] of Var, literal)
+flow_def = Def.new("once")
+flow_def.block_arg = Arg.new("block")
+flow_call = Call.new(nil, "once", [] of ASTNode, written)
+flow_key = flow_visitor.def_instance_key(flow_def, program, flow_call).as(String)
+flow = flow_visitor.capture_block_flow(written, flow_visitor.vars, flow_visitor.var_unions, flow_visitor.vars.dup)
+flow_visitor.remember_def_instance(flow_key, flow_def, nil_type, flow)
+raise "same-entry proc-only cache missed" if flow_visitor.cached_instance(flow_key).nil?
+flow_visitor.vars["seen"] = int32
+raise "proc-only cache accepted changed entry flow" unless flow_visitor.cached_instance(flow_key).nil?
+
 puts "forwarded block key components and identity controls: passed"
