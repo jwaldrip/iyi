@@ -15,6 +15,8 @@
   preserving their documentation and rendered signatures.
 - The body gate checks captured `next` targets through block capture and mutates
   the active proc-target assignment.
+- A declared local's AST node retains its written type while flow and storage
+  retain the initializer's narrower type.
 - Reused yielded-block instances validate the caller's storage and the locals
   the block reads, then merge its recorded writes into the caller's flow.
 - LLVM-named C bindings lower through the typed intrinsic registry. Unsupported

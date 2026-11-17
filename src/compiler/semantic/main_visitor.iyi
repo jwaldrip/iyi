@@ -1905,9 +1905,9 @@ pub class MainVisitor < TypeNodeHost
         v = node.var.as(Var)
         stored = proc_compatible ? decl_type : val_type
         @vars[v.name] = stored
-        # Hosted type_assign binds storage to the value; the written type
-        # constrains assignments without widening the initializer's storage.
-        set_type(v, stored)
+        # The declaration node keeps its written type; flow and storage start
+        # at the initializer's type, as hosted type_assign does.
+        set_type(v, decl_type)
         merge_var_union(v.name, stored) unless stored.is_a?(NoReturnType)
       elsif node.var.is_a?(InstanceVar)
         ivar_node = node.var.as(InstanceVar)
