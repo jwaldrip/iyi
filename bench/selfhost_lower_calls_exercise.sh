@@ -230,6 +230,34 @@ if ! super_refusal_checks "$WORK/port"; then
   status=1
 fi
 
+# LLVM bindings must lower to instructions, with malformed bindings refused before linking.
+intrinsic_refusal_checks() {
+  local driver="$1" pair name expected
+  for pair in \
+    "unknown|the lib fun vzeroall binds llvm.x86.avx.vzeroall, which is not an intrinsic the IR accepts" \
+    "varargs|the lib fun ceil binds the LLVM intrinsic llvm.ceil.f64 with variadic arguments" \
+    "argument|the lib fun ceil declares the LLVM intrinsic llvm.ceil.f64 as double (float), and the intrinsic is double (double)" \
+    "result|the lib fun ceil declares the LLVM intrinsic llvm.ceil.f64 as float (double), and the intrinsic is double (double)" \
+    "aggregate|the lib fun sadd binds the LLVM intrinsic llvm.sadd.with.overflow.i32 with the aggregate result"; do
+    name="lowcallwait_intrinsic_${pair%%|*}"
+    expected="${pair#*|}"
+    if "$driver" emit "$REPO/bench/fixtures/$name.iyi" "$WORK/lowcall_clib_intrinsics.oracle.ll" > "$WORK/$name.out" 2> "$WORK/$name.err"; then
+      echo "  $name: port unexpectedly accepted"
+      return 1
+    fi
+    if ! grep -Fq -- "$expected" "$WORK/$name.err"; then
+      echo "  $name: expected refusal missing: $(awk 'NR==1' "$WORK/$name.err")"
+      return 1
+    fi
+  done
+}
+if intrinsic_refusal_checks "$WORK/port"; then
+  echo "  LLVM intrinsic bindings: five malformed or unsupported bindings refused by name"
+else
+  echo "  FAIL: LLVM intrinsic binding refusals"
+  status=1
+fi
+
 
 # An uninstantiated generic receiver is a typing gap, not an owner that lowering
 # may guess. The hosted compiler still accepts the source and emits its module.
@@ -1043,6 +1071,35 @@ prove_mutation "a lib call's function type returns nil" "$REPO/src/compiler/lowe
   'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)' 'fn_type = low.module.types.func(params, low.typer.llvm_return_type(low.analysed.program.nil_type), lib_fun.varargs?)' -- lower_calls_check || status=1
 prove_mutation "a lib call's result is declared as an integer (a pointer result is caught)" "$REPO/src/compiler/lower/call.iyi" \
   'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)' 'fn_type = low.module.types.func(params, low.module.types.int32, lib_fun.varargs?)' -- lower_calls_check || status=1
+
+intrinsic_check() {
+  if ! "$IYI" build -o "$WORK/intrinsic_mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/intrinsic_mut.build.log" 2>&1; then
+    cat "$WORK/intrinsic_mut.build.log" > "$WORK/intrinsic.invalid"
+    return 1
+  fi
+  "$WORK/intrinsic_mut" lower "$REPO/bench/fixtures/lowcall_clib_intrinsics.iyi" "$WORK/lowcall_clib_intrinsics.oracle.ll" > "$WORK/intrinsic_mut.out" 2> "$WORK/intrinsic_mut.err" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/intrinsic_mut.out" || return 1
+  intrinsic_refusal_checks "$WORK/intrinsic_mut" > /dev/null
+}
+if ! intrinsic_check; then
+  echo "  LLVM intrinsic baseline failed; mutations cannot prove coverage"
+  status=1
+else
+  prove_mutation "an LLVM-named lib fun is called as a C function" "$REPO/src/compiler/lower/call.iyi" \
+    '  if real.starts_with?("llvm.")' '  if false' -- intrinsic_check || status=1
+  prove_mutation "an ordinary C fun is taken for an LLVM intrinsic" "$REPO/src/compiler/lower/call.iyi" \
+    '  if real.starts_with?("llvm.")' '  if true' -- intrinsic_check || status=1
+  prove_mutation "an LLVM binding's declared signature is not checked" "$REPO/src/compiler/lower/call.iyi" \
+    '  unless params == signature[1] && result == signature[0]' '  unless true' -- intrinsic_check || status=1
+  prove_mutation "a variadic LLVM binding is accepted" "$REPO/src/compiler/lower/call.iyi" \
+    '  if lib_fun.varargs?' '  if false' -- intrinsic_check || status=1
+fi
+if [ -e "$WORK/intrinsic.invalid" ]; then
+  echo "  FAIL: an LLVM intrinsic mutation did not compile; no behavioral detection was proved"
+  cat "$WORK/intrinsic.invalid"
+  status=1
+fi
+
 prove_mutation "a class method is named with the instance separator (# not ::)" "$REPO/src/compiler/lower/fun.iyi" \
   'text = text + owner_segment(co, name, true, defining) + "::"' 'text = text + owner_segment(co, name, true, defining) + "#"' -- lower_calls_check || status=1
 prove_mutation "a stored struct receiver is passed by value instead of address" "$REPO/src/compiler/lower/instance_var.iyi" \

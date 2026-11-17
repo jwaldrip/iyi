@@ -24,6 +24,8 @@ module compiler/lower/call
 #     lib gives it (`real_name`), with the C calling convention, and called with the arguments the
 #     analysis recorded for the call (`MainVisitor#lib_call_target`); a NoReturn call is followed by
 #     `unreachable` (hosted `codegen_extern_call` and `codegen_call_or_invoke`).
+#   - a lib fun whose C name starts with `llvm.` emits the IR's typed intrinsic, with no
+#     declaration or library import (hosted `llvm_intrinsic?`, codegen_lib_intrinsic).
 #   - external lib-variable getters and setters load and store the declared C global.
 #   - receiverless super uses the dynamic instance self and the recorded defining owner.
 # The argument types are the analysed types of the argument nodes, which is how the
@@ -44,7 +46,8 @@ module compiler/lower/call
 
 import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, Generic, InstanceVar, Nop, NilLiteral, NumberLiteral, Out, Path, RespondsTo, SymbolLiteral, Var}
 import compiler/ir/function::{Function, Global, TlsModel}
-import compiler/ir/inst::{CallConv}
+import compiler/ir/inst::{CallConv, Inst}
+import compiler/ir/intrinsics::{IntrinsicMatch, intrinsic_match, intrinsic_signature}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/block::{NoReturnPhi, alloca_local, join_pointer}
@@ -56,7 +59,7 @@ import compiler/lower/ensure::{set_ensure_exception_handler}
 import compiler/semantic/closures::{ClosureFacts}
 import compiler/lower/fun::{block_ended?, def_context_type, target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
-import compiler/lower/pending::{pending_visit_node}
+import compiler/lower/pending::{pending_visit_node, refuse_port}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/proc::{make_fun}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
@@ -1194,8 +1197,9 @@ end
 # fun takes them: named arguments are already at their parameter's place. A number literal takes the type
 # the record gives it, an `out` argument passes the address of its variable (declared here when the body
 # has none), and nil passed to a pointer passes its null (hosted prepare_call_args_external). The fun is
-# declared in the module with the C calling convention and imported from the library its lib's `@[Link]` names. A NoReturn fun ends the block with `unreachable`,
-# and its value is nil. An argument that never returns ends the block, and the call is not made. Refused by
+# declared with the C calling convention and imported from the library its lib's `@[Link]` names,
+# unless its C name starts with `llvm.`: that fun emits a typed intrinsic. A NoReturn fun ends the block
+# with `unreachable`, and its value is nil. An argument that never returns ends the block, and the call is not made. Refused by
 # name: an argument converted by its to_unsafe method, nil to a proc or a variadic argument, an `out`
 # argument that is not a variable, and a number argument that is not a literal.
 # External variables use the same evaluated arguments but load or store their C global.
@@ -1287,17 +1291,21 @@ pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret 
     return
   end
 
-  check_lib_aggregate(ret, "result")
   real = lib_fun.real_name
-  fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)
-  import_from = lib_import_library(low, node)
-  func = low.module.get_function?(real)
-  if func.nil?
-    made = low.module.add_function(real, fn_type, CallConv::C)
-    made.import_library = import_from
-    func = made
+  if real.starts_with?("llvm.")
+    inst = codegen_lib_intrinsic(low, lib_fun, params, values, ret)
+  else
+    check_lib_aggregate(ret, "result")
+    fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)
+    import_from = lib_import_library(low, node)
+    func = low.module.get_function?(real)
+    if func.nil?
+      made = low.module.add_function(real, fn_type, CallConv::C)
+      made.import_library = import_from
+      func = made
+    end
+    inst = low.builder.call(fn_type, func.as(Function), values, "")
   end
-  inst = low.builder.call(fn_type, func.as(Function), values, "")
   if ret.is_a?(NoReturnType)
     low.builder.unreachable
     low.last = llvm_nil(low)
@@ -1306,6 +1314,32 @@ pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret 
   else
     low.last = inst
   end
+end
+
+# Match the hosted llvm_intrinsic? boundary before creating a C declaration. The argument loop supplies
+# declared parameter types; both those and the result must match the IR's canonical intrinsic signature.
+# Aggregate results need the hosted llvm_intrinsic_return_type spill, which this path does not yet emit.
+def codegen_lib_intrinsic(low : Lowerer, lib_fun : LibFun, params : Array(IrType), values : Array(Value), ret : Type) : Inst
+  real = lib_fun.real_name
+  found = intrinsic_match(real, low.module.types)
+  if found.nil?
+    refuse_port("lower: the lib fun #{lib_fun.name} binds #{real}, which is not an intrinsic the IR accepts (ir/intrinsics.iyi intrinsic_match; hosted codegen/ast.cr llvm_intrinsic?)")
+  end
+  match = found.as(IntrinsicMatch)
+  if lib_fun.varargs?
+    refuse_port("lower: the lib fun #{lib_fun.name} binds the LLVM intrinsic #{real} with variadic arguments, which no intrinsic takes")
+  end
+  if passed_by_value?(ret)
+    refuse_port("lower: the lib fun #{lib_fun.name} binds the LLVM intrinsic #{real} with the aggregate result #{ret.full_name}, whose hosted spill (codegen/call.cr codegen_call_or_invoke, fun.cr llvm_intrinsic_return_type) is not ported yet")
+  end
+  signature = intrinsic_signature(match.id, match.overload, low.module.types)
+  result = low.typer.llvm_return_type(ret)
+  unless params == signature[1] && result == signature[0]
+    declared = "#{result} (#{params.map { |t| t.to_s }.join(", ")})"
+    wanted = "#{signature[0]} (#{signature[1].map { |t| t.to_s }.join(", ")})"
+    refuse_port("lower: the lib fun #{lib_fun.name} declares the LLVM intrinsic #{real} as #{declared}, and the intrinsic is #{wanted} (ir/intrinsics.iyi intrinsic_signature)")
+  end
+  low.builder.intrinsic(match.id, match.overload, values)
 end
 
 # The position of argument *i* in one of the lib call record's index lists (`out_index`, `literal_index`), or -1.
