@@ -108,11 +108,13 @@ pub abstract class Type
   def devirtualize : Type
     self
   end
+
   # A concrete generic class instance is not a ModuleType, but its metaclass
   # is still the parent of a subclass's metaclass.
   def superclass_metaclass : ModuleType
     raise "BUG: #{full_name} has no superclass metaclass"
   end
+
   # Generic instances live outside ModuleType but can contribute fields through
   # an instantiated superclass or included module.
   def lookup_instance_var?(var_name : String) : MetaTypeVar?
@@ -122,8 +124,6 @@ pub abstract class Type
   def all_instance_vars? : Hash(String, MetaTypeVar)?
     nil
   end
-
-
 
   # Records a place this type is declared, as the hosted pass does (`attach_doc`).
   def add_location(location : Location) : Nil
