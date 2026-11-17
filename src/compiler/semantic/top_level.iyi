@@ -3213,7 +3213,11 @@ pub class TopLevelVisitor < Visitor
       if type.is_a?(GenericClassType) && node.superclass.is_a?(Generic) && @program.merge_hook.nil?
         generic = node.superclass.as(Generic)
         base = @program.lookup_type_node(generic.name, @current_type)
-        @program.pending_generic_superclasses << PendingGenericSuperclass.new(type, generic, base, @program.current_imports)
+        # Total mode already carried a missing base and chose the default parent.
+        # Only a resolved base can have its generic arguments bound later.
+        unless base.is_a?(UnresolvedType)
+          @program.pending_generic_superclasses << PendingGenericSuperclass.new(type, generic, base, @program.current_imports)
+        end
       end
     end
 

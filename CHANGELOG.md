@@ -17,6 +17,8 @@
   the active proc-target assignment.
 - A declared local's AST node retains its written type while flow and storage
   retain the initializer's narrower type.
+- Total-mode typing keeps the default parent for a missing generic superclass,
+  rather than queuing an unresolved base for metaclass binding.
 - Reused yielded-block instances validate the caller's storage and the locals
   the block reads, then merge its recorded writes into the caller's flow.
 - LLVM-named C bindings lower through the typed intrinsic registry. Unsupported
