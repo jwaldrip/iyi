@@ -149,6 +149,11 @@ pub class RecursiveClear < Visitor
     @visitor.call_arguments.delete(node)
     @visitor.call_receivers.delete(node)
     @visitor.lib_call_targets.delete(node)
+    if @visitor.reused_expansion?(node)
+      if expanded = @visitor.expansions[node]?
+        expanded.accept(self)
+      end
+    end
     true
   end
 end
@@ -222,9 +227,12 @@ pub class BlockOwner
   getter jump_proc : Def?
   # Storage belongs to the block, including writes from its nested blocks.
   getter local_storage : LocalStorage
+  # Break flow joins the caller only after every yield has been typed.
+  getter exits : Array(Hash(String, Type))
 
   def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil, @writer_type : ModuleType? = nil, @var_owners : Hash(String, LocalStorage)? = nil, @untyped_locals : Hash(String, String)? = nil, @jump_proc : Def? = nil)
     @local_storage = LocalStorage.new(Hash(String, Type).new, Set(String).new, Set(String).new)
+    @exits = [] of Hash(String, Type)
   end
 end
 
@@ -413,6 +421,10 @@ pub class MainVisitor < TypeNodeHost
   # Jump boundaries are AST identities, not the value-collection stacks.
   property jump_block_calls : NodeMap(Call) = NodeMap(Call).new
   property jump_block : Block? = nil
+  # A yielded next joins the call's entry flow; breaks wait until the call ends.
+  # Scratch block typing leaves both unset.
+  property jump_block_context : Hash(String, Type)? = nil
+  property jump_block_exits : Array(Hash(String, Type))? = nil
   # A captured block's `next` returns from its proc when no inner jump boundary applies.
   # Keep this separate from current_def, which carries the writer's lookup bindings.
   property jump_proc : Def? = nil
@@ -435,6 +447,7 @@ pub class MainVisitor < TypeNodeHost
   # A filter can leave a variable no type, making its guarded branch impossible.
   property narrowed_out : Bool = false
   property while_break_vars : Array(Array(Hash(String, Type))) = [] of Array(Hash(String, Type))
+  property while_next_vars : Array(Array(Hash(String, Type))) = [] of Array(Hash(String, Type))
   # Assignment types visible from each enclosing handler's ensure.
   property handler_vars : Array(Hash(String, Type)) = [] of Hash(String, Type)
   property handler_writes : Array(Set(String)) = [] of Set(String)
@@ -1034,15 +1047,21 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
-  # iyi: a literal the hosted pass expands before it types it (main_visitor.cr
-  # 3664-3700, expand(node)). The literal expander draws its names from the
-  # program's normalizer, as hosted `@program.literal_expander` does; the
-  # literal takes the expanded tree's type, and the tree is walked.
+  # Literal trees are reused across loop passes, yields and recursive retyping.
+  def reused_expansion?(node : ASTNode) : Bool
+    node.is_a?(ArrayLiteral) || node.is_a?(HashLiteral) || node.is_a?(RangeLiteral) || node.is_a?(StringInterpolation) || node.is_a?(And) || node.is_a?(Or) || node.is_a?(Case) || node.is_a?(Select) || node.is_a?(MultiAssign)
+  end
+
+  # Expand once per node, as hosted does in its single visit. Retyping walks
+  # the same tree without allocating new temporaries or rewriting literals.
   def expand_literal(node : ASTNode) : Bool
-    expanded = node.transform(@literal_expander)
-    expanded.accept(self)
-    @expansions[node] = expanded
-    if et = child_type(expanded)
+    tree = @expansions[node]?
+    if tree.nil?
+      tree = node.transform(@literal_expander)
+      @expansions[node] = tree
+    end
+    tree.accept(self)
+    if et = child_type(tree)
       set_type(node, et)
     end
     false
@@ -1181,6 +1200,9 @@ pub class MainVisitor < TypeNodeHost
       node.target = target
     elsif block = @jump_block
       node.target = @jump_block_calls[block]?
+      if exits = @jump_block_exits
+        exits << @vars.dup
+      end
     elsif @jump_proc
       return refuse(node, "can't break from captured block, try using `next`.")
     end
@@ -1206,8 +1228,12 @@ pub class MainVisitor < TypeNodeHost
     end
     if target = @jump_whiles.last?
       node.target = target
+      @while_next_vars.last << @vars.dup unless @while_next_vars.empty?
     elsif block = @jump_block
       node.target = block
+      if ctx = @jump_block_context
+        merge_block_exit(ctx, @vars, block)
+      end
     elsif proc_def = @jump_proc
       node.target = proc_def
     end
@@ -2682,6 +2708,7 @@ pub class MainVisitor < TypeNodeHost
       @type_filters = nil
       @unreachable = false
       @while_break_vars.push([] of Hash(String, Type))
+      @while_next_vars.push([] of Hash(String, Type))
       @jump_whiles << node
       old_handler_direct_exit = @handler_direct_exit
       @handler_direct_exit = false
@@ -2690,6 +2717,7 @@ pub class MainVisitor < TypeNodeHost
       @handler_direct_exit = old_handler_direct_exit
       body_vars = @vars
       break_vars_list = @while_break_vars.pop
+      next_states = @while_next_vars.pop
       @speculation.depth = @speculation.depth - 1
 
       changed = false
@@ -2707,6 +2735,20 @@ pub class MainVisitor < TypeNodeHost
           end
         else
           next_vars[name] = start_t
+        end
+      end
+      # Next carries its own flow back to the loop head (hosted bind_vars).
+      next_states.each do |state|
+        state.each do |name, next_t|
+          if head_t = next_vars[name]?
+            if head_t != next_t
+              merged_head = @program.type_merge(head_t, next_t)
+              if merged_head != head_t
+                changed = true
+                next_vars[name] = merged_head
+              end
+            end
+          end
         end
       end
       unless changed
@@ -2969,10 +3011,18 @@ pub class MainVisitor < TypeNodeHost
       @unreachable = false
       enter_file_scope(blk)
       saved_jump_block = @jump_block
+      saved_jump_block_context = @jump_block_context
+      saved_jump_block_exits = @jump_block_exits
       saved_jump_whiles = @jump_whiles
       saved_block_may_repeat = @block_may_repeat
       @block_may_repeat = @block_may_repeat || !saved_jump_whiles.empty?
       @jump_block = blk
+      @jump_block_context = callee_context_vars
+      @jump_block_exits = if exit_owner = @block_owners[blk]?
+                            exit_owner.exits
+                          else
+                            nil
+                          end
       @jump_whiles = [] of While
       old_handler_direct_exit = @handler_direct_exit
       @handler_direct_exit = false
@@ -3010,6 +3060,8 @@ pub class MainVisitor < TypeNodeHost
       @nil_resets = callee_nil_resets
       @untyped_locals = callee_untyped_locals
       @jump_block = saved_jump_block
+      @jump_block_context = saved_jump_block_context
+      @jump_block_exits = saved_jump_block_exits
       @jump_whiles = saved_jump_whiles
       @handler_direct_exit = old_handler_direct_exit
       @type_filters = old_yield_type_filters
@@ -4085,6 +4137,19 @@ pub class MainVisitor < TypeNodeHost
     BlockFlow.new(storage, walk.names, entry, delta)
   end
 
+  # Only captured names leave a yielded block; its arguments own their slots.
+  def merge_block_exit(flow : Hash(String, Type), state : Hash(String, Type), blk : Block) : Nil
+    flow.each do |name, before|
+      shadowed = false
+      blk.args.each { |arg| shadowed = true if arg.name == name }
+      next if shadowed
+      if left = state[name]?
+        flow[name] = @program.type_merge(before, left) unless before == left
+      end
+    end
+    nil
+  end
+
   # Caches a finished instance, including one with a refused body and a declared
   # return type. Its recorded refusals remain attached to the cached definition.
   def remember_def_instance(key : String?, definition : Def, return_type : Type?, block_flow : BlockFlow? = nil) : Nil
@@ -4328,6 +4393,7 @@ pub class MainVisitor < TypeNodeHost
                 saved_proc_break_types = @break_types
                 saved_proc_return_types = @return_types
                 saved_proc_while_break_vars = @while_break_vars
+                saved_proc_while_next_vars = @while_next_vars
                 saved_proc_unreachable = @unreachable
                 saved_proc_type_filters = @type_filters
                 saved_proc_needs_type_filters = @needs_type_filters
@@ -4345,6 +4411,7 @@ pub class MainVisitor < TypeNodeHost
                 @break_types = nil
                 @return_types = nil
                 @while_break_vars = [] of Array(Hash(String, Type))
+                @while_next_vars = [] of Array(Hash(String, Type))
                 @unreachable = false
                 @type_filters = nil
                 @needs_type_filters = 0
@@ -4364,6 +4431,7 @@ pub class MainVisitor < TypeNodeHost
                 @break_types = saved_proc_break_types
                 @return_types = saved_proc_return_types
                 @while_break_vars = saved_proc_while_break_vars
+                @while_next_vars = saved_proc_while_next_vars
                 @unreachable = saved_proc_unreachable
                 @type_filters = saved_proc_type_filters
                 @needs_type_filters = saved_proc_needs_type_filters
@@ -4520,7 +4588,9 @@ pub class MainVisitor < TypeNodeHost
     @needs_type_filters = 0
     @unreachable = false
     old_while_break_vars = @while_break_vars
+    old_while_next_vars = @while_next_vars
     @while_break_vars = [] of Array(Hash(String, Type))
+    @while_next_vars = [] of Array(Hash(String, Type))
     @break_types = nil
     @next_types = nil
     @return_types = [] of Type?
@@ -4694,6 +4764,7 @@ pub class MainVisitor < TypeNodeHost
         @flow_dead = false
         @dead_depth = recursive_start_dead_depth
         @while_break_vars = [] of Array(Hash(String, Type))
+        @while_next_vars = [] of Array(Hash(String, Type))
         @jump_whiles = [] of While
         @current_block_context_vars = if ctx = recursive_start_context
                                         ctx.dup
@@ -4701,6 +4772,11 @@ pub class MainVisitor < TypeNodeHost
                                         nil
                                       end
         @current_yield_nodes = [] of Yield if block
+        if blk = block
+          if exit_owner = @block_owners[blk]?
+            exit_owner.exits.truncate(0, 0)
+          end
+        end
         assumed = estimate || @program.no_return_type
         remember_def_instance(cache_key, target_def, commit_pass ? assumed : estimate)
         recursive_frame.estimate = commit_pass ? assumed : estimate
@@ -4747,6 +4823,10 @@ pub class MainVisitor < TypeNodeHost
     block_flow : BlockFlow? = nil
     if block && (ctx_vars = @current_block_context_vars)
       if blk = block
+        # Break changes the after-call flow, never a later yield's entry.
+        if exit_owner = @block_owners[blk]?
+          exit_owner.exits.each { |state| merge_block_exit(ctx_vars, state, blk) }
+        end
         if cache_key && !target_def.uses_block_arg?
           block_flow = capture_block_flow(blk, old_vars, old_var_unions, ctx_vars)
         end
@@ -4795,6 +4875,7 @@ pub class MainVisitor < TypeNodeHost
     @needs_type_filters = old_needs_type_filters
     @unreachable = old_unreachable
     @while_break_vars = old_while_break_vars
+    @while_next_vars = old_while_next_vars
     @jump_block = saved_jump_block
     @jump_proc = saved_jump_proc
     @jump_whiles = saved_jump_whiles
@@ -4937,6 +5018,8 @@ pub class MainVisitor < TypeNodeHost
     saved_break_types = @break_types
     saved_next_types = @next_types
     saved_jump_block = @jump_block
+    saved_jump_block_context = @jump_block_context
+    saved_jump_block_exits = @jump_block_exits
     saved_jump_whiles = @jump_whiles
     saved_type_filters = @type_filters
     saved_needs_type_filters = @needs_type_filters
@@ -4952,12 +5035,16 @@ pub class MainVisitor < TypeNodeHost
     saved_var_owners = @var_owners
     saved_untyped_locals = @untyped_locals
     saved_while_break_vars = @while_break_vars
+    saved_while_next_vars = @while_next_vars
     @vars = block_vars
     @current_type = writer_type
     enter_file_scope(blk)
     @break_types = @block_breaks[blk]?
     @next_types = [] of Type?
     @jump_block = blk
+    # Scratch typing must not join a next or break into the real call.
+    @jump_block_context = nil
+    @jump_block_exits = nil
     @jump_whiles = [] of While
     @type_filters = nil
     @needs_type_filters = 0
@@ -4973,6 +5060,7 @@ pub class MainVisitor < TypeNodeHost
     @var_owners = Hash(String, LocalStorage).new
     @untyped_locals = Hash(String, String).new
     @while_break_vars = [] of Array(Hash(String, Type))
+    @while_next_vars = [] of Array(Hash(String, Type))
     saved_super_barrier = @super_barrier
     @super_barrier = "a block"
     blk.body.accept(self)
@@ -4985,6 +5073,8 @@ pub class MainVisitor < TypeNodeHost
     @break_types = saved_break_types
     @next_types = saved_next_types
     @jump_block = saved_jump_block
+    @jump_block_context = saved_jump_block_context
+    @jump_block_exits = saved_jump_block_exits
     @jump_whiles = saved_jump_whiles
     @type_filters = saved_type_filters
     @needs_type_filters = saved_needs_type_filters
@@ -5000,6 +5090,7 @@ pub class MainVisitor < TypeNodeHost
     @var_owners = saved_var_owners
     @untyped_locals = saved_untyped_locals
     @while_break_vars = saved_while_break_vars
+    @while_next_vars = saved_while_next_vars
     answered
   end
 

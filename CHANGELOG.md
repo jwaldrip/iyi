@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- A `next` in a `while` carries its flow back to the loop head. A yielded
+  block's `next` carries its flow to later yields and the caller; its `break`
+  carries its flow to the caller without changing later yields' entry types.
+- Literal expansions retain their tree across retyping, keeping temporary
+  names stable and avoiding repeated interpolation rewrites. Recursive
+  retyping clears the retained tree's speculative types and call bindings.
 - Reused yielded-block instances validate the caller's storage and the locals
   the block reads, then merge its recorded writes into the caller's flow.
 - LLVM-named C bindings lower through the typed intrinsic registry. Unsupported

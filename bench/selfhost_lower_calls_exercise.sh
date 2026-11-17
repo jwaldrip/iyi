@@ -855,6 +855,14 @@ prove_mutation "a reused block instance ignores its entry flow" "$REPO/src/compi
 prove_mutation "a reused block instance ignores its writer storage" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '    return false unless flow.storage.object_id == @var_unions.object_id' \
   '    return false unless true' -- block_cache_check lowcall_block_cached_entry || status=1
+prove_mutation "a while next carries no flow to its loop head" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '      @while_next_vars.last << @vars.dup unless @while_next_vars.empty?' '      nil' -- block_cache_check lowcall_while_next_flow || status=1
+prove_mutation "a revisited literal is expanded again" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    tree = @expansions[node]?' '    tree = nil' -- block_cache_check lowcall_while_next_flow || status=1
+prove_mutation "a block next carries no flow" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        merge_block_exit(ctx, @vars, block)' '        ctx' -- block_cache_check lowcall_block_exit_flow || status=1
+prove_mutation "a block break carries no flow" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '          exit_owner.exits.each { |state| merge_block_exit(ctx_vars, state, blk) }' '          exit_owner.exits' -- block_cache_check lowcall_block_exit_flow || status=1
 
 uncovered_mutation_check() {
   if ! "$IYI" build -o "$WORK/uncovered-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/uncovered-mut.build.log" 2>&1; then
