@@ -679,10 +679,17 @@ echo
 echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires every call fixture
 # to match the hosted module exactly. It returns 0 only on the unmutated behaviour.
+# Keep diagnostics past WORK cleanup. An invalid mutant must fail the proof,
+# while a failed baseline must still return nonzero to its caller.
+invalid_mutation() {
+  { echo "INVALID MUTANT: $1"; cat "$1"; } | tee -a "$WORK/general-mutation.invalid" >&2
+  [ "${_PM_ARMED:-0}" = 1 ]
+}
+
 lower_calls_check() {
   if ! "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/mut.build.log"
+    return $?
   fi
   for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi; do
     name="$(basename "$fixture" .iyi)"
@@ -706,15 +713,14 @@ prove_mutation "a forwarded initialize loses its definition location" "$REPO/src
 
 overload_dispatch_check() {
   if ! "$IYI" build -o "$WORK/overload.check.tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/overload.check.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    echo "INVALID MUTANT: overload compiler did not build"
-    return 0
+    invalid_mutation "$WORK/overload.check.build.log"
+    return $?
   fi
   rm -f "$WORK/overload.check.exe"
   IYI_PATH="$REPO/src" "$WORK/overload.check.tool" "$REPO/bench/fixtures/lowcallrun_new_overload_dispatch.iyi" -o "$WORK/overload.check.exe" --pipeline typed > "$WORK/overload.check.log" 2>&1 || return 1
-  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/overload.check.exe"; then
-    touch "$WORK/general-mutation.invalid"
-    return 0
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/overload.check.exe" > "$WORK/overload.signature.log" 2>&1; then
+    invalid_mutation "$WORK/overload.signature.log"
+    return $?
   fi
   local result
   timeout 30 "$WORK/overload.check.exe" > "$WORK/overload.check.out" 2>&1; result=$?
@@ -741,8 +747,8 @@ fi
 
 recursive_inferred_check() {
   if ! "$IYI" build -o "$WORK/recursive-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/recursive-mut.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/recursive-mut.build.log"
+    return $?
   fi
   "$WORK/recursive-mut" lower "$REPO/bench/fixtures/lowcall_recursive_inferred.iyi" "$WORK/lowcall_recursive_inferred.oracle.ll" > "$WORK/recursive-mut.out" 2>/dev/null || return 1
   awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/recursive-mut.out"
@@ -752,8 +758,8 @@ prove_mutation "an inferred recursive body is not retyped" "$REPO/src/compiler/s
 
 underscore_check() {
   if ! "$IYI" build -o "$WORK/underscore-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/underscore-mut.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/underscore-mut.build.log"
+    return $?
   fi
   "$WORK/underscore-mut" lower "$REPO/bench/fixtures/lowdecl_multi_assign_underscore.iyi" "$WORK/lowdecl_multi_assign_underscore.oracle.ll" > "$WORK/underscore-mut.out" 2>/dev/null || return 1
   awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/underscore-mut.out"
@@ -763,8 +769,8 @@ prove_mutation "underscore assignment is refused" "$REPO/src/compiler/lower/lowe
 
 block_decl_check() {
   if ! "$IYI" build -o "$WORK/block-decl-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-decl-mut.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/block-decl-mut.build.log"
+    return $?
   fi
   for name in lowdecl_typedecl_block lowdecl_typedecl_block_widen lowdecl_typedecl_block_nested lowdecl_typedecl_block_later_nil lowdecl_typedecl_reference; do
     "$WORK/block-decl-mut" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/block-decl-mut.out" 2>/dev/null || return 1
@@ -777,8 +783,8 @@ prove_mutation "a typed local keeps its initializer's storage type" "$REPO/src/c
 
 block_storage_check() {
   if ! "$IYI" build -o "$WORK/block-storage-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-storage-mut.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/block-storage-mut.build.log"
+    return $?
   fi
   "$WORK/block-storage-mut" lower "$REPO/bench/fixtures/lowdecl_block_branch_storage.iyi" "$WORK/lowdecl_block_branch_storage.oracle.ll" > "$WORK/block-storage-mut.out" 2>/dev/null || return 1
   awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-storage-mut.out"
@@ -789,8 +795,8 @@ prove_mutation "block locals retain only the first assignment type" "$REPO/src/c
 
 block_loop_rw_check() {
   if ! "$IYI" build -o "$WORK/block-loop-rw-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-loop-rw-mut.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/block-loop-rw-mut.build.log"
+    return $?
   fi
   "$WORK/block-loop-rw-mut" lower "$REPO/bench/fixtures/lowcall_block_nilable_rw.iyi" "$WORK/lowcall_block_nilable_rw.oracle.ll" > "$WORK/block-loop-rw-mut.out" 2>/dev/null || return 1
   awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-loop-rw-mut.out"
@@ -800,8 +806,8 @@ prove_mutation "a loop yield sees only the first block invocation" "$REPO/src/co
 
 block_branch_rw_check() {
   if ! "$IYI" build -o "$WORK/block-branch-rw-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-branch-rw-mut.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/block-branch-rw-mut.build.log"
+    return $?
   fi
   "$WORK/block-branch-rw-mut" lower "$REPO/bench/fixtures/lowcall_block_branch_nilable_rw.iyi" "$WORK/lowcall_block_branch_nilable_rw.oracle.ll" > "$WORK/block-branch-rw-mut.out" 2>/dev/null || return 1
   awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-branch-rw-mut.out"
@@ -811,8 +817,8 @@ prove_mutation "one yield overwrites another yield's entry flow" "$REPO/src/comp
 
 block_lexical_locals_check() {
   if ! "$IYI" build -o "$WORK/block-lexical-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-lexical-mut.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/block-lexical-mut.build.log"
+    return $?
   fi
   "$WORK/block-lexical-mut" lower "$REPO/bench/fixtures/lowcall_block_lexical_locals.iyi" "$WORK/lowcall_block_lexical_locals.oracle.ll" > "$WORK/block-lexical-mut.out" 2> "$WORK/block-lexical-mut.err" || return 1
   awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-lexical-mut.out"
@@ -826,8 +832,8 @@ prove_mutation "a fun visitor loses block writer ownership" "$REPO/src/compiler/
 
 block_nested_storage_check() {
   if ! "$IYI" build -o "$WORK/block-nested-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-nested-mut.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/block-nested-mut.build.log"
+    return $?
   fi
   "$WORK/block-nested-mut" lower "$REPO/bench/fixtures/lowcall_block_nested_local_writes.iyi" "$WORK/lowcall_block_nested_local_writes.oracle.ll" > "$WORK/block-nested-mut.out" 2> "$WORK/block-nested-mut.err" || return 1
   awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-nested-mut.out"
@@ -842,8 +848,8 @@ prove_mutation "a nested block writes into its yielding def's storage" "$REPO/sr
 block_cache_check() {
   local name="$1"
   if ! "$IYI" build -o "$WORK/block-cache-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/block-cache-mut.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/block-cache-mut.build.log"
+    return $?
   fi
   "$WORK/block-cache-mut" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/block-cache-mut.out" 2> "$WORK/block-cache-mut.err" || return 1
   awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad=1; n++ } END { exit (bad || n == 0) }' "$WORK/block-cache-mut.out"
@@ -889,7 +895,7 @@ if [ -e "$WORK/uncovered.invalid" ]; then
 fi
 
 triple_check() {
-  "$IYI" build -o "$WORK/triple-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/triple-mut.build.log" 2>&1 || { touch "$WORK/general-mutation.invalid"; return 1; }
+  "$IYI" build -o "$WORK/triple-mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/triple-mut.build.log" 2>&1 || { invalid_mutation "$WORK/triple-mut.build.log"; return $?; }
   "$WORK/triple-mut" triple > "$WORK/triple-mut.out" 2>&1
 }
 
@@ -1027,7 +1033,7 @@ if ! lower_calls_check; then
   exit 1
 fi
 generic_gap_check() {
-  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || { touch "$WORK/general-mutation.invalid"; return 1; }
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || { invalid_mutation "$WORK/mut.build.log"; return $?; }
   if "$WORK/mut" lower "$generic_fixture" "$WORK/uninstantiated.oracle.ll" > "$WORK/generic.mut.out" 2> "$WORK/generic.mut.err"; then
     return 1
   fi
@@ -1043,7 +1049,7 @@ prove_mutation "an uninstantiated generic loses its typing-gap diagnostic" "$REP
 # comparison above drops the `import` text on both sides (lower_gate.iyi strip_import), so this check is the one
 # that proves it. It rebuilds the driver from the current source, so a mutation of the import is what it tests.
 link_import_check() {
-  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || { touch "$WORK/general-mutation.invalid"; return 1; }
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || { invalid_mutation "$WORK/mut.build.log"; return $?; }
   "$WORK/mut" emit "$REPO/bench/fixtures/lowcall_link_framework.iyi" "$WORK/lowcall_link_framework.oracle.ll" > "$WORK/mut.import.ir" 2>/dev/null || return 1
   awk '/^declare / && /@SecRandomCopyBytes\(/ && / import "Security"/ { ok = 1 } END { exit !ok }' "$WORK/mut.import.ir"
 }
@@ -1159,12 +1165,12 @@ prove_mutation "a module-level build constant is kept in the module (the module 
   'next if stripped.starts_with?("@") && build_constant?(stripped, builds) || stripped.starts_with?("%Nil = type")' 'next if stripped.starts_with?("%Nil = type")' -- lower_calls_check || status=1
 noreturn_phi_check() {
   if ! "$IYI" build -o "$WORK/noreturn_phi" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/noreturn_phi.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/noreturn_phi.build.log"
+    return $?
   fi
-  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/noreturn_phi"; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/noreturn_phi" > "$WORK/noreturn_phi.signature.log" 2>&1; then
+    invalid_mutation "$WORK/noreturn_phi.signature.log"
+    return $?
   fi
   "$WORK/noreturn_phi" noreturn-phi > "$WORK/noreturn_phi.out" 2>&1
 }
@@ -1204,12 +1210,12 @@ prove_mutation "an aggregate dispatch argument remains a pointer" "$REPO/src/com
   '      passed = to_rhs(low, passed, params[i]) if passed_by_value?(params[i]) && passed.type.pointer?' '      passed = values[i]' -- lower_calls_check || status=1
 nil_phi_check() {
   if ! "$IYI" build -o "$WORK/nil_phi" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/nil_phi.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/nil_phi.build.log"
+    return $?
   fi
-  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/nil_phi"; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/nil_phi" > "$WORK/nil_phi.signature.log" 2>&1; then
+    invalid_mutation "$WORK/nil_phi.signature.log"
+    return $?
   fi
   "$WORK/nil_phi" nil-phi > "$WORK/nil_phi.out" 2>&1
 }
@@ -1338,12 +1344,12 @@ prove_mutation "a recursive call targets a fresh clone" "$REPO/src/compiler/sema
 
 generic_frame_owner_check() {
   if ! "$IYI" build -o "$WORK/frame_owner" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/frame_owner.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/frame_owner.build.log"
+    return $?
   fi
-  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/frame_owner"; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/frame_owner" > "$WORK/frame_owner.signature.log" 2>&1; then
+    invalid_mutation "$WORK/frame_owner.signature.log"
+    return $?
   fi
   "$WORK/frame_owner" generic-frame "$REPO/bench/fixtures/lowcall_generic_self_new.iyi" > "$WORK/frame_owner.out" 2>&1
 }
@@ -1361,19 +1367,17 @@ fi
 # as context; call.cr:95 passes that type id as self.
 generic_frame_check() {
   if ! "$IYI" build -o "$WORK/frame_lower" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/frame_lower.build.log" 2>&1; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/frame_lower.build.log"
+    return $?
   fi
-  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/frame_lower"; then
-    touch "$WORK/general-mutation.invalid"
-    return 1
+  if [ "$(uname -s)" = Darwin ] && ! codesign -v --strict "$WORK/frame_lower" > "$WORK/frame_lower.signature.log" 2>&1; then
+    invalid_mutation "$WORK/frame_lower.signature.log"
+    return $?
   fi
   "$WORK/frame_lower" generic-frame-lower "$REPO/bench/fixtures/lowcall_generic_self_new.iyi" > "$WORK/frame_lower.out" 2>&1 || return 1
   if ! "$IYI" build -o "$WORK/frame_native" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/frame_native.build.log" 2>&1; then
-    echo "INVALID: generic frame probe did not build" >&2
-    awk '!/^ld: warning/ && NR<=20' "$WORK/frame_native.build.log" >&2
-    touch "$WORK/general-mutation.invalid"
-    return 1
+    invalid_mutation "$WORK/frame_native.build.log"
+    return $?
   fi
   IYI_PATH="$REPO/src" "$WORK/frame_native" "$REPO/bench/fixtures/lowcall_generic_self_new.iyi" -o "$WORK/frame.probe.exe" --pipeline typed --probe-phase --keep-going > "$WORK/frame.probe" 2>&1 || true
   if grep -E 'no receiver inside a generic or builtin class method|no receiver inside a class method' "$WORK/frame.probe"; then
@@ -1393,7 +1397,8 @@ prove_mutation "a receiverless call in a generic class method is treated as buil
 
 
 if [ -e "$WORK/general-mutation.invalid" ]; then
-  echo "  FAIL: a mutation driver did not build; behavioral detection is unproven"
+  echo "  FAIL: a mutation driver could not be built or verified; behavioral detection is unproven"
+  cat "$WORK/general-mutation.invalid"
   status=1
 fi
 

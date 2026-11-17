@@ -21,29 +21,29 @@ and its function verifies. This one floor reduction is authorized for the integr
 
 ## Strict bootstrap checks
 
-At `4df314d06`, the hosted compiler builds `compile_native.iyi`, and that native
-stage1 compiles `samples/iyi/hello.iyi` with `--pipeline typed --prelude` through
-linking. The executable exits 0 and its stdout is byte-identical to the hosted
-build. Stage1 links only `libSystem.B.dylib`.
+At `33f36d5da2` on macOS arm64, hosted `bin/iyi` builds the real
+`src/compiler/stage1.iyi` command entry. Stage1 builds stage2 from that same
+source, then stage2 builds stage3 with the same source and options. Stage2 and
+stage3 are byte-identical, with SHA-256
+`bd9afaae218eca641d78900411ef369864bb37e9d08289051babb2d60eefd7e5`.
+Both self-built binaries have valid signatures and link only `libSystem.B.dylib`.
 
-At `16b2671a3`, hosted `bin/iyi` builds the real `src/compiler/stage1.iyi`
-command entry. That stage1 builds stage2 from the same entry, with valid
-signatures and only `libSystem.B.dylib` linked. Stage2 then fails to build stage3:
-`impl Std::Iterator::Iterator does not answer associated type Elem`.
-No stage2/stage3 fixed point is established, and the hosted compiler remains
-the default.
+The self-built stage2 runs `samples/iyi/hello.iyi` with all six expected output
+lines, empty stderr and exit 0. Stage1 builds the standalone parser, which
+accepts hello and rejects incomplete syntax with exit 1. The hosted compiler
+remains the default. A self-bootstrap on other hosts remains unproven.
 
-The same revision lowers LLVM-named C bindings through the typed intrinsic
-registry rather than importing them as C symbols. Numeric, tuple-narrowing
-and intrinsic fixtures compile through the stage1 command and match hosted
-output and exit status. Unsupported intrinsic bindings fail during lowering
-and produce no executable.
+At `16b2671a3`, LLVM-named C bindings lower through the typed intrinsic registry
+rather than being imported as C symbols. Numeric, tuple-narrowing and intrinsic
+fixtures compile through the stage1 command and match hosted output and exit
+status. Unsupported intrinsic bindings fail during lowering and produce no
+executable.
 
-The cached-block flow repair moves the third build past declaration, body
-typing and lowering. Its stage2 builds from the same command entry and links
-only libSystem. Stage3 reaches the native phase, then stops at
-`rt/builtins.ir: line 14: an instruction is outside any block`. The original
-missing-associated-type failure is gone; the fixed point remains unproven.
+At `33f36d5da2`, the while-next fixture matches all five hosted functions and
+the block-next/break fixture matches all six, including module-level IR.
+Their native executables exit 30 and 57 with hosted-identical stdout and stderr.
+Literal expansions retain their trees across flow retyping, keeping generated
+temporaries stable; recursive retyping clears those trees' speculative bindings.
 
 The pointer-forwarding and inline-annotation fixtures match hosted IR and return
 42. The external-global access fixture matches hosted IR and returns 7. At
@@ -85,7 +85,7 @@ Top-level statements use their file's imports, and import-scope metadata emits
 no instructions. The two-unit inherited-name program compiles through linking
 and exits 7, equal to hosted. All 11 single-file regressions run equal to hosted;
 real-prelude hello still exits 0 with identical output, and stage1 links only
-libSystem. The strict parser now stops in bodies at `expected type, got B`.
+libSystem. At that revision, the strict parser stopped in bodies at `expected type, got B`.
 A real-prelude character-range probe reproduces that refusal at `72d1eac67`,
 while the hosted build exits 7.
 

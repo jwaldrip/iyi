@@ -9,6 +9,8 @@
 - Literal expansions retain their tree across retyping, keeping temporary
   names stable and avoiding repeated interpolation rewrites. Recursive
   retyping clears the retained tree's speculative types and call bindings.
+- The call-lowering gate retains mutation build and signature diagnostics and
+  rejects an unbuildable mutation without counting it as a caught regression.
 - Reused yielded-block instances validate the caller's storage and the locals
   the block reads, then merge its recorded writes into the caller's flow.
 - LLVM-named C bindings lower through the typed intrinsic registry. Unsupported
