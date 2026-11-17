@@ -13,6 +13,8 @@
   rejects an unbuildable mutation without counting it as a caught regression.
 - Artifact API JSON includes exported module macros and type-owned macros,
   preserving their documentation and rendered signatures.
+- The body gate checks captured `next` targets through block capture and mutates
+  the active proc-target assignment.
 - Reused yielded-block instances validate the caller's storage and the locals
   the block reads, then merge its recorded writes into the caller's flow.
 - LLVM-named C bindings lower through the typed intrinsic registry. Unsupported

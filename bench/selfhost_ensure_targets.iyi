@@ -1,6 +1,6 @@
 module bench/selfhost_ensure_targets
 
-import compiler/syntax/ast::{ASTNode, Block, Break, Call, Def, Next, ProcLiteral, Return, While}
+import compiler/syntax/ast::{ASTNode, Block, Break, Call, Def, Expressions, Next, ProcLiteral, Return, While}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
@@ -114,13 +114,19 @@ expected = ["Next 5 While 4", "Break 8 While 7", "Next 11 Block 10", "Break 14 C
 raise "jump targets: #{walk.lines}" unless walk.lines == expected
 walk.lines.each { |line| puts line }
 
-captured = Parser.new("-> { next }\n", "captured.iyi").parse.as(ProcLiteral)
-captured.def.captured_block = true
-visitor = MainVisitor.new(SemanticProgram.new)
+source = "def capture(&block : -> Int32)\n  block\nend\ncapture do\n  next 42\nend\n"
+node = Parser.new(source, "captured.iyi").parse
+program = SemanticProgram.new
+declarations = TopLevelVisitor.new(program, "captured.iyi")
+node.accept(declarations)
+declarations.finish
+visitor = MainVisitor.new(program)
 visitor.total = true
-captured.accept(visitor)
+node.accept(visitor)
+block = node.as(Expressions).expressions.last.as(Call).block.as(Block)
+captured = block.fun_literal.as(ProcLiteral)
 walk = LoopTargets.new
 captured.def.body.accept(walk)
-raise "captured block target: #{walk.lines}" unless walk.lines == ["Next 1 Def 1"]
+raise "captured block target: #{walk.lines}" unless walk.lines == ["Next 5 Def 4"]
 raise "captured next targets another def" unless walk.last_next_target.as(Def).node_id == captured.def.node_id
 puts walk.lines.first
