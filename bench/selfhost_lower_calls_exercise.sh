@@ -1081,7 +1081,7 @@ prove_mutation "a block call's value is merged as a non-final branch" "$REPO/src
 prove_mutation "a block call allocates none of the block's variables" "$REPO/src/compiler/lower/call.iyi" \
   "  allocate_block_vars(low, block, block_ctx.vars, captured)" "  block_ctx.vars.size" -- lower_calls_check || status=1
 prove_mutation "an inlined def's argument is allocated with the nil type" "$REPO/src/compiler/lower/call.iyi" \
-  "    alloca_local(low, vars, arg.name, arg_types[i])" "    alloca_local(low, vars, arg.name, low.analysed.program.nil_type)" -- lower_calls_check || status=1
+  "      alloca_local(low, vars, arg.name, storage)" "      alloca_local(low, vars, arg.name, low.analysed.program.nil_type)" -- lower_calls_check || status=1
 prove_mutation "a block branch's value is merged as the last branch" "$REPO/src/compiler/lower/block.iyi" \
   "  phi.add_branch(low, value, false)" "  phi.add_branch(low, value, true)" -- lower_calls_check || status=1
 prove_mutation "a block branch's value is dropped" "$REPO/src/compiler/lower/block.iyi" \
