@@ -840,7 +840,7 @@ block_nested_storage_check() {
 }
 prove_mutation "a block local misses its nested blocks' writes" "$REPO/src/compiler/lower/call.iyi" \
   '        storage = low.analysed.program.type_merge(storage, written)' \
-  '        storage = storage' -- block_nested_storage_check || status=1
+  '        storage = t.nil? ? low.analysed.program.nil_type : t.as(Type)' -- block_nested_storage_check || status=1
 prove_mutation "a nested block writes into its yielding def's storage" "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '        @var_unions = owner.local_storage.unions' \
   '        @var_unions = callee_var_unions' -- block_nested_storage_check || status=1
