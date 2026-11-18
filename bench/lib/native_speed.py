@@ -230,7 +230,7 @@ def measure(args):
     write_json(args.out, {"rows": rows})
 
 
-def compile_rounds(old, new, source, count, directory):
+def compile_rounds(old, new, source, count, directory, timeout):
     runs = {"hosted": [], "native": []}
     release = {"hosted": True, "native": True}
     for arm in runs:
@@ -248,7 +248,7 @@ def compile_rounds(old, new, source, count, directory):
                 if release[arm]:
                     command.append("--release")
                 command += ["-o", str(output), source]
-                sample = wait_timed(command, 300, require_result=False, allow_failure=True)
+                sample = wait_timed(command, timeout, require_result=False, allow_failure=True)
                 if "returncode" not in sample:
                     if not output.is_file():
                         raise GateError("compiler did not create " + str(output))
@@ -266,13 +266,14 @@ def compile_rounds(old, new, source, count, directory):
 def latency(args):
     if args.runs < 1:
         raise GateError("runs must be positive")
+    timeout = number(args.timeout, "latency timeout")
     noise, _ = parse_ceiling(DEFAULT_CEILING.read_text(encoding="utf-8"))
     directory = Path(args.out).resolve().parent / "lat"
-    runs = compile_rounds(args.old, args.new, args.source, args.runs, directory)
+    runs = compile_rounds(args.old, args.new, args.source, args.runs, directory, timeout)
     rows = [dict({"workload": "latency", "mode": "selfbuild", "metric": metric}, **runs)
             for metric in ("wall", "cpu", "footprint")]
     if any(needs_retry(row, noise) for row in rows):
-        runs = compile_rounds(args.old, args.new, args.source, args.runs * 2, directory)
+        runs = compile_rounds(args.old, args.new, args.source, args.runs * 2, directory, timeout)
         rows = [dict({"workload": "latency", "mode": "selfbuild", "metric": metric,
                       "remeasured": True}, **runs) for metric in ("wall", "cpu", "footprint")]
     write_json(args.out, {"rows": rows})
@@ -437,6 +438,8 @@ def parser():
     lat.add_argument("--new", required=True)
     lat.add_argument("--source", required=True)
     lat.add_argument("--runs", required=True, type=int)
+    lat.add_argument("--timeout", type=float, default=1800,
+                     help="per-compile timeout in seconds (default: %(default)s)")
     lat.add_argument("--out", required=True)
     return p
 

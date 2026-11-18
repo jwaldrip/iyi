@@ -2,7 +2,9 @@
 # Compare the self-hosted native backend with the hosted LLVM compiler.
 # NATIVE_SPEED_RUNS sets the number of interleaved runtime rounds (default 5).
 # NATIVE_SPEED_TOLERANCE_SCALE overrides the pull-request noise multiplier.
-# NATIVE_SPEED_LATENCY=1 runs the self-build and stage2/stage3 identity check.
+# NATIVE_SPEED_LATENCY=0 switches off the self-build arm; =1 forces it on.
+# Unset runs it on non-pull-request macOS arm64 hosts with at least 16 GiB.
+# NATIVE_SPEED_LATENCY_TIMEOUT sets the per-compile timeout in seconds (default 1800).
 # NATIVE_SPEED_TARGET=1 checks every runtime and latency row against 1.00.
 # NATIVE_SPEED_LOWER=1 lowers measured ceilings, or proposes them in CI.
 set -uo pipefail
@@ -256,14 +258,19 @@ echo "== 5. compiler latency and stage2/stage3 identity"
 latency_ok=0
 stage2_ok=0
 do_latency=0
-if [ "${NATIVE_SPEED_LATENCY:-0}" = 1 ] || [ "$target" -eq 1 ]; then
+latency_off=0
+if [ "${NATIVE_SPEED_LATENCY:-}" = 0 ]; then
+  latency_off=1
+elif [ "${NATIVE_SPEED_LATENCY:-}" = 1 ] || [ "$target" -eq 1 ]; then
   do_latency=1
 elif [ "$HOST_ID" = darwin-arm64 ] && [ "${GITHUB_EVENT_NAME:-}" != pull_request ]; then
   mem=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
   case "$mem" in ''|*[!0-9]*) mem=0 ;; esac
   [ "$mem" -lt 17179869184 ] || do_latency=1
 fi
-if [ "$HOST_ID" != darwin-arm64 ]; then
+if [ "$latency_off" -eq 1 ]; then
+  host_limited "latency arm switched off (NATIVE_SPEED_LATENCY=0)"
+elif [ "$HOST_ID" != darwin-arm64 ]; then
   host_limited "latency arm and compiler bootstrap require macOS arm64"
 elif [ "$do_latency" -eq 0 ]; then
   host_limited "latency arm requires NATIVE_SPEED_LATENCY=1 or a non-pull-request host with at least 16 GiB"
@@ -290,7 +297,8 @@ elif [ "$stage1_ok" -eq 1 ] && [ "$native_release" != unknown ] && [ "$native_re
     else
       fail "stage2 and stage3 differ"
     fi
-    if "$PY" "$HELPER" latency --old "$STAGE1" --new "$WORK/s2/iyi" --source "$SOURCE" --runs 3 --out "$WORK/latency.json"; then
+    if "$PY" "$HELPER" latency --old "$STAGE1" --new "$WORK/s2/iyi" --source "$SOURCE" --runs 3 \
+      --timeout "${NATIVE_SPEED_LATENCY_TIMEOUT:-1800}" --out "$WORK/latency.json"; then
       latency_ok=1
       "$PY" "$HELPER" judge --ceiling "$CEILING" --measurements "$WORK/latency.json" --scale "$SCALE" \
         --tsv "$WORK/latency.tsv" || fail "latency verdicts failed"
@@ -313,7 +321,8 @@ elif [ "$target" -eq 0 ]; then
 elif [ "$runtime_ok" -eq 1 ] && [ "$latency_ok" -eq 1 ]; then
   target_runs=$((RUNS * 2))
   if "$PY" "$HELPER" measure --pairs "$WORK/pairs.tsv" --runs "$target_runs" --timeout 300 --out "$WORK/target-runtime.json" \
-    && "$PY" "$HELPER" latency --old "$STAGE1" --new "$WORK/s2/iyi" --source "$SOURCE" --runs "$target_runs" --out "$WORK/target-latency.json" \
+    && "$PY" "$HELPER" latency --old "$STAGE1" --new "$WORK/s2/iyi" --source "$SOURCE" --runs "$target_runs" \
+      --timeout "${NATIVE_SPEED_LATENCY_TIMEOUT:-1800}" --out "$WORK/target-latency.json" \
     && merge_measurements "$WORK/target.json" "$WORK/target-runtime.json" "$WORK/target-latency.json"; then
     "$PY" "$HELPER" judge --ceiling "$CEILING" --measurements "$WORK/target.json" --scale 1 --target || fail "target check failed"
   else
