@@ -1,0 +1,53 @@
+
+@[Unsafe("a measurement reads the collector's counters")]
+import std/time::{Time}
+
+{% if flag?(:use_struct) %}
+  struct Point
+    @x : UInt64
+    @y : UInt64
+
+    def initialize(@x : UInt64, @y : UInt64)
+    end
+
+    def sum : UInt64
+      @x &+ @y
+    end
+  end
+{% else %}
+  class Point
+    @x : UInt64
+    @y : UInt64
+
+    def initialize(@x : UInt64, @y : UInt64)
+    end
+
+    def sum : UInt64
+      @x &+ @y
+    end
+  end
+{% end %}
+
+def run(count : UInt64) : UInt64
+  total = 0_u64
+  index = 0_u64
+  while index < count
+    point = Point.new(index, index &+ 1_u64)
+    total = total ^ (point.sum &* 0x9E3779B97F4A7C15_u64)
+    {% if flag?(:hand_free) %}
+      IyiHeap.free(point.as(Void*))
+    {% end %}
+    index = index &+ 1_u64
+  end
+  total
+end
+
+{% if flag?(:no_auto) %}
+  IyiMark.auto = false
+{% end %}
+{% if flag?(:no_helpers) %}
+  IyiMark.workers = 0_u64
+{% end %}
+
+puts "result=#{run(40_000_000_u64)}"
+puts "stats: collections=#{IyiMark.collections.to_i64} paused_us=#{IyiMark.pause_total_ns.to_i64 // 1000_i64}"

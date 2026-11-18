@@ -1,0 +1,71 @@
+
+@[Unsafe("a measurement reads the collector's counters and, in one arm, hands chunks back by hand")]
+import std/time::{Time}
+
+class Node
+  @left : Node?
+  @right : Node?
+
+  def initialize(@left : Node?, @right : Node?)
+  end
+
+  def check : Int32
+    left = @left
+    right = @right
+    return 1 if left.is_a?(Nil) || right.is_a?(Nil)
+    1 + left.check + right.check
+  end
+
+  def release : Nil
+    left = @left
+    right = @right
+    left.release if left.is_a?(Node)
+    right.release if right.is_a?(Node)
+    IyiHeap.free(self.as(Void*))
+  end
+end
+
+def make(depth : Int32) : Node
+  return Node.new(nil, nil) if depth == 0
+  Node.new(make(depth - 1), make(depth - 1))
+end
+
+def drop(tree : Node) : Nil
+  {% if flag?(:hand_free) %}
+    tree.release
+  {% end %}
+end
+
+def checked(depth : Int32) : Int64
+  tree = make(depth)
+  sum = tree.check.to_i64
+  drop(tree)
+  sum
+end
+
+def run : Int64
+  max_depth = 16
+  total = checked(max_depth + 1)
+  long_lived = make(max_depth)
+  depth = 4
+  while depth <= max_depth
+    iterations = 1.unsafe_shl(max_depth - depth + 4)
+    i = 0
+    while i < iterations
+      total = total + checked(depth)
+      i = i + 1
+    end
+    depth = depth + 2
+  end
+  total + long_lived.check.to_i64
+end
+
+{% if flag?(:no_auto) %}
+  IyiMark.auto = false
+{% end %}
+{% if flag?(:no_helpers) %}
+  IyiMark.workers = 0_u64
+{% end %}
+
+puts "result=#{run}"
+puts "stats: collections=#{IyiMark.collections.to_i64} paused_us=#{IyiMark.pause_total_ns.to_i64 // 1000_i64}"

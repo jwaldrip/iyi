@@ -1,0 +1,28 @@
+
+def add(total : Int64, i : Int32) : Int64
+  {% if flag?(:wrapping) %}
+    total &+ (i % 7).to_i64
+  {% else %}
+    total + (i % 7).to_i64
+  {% end %}
+end
+
+def bump(i : Int32) : Int32
+  {% if flag?(:wrapping) %}
+    i &+ 1
+  {% else %}
+    i + 1
+  {% end %}
+end
+
+def run : Int64
+  total = 0_i64
+  i = 0
+  while i < 300_000_000
+    total = add(total, i)
+    i = bump(i)
+  end
+  total
+end
+
+puts "result=#{run}"

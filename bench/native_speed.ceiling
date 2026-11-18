@@ -1,0 +1,38 @@
+# native speed ceilings (bench/native_speed_exercise.sh): <workload> <mode> <metric> <ratio>, ratio = native / hosted LLVM
+# in the matched mode. A ceiling may only fall: NATIVE_SPEED_LOWER=1 lowers each measured row to its measured ratio and
+# adds missing rows; nothing raises one. A row passes while ratio <= ceiling * (1 + scale * noise[metric]).
+noise cycles 0.05
+noise cpu 0.10
+noise wall 0.10
+noise footprint 0.10
+arith default cycles 1.42
+arith default cpu 1.38
+arith release cycles 8.11
+arith release cpu 8.62
+nbody default cycles 1.29
+nbody default cpu 1.32
+nbody release cycles 18.87
+nbody release cpu 17.94
+fannkuch default cycles 1.23
+fannkuch default cpu 1.19
+fannkuch release cycles 10.01
+fannkuch release cpu 9.76
+trees default cycles 1.39
+trees default cpu 1.45
+trees release cycles 4.64
+trees release cpu 5.28
+escape default cycles 1.47
+escape default cpu 1.49
+escape release cycles 4.44
+escape release cpu 4.69
+hash default cycles 1.31
+hash default cpu 1.32
+hash release cycles 4.34
+hash release cpu 4.35
+append default cycles 1.28
+append default cpu 1.24
+append release cycles 4.77
+append release cpu 4.33
+latency selfbuild wall 5.84
+latency selfbuild cpu 4.91
+latency selfbuild footprint 0.97

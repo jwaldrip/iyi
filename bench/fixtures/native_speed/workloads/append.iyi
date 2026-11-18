@@ -1,0 +1,18 @@
+
+def run(n : Int32) : Int64
+  items = [] of Int32
+  i = 0
+  while i < n
+    items << i
+    i = i + 1
+  end
+  sum = 0_i64
+  index = 0
+  while index < items.size
+    sum = sum + items[index]
+    index = index + 1
+  end
+  sum
+end
+
+puts "result=#{run(64_000_000)}"
