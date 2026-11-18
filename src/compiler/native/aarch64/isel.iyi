@@ -822,8 +822,11 @@ class Isel
     first = i.op == Op::Sub ? 1 : 0
     k = 0
     while k < 2
-      value = i.args[(first + k) % 2]
+      side = (first + k) % 2
+      value = i.args[side]
       if value.is_a?(Inst) && value.as(Inst).op == Op::Mul && single_local_use?(value, block)
+        other = i.args[1 - side]
+        return if other.is_a?(Inst) && is_const_op?(other.as(Inst).op)
         @deferred[value] = DeferredKind::Multiply
         return
       end
