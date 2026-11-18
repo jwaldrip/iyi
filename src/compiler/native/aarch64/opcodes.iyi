@@ -110,6 +110,8 @@ pub def aarch64_op(v : Int32) : MOp
   return MOp::StrReg if v == MOp::StrReg.value.to_i32
   return MOp::Madd if v == MOp::Madd.value.to_i32
   return MOp::Neg if v == MOp::Neg.value.to_i32
+  return MOp::Ldp if v == MOp::Ldp.value.to_i32
+  return MOp::Stp if v == MOp::Stp.value.to_i32
   raise "aarch64: opcode #{v} is not an MOp member"
 end
 

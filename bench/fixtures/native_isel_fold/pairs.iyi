@@ -1,0 +1,22 @@
+module pairs
+
+import std/static_array
+import std/int
+
+values = StaticArray(Int64, 4).new
+values[0] = 5_i64
+values[1] = 7_i64
+values[2] = 19_i64
+narrow = StaticArray(Int32, 2).new
+narrow[0] = -2147483648_i32
+narrow[1] = -1_i32
+floats = StaticArray(Float64, 2).new
+floats[0] = 2.0_f64
+floats[1] = 3.0_f64
+puts "#{values[0] + values[1]}"
+puts "#{values[0] + values[1]}"
+puts "#{values[1] - values[0]}"
+puts "#{values[0] + values[2]}"
+puts "#{values[0] + values[2]}"
+puts "#{narrow[0].to_i64 + narrow[1].to_i64}"
+puts "#{(floats[0] + floats[1]).to_i64}"

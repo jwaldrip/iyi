@@ -91,6 +91,7 @@ enum DeferredKind
   Address
   IndexedAddress
   Multiply
+  PairedMemory
   Compare
   SelectCompare
   SelectFloatCompare
@@ -132,6 +133,7 @@ class Isel
     @deferred = Hash(Value, DeferredKind).new
     @slots = Hash(Value, Int32).new
     @overflow_value = Hash(Value, Inst).new
+    @paired = Hash(Value, Inst).new
     @block_index = Hash(String, Int32).new
     @edge_count = 0
     @failure = nil
@@ -732,6 +734,62 @@ class Isel
       end
       block = block + 1
     end
+    @fn.blocks.each do |b|
+      k = 0
+      while k < b.insts.size
+        first = b.insts[k]
+        if first.op == Op::Load || first.op == Op::Store
+          j = k + 1
+          while j < b.insts.size && b.insts[j].op == Op::Gep && !b.insts[j].args.includes?(first)
+            j = j + 1
+          end
+          if j < b.insts.size && pair_eligible?(first, b.insts[j])
+            second = b.insts[j]
+            @deferred[first] = DeferredKind::PairedMemory
+            @paired[second] = first
+            k = j + 1
+            next
+          end
+        end
+        k = k + 1
+      end
+    end
+  end
+
+  # Constant addresses can be compared by their common IR base and byte offset.
+  def pair_location(i : Inst) : {Value, Int64}?
+    pointer = i.op == Op::Load ? i.args[0] : i.args[1]
+    if pointer.is_a?(Inst) && pointer.as(Inst).op == Op::Gep
+      gep = pointer.as(Inst)
+      plan = plan_gep(@layout, gep.aux.as(GepAux).source_type, gep.args)
+      return nil if plan.is_a?(String)
+      shape = plan.as(GepPlan)
+      return nil unless shape.terms.empty?
+      return {gep.args[0], shape.const_off}
+    end
+    {pointer, 0_i64}
+  end
+
+  def pair_eligible?(first : Inst, second : Inst) : Bool
+    return false unless first.op == second.op && (first.op == Op::Load || first.op == Op::Store)
+    a = first.aux.as(MemAux)
+    b = second.aux.as(MemAux)
+    return false if a.volatile || b.volatile || a.ordering != Ordering::NotAtomic || b.ordering != Ordering::NotAtomic
+    ta = first.op == Op::Load ? first.type : first.args[0].type
+    tb = second.op == Op::Load ? second.type : second.args[0].type
+    return false unless (ta.int? || ta.pointer? || ta.float?) && (tb.int? || tb.pointer? || tb.float?)
+    size = mem_bits(ta)
+    return false unless (size == 32 || size == 64) && mem_bits(tb) == size && ta.float? == tb.float?
+    left = pair_location(first)
+    right = pair_location(second)
+    return false unless left && right
+    return false unless left[0] == right[0]
+    low = left[1] < right[1] ? left[1] : right[1]
+    high = left[1] < right[1] ? right[1] : left[1]
+    scale = (size // 8).to_i64
+    return false if low % scale != 0_i64 || low // scale < -64_i64 || low // scale > 63_i64
+    return false unless high == low + scale # pair-adjacent-offset
+    true
   end
 
   def single_local_use?(v : Value, block : Int32) : Bool
@@ -1079,6 +1137,12 @@ class Isel
 
   def lower_inst(i : Inst) : Nil
     return if failed?
+    if first = @paired[i]?
+      if @deferred[first]? == DeferredKind::PairedMemory
+        lower_memory_pair(first, i)
+        return
+      end
+    end
     if wide_unsupported?(i)
       fail("#{i.op} on an i128 is not lowered in this slice")
       return
@@ -1222,6 +1286,45 @@ class Isel
     value = gep.args[plan.terms[0][0]]
     index = signed_value(canon(first_leaf(value), value.type), value.type)
     {first_leaf(gep.args[0]), index}
+  end
+
+  def lower_memory_pair(first : Inst, second : Inst) : Nil
+    left = pair_location(first).as({Value, Int64})
+    right = pair_location(second).as({Value, Int64})
+    if left[1] > right[1]
+      lo = second
+      hi = first
+      offset = right[1]
+    else
+      lo = first
+      hi = second
+      offset = left[1]
+    end
+    load = first.op == Op::Load
+    ta = load ? lo.type : lo.args[0].type
+    tb = load ? hi.type : hi.args[0].type
+    base = first_leaf(left[0])
+    m = mop(load ? MOp::Ldp : MOp::Stp)
+    m.size = mem_bits(ta)
+    m.fp = ta.float?
+    m.imm = offset
+    if load
+      a = @mf.new_vreg(leaf_class(ta))
+      b = @mf.new_vreg(leaf_class(tb))
+      m.defs << vop(a)
+      m.defs << vop(b)
+      m.uses << vop(base)
+      emit(m)
+      a = canon(a, ta) if ta.int?
+      b = canon(b, tb) if tb.int?
+      bind_result(lo, [a])
+      bind_result(hi, [b])
+    else
+      m.uses << vop(first_leaf(lo.args[0]))
+      m.uses << vop(first_leaf(hi.args[0]))
+      m.uses << vop(base)
+      emit(m)
+    end
   end
 
   def lower_load(i : Inst) : Nil

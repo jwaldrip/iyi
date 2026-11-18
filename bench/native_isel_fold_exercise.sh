@@ -290,6 +290,11 @@ expect("select", "choose_shared", [op("Cset"), op("Csel")])
 for fn in ("float_ordered", "float_unordered"):
     expect("select", fn, [op("FCmp"), op("Csel")], [op("Cset")])
 expect("select", "float_composite", [op("FCmp"), op("Cset"), op("Csel")])
+for fn in ("load_pair", "interleaved", "reverse_pair", "narrow_pair", "float_pair"):
+    expect("pairs", fn, [op("Ldp")], [op("Ldr")])
+expect("pairs", "store_pair", [op("Stp")], [op("Str")])
+for fn in ("load_gap", "different_bases"):
+    expect("pairs", fn, [op("Ldr")], [op("Ldp")])
 for problem in errors:
     print("INVALID: " + problem)
 for problem in defects:
@@ -315,7 +320,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       exit 1
     fi
   done
-  for key in branches memory immediates overflow deferred indexed division mulacc select; do
+  for key in branches memory immediates overflow deferred indexed division mulacc select pairs; do
     source="$FIX/$key.iyi"
     [ "$key" != division ] || source="$WORK/division.iyi"
     if ! ./bin/iyi build -o "$(native_path "$WORK/$key.hosted$EXE")" "$(native_path "$source")" >"$WORK/$key.hosted.log" 2>&1; then
@@ -336,6 +341,10 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       if ! check_output "$DRV" "$mode" "$key"; then
         parity_ok=0
         fail "$key: clean=$mode differs from hosted"
+      fi
+      if [ "$key" = pairs ] && ! IYI_NATIVE_REGALLOC=pin check_output "$DRV" "$mode" "$key"; then
+        parity_ok=0
+        fail "$key: pin allocator clean=$mode differs from hosted"
       fi
     done
     [ "$parity_ok" -eq 0 ] || echo "parity: $key (clean=0,1)"
@@ -392,6 +401,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_fold_mutation "division: reciprocal constant off by one" src/compiler/native/aarch64/fold.iyi '  multiplier = quotient &+ 1_u64 # division-magic' '  multiplier = quotient &+ 2_u64 # division-magic' division
   prove_fold_mutation "multiply-subtract: exchange the addend" src/compiler/native/aarch64/isel.iyi '    m.uses << vop(addend) # fused-mul-addend' '    m.uses << vop(a) # fused-mul-addend' mulacc
   prove_fold_mutation "select: exchange conditional arms" src/compiler/native/aarch64/isel.iyi '        regs << csel_cond(tv[k], fv[k], cond) # select-arms' '        regs << csel_cond(fv[k], tv[k], cond) # select-arms' select
+  prove_fold_mutation "pair: accept the wrong second offset" src/compiler/native/aarch64/isel.iyi '    return false unless high == low + scale # pair-adjacent-offset' '    return false unless high == low + scale * 2_i64 # pair-adjacent-offset' pairs
 else
   host_limited "runtime selector mutation proofs (macOS arm64)"
 fi
