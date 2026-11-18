@@ -448,6 +448,9 @@ for file in "$FIXTURES/barrier/"*.ir; do
   fixture_stats barrier "$file"
 done
 fixture_check barrier-stack stack_mode_heap_keep keep barrier
+for pass in devirt escape barrier barrier-stack; do
+  fixture_check "$pass" partition_asm_keep keep release
+done
 
 echo '== 3. default pipeline fixtures, determinism and idempotence'
 echo '== 3a. preserve entry frames across release rounds'
@@ -1120,6 +1123,14 @@ prove_mutation 'S9E11: literal pointer slots remain aligned' src/compiler/ir/opt
   '  true # mutation S9-slot: accept an unaligned pointer word' \
   -- mutation_check S9E11 escape unaligned_pointer_literal || fail 'S9E11 was not caught'
 mutation_result S9E11
+for pass in devirt escape barrier barrier-stack; do
+  label="S9ASM-$pass"
+  prove_mutation "$label: assembly partition use disables $pass" src/compiler/ir/opt/escape.iyi \
+    '        return true if template.includes?("__iyi_new_shared") || template.includes?("__iyi_publish")' \
+    '        nil if template.includes?("__iyi_new_shared") || template.includes?("__iyi_publish")' \
+    -- mutation_check "$label" "$pass" partition_asm_keep release || fail "$label was not caught"
+  mutation_result "$label"
+done
 
 echo '== 8. verdict'
 if [ "$failed" -eq 0 ]; then

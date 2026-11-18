@@ -20,5 +20,13 @@ entry:
   %0 = alloca [16 x i8], align 16
   intrinsic llvm.memset.p0.i64(ptr %0, i8 0, i64 16, i1 false)
   store i64 30064771072, ptr %0, align 8
+  ret i64 7
+}
+
+define external i64 @other_b(i64 %x) {
+entry:
+  %0 = alloca [16 x i8], align 16
+  intrinsic llvm.memset.p0.i64(ptr %0, i8 0, i64 16, i1 false)
+  store i64 30064771072, ptr %0, align 8
   ret i64 %x
 }

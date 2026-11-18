@@ -8,6 +8,7 @@ import compiler/ir/builder::{Builder}
 import compiler/ir/opt/analysis::{DefUse}
 import compiler/ir/opt/edit::{new_inst}
 import compiler/ir/opt/effects::{opaque?, writes_memory?, runtime_entry?}
+import compiler/ir/opt/escape::{partitioned_heap?}
 import compiler/ir/opt/fold::{int_value, canonical}
 
 # A byte GEP is the only accepted representation of the high half of the
@@ -63,9 +64,8 @@ pub class DevirtInfo
   getter local_folds : Int32
   getter global_folds : Int32
 
-  # The scheduler may provide its already-computed partition-use result. The
-  # scan below also detects references, so the one-argument API is safe.
-  def initialize(@mod : Module, partitioned : Bool = false)
+  # The scheduler supplies the shared partition-use scan result.
+  def initialize(@mod : Module, partitioned : Bool)
     @partitioned = partitioned
     @refusal_reason = nil.as(String?)
     @local_folds = 0
@@ -185,10 +185,6 @@ pub class DevirtInfo
         fn = current.as(Function)
         @address_taken[fn] = true
         refuse("allocator address is taken") if allocator?(fn.name) || raw_allocator?(fn.name)
-        if partition_entry?(fn.name)
-          @partitioned = true
-          refuse("partition allocation or publication is used")
-        end
       elsif current.is_a?(Inst)
         inst = current.as(Inst)
         case inst.op
@@ -273,10 +269,6 @@ pub class DevirtInfo
               target = inst.args[0].as(Function)
               if target.name == "__iyi_new" && inst.args.size == 4 && headed_site?(inst, target) && int_value(inst.args[2]).nil?
                 @needs_dynamic_local = true
-              end
-              if partition_entry?(target.name)
-                @partitioned = true
-                refuse("partition allocation or publication is used")
               end
               if allocator?(target.name)
                 record_allocation(inst, target, fn)
@@ -597,5 +589,5 @@ pub class DevirtInfo
 end
 
 pub def run_devirt(mod : Module, fn : Function) : Bool
-  DevirtInfo.new(mod).run(fn)
+  DevirtInfo.new(mod, partitioned_heap?(mod)).run(fn)
 end
