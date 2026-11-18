@@ -980,8 +980,8 @@ prove_mutation 'ENTRY: preserve entry-frame identities' src/compiler/ir/opt/inli
   -- entry_mutation_check || fail 'ENTRY was not caught'
 mutation_result ENTRY
 prove_mutation 'M1: iterated phi frontier' src/compiler/ir/opt/mem2reg.iyi \
-  '        work << y # iterate: phi blocks define the slot too' \
-  '        work << y if false # iterate: phi blocks define the slot too' \
+  '          work << y # iterate: phi blocks define the slot too' \
+  '          work << y if false # iterate: phi blocks define the slot too' \
   -- mutation_check M1 mem2reg nested_loops || fail 'M1 was not caught'
 mutation_result M1
 prove_mutation 'M2: stores have side effects' src/compiler/ir/opt/effects.iyi \
@@ -1160,8 +1160,8 @@ prove_mutation 'S9E9: direct entry frames are excluded' src/compiler/ir/opt/esca
   -- mutation_check S9E9 escape top_level || fail 'S9E9 was not caught'
 mutation_result S9E9
 prove_mutation 'S9E10: recursive functions are excluded' src/compiler/ir/opt/escape.iyi \
-  '  return false if cycles.recursive?(fn) # mutation S9-recursion: remove this guard' \
-  '  nil # mutation S9-recursion: remove this guard' \
+  '  return false if cycles.recursive?(fn)' \
+  '  nil' \
   -- mutation_check S9E10 escape recursive || fail 'S9E10 was not caught'
 mutation_result S9E10
 prove_mutation 'S9E11: typed pointer slots remain aligned' src/compiler/ir/opt/escape.iyi \
@@ -1170,8 +1170,8 @@ prove_mutation 'S9E11: typed pointer slots remain aligned' src/compiler/ir/opt/e
   -- mutation_check S9E11 escape unaligned_pointer_hint || fail 'S9E11 was not caught'
 mutation_result S9E11
 prove_mutation 'S9E12: indirect calls may recurse' src/compiler/ir/opt/escape.iyi \
-  '      edges[k] << hub if indirect # mutation S9-indirect: indirect calls may reach address-taken functions' \
-  '      nil if indirect # mutation S9-indirect: indirect calls may reach address-taken functions' \
+  '      edges[k] << hub if indirect' \
+  '      nil if indirect' \
   -- mutation_check S9E12 escape indirect_recursion || fail 'S9E12 was not caught'
 mutation_result S9E12
 prove_mutation 'S9E13: declarations may call back' src/compiler/ir/opt/escape.iyi \
@@ -1180,7 +1180,7 @@ prove_mutation 'S9E13: declarations may call back' src/compiler/ir/opt/escape.iy
   -- mutation_check S9E13 escape declaration_callback || fail 'S9E13 was not caught'
 mutation_result S9E13
 prove_mutation 'S9E-scale-indirect: indirect callers must not expand the callback product' src/compiler/ir/opt/escape.iyi \
-  '      edges[k] << hub if indirect # mutation S9-indirect: indirect calls may reach address-taken functions' \
+  '      edges[k] << hub if indirect' \
   '      if indirect
         t = 0
         while t < mod.functions.size
@@ -1275,8 +1275,8 @@ prove_mutation 'S9E26: bulk copy preserves pointer alignment' src/compiler/ir/op
   -- mutation_check S9E26 escape bulk_align_keep || fail 'S9E26 was not caught'
 mutation_result S9E26
 prove_mutation 'S9E30: bulk copy length covers whole words' src/compiler/ir/opt/escape.iyi \
-  '  return false unless source_span && length % 8_i64 == 0_i64 # mutation S9-bulk-length: copy whole pointer words' \
-  '  return false unless source_span # mutation S9-bulk-length: copy whole pointer words' \
+  '  return false unless source_span && length % 8_i64 == 0_i64' \
+  '  return false unless source_span' \
   -- mutation_check S9E30 escape bulk_partial_word_keep || fail 'S9E30 was not caught'
 mutation_result S9E30
 prove_mutation 'S9E27: barrier call alignment is honored' src/compiler/ir/opt/escape.iyi \
@@ -1343,8 +1343,8 @@ prove_mutation 'S9B13: memset removal only for zero bytes' src/compiler/ir/opt/b
   -- mutation_check S9B13 barrier memset_nonzero_keep || fail 'S9B13 was not caught'
 mutation_result S9B13
 prove_mutation 'S9B14: constant coverage uses shade base' src/compiler/ir/opt/barrier.iyi \
-  '      return false unless length > 0_i64 && dest && dest.base == shade.base # mutation S9-constant-base: stored bytes must belong to the shaded base' \
-  '      return false unless length > 0_i64 && dest # mutation S9-constant-base: stored bytes must belong to the shaded base' \
+  '      return false unless length > 0_i64 && dest && dest.base == shade.base' \
+  '      return false unless length > 0_i64 && dest' \
   -- mutation_check S9B14 barrier constant_outside_keep || fail 'S9B14 was not caught'
 mutation_result S9B14
 prove_mutation 'S9B15: constant stores stay in shade' src/compiler/ir/opt/barrier.iyi \
@@ -1373,8 +1373,8 @@ prove_mutation 'S9B19: merged shades share a base' src/compiler/ir/opt/barrier.i
   -- mutation_check S9B19 barrier merge_other_object_keep || fail 'S9B19 was not caught'
 mutation_result S9B19
 prove_mutation 'S9B20: merged shades have no gap' src/compiler/ir/opt/barrier.iyi \
-  '          break if next_lower > upper || next_upper < lower # mutation S9-merge-gap: the union cannot shade untouched words' \
-  '          break if false # mutation S9-merge-gap: the union cannot shade untouched words' \
+  '          break if next_lower > upper || next_upper < lower' \
+  '          break if false' \
   -- mutation_check S9B20 barrier merge_gap_keep || fail 'S9B20 was not caught'
 mutation_result S9B20
 prove_mutation 'S9B21: first merge address must be inbounds' src/compiler/ir/opt/barrier.iyi \
@@ -1389,8 +1389,8 @@ prove_mutation 'S9B22: second merge address must be inbounds' src/compiler/ir/op
 mutation_result S9B22
 
 prove_mutation 'S9R1: promotion is refused in a function that can return twice' src/compiler/ir/opt/escape.iyi \
-  '  return false if function_returns_twice?(fn) # mutation S9-returns-twice: promoted objects cannot cross a second return' \
-  '  nil if function_returns_twice?(fn) # mutation S9-returns-twice: promoted objects cannot cross a second return' \
+  '  return false if function_returns_twice?(fn)' \
+  '  nil if function_returns_twice?(fn)' \
   -- mutation_check S9R1 release returns_twice || fail 'S9R1 was not caught'
 mutation_result S9R1
 prove_mutation 'S9R2: the selective escape group repeats to a fixed point' src/compiler/ir/opt/pipeline.iyi \
