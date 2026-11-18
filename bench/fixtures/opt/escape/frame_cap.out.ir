@@ -15,6 +15,6 @@ body:
   intrinsic llvm.memset.p0.i64(ptr %1, i8 0, i64 512, i1 false)
   intrinsic llvm.memset.p0.i64(ptr %2, i8 0, i64 512, i1 false)
   intrinsic llvm.memset.p0.i64(ptr %3, i8 0, i64 512, i1 false)
-  %p4 = call ptr (i64, i64, i64) @__iyi_new(i64 512, i64 1, i64 2)
+  %p4 = call ptr (i64, i64, i64) @__iyi_new(i64 512, i64 1, i64 2) ["iyi-escape"="frame-cap"]
   ret void
 }

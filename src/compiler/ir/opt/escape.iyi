@@ -2,7 +2,7 @@ module compiler/ir/opt/escape
 
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
-import compiler/ir/inst::{Op, Inst, Block, GepAux, MemAux, CallAux, IntrinsicAux, AsmAux, IntPredicate, Ordering}
+import compiler/ir/inst::{Op, Inst, Block, GepAux, MemAux, CallAux, Attribute, IntrinsicAux, AsmAux, IntPredicate, Ordering}
 import compiler/ir/function::{Function, Global}
 import compiler/ir/module::{Module}
 import compiler/ir/builder::{Builder}
@@ -262,11 +262,13 @@ end
 # If one of those functions is address-taken, its indirect callers cannot be
 # identified from this IR, so no function gets a stack promotion.
 class LongLivedFrames
+  getter addresses : Hash(Function, Bool)
+
   def initialize(mod : Module)
     @protected = Hash(Function, Bool).new
     @uncertain = false
     callers = Hash(Function, Array(Function)).new
-    addresses = Hash(Function, Bool).new
+    @addresses = Hash(Function, Bool).new
     seen = Hash(Value, Bool).new
     work = [] of Value
     mod.globals.each do |global|
@@ -304,7 +306,7 @@ class LongLivedFrames
       next if seen.has_key?(value)
       seen[value] = true
       if value.is_a?(Function)
-        addresses[value.as(Function)] = true
+        @addresses[value.as(Function)] = true
       elsif value.is_a?(Inst)
         inst = value.as(Inst)
         op = inst.op
@@ -323,7 +325,7 @@ class LongLivedFrames
     k = 0
     while k < pending.size
       fn = pending[k]
-      @uncertain = true if addresses.has_key?(fn)
+      @uncertain = true if @addresses.has_key?(fn)
       if incoming = callers[fn]?
         incoming.each do |caller|
           unless @protected.has_key?(caller)
@@ -341,19 +343,19 @@ class LongLivedFrames
   end
 end
 
-# Direct call SCCs are computed once per module. Reusing one frame slot in a
-# recursive call chain would multiply its footprint with recursion depth.
-class DirectCycles
-  def initialize(mod : Module)
+# One synthetic hub represents the edges from indirect calls and declarations
+# to every address-taken function, without constructing their Cartesian product.
+class CallCycles
+  def initialize(mod : Module, addresses : Hash(Function, Bool))
     @recursive = Hash(Function, Bool).new
     ids = Hash(Function, Int32).new
     edges = [] of Array(Int32)
     index = [] of Int32
     low = [] of Int32
     active = [] of Bool
+    hub = mod.functions.size
     k = 0
-    mod.functions.each do |fn|
-      ids[fn] = k
+    while k <= hub
       edges << [] of Int32
       index << -1
       low << -1
@@ -362,15 +364,28 @@ class DirectCycles
     end
     k = 0
     mod.functions.each do |fn|
+      ids[fn] = k
+      k = k + 1
+    end
+    k = 0
+    mod.functions.each do |fn|
+      edges[k] << hub if fn.declaration? # mutation S9-declaration: a declaration may call back
+      indirect = false
       fn.blocks.each do |block|
         block.insts.each do |inst|
-          if (inst.op == Op::Call || inst.op == Op::Invoke) && !inst.args.empty? && inst.args[0].is_a?(Function)
-            if target = ids[inst.args[0].as(Function)]?
-              edges[k] << target
+          if (inst.op == Op::Call || inst.op == Op::Invoke) && !inst.args.empty?
+            if inst.args[0].is_a?(Function)
+              if target = ids[inst.args[0].as(Function)]?
+                edges[k] << target
+              end
+            else
+              indirect = true
             end
           end
         end
       end
+      edges[k] << hub if indirect # mutation S9-indirect: indirect calls may reach address-taken functions
+      edges[hub] << k if addresses.has_key?(fn) # mutation S9-hub: only address-taken functions are reached
       k = k + 1
     end
     stack = [] of Int32
@@ -421,7 +436,7 @@ class DirectCycles
               end
               cyclic = members.size > 1
               edges[node].each { |target| cyclic = true if target == node } unless cyclic
-              members.each { |member| @recursive[mod.functions[member]] = true } if cyclic
+              members.each { |member| @recursive[mod.functions[member]] = true if member < hub } if cyclic
             end
           end
         end
@@ -788,7 +803,7 @@ end
 def normal_memory?(inst : Inst) : Bool
   return false unless inst.aux.is_a?(MemAux)
   mem = inst.aux.as(MemAux)
-  !mem.volatile && mem.ordering == Ordering::NotAtomic
+  !mem.volatile && mem.ordering == Ordering::NotAtomic # mutation S9-atomic: only ordinary accesses may promote
 end
 
 def barrier_use?(inst : Inst, index : Int32) : Bool
@@ -801,7 +816,7 @@ def bounded_barrier?(inst : Inst, candidate : Candidate, offsets : Offsets) : Bo
   words = int_value(inst.args[2])
   span = offsets.span(inst.args[1])
   return false unless words && span && words >= 0_i64 && span.low >= 0_i64 && span.high <= candidate.size
-  words <= (candidate.size - span.high) // 8_i64
+  words <= (candidate.size - span.high) // 8_i64 # mutation S9-barrier-bound: shade stays within object
 end
 
 # The slot is 16-aligned, but a headed object's user pointer is eight bytes
@@ -835,7 +850,7 @@ def aligned_memory?(inst : Inst, index : Int32, candidate : Candidate, offsets :
   if span.low < 0_i64
     # Only the high half of a headed header is stable object data. Its low
     # half belongs to the collector and must not be observed from the stack.
-    return false unless inst.op == Op::Load && candidate.headed? && span.low >= -4_i64 && span.high < 0_i64 && info.store <= -span.high
+    return false unless inst.op == Op::Load && candidate.headed? && span.low >= -4_i64 && span.high < 0_i64 && info.store <= -span.high # mutation S9-header-low: reject low header bits
   else
     return false if span.high > candidate.size || info.store > candidate.size - span.high
   end
@@ -867,7 +882,7 @@ def argument_attributes_safe?(inst : Inst, index : Int32, candidate : Candidate,
   return true if arg < 0 || arg >= attrs.size
   attrs[arg].each do |attr|
     if attr.name == "align"
-      return false if attr.int_value > 16_u64
+      return false if attr.int_value > 16_u64 # mutation S9-call-align: preserve required alignment
       return false unless aligned_pointer?(candidate, inst.args[index], attr.int_value.to_i64, offsets)
     elsif attr.name == "dereferenceable" || attr.name == "dereferenceable_or_null"
       span = offsets.span(inst.args[index])
@@ -896,13 +911,13 @@ def bulk_use?(inst : Inst, index : Int32, candidate : Candidate, offsets : Offse
   return true if id == IntrinsicId::Memset
   return true if index == 1
   source_span = offsets.span(inst.args[1])
-  return false unless source_span && length % 8_i64 == 0_i64
-  return false unless aligned_span?(target, 0_i64, 8_i64) && aligned_span?(source_span, 0_i64, 8_i64)
+  return false unless source_span && length % 8_i64 == 0_i64 # mutation S9-bulk-length: copy whole pointer words
+  return false unless aligned_span?(target, 0_i64, 8_i64) && aligned_span?(source_span, 0_i64, 8_i64) # mutation S9-bulk-align: do not shift pointer words
   origin = source_span.origin
   if origin == candidate.call
     return source_span.low >= 0_i64 && source_span.high <= candidate.size && length <= candidate.size - source_span.high
   end
-  return false unless origin.is_a?(Inst) && origin.as(Inst).op == Op::Alloca && origin.as(Inst).aux.is_a?(GepAux)
+  return false unless origin.is_a?(Inst) && origin.as(Inst).op == Op::Alloca && origin.as(Inst).aux.is_a?(GepAux) # mutation S9-bulk-source: source must be stack or same object
   source = origin.as(Inst)
   info = sizes.get(source.aux.as(GepAux).source_type)
   return false unless info
@@ -954,14 +969,31 @@ def top_level?(fn : Function) : Bool
   fn.name == "__iyi_main" || fn.name == "__crystal_main" || fn.name == "__iyi_program" || fn.name == "__iyi_enter" || fn.name == "main" # mutation S9-top: return false
 end
 
+def frame_capped?(inst : Inst) : Bool
+  return false unless inst.aux.is_a?(CallAux)
+  inst.aux.as(CallAux).fn_attrs.any? { |attr| attr.name == "iyi-escape" && attr.string_value == "frame-cap" }
+end
+
+def mark_capped(insertions : Hash(Inst, Array(Inst)), replacements : Hash(Value, Value), call : Inst) : Nil
+  aux = call.aux.as(CallAux)
+  marker = Attribute.new("iyi-escape", 0_u64, "frame-cap")
+  marked_aux = CallAux.new(aux.fn_type, aux.cc, aux.tail, aux.fn_attrs + [marker], aux.param_attrs, aux.ret_attrs)
+  marked = Inst.new(Op::Call, call.type, call.args.dup, call.aux_int, marked_aux, [] of Block, [] of Int64, call.name)
+  marked.loc = call.loc
+  add_before(insertions, call, marked)
+  replacements[call] = marked
+  nil
+end
+
 def candidate_for(inst : Inst, block : Int32, sizes : SizeTable) : Candidate?
   return nil unless inst.op == Op::Call && inst.args.size == 4 && inst.type.pointer? && inst.type.address_space == 0
   callee = inst.args[0]
   return nil unless callee.is_a?(Function) && callee.as(Function).name == "__iyi_new"
+  return nil if frame_capped?(inst) # mutation S9-capped: a marked call stays on the heap
   return nil unless inst.args[1].type.int? && inst.args[1].type.bits == 64 && inst.args[2].type.int? && inst.args[2].type.bits == 64 && inst.args[3].type.int? && inst.args[3].type.bits == 64
   size = size_value(sizes, inst.args[1])
   flags = int_value(inst.args[3])
-  return nil unless size && flags && size > 0_i64 && size <= 512_i64 && flags >= 0_i64 && flags <= 3_i64
+  return nil unless size && flags && size > 0_i64 && size <= 512_i64 && flags >= 0_i64 && flags <= 3_i64 # mutation S9-size-cap: cap individual objects
   Candidate.new(inst, size, flags, block, sizeof_type(inst.args[1]))
 end
 
@@ -1008,7 +1040,7 @@ end
 pub class EscapeInfo
   def initialize(@mod : Module, @partitioned : Bool)
     @frames = LongLivedFrames.new(@mod)
-    @cycles = DirectCycles.new(@mod)
+    @cycles = CallCycles.new(@mod, @frames.addresses)
   end
 
   def run(fn : Function) : Bool
@@ -1024,7 +1056,7 @@ pub def run_escape_checked(mod : Module, fn : Function, partitioned : Bool) : Bo
   EscapeInfo.new(mod, partitioned).run(fn)
 end
 
-def run_escape_with_facts(mod : Module, fn : Function, partitioned : Bool, frames : LongLivedFrames, cycles : DirectCycles) : Bool
+def run_escape_with_facts(mod : Module, fn : Function, partitioned : Bool, frames : LongLivedFrames, cycles : CallCycles) : Bool
   return false if partitioned
   return false if fn.declaration? || frames.protects?(fn) # mutation S9-top-call: remove top-level exclusion
   return false if cycles.recursive?(fn) # mutation S9-recursion: remove this guard
@@ -1044,6 +1076,8 @@ def run_escape_with_facts(mod : Module, fn : Function, partitioned : Bool, frame
           shapes = (candidate.flags & 2_i64) == 0_i64 ? word_shapes : pointer_shapes
           shape = shapes.get(hint)
           candidate.bad = true unless shape && shape.aligned # mutation S9-layout: ignore unaligned pointer slots
+        else
+          candidate.bad = true if (candidate.flags & 2_i64) == 0_i64 # mutation S9-hint: pointerful objects need a layout hint
         end
         candidates << candidate
         by_call[inst] = candidate
@@ -1086,7 +1120,7 @@ def run_escape_with_facts(mod : Module, fn : Function, partitioned : Bool, frame
     if value.is_a?(Inst) && by_call.has_key?(value.as(Inst))
       next
     end
-    candidate.bad = true unless alias_instruction?(value)
+    candidate.bad = true unless alias_instruction?(value) # mutation S9-alias: alien pointers poison the candidate
   end
 
   components = BlockComponents.new(fn)
@@ -1130,7 +1164,7 @@ def run_escape_with_facts(mod : Module, fn : Function, partitioned : Bool, frame
             safe = barrier_use?(inst, index) && bounded_barrier?(inst, candidate, offsets) && argument_attributes_safe?(inst, index, candidate, offsets) # mutation S9-call: change to true
           elsif bulk_use?(inst, index, candidate, offsets, sizes)
             safe = argument_attributes_safe?(inst, index, candidate, offsets)
-          elsif harmless_compare?(inst, index, sets)
+          elsif harmless_compare?(inst, index, sets) # mutation S9-compare: compare only null or same object
             safe = true
           end
           candidate.bad = true unless safe
@@ -1157,7 +1191,10 @@ def run_escape_with_facts(mod : Module, fn : Function, partitioned : Bool, frame
     layout = sizes.get(type)
     next unless layout
     bytes = ((layout.alloc + 15_i64) // 16_i64) * 16_i64
-    next if frame + bytes > 2048_i64
+    if frame + bytes > 2048_i64
+      mark_capped(insertions, replacements, candidate.call) # mutation S9-cap-mark: preserve a cap rejection
+      next
+    end
     frame = frame + bytes
     slot = new_inst(Op::Alloca, mod.types.ptr, [] of Value, 16_i64, GepAux.new(type))
     allocations << slot

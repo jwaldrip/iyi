@@ -14,7 +14,7 @@ end
 
 module IrOpt
   def self.usage : NoReturn
-    STDERR.puts "iyi-opt: usage: run [--verify-each] [--no-verify] [--closed-world] PASSES FILE | print FILE | passes | stats [--closed-world] PASSES FILE"
+    STDERR.puts "iyi-opt: usage: run [--verify-each] [--no-verify] PASSES FILE | print FILE | passes | stats PASSES FILE"
     LibC.exit(2)
   end
 
@@ -93,7 +93,7 @@ module IrOpt
     command = args[0]
     if command == "passes"
       usage unless args.size == 1
-      passes = [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::Sroa, PassId::Inline, PassId::DeadFn, PassId::Cse, PassId::Prove, PassId::Licm, PassId::Layout, PassId::Devirt, PassId::Escape, PassId::Barrier, PassId::BarrierStack]
+      passes = [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::Sroa, PassId::Inline, PassId::DeadFn, PassId::Cse, PassId::Prove, PassId::Licm, PassId::Layout, PassId::Escape, PassId::Barrier, PassId::BarrierStack]
       k = 0
       while k < passes.size
         tiers = k < 4 ? "default,release" : "release"
@@ -112,12 +112,9 @@ module IrOpt
 
     verify_each = false
     no_verify = command == "stats"
-    closed_world = false
     index = 1
     while index < args.size
-      if args[index] == "--closed-world"
-        closed_world = true
-      elsif command == "run" && args[index] == "--verify-each"
+      if command == "run" && args[index] == "--verify-each"
         verify_each = true
       elsif command == "run" && args[index] == "--no-verify"
         no_verify = true
@@ -146,7 +143,7 @@ module IrOpt
       end
     end
     env_options = PassOptions.from_env
-    options = PassOptions.new(!no_verify && (verify_each || env_options.verify_each), env_options.time_passes, closed_world)
+    options = PassOptions.new(!no_verify && (verify_each || env_options.verify_each), env_options.time_passes)
     if reason = run_passes(mod, passes, options)
       STDERR.puts "iyi-opt: #{reason}"
       LibC.exit(1)
