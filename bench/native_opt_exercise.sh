@@ -699,14 +699,19 @@ def generate_allocations(n, path):
         f.write('target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"\n')
         f.write('declare external void @consume_allocation(ptr)\n')
         f.write('define internal ptr @__iyi_new(i64 %size, i64 %type, i64 %flags) {\nentry:\n  ret ptr null\n}\n')
-        f.write('define external void @allocations() {\nentry:\n')
-        for i in range(n):
+        # Local sites sit in a helper that reaches no declaration; the escaping sites call the
+        # declared sink, which the rule treats as a possible callback into the external root.
+        f.write('define internal void @local_sites() {\nentry:\n')
+        for i in range(0, n, 2):
             f.write('  %%p%d = call ptr (i64, i64, i64) @__iyi_new(i64 8, i64 1, i64 2)\n' % i)
-            if i % 2:
-                f.write('  call void (ptr) @consume_allocation(ptr %%p%d)\n' % i)
-            else:
-                f.write('  store i64 %d, ptr %%p%d, align 8\n' % (i, i))
+            f.write('  store i64 %d, ptr %%p%d, align 8\n' % (i, i))
         f.write('  ret void\n}\n')
+        f.write('define internal void @escaping_sites() {\nentry:\n')
+        for i in range(1, n, 2):
+            f.write('  %%p%d = call ptr (i64, i64, i64) @__iyi_new(i64 8, i64 1, i64 2)\n' % i)
+            f.write('  call void (ptr) @consume_allocation(ptr %%p%d)\n' % i)
+        f.write('  ret void\n}\n')
+        f.write('define external void @allocations() {\nentry:\n  call void () @local_sites()\n  call void () @escaping_sites()\n  ret void\n}\n')
 
 def generate_indegree(n, path):
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
@@ -727,8 +732,9 @@ def generate_callbacks(n, path):
         f.write('; iyi-ir 1\nsource_filename = "callback-scale"\n')
         f.write('target triple = "aarch64-apple-darwin"\n')
         f.write('target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"\n')
-        f.write('declare external ptr @__iyi_new(i64, i64, i64)\n')
-        f.write('declare external void @register(ptr)\ndeclare external void @consume(i64)\n')
+        f.write('declare external void @register(ptr)\n')
+        f.write('define internal ptr @__iyi_new(i64 %size, i64 %type, i64 %flags) {\nentry:\n  ret ptr null\n}\n')
+        f.write('define internal void @consume(i64 %v) {\nentry:\n  ret void\n}\n')
         for i in range(n):
             f.write('define internal i64 @cb%d(ptr %%next, i64 %%d) [noinline] {\nentry:\n' % i)
             f.write('  %p = call ptr (i64, i64, i64) @__iyi_new(i64 8, i64 1, i64 2)\n')
@@ -1353,7 +1359,7 @@ mutation_result S9R5f
 prove_mutation 'S9R5g: a second candidate in a shared set poisons the first' src/compiler/ir/opt/escape.iyi \
   '      previous.bad = true' \
   '      nil # mutation S9-poison-previous: the first candidate of a shared set stays promotable' \
-  -- mutation_check S9R5g escape mixed_candidates || fail 'S9R5g was not caught'
+  -- mutation_check S9R5g escape mixed_candidates_unused_keep || fail 'S9R5g was not caught'
 mutation_result S9R5g
 prove_mutation 'S9R5h: a second candidate in a shared set is poisoned' src/compiler/ir/opt/escape.iyi \
   '      previous.bad = true
