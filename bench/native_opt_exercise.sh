@@ -254,8 +254,6 @@ fixture_check deadfn global_keep keep
 fixture_check deadfn asm_keep keep
 
 echo '== 3. default pipeline fixtures, determinism and idempotence'
-fixture_check default locals_loop changed
-fixture_check release full changed
 echo '== 3a. preserve entry frames across release rounds'
 if entry_chain_check "$DRV" "$FIXTURES/release/entry_chain.ir" "$WORK/entry-first.ir" && \
    entry_chain_check "$DRV" "$FIXTURES/release/entry_chain.ir" "$WORK/entry-second.ir" && \
@@ -266,6 +264,8 @@ if entry_chain_check "$DRV" "$FIXTURES/release/entry_chain.ir" "$WORK/entry-firs
 else
   fail 'entry-chain release semantics, determinism or idempotence failed'
 fi
+fixture_check default locals_loop changed
+fixture_check release full changed
 
 echo '== 4. CLI contract'
 printf 'cfg-simplify\tdefault,release\nmem2reg\tdefault,release\nsimplify\tdefault,release\ndce\tdefault,release\nsroa\trelease\ninline\trelease\ndeadfn\trelease\n' >"$WORK/passes.expected"
@@ -498,6 +498,11 @@ fi
 
 
 echo '== 7. mutation proofs, each rebuilding iyi-opt'
+prove_mutation 'ENTRY: preserve entry-frame identities' src/compiler/ir/opt/inline.iyi \
+  '  return false if top_level?(fn) || fn.name == "__iyi_program" || fn.name == "__iyi_enter" # mutation entry-frame: preserve entry identities' \
+  '  return false if false # mutation entry-frame: preserve entry identities' \
+  -- entry_mutation_check || fail 'ENTRY was not caught'
+mutation_result ENTRY
 prove_mutation 'M1: iterated phi frontier' src/compiler/ir/opt/mem2reg.iyi \
   '        work << y # iterate: phi blocks define the slot too' \
   '        work << y if false # iterate: phi blocks define the slot too' \
@@ -548,11 +553,6 @@ prove_mutation 'M10: callees before callers' src/compiler/ir/opt/callgraph.iyi \
   '          pending[own] = pending[own] + 0 # mutation S6-order: caller waits for callee' \
   -- mutation_check M10 inline bottom_up || fail 'M10 was not caught'
 mutation_result M10
-prove_mutation 'ENTRY: preserve entry-frame identities' src/compiler/ir/opt/inline.iyi \
-  '  return false if top_level?(fn) || fn.name == "__iyi_program" || fn.name == "__iyi_enter" # mutation entry-frame: preserve entry identities' \
-  '  return false if false # mutation entry-frame: preserve entry identities' \
-  -- entry_mutation_check || fail 'ENTRY was not caught'
-mutation_result ENTRY
 
 echo '== 8. verdict'
 if [ "$failed" -eq 0 ]; then
