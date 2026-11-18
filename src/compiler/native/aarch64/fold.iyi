@@ -1,6 +1,6 @@
 module compiler/native/aarch64/fold
 
-import compiler/ir/values::{Value}
+import compiler/ir/values::{Value, u64_as_i64}
 import compiler/ir/inst::{Inst, Op}
 
 # Match the selector's canonical representation of scalar integer and null constants.
@@ -83,4 +83,51 @@ pub def single_bit(value : Int64, width : Int32) : Int32
     i = i + 1
   end
   found
+end
+
+# Exact unsigned reciprocal division. A zero multiplier denotes a power of two;
+# otherwise the quotient is mulhi(n, multiplier), optionally corrected, then shifted.
+pub struct DivMagic
+  getter multiplier : Int64
+  getter shift : Int32
+  getter adjust : Bool
+
+  def initialize(@multiplier : Int64, @shift : Int32, @adjust : Bool)
+  end
+end
+
+pub def division_magic(divisor : UInt64) : DivMagic
+  raise "BUG: zero division magic" if divisor == 0_u64
+  shift = 0
+  high = divisor
+  while high > 1_u64
+    high = high.unsafe_shr(1_i64)
+    shift = shift + 1
+  end
+  if (divisor & (divisor &- 1_u64)) == 0_u64
+    return DivMagic.new(0_i64, shift, false)
+  end
+  # Divide the 128-bit number 2^(64+shift) by divisor without requiring
+  # 128-bit operations in the self-hosted compiler.
+  remainder = 1_u64.unsafe_shl(shift.to_i64)
+  quotient = 0_u64
+  bit = 63
+  while bit >= 0
+    carry = remainder.unsafe_shr(63_i64)
+    remainder = remainder &+ remainder
+    if carry != 0_u64 || remainder >= divisor
+      remainder = remainder &- divisor
+      quotient = quotient | 1_u64.unsafe_shl(bit.to_i64)
+    end
+    bit = bit - 1
+  end
+  adjust = false
+  if divisor &- remainder >= 1_u64.unsafe_shl(shift.to_i64)
+    quotient = quotient &+ quotient
+    doubled = remainder &+ remainder
+    quotient = quotient &+ 1_u64 if doubled >= divisor || doubled < remainder
+    adjust = true
+  end
+  multiplier = quotient &+ 1_u64 # division-magic
+  DivMagic.new(u64_as_i64(multiplier), shift, adjust)
 end

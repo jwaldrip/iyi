@@ -31,7 +31,7 @@ import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_m
 import compiler/native/target::{TargetDesc, TlsForm}
 import compiler/native/aarch64/abi::{aarch64_target}
 import compiler/native/lower::{LeafLoc, CallAssignment, flatten_leaves, assign_call, assign_return, assign_iyi_call, assign_iyi_return, iyi_result_indirect?, reachable_blocks, plan_gep, GepPlan, overflow_form, acquire_on_load?, release_on_store?, icmp_unsigned?}
-import compiler/native/aarch64/fold::{integer_constant, add_immediate?, logical_immediate, single_bit}
+import compiler/native/aarch64/fold::{integer_constant, add_immediate?, logical_immediate, single_bit, division_magic}
 
 import compiler/native/asm/constraints::{parse_operand, parse_clobber, digits?, ConstraintClass, ConstraintError, OperandConstraint}
 import compiler/native/aarch64/asm::{AsmAssembler}
@@ -1326,12 +1326,76 @@ class Isel
     true
   end
 
+  def immediate_shift(op : MOp, value : Int32, shift : Int32) : Int32
+    return value if shift == 0
+    result = gpr
+    m = mop(op)
+    m.imm = shift.to_i64
+    m.defs << vop(result)
+    m.uses << vop(value)
+    emit(m)
+    result
+  end
+
+  # Use an unsigned reciprocal on the magnitude, then restore the sign. This
+  # keeps MIN / -1 in the same wrapped register representation as A64 SDIV.
+  def lower_constant_division(i : Inst) : Bool
+    op = i.op
+    return false unless op == Op::SDiv || op == Op::UDiv || op == Op::SRem || op == Op::URem
+    bits = i.type.bits
+    return false unless bits == 8 || bits == 16 || bits == 32 || bits == 64
+    constant = integer_constant(i.args[1])
+    return false if constant.nil?
+    raw = constant.as(Int64)
+    signed = op == Op::SDiv || op == Op::SRem
+    divisor = raw.unsafe_to_u64
+    divisor = divisor & 0xFFFFFFFFFFFFFFFF_u64.unsafe_shr((64 - bits).to_i64) if !signed && bits < 64
+    divisor = (~divisor) &+ 1_u64 if signed && raw < 0_i64
+    return false if divisor == 0_u64
+    magic = division_magic(divisor)
+    dividend = first_leaf(i.args[0])
+    dividend = zext(dividend, i.type) unless signed
+    magnitude = dividend
+    sign = -1
+    if signed
+      sign = immediate_shift(MOp::AsrImm, dividend, 63)
+      magnitude = binop(MOp::Sub, binop(MOp::Eor, dividend, sign), sign)
+    end
+    if magic.multiplier == 0_i64
+      quotient = immediate_shift(MOp::LsrImm, magnitude, magic.shift)
+    else
+      quotient = binop(MOp::Umulh, magnitude, const_gpr(magic.multiplier))
+      if magic.adjust
+        correction = immediate_shift(MOp::LsrImm, binop(MOp::Sub, magnitude, quotient), 1)
+        quotient = binop(MOp::Add, quotient, correction)
+      end
+      quotient = immediate_shift(MOp::LsrImm, quotient, magic.shift)
+    end
+    if signed
+      sign = binop(MOp::Eor, sign, const_gpr(-1_i64)) if raw < 0_i64
+      quotient = binop(MOp::Sub, binop(MOp::Eor, quotient, sign), sign)
+    end
+    if op == Op::SRem || op == Op::URem
+      result = gpr
+      m = mop(MOp::Msub)
+      m.defs << vop(result)
+      m.uses << vop(dividend)
+      m.uses << vop(quotient)
+      m.uses << vop(const_gpr(raw))
+      emit(m)
+      quotient = result
+    end
+    bind_result(i, [canon(quotient, i.type)])
+    true
+  end
+
   def lower_int_binop(i : Inst) : Nil
     t = i.type
     if i128?(t)
       wide_binop(i)
       return
     end
+    return if lower_constant_division(i)
     return if lower_immediate(i)
     a = first_leaf(i.args[0])
     b = first_leaf(i.args[1])
