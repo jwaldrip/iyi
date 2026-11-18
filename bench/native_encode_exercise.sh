@@ -86,6 +86,9 @@ cbnz x1, .
 tbz x1, #5, .
 tbnz x1, #63, .
 ldr x1, [x2, x3, lsl #3]
+ldr w1, [x2, x3, lsl #2]
+ldrh w1, [x2, x3, lsl #1]
+ldrb w1, [x2, x3]
 ldrsw x1, [x2, x3, lsl #2]
 ldrsh x1, [x2, x3, lsl #1]
 ldrsb x1, [x2, x3]
