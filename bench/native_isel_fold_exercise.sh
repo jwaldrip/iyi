@@ -295,6 +295,12 @@ for fn in ("load_pair", "interleaved", "reverse_pair", "narrow_pair", "float_pai
 expect("pairs", "store_pair", [op("Stp")], [op("Str")])
 for fn in ("load_gap", "different_bases"):
     expect("pairs", fn, [op("Ldr")], [op("Ldp")])
+expect("leaf", "plain_leaf", [op("Ret")], [op("StpFpLr"), op("MovFp"), op("LdpFpLr"), op("SpAdjust")])
+expect("leaf", "slot_leaf", [op("StpFpLr"), op("LdrFrame"), op("StrFrame"), op("LdpFpLr")])
+expect("leaf", "stack_arg", [op("StpFpLr"), r"Ldr/64 .*x29", op("LdpFpLr")])
+expect("leaf", "asm_leaf", [op("StpFpLr"), op("InlineAsm"), op("LdpFpLr")])
+expect("leaf", "saved_leaf", [op("StpFpLr"), op("SpStore"), op("SpLoad"), op("LdpFpLr")])
+expect("leaf", "nonleaf", [op("StpFpLr"), op("Bl"), op("LdpFpLr")])
 for problem in errors:
     print("INVALID: " + problem)
 for problem in defects:
@@ -320,7 +326,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       exit 1
     fi
   done
-  for key in branches memory immediates overflow deferred indexed division mulacc select pairs; do
+  for key in branches memory immediates overflow deferred indexed division mulacc select pairs leaf; do
     source="$FIX/$key.iyi"
     [ "$key" != division ] || source="$WORK/division.iyi"
     if ! ./bin/iyi build -o "$(native_path "$WORK/$key.hosted$EXE")" "$(native_path "$source")" >"$WORK/$key.hosted.log" 2>&1; then
@@ -402,6 +408,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_fold_mutation "multiply-subtract: exchange the addend" src/compiler/native/aarch64/isel.iyi '    m.uses << vop(addend) # fused-mul-addend' '    m.uses << vop(a) # fused-mul-addend' mulacc
   prove_fold_mutation "select: exchange conditional arms" src/compiler/native/aarch64/isel.iyi '        regs << csel_cond(tv[k], fv[k], cond) # select-arms' '        regs << csel_cond(fv[k], tv[k], cond) # select-arms' select
   prove_fold_mutation "pair: accept the wrong second offset" src/compiler/native/aarch64/isel.iyi '    return false unless high == low + scale # pair-adjacent-offset' '    return false unless high == low + scale * 2_i64 # pair-adjacent-offset' pairs
+  prove_fold_mutation "leaf: discard a required slot frame" src/compiler/native/frame.iyi '  return false unless f.slots.empty? # frameless-no-slots' '  return false unless true # frameless-no-slots' leaf
 else
   host_limited "runtime selector mutation proofs (macOS arm64)"
 fi

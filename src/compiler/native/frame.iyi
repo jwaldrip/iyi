@@ -17,10 +17,36 @@ module compiler/native/frame
 
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, Role}
 import compiler/native/target::{new_inst, is_role?}
-import compiler/native/aarch64/regs::{fp_reg, is_fpr?, callee_saved_fprs}
+import compiler/native/aarch64/regs::{fp_reg, lr_reg, is_fpr?, callee_saved_gprs, callee_saved_fprs}
 
 def round_up(n : Int64, to : Int64) : Int64
   ((n + to - 1_i64) // to) * to
+end
+
+# Stack-argument loads use the frame pointer. Inline assembly and physical
+# callee-saved or stack-register operands also retain the established frame.
+def frameless_leaf?(fn : MFunction) : Bool
+  f = fn.frame
+  return false if fn.naked || f.has_calls || f.outgoing_bytes != 0_i64
+  return false unless f.slots.empty? # frameless-no-slots
+  return false unless f.callee_saved.empty?
+  saved = callee_saved_gprs + callee_saved_fprs
+  fn.blocks.each do |block|
+    block.insts.each do |inst|
+      return false if inst.call || !inst.asm.nil?
+      inst.uses.each do |op|
+        if op.kind == OperandKind::Physical
+          return false if op.reg == fp_reg || op.reg == lr_reg || op.reg == 31 || saved.includes?(op.reg)
+        end
+      end
+      inst.defs.each do |op|
+        if op.kind == OperandKind::Physical
+          return false if op.reg == fp_reg || op.reg == lr_reg || op.reg == 31 || saved.includes?(op.reg)
+        end
+      end
+    end
+  end
+  true
 end
 
 # Lays acc the frame, then inserts the prologue at the start of the entry block and an epilogue before every return.
@@ -53,6 +79,7 @@ pub def lay_out(fn : MFunction, stack_align : Int64) : Nil
     offset = offset + slot[0]
   end
   f.frame_size = round_up(offset, stack_align)
+  return if frameless_leaf?(fn)
   insert_prologue(fn)
   fn.blocks.each do |block|
     insert_epilogues(fn, block)
