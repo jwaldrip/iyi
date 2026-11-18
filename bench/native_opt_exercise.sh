@@ -266,19 +266,25 @@ echo '== 5. diamond-chain scaling'
 # Each size is run three times and the least figure is kept: the child's CPU
 # time where the host reports it, so other jobs on the machine do not stretch
 # it, and elapsed time elsewhere.
-if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" "${NATIVE_OPT_SCALE_K:-2048}" <<'PY'
+if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" "${NATIVE_OPT_SCALE_K:-2048}" "${NATIVE_OPT_RELEASE_SCALE_K:-4096}" <<'PY'
 import os, subprocess, sys, time
 try:
     import resource
 except ImportError:
     resource = None
-binary, work, text_k = sys.argv[1:]
+binary, work, text_k, text_release_k = sys.argv[1:]
 try:
     k = int(text_k)
 except ValueError:
     sys.exit('NATIVE_OPT_SCALE_K must be an integer')
 if k < 64:
     sys.exit('NATIVE_OPT_SCALE_K must be at least 64')
+try:
+    release_k = int(text_release_k)
+except ValueError:
+    sys.exit('NATIVE_OPT_RELEASE_SCALE_K must be an integer')
+if release_k < 64:
+    sys.exit('NATIVE_OPT_RELEASE_SCALE_K must be at least 64')
 
 def generate(n, path):
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
@@ -302,14 +308,32 @@ def generate(n, path):
                 f.write('  ret i64 %%sum%d\n' % i)
         f.write('}\n')
 
+def generate_release(n, path):
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('; iyi-ir 1\nsource_filename = "call-chain"\n')
+        f.write('target triple = "aarch64-apple-darwin"\n')
+        f.write('target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"\n')
+        for i in range(n):
+            linkage = 'external' if i == 0 else 'internal'
+            f.write('define %s i64 @f%d(i64 %%x) {\nentry:\n' % (linkage, i))
+            if i + 1 < n:
+                f.write('  %%v = call i64 (i64) @f%d(i64 %%x)\n' % (i + 1))
+                f.write('  %next = add i64 %v, 1\n  ret i64 %next\n}\n')
+            else:
+                f.write('  ret i64 %x\n}\n')
+
 def child_cpu():
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     return usage.ru_utime + usage.ru_stime
 
-def run(n, verified, repeats=1):
-    path = os.path.join(work, 'scale-%d.ir' % n)
-    generate(n, path)
-    cmd = [binary, 'run', '--verify-each' if verified else '--no-verify', 'default', path]
+def run(n, verified, repeats=1, tier='default'):
+    if tier == 'release':
+        path = os.path.join(work, 'call-chain-%d.ir' % n)
+        generate_release(n, path)
+    else:
+        path = os.path.join(work, 'scale-%d.ir' % n)
+        generate(n, path)
+    cmd = [binary, 'run', '--verify-each' if verified else '--no-verify', tier, path]
     least = None
     for _ in range(repeats):
         before = child_cpu() if resource else 0.0
@@ -327,6 +351,7 @@ def run(n, verified, repeats=1):
         if least is None or spent < least:
             least = spent
     return least
+failed = False
 try:
     run(max(8, k // 8), True)
     small = run(k, False, 3)
@@ -340,65 +365,28 @@ try:
         raise RuntimeError('2K/K exceeds 3.0')
 except RuntimeError as exc:
     print(str(exc), file=sys.stderr)
-    sys.exit(1)
-PY
-then
-  fail 'optimizer scale contract failed'
-fi
-
-echo '== 6. release call-chain scaling'
-if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" "${NATIVE_OPT_RELEASE_SCALE_K:-4096}" <<'PY'
-import os, subprocess, sys, time
-binary, work, text_k = sys.argv[1:]
+    failed = True
+print('== 6. release call-chain scaling')
 try:
-    k = int(text_k)
-except ValueError:
-    sys.exit('NATIVE_OPT_RELEASE_SCALE_K must be an integer')
-if k < 64:
-    sys.exit('NATIVE_OPT_RELEASE_SCALE_K must be at least 64')
-
-def run(n, verified):
-    path = os.path.join(work, 'call-chain-%d.ir' % n)
-    with open(path, 'w', encoding='utf-8', newline='\n') as f:
-        f.write('; iyi-ir 1\nsource_filename = "call-chain"\n')
-        f.write('target triple = "aarch64-apple-darwin"\n')
-        f.write('target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"\n')
-        for i in range(n):
-            linkage = 'external' if i == 0 else 'internal'
-            f.write('define %s i64 @f%d(i64 %%x) {\nentry:\n' % (linkage, i))
-            if i + 1 < n:
-                f.write('  %%v = call i64 (i64) @f%d(i64 %%x)\n' % (i + 1))
-                f.write('  %next = add i64 %v, 1\n  ret i64 %next\n}\n')
-            else:
-                f.write('  ret i64 %x\n}\n')
-    cmd = [binary, 'run', '--verify-each' if verified else '--no-verify', 'release', path]
-    start = time.monotonic()
-    try:
-        completed = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=180)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError('release scale run could not complete: %s' % exc)
-    elapsed = time.monotonic() - start
-    if completed.returncode != 0:
-        raise RuntimeError('release scale failed (%d): %s' %
-                           (completed.returncode, completed.stderr.decode('utf-8', 'replace')))
-    return elapsed
-try:
-    run(max(8, k // 8), True)
-    small = run(k, False)
-    large = run(2 * k, False)
+    run(max(8, release_k // 8), True, tier='release')
+    small = run(release_k, False, 3, 'release')
+    large = run(2 * release_k, False, 3, 'release')
     ratio = large / small if small > 0 else float('inf')
-    print('  release K=%d %.3fs, 2K=%d %.3fs, ratio %.3f' % (k, small, 2 * k, large, ratio))
+    print('  release K=%d %.3fs, 2K=%d %.3fs, ratio %.3f (%s, least of 3)' %
+          (release_k, small, 2 * release_k, large, ratio, 'cpu' if resource else 'elapsed'))
     if large < 0.5:
         raise RuntimeError('release 2K run is under 0.5s; increase NATIVE_OPT_RELEASE_SCALE_K')
     if ratio > 3.0:
         raise RuntimeError('release 2K/K exceeds 3.0')
 except RuntimeError as exc:
     print(str(exc), file=sys.stderr)
-    sys.exit(1)
+    failed = True
+sys.exit(1 if failed else 0)
 PY
 then
-  fail 'release optimizer scale contract failed'
+  fail 'optimizer scale contract failed'
 fi
+
 
 echo '== 7. mutation proofs, each rebuilding iyi-opt'
 prove_mutation 'M1: iterated phi frontier' src/compiler/ir/opt/mem2reg.iyi \
