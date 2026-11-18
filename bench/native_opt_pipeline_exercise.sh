@@ -25,6 +25,63 @@ mkdir -p "$WORK/bin" "$WORK/ir" "$WORK/default" "$WORK/o0" "$WORK/mutant" "$WORK
 failures=0
 fail() { echo "FAIL: $*"; failures=$((failures + 1)); }
 
+# Records are path, failing phase, and the first normalized refusal line.
+check_ceiling() {
+  "$PY" - "$(native_path "$1")" "$(native_path "$2")" "$(native_path "$3")" "$4" <<'PY'
+import sys
+
+ceiling, measured, built, lower = sys.argv[1:]
+def records(path):
+    rows = {}
+    with open(path, encoding='utf-8') as stream:
+        for line in stream:
+            line = line.rstrip('\n')
+            if not line or line.startswith('#'):
+                continue
+            fields = line.split('\t')
+            if len(fields) != 3 or not all(fields) or fields[0] in rows:
+                raise ValueError('invalid or duplicate ceiling row: ' + line)
+            rows[fields[0]] = line
+    return rows
+try:
+    expected, actual = records(ceiling), records(measured)
+    with open(built, encoding='utf-8') as stream:
+        built_names = set(stream.read().splitlines())
+    bad = False
+    for name, row in actual.items():
+        if name not in expected:
+            print('FAIL: unlisted refusal: ' + row)
+            bad = True
+        elif expected[name] != row:
+            print('FAIL: refusal changed: ' + row)
+            print('  expected: ' + expected[name])
+            bad = True
+    for name in expected:
+        if name in built_names:
+            print('IMPROVED: remove ' + name + ' from the ceiling')
+            if lower != '1':
+                bad = True
+        elif name not in actual:
+            print('FAIL: ceiling entry was not measured: ' + name)
+            bad = True
+    sys.exit(1 if bad else 0)
+except (OSError, ValueError) as exc:
+    print('FAIL: ' + str(exc))
+    sys.exit(1)
+PY
+}
+
+# Normalize the checkout prefix, preserving the first refusal verbatim otherwise.
+refusal_row() {
+  local source="$1" stdout="$2" stderr="$3" phase reason
+  phase="$(awk '/^\[phase\] [a-z]+: start$/ { p=$2; sub(/:$/, "", p) } END { print p }' "$stdout")"
+  reason="$(awk '/^(Error: |iyi: panic: |iyi-compile-native: )/ { print; exit }' "$stderr")"
+  [ -n "$phase" ] && [ -n "$reason" ] || return 1
+  reason="${reason//"$REPO_NATIVE/"/}"
+  reason="${reason//"$REPO/"/}"
+  printf '%s\t%s\t%s\n' "$source" "$phase" "$reason"
+}
+
 # Compare all non-stat bytes, the number of stat lines and the exact stat schema.
 workload_equal() {
   "$PY" - "$(native_path "$1")" "$(native_path "$2")" <<'PY'
@@ -111,6 +168,26 @@ if ! workload_equal "$WORK/comparison.a" "$WORK/comparison.b" ||
 else
   echo '  workload comparison catches wrong results and malformed stats'
 fi
+printf 'samples/iyi/a.iyi\tbodies\tError: fixture refusal\n' >"$WORK/ceiling.test"
+cp "$WORK/ceiling.test" "$WORK/measured.test"
+: >"$WORK/built.test"
+if ! check_ceiling "$WORK/ceiling.test" "$WORK/measured.test" "$WORK/built.test" 0 >/dev/null ||
+   { printf 'samples/iyi/b.iyi\tlower\tError: new refusal\n' >>"$WORK/measured.test"
+     check_ceiling "$WORK/ceiling.test" "$WORK/measured.test" "$WORK/built.test" 0 >"$WORK/unlisted.test"; } ||
+   ! grep -Fq 'FAIL: unlisted refusal:' "$WORK/unlisted.test"; then
+  fail 'ceiling failed to catch an unlisted refusal'
+else
+  echo '  ceiling catches an unlisted refusal'
+fi
+: >"$WORK/measured.test"
+printf 'samples/iyi/a.iyi\n' >"$WORK/built.test"
+if check_ceiling "$WORK/ceiling.test" "$WORK/measured.test" "$WORK/built.test" 0 >"$WORK/improved.test" ||
+   ! grep -Fxq 'IMPROVED: remove samples/iyi/a.iyi from the ceiling' "$WORK/improved.test" ||
+   ! check_ceiling "$WORK/ceiling.test" "$WORK/measured.test" "$WORK/built.test" 1 >/dev/null; then
+  fail 'ceiling failed to report a newly buildable sample'
+else
+  echo '  ceiling reports a newly buildable sample'
+fi
 if ! "$TOOL" "$FIXTURE" -o "$WORK_NATIVE/o0/tier.ir" --pipeline typed --probe-phase --emit ir -O0 >"$WORK/o0/phase.log" 2>&1 ||
    ! "$TOOL" "$FIXTURE" -o "$WORK_NATIVE/default/tier.ir" --pipeline typed --probe-phase --emit ir >"$WORK/default/phase.log" 2>&1; then
   cat "$WORK/o0/phase.log" "$WORK/default/phase.log" 2>/dev/null
@@ -191,13 +268,47 @@ fi
 echo '== 4. every sample and speed workload: real IR and hosted execution parity'
 if [ "$HOST_ID" = darwin-arm64 ]; then
   checked=0
+  ceiling="$REPO/bench/native_opt_pipeline.ceiling"
+  lower="${NATIVE_OPT_PIPELINE_LOWER:-0}"
+  case "$lower" in 0|1) ;; *) fail "invalid NATIVE_OPT_PIPELINE_LOWER=$lower"; lower=0 ;; esac
+  : >"$WORK/measured.tsv"
+  : >"$WORK/built.txt"
   for source in "$REPO"/samples/iyi/*.iyi "$REPO"/bench/fixtures/native_speed/workloads/*.iyi; do
     [ -f "$source" ] || { fail "source glob did not match: $source"; continue; }
     base="$(basename "$source" .iyi)"
     case "$source" in "$REPO"/samples/iyi/*) kind=sample ;; *) kind=workload ;; esac
     name="$kind-$base"
+    rel="${source#"$REPO"/}"
     checked=$((checked + 1))
     source_native="$(native_path "$source")" || { fail "cannot convert path $source"; continue; }
+    o0_rc=0
+    "$TOOL" "$source_native" -o "$WORK_NATIVE/bin/$name.o0$EXE" --pipeline typed --prelude --probe-phase -O0 >"$WORK/$name.o0.log" 2>"$WORK/$name.o0.err" || o0_rc=$?
+    default_rc=0
+    "$TOOL" "$source_native" -o "$WORK_NATIVE/bin/$name.native$EXE" --pipeline typed --prelude --probe-phase >"$WORK/$name.native.log" 2>"$WORK/$name.native.err" || default_rc=$?
+    if [ "$o0_rc" -ne 0 ]; then
+      if [ "$kind" != sample ] || [ "$o0_rc" -ne 1 ] || [ "$default_rc" -ne 1 ] ||
+         [ -e "$WORK/bin/$name.o0$EXE" ] || [ -e "$WORK/bin/$name.native$EXE" ]; then
+        fail "$name: -O0 and default did not both refuse without output (exits $o0_rc/$default_rc)"
+        cat "$WORK/$name.o0.log" "$WORK/$name.o0.err" "$WORK/$name.native.log" "$WORK/$name.native.err"
+        continue
+      fi
+      o0_row="$(refusal_row "$rel" "$WORK/$name.o0.log" "$WORK/$name.o0.err")" || o0_row=""
+      default_row="$(refusal_row "$rel" "$WORK/$name.native.log" "$WORK/$name.native.err")" || default_row=""
+      if [ -z "$o0_row" ] || [ "$o0_row" != "$default_row" ]; then
+        fail "$name: -O0 and default refused at different phases or with different reasons"
+        cat "$WORK/$name.o0.log" "$WORK/$name.o0.err" "$WORK/$name.native.log" "$WORK/$name.native.err"
+      else
+        printf '%s\n' "$o0_row" >>"$WORK/measured.tsv"
+        printf '  refusal: %s\n' "$o0_row"
+      fi
+      continue
+    fi
+    if [ "$kind" = sample ]; then printf '%s\n' "$rel" >>"$WORK/built.txt"; fi
+    if [ ! -s "$WORK/bin/$name.o0$EXE" ] || [ "$default_rc" -ne 0 ] || [ ! -s "$WORK/bin/$name.native$EXE" ]; then
+      fail "$name: -O0 built but the default tier did not (exit $default_rc)"
+      cat "$WORK/$name.native.log" "$WORK/$name.native.err"
+      continue
+    fi
     if ! "$TOOL" "$source_native" -o "$WORK_NATIVE/ir/$name.raw.ir" --pipeline typed --prelude --emit ir -O0 >"$WORK/ir/$name.emit.log" 2>&1; then
       fail "$name: unoptimized IR emission failed"; cat "$WORK/ir/$name.emit.log"
     elif ! "$OPT" run --verify-each default "$WORK_NATIVE/ir/$name.raw.ir" >"$WORK/ir/$name.optimized.ir" 2>"$WORK/ir/$name.opt.log"; then
@@ -208,24 +319,32 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
     if ! "$IYI" build -o "$WORK_NATIVE/bin/$name.hosted$EXE" "$source_native" >"$WORK/$name.hosted.build.log" 2>&1; then
       fail "$name: hosted build failed"; cat "$WORK/$name.hosted.build.log"; continue
     fi
-    if ! "$TOOL" "$source_native" -o "$WORK_NATIVE/bin/$name.native$EXE" --pipeline typed --prelude >"$WORK/$name.native.build.log" 2>&1; then
-      fail "$name: native default build failed"; cat "$WORK/$name.native.build.log"; continue
-    fi
-    mkdir -p "$WORK/runs/$name.hosted" "$WORK/runs/$name.native"
+    mkdir -p "$WORK/runs/$name.hosted" "$WORK/runs/$name.o0" "$WORK/runs/$name.native"
     hs="$(run_bounded "$WORK/bin/$name.hosted$EXE" "$WORK/$name.hosted.out" "$WORK/$name.hosted.err" "$WORK/runs/$name.hosted")"
-    ns="$(run_bounded "$WORK/bin/$name.native$EXE" "$WORK/$name.native.out" "$WORK/$name.native.err" "$WORK/runs/$name.native")"
-    case "$hs:$ns" in *[!0-9:]*) fail "$name: hosted termination $hs, native termination $ns"; continue ;; esac
-    if [ "$hs" != "$ns" ]; then
-      fail "$name: hosted exit $hs, native exit $ns"
-    elif [ "$kind" = sample ] && ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.native.out"; then
-      fail "$name: stdout differs"; diff -u "$WORK/$name.hosted.out" "$WORK/$name.native.out" || :
-    elif [ "$kind" = workload ] && ! workload_equal "$WORK/$name.hosted.out" "$WORK/$name.native.out"; then
-      fail "$name: stdout differs"; diff -u "$WORK/$name.hosted.out" "$WORK/$name.native.out" || :
-    else
-      echo "  $name: stdout and exit $hs match hosted"
-    fi
+    for tier in o0 native; do
+      ns="$(run_bounded "$WORK/bin/$name.$tier$EXE" "$WORK/$name.$tier.out" "$WORK/$name.$tier.err" "$WORK/runs/$name.$tier")"
+      case "$hs:$ns" in *[!0-9:]*|:*|*:) fail "$name $tier: hosted termination $hs, native termination $ns"; continue ;; esac
+      if [ "$hs" != "$ns" ]; then
+        fail "$name $tier: hosted exit $hs, native exit $ns"
+      elif [ "$kind" = sample ] && ! cmp -s "$WORK/$name.hosted.out" "$WORK/$name.$tier.out"; then
+        fail "$name $tier: stdout differs"; diff -u "$WORK/$name.hosted.out" "$WORK/$name.$tier.out" || :
+      elif [ "$kind" = workload ] && ! workload_equal "$WORK/$name.hosted.out" "$WORK/$name.$tier.out"; then
+        fail "$name $tier: stdout differs"; diff -u "$WORK/$name.hosted.out" "$WORK/$name.$tier.out" || :
+      else
+        echo "  $name $tier: stdout and exit $hs match hosted"
+      fi
+    done
   done
   echo "  checked $checked sample and workload sources"
+  if check_ceiling "$ceiling" "$WORK/measured.tsv" "$WORK/built.txt" "$lower"; then
+    if [ "$lower" = 1 ]; then
+      { grep '^#' "$ceiling"; cat "$WORK/measured.tsv"; } >"$WORK/ceiling.new"
+      cp "$WORK/ceiling.new" "$ceiling"
+      echo '  refusal ceiling lowered from measured, already listed rows'
+    fi
+  else
+    fail 'refusal ceiling'
+  fi
 else
   host_limited 'real-program IR, Mach-O builds and execution parity require darwin-arm64'
 fi

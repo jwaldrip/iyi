@@ -1,0 +1,16 @@
+# Samples refused by the typed pipeline at -O0, with their phase and first refusal line.
+# The list may only shrink; NATIVE_OPT_PIPELINE_LOWER=1 rewrites it after improvements.
+samples/iyi/collections.iyi	bodies	Error: undefined constant Elem
+samples/iyi/config.iyi	lower	iyi: panic: lower: visit(an exhaustive case (hosted cleanup_transformer.cr: replace_unreachable_if_needed)) (hosted codegen.cr) is not ported yet
+samples/iyi/cores.iyi	bodies	iyi: panic: undefined method 'await_writable' for Std::Socket::IyiSocket.class
+samples/iyi/derive.iyi	declarations	Error: undefined constant Name
+samples/iyi/enums.iyi	bodies	iyi: panic: type mismatch for return type: expected Array(Enum), got Array(Samples::Enums::Level)
+samples/iyi/errors.iyi	lower	iyi: panic: lower: visit(an exhaustive case (hosted cleanup_transformer.cr: replace_unreachable_if_needed)) (hosted codegen.cr) is not ported yet
+samples/iyi/format.iyi	bodies	iyi: panic: unsupported node: Splat
+samples/iyi/generics.iyi	bodies	iyi: panic: undefined constant X
+samples/iyi/immutable.iyi	bodies	Error: undefined constant Elem
+samples/iyi/modules.iyi	declarations	Error: undefined constant Greet
+samples/iyi/socket.iyi	bodies	iyi: panic: undefined method 'new' for Std::Slice::Slice(UInt8)
+samples/iyi/std_iterator.iyi	bodies	Error: undefined constant TakeIterator
+samples/iyi/webapp.iyi	bodies	iyi: panic: no overload matches 'Proc#call' with type Kemal::Router::Context
+samples/iyi/workers.iyi	lower	iyi: panic: lower: visit(spawn classification of samples/iyi/workers.iyi:19:7 is not ported (hosted cleanup_transformer.cr classify_spawn)) (hosted codegen.cr) is not ported yet
