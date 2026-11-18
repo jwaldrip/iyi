@@ -1,0 +1,21 @@
+import compiler/loader::{Loader, IyiPath}
+
+cases = {
+  "" => "",
+  "already/normalized" => "already/normalized",
+  "C:\\tools\\lib" => "C:/tools/lib",
+  "\\\\server\\share\\file.iyi" => "//server/share/file.iyi",
+  "dir\\路径\\file.iyi" => "dir/路径/file.iyi",
+}
+cases.each do |source, expected|
+  actual = Loader.windows_separators(source)
+  raise "separator mismatch: #{source} -> #{actual}" unless actual == expected
+end
+{% if flag?(:win32) %}
+  raise "Windows clean path" unless Loader.clean_path(".\\dir\\file.iyi") == "dir/file.iyi"
+  paths = IyiPath.new(["$ORIGIN\\lib"], "C:\\tools")
+  raise "Windows origin expansion" unless paths.entries[0] == "C:/tools/lib"
+{% else %}
+  raise "literal POSIX backslash changed" unless Loader.clean_path("dir\\file.iyi") == "dir\\file.iyi"
+{% end %}
+puts "loader path behavior passed"
