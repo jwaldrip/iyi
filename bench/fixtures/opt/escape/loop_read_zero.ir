@@ -9,7 +9,7 @@ entry:
   br label %loop
 loop:
   %i = phi i64 [ 0, label %entry ], [ %next, label %write ]
-  %p = call ptr (i64, i64, i64) @__iyi_new(i64 ptrtoint (ptr getelementptr (%Point, ptr null, i32 1) to i64), i64 9, i64 2)
+  %p = call ptr (i64, i64, i64) @__iyi_new(i64 ptrtoint (ptr getelementptr (%Point, ptr null, i32 1) to i64), i64 9, i64 0)
   %field = getelementptr %Point, ptr %p, i64 0, i32 1
   %first = icmp eq i64 %i, 0
   br i1 %first, label %write, label %read
