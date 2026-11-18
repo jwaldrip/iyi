@@ -7,6 +7,7 @@ import compiler/ir/verifier::{verify, IrError}
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Function}
 import compiler/ir/opt/pipeline::{PassId, OptTier, PassOptions, pass_name, pass_named, tier_passes, run_passes}
+import compiler/ir/opt/escape::{call_cycle_edge_count}
 
 lib LibC
   fun exit(status : Int32) : NoReturn
@@ -14,7 +15,7 @@ end
 
 module IrOpt
   def self.usage : NoReturn
-    STDERR.puts "iyi-opt: usage: run [--verify-each] [--no-verify] PASSES FILE | print FILE | passes | stats PASSES FILE"
+    STDERR.puts "iyi-opt: usage: run [--verify-each] [--no-verify] PASSES FILE | print FILE | passes | stats PASSES FILE | call-edges FILE"
     LibC.exit(2)
   end
 
@@ -106,6 +107,12 @@ module IrOpt
       usage unless args.size == 2
       mod = read_module(args[1])
       STDOUT.print(print(mod))
+      return
+    end
+    if command == "call-edges"
+      usage unless args.size == 2
+      mod = read_module(args[1])
+      STDOUT.puts call_cycle_edge_count(mod)
       return
     end
     usage unless command == "run" || command == "stats"

@@ -125,6 +125,47 @@ generated_mutation_check() {
   mutation_check "$@"
 }
 
+# A build or execution failure is not a caught graph-complexity mutation.
+call_graph_mutation_check() {
+  local label="$1" status="$WORK/$1.status" rc=0
+  printf '2\n' >"$status"
+  if ! build_driver "$MUTANT"; then
+    echo "mutant $label did not build" >&2; cat "$WORK/build.log" >&2; return 2
+  fi
+  "$PY" - "$(native_path "$MUTANT")" "$(native_path "$WORK/call-edges-mut-small.ir")" \
+    "$(native_path "$WORK/call-edges-mut-large.ir")" "$(native_path "$WORK/$label.ratio")" <<'PY' || rc=$?
+import subprocess, sys
+binary, small_path, large_path, result_path = sys.argv[1:]
+counts = []
+for path in (small_path, large_path):
+    try:
+        result = subprocess.run([binary, 'call-edges', path], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=180)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.decode('utf-8', 'replace'))
+        count = int(result.stdout.strip())
+        if count <= 0:
+            raise ValueError('edge count must be positive')
+        counts.append(count)
+    except (OSError, subprocess.TimeoutExpired, ValueError, RuntimeError) as exc:
+        print('graph mutation could not be measured:', exc, file=sys.stderr)
+        sys.exit(2)
+ratio = counts[1] / counts[0]
+with open(result_path, 'w', encoding='utf-8') as result:
+    result.write('  %s: %d -> %d edges, ratio %.3f (bound 3.0)\n' %
+                 (result_path.rsplit('/', 1)[-1].split('.')[0], counts[0], counts[1], ratio))
+sys.exit(1 if ratio > 3.0 else 0)
+PY
+  if [ "$rc" -eq 1 ]; then
+    printf '1\n' >"$status"; return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    return 2
+  fi
+  printf '0\n' >"$status"
+  return 0
+}
+
 mutation_result() {
   local label="$1" result
   result=$(cat "$WORK/$label.status" 2>/dev/null || printf '2')
@@ -714,18 +755,24 @@ def generate_allocations(n, path):
         f.write('define external void @allocations() {\nentry:\n  call void () @local_sites()\n  call void () @escaping_sites()\n  ret void\n}\n')
 
 def generate_indegree(n, path):
+    # Both N indirect callers and N declarations can reach N address-taken
+    # callbacks. The recursion hub must represent that relation in O(N) edges.
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write('; iyi-ir 1\nsource_filename = "high-indegree"\n')
         f.write('target triple = "aarch64-apple-darwin"\n')
         f.write('target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"\n')
-        f.write('define external i64 @indegree(i1 %condition, i64 %value) {\nentry:\n  br label %branch0\n')
+        f.write('declare external void @register(ptr)\n')
         for i in range(n):
-            f.write('branch%d:\n' % i)
-            if i + 1 < n:
-                f.write('  br i1 %%condition, label %%join, label %%branch%d\n' % (i + 1))
-            else:
-                f.write('  br label %join\n')
-        f.write('join:\n  ret i64 %value\n}\n')
+            f.write('declare external void @decl%d()\n' % i)
+        for i in range(n):
+            f.write('define internal void @cb%d() [noinline] {\nentry:\n  ret void\n}\n' % i)
+            f.write('define internal void @caller%d(ptr %%next) [noinline] {\nentry:\n' % i)
+            f.write('  call void () %%next()\n  call void () @decl%d()\n  ret void\n}\n' % i)
+        f.write('define external void @drive() {\nentry:\n')
+        for i in range(n):
+            f.write('  call void (ptr) @register(ptr @cb%d)\n' % i)
+            f.write('  call void (ptr) @caller%d(ptr @cb%d)\n' % (i, i))
+        f.write('  ret void\n}\n')
 
 def generate_callbacks(n, path):
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
@@ -793,9 +840,8 @@ def run(n, verified, repeats=1, tier='default', shape='calls'):
             if kept < n // 2 or kept >= n:
                 raise RuntimeError('allocation scale must retain escaping sites and promote local sites: %d/%d kept' % (kept, n))
         if verified and tier == 'release' and shape == 'high-indegree':
-            incoming = completed.stdout.count(b'label %join')
-            if incoming < n:
-                raise RuntimeError('high-indegree scale lost incoming edges: %d/%d' % (incoming, n))
+            if b'@caller0(' not in completed.stdout or b'@cb0(' not in completed.stdout:
+                raise RuntimeError('high-indegree scale lost caller or callback functions')
         if verified and tier == 'release' and shape == 'callbacks':
             kept = sum(1 for line in completed.stdout.splitlines()
                        if b'call ' in line and b'@__iyi_new(' in line)
@@ -870,17 +916,38 @@ except RuntimeError as exc:
     failed = True
 print('== 6. release high-indegree scaling')
 try:
-    run(max(8, indegree_k // 8), True, tier='release', shape='high-indegree')
-    small = run(indegree_k, False, 3, 'release', 'high-indegree')
-    large = run(2 * indegree_k, False, 3, 'release', 'high-indegree')
-    ratio = large / small if small > 0 else float('inf')
-    print('  high-indegree K=%d %.3fs, 2K=%d %.3fs, ratio %.3f (%s, least of 3)' %
-          (indegree_k, small, 2 * indegree_k, large, ratio,
-           'cpu' if resource else 'elapsed'))
-    if large < 0.5:
-        raise RuntimeError('high-indegree 2K run is under 0.5s; increase NATIVE_OPT_INDEGREE_SCALE_K')
-    if ratio > 3.0:
-        raise RuntimeError('high-indegree 2K/K exceeds 3.0')
+    run(8, True, tier='release', shape='high-indegree')
+    small_path = os.path.join(work, 'call-edges-small.ir')
+    large_path = os.path.join(work, 'call-edges-large.ir')
+    generate_indegree(indegree_k, small_path)
+    generate_indegree(2 * indegree_k, large_path)
+    mutation_k = max(64, indegree_k // 16)
+    generate_indegree(mutation_k, os.path.join(work, 'call-edges-mut-small.ir'))
+    generate_indegree(2 * mutation_k, os.path.join(work, 'call-edges-mut-large.ir'))
+
+    def edge_count(path):
+        try:
+            result = subprocess.run([binary, 'call-edges', path], stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, timeout=180)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.decode('utf-8', 'replace'))
+            count = int(result.stdout.strip())
+            if count <= 0:
+                raise ValueError('edge count must be positive')
+            return count
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            raise RuntimeError('call-graph edge count failed: %s' % exc)
+
+    for measurement in range(1, 4):
+        small = edge_count(small_path)
+        large = edge_count(large_path)
+        ratio = large / small
+        print('  high-indegree run %d: K=%d %d edges, 2K=%d %d edges, ratio %.6f' %
+              (measurement, indegree_k, small, 2 * indegree_k, large, ratio))
+        if ratio > 3.0:
+            raise RuntimeError('high-indegree 2K/K exceeds 3.0')
+        if small != 6 * indegree_k + 2 or large != 12 * indegree_k + 2:
+            raise RuntimeError('high-indegree graph has an unexpected edge count')
 except RuntimeError as exc:
     print(str(exc), file=sys.stderr)
     failed = True
@@ -1112,6 +1179,36 @@ prove_mutation 'S9E13: declarations may call back' src/compiler/ir/opt/escape.iy
   '      nil if fn.declaration? # mutation S9-declaration: a declaration may call back' \
   -- mutation_check S9E13 escape declaration_callback || fail 'S9E13 was not caught'
 mutation_result S9E13
+prove_mutation 'S9E-scale-indirect: indirect callers must not expand the callback product' src/compiler/ir/opt/escape.iyi \
+  '      edges[k] << hub if indirect # mutation S9-indirect: indirect calls may reach address-taken functions' \
+  '      if indirect
+        t = 0
+        while t < mod.functions.size
+          candidate = mod.functions[t]
+          if addresses.has_key?(candidate) || (!candidate.declaration? && candidate.linkage != Linkage::Internal && candidate.linkage != Linkage::Private)
+            edges[k] << t
+          end
+          t = t + 1
+        end
+      end' \
+  -- call_graph_mutation_check S9E-scale-indirect || fail 'S9E-scale-indirect was not caught'
+mutation_result S9E-scale-indirect
+test ! -f "$WORK/S9E-scale-indirect.ratio" || cat "$WORK/S9E-scale-indirect.ratio"
+prove_mutation 'S9E-scale-declaration: declarations must not expand the callback product' src/compiler/ir/opt/escape.iyi \
+  '      edges[k] << hub if fn.declaration? # mutation S9-declaration: a declaration may call back' \
+  '      if fn.declaration?
+        t = 0
+        while t < mod.functions.size
+          candidate = mod.functions[t]
+          if addresses.has_key?(candidate) || (!candidate.declaration? && candidate.linkage != Linkage::Internal && candidate.linkage != Linkage::Private)
+            edges[k] << t
+          end
+          t = t + 1
+        end
+      end' \
+  -- call_graph_mutation_check S9E-scale-declaration || fail 'S9E-scale-declaration was not caught'
+mutation_result S9E-scale-declaration
+test ! -f "$WORK/S9E-scale-declaration.ratio" || cat "$WORK/S9E-scale-declaration.ratio"
 prove_mutation 'S9E14: every function is a callback target' src/compiler/ir/opt/escape.iyi \
   '      edges[hub] << k if addresses.has_key?(fn) ||' \
   '      edges[hub] << k if true ||' \

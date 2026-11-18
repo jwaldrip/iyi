@@ -368,7 +368,10 @@ end
 # One synthetic hub represents the edges from indirect calls and declarations
 # to address-taken and externally visible definitions, without their Cartesian product.
 class CallCycles
-  def initialize(mod : Module, addresses : Hash(Function, Bool))
+  getter edge_count : Int64
+
+  def initialize(mod : Module, addresses : Hash(Function, Bool), count_edges : Bool = false)
+    @edge_count = 0_i64
     @recursive = Hash(Function, Bool).new
     ids = Hash(Function, Int32).new
     edges = [] of Array(Int32)
@@ -409,6 +412,9 @@ class CallCycles
       edges[k] << hub if indirect # mutation S9-indirect: indirect calls may reach address-taken functions
       edges[hub] << k if addresses.has_key?(fn) || (!fn.declaration? && fn.linkage != Linkage::Internal && fn.linkage != Linkage::Private) # mutation S9-hub: externally visible symbols can be called back
       k = k + 1
+    end
+    if count_edges
+      edges.each { |targets| @edge_count = @edge_count + targets.size.to_i64 }
     end
     stack = [] of Int32
     nodes = [] of Int32
@@ -1068,6 +1074,12 @@ pub class EscapeInfo
   def run(fn : Function) : Bool
     run_escape_with_facts(@mod, fn, @partitioned, @frames, @cycles)
   end
+end
+
+# Count the actual recursion graph, not the equivalent uncompressed call relation.
+pub def call_cycle_edge_count(mod : Module) : Int64
+  frames = LongLivedFrames.new(mod)
+  CallCycles.new(mod, frames.addresses, true).edge_count
 end
 
 pub def run_escape(mod : Module, fn : Function) : Bool
