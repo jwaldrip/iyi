@@ -284,6 +284,8 @@ for fn in ("add_left", "add_right", "narrow"):
 expect("mulacc", "sub_left", [op("Neg"), op("Madd")], [op("Mul")])
 expect("mulacc", "sub_right", [op("Msub")], [op("Mul")])
 expect("mulacc", "shared_mul", [op("Mul")], [op("Madd"), op("Msub")])
+expect("mulacc", "constant_add", [op("Mul"), op("AddImm")], [op("Madd"), op("Msub")])
+expect("mulacc", "constant_sub", [op("Mul"), op("SubImm")], [op("Madd"), op("Msub")])
 for fn in ("choose", "choose_hint"):
     expect("select", fn, [op("CmpImm"), op("Csel")], [op("Cset")])
 expect("select", "choose_shared", [op("Cset"), op("Csel")])
