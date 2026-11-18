@@ -1169,6 +1169,11 @@ prove_mutation 'S9E26: bulk copy preserves pointer alignment' src/compiler/ir/op
   '  nil # mutation S9-bulk-align: do not shift pointer words' \
   -- mutation_check S9E26 escape bulk_align_keep || fail 'S9E26 was not caught'
 mutation_result S9E26
+prove_mutation 'S9E30: bulk copy length covers whole words' src/compiler/ir/opt/escape.iyi \
+  '  return false unless source_span && length % 8_i64 == 0_i64 # mutation S9-bulk-length: copy whole pointer words' \
+  '  return false unless source_span # mutation S9-bulk-length: copy whole pointer words' \
+  -- mutation_check S9E30 escape bulk_partial_word_keep || fail 'S9E30 was not caught'
+mutation_result S9E30
 prove_mutation 'S9E27: barrier call alignment is honored' src/compiler/ir/opt/escape.iyi \
   '      return false unless aligned_pointer?(candidate, inst.args[index], attr.int_value.to_i64, offsets) # mutation S9-call-offset-align: honor actual pointer offset' \
   '      nil # mutation S9-call-offset-align: honor actual pointer offset' \
