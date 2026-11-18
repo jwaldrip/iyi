@@ -146,14 +146,22 @@ for name in fold_int fold_icmp_signed identities trivial_phi condbr_const overfl
 for name in float32_keep div_by_zero_keep fold_safety_keep ptrtoint_mul_keep; do fixture_check simplify "$name" keep; done
 for name in dead_arith dead_phi_cycle dead_plain_load; do fixture_check dce "$name" changed; done
 for name in keep_store keep_call keep_volatile_load keep_marking_load_used keep_call_unreachable keep_atomic; do fixture_check dce "$name" keep; done
+for name in fields mixed_union single_union memset memcpy whole; do fixture_check sroa "$name" changed; done
+for name in escaping dynamic volatile volatile_memset; do fixture_check sroa "$name" keep; done
+for name in leaf_two returns bottom_up top_level runtime_marking; do fixture_check inline "$name" changed; done
+for name in guards tls_keep always_runtime_keep; do fixture_check inline "$name" keep; done
+fixture_check deadfn roots changed
+fixture_check deadfn global_keep keep
+fixture_check deadfn asm_keep keep
 
 echo '== 3. default pipeline fixtures, determinism and idempotence'
 fixture_check default locals_loop changed
+fixture_check release full changed
 
 echo '== 4. CLI contract'
-printf 'cfg-simplify\tdefault,release\nmem2reg\tdefault,release\nsimplify\tdefault,release\ndce\tdefault,release\n' >"$WORK/passes.expected"
+printf 'cfg-simplify\tdefault,release\nmem2reg\tdefault,release\nsimplify\tdefault,release\ndce\tdefault,release\nsroa\trelease\ninline\trelease\ndeadfn\trelease\n' >"$WORK/passes.expected"
 if ! "$DRV" passes >"$WORK/passes.actual" 2>"$WORK/cli.err" || ! cmp -s "$WORK/passes.expected" "$WORK/passes.actual"; then
-  fail 'passes did not list exactly the four named passes and tiers'
+  fail 'passes did not list the expected names and tiers'
 fi
 expect_status 2 'missing arguments' "$DRV" run || true
 expect_status 2 'extra arguments' "$DRV" passes extra || true
@@ -201,6 +209,55 @@ fi
 if ! IYI_TIME_PASSES=1 "$DRV" run --no-verify mem2reg "$(native_path "$FIXTURES/mem2reg/straight_line.ir")" >"$WORK/timed.ir" 2>"$WORK/timed.err" || \
    ! grep -q "$(printf '^opt-time\tmem2reg\t')" "$WORK/timed.err"; then
   fail 'no-verify did not retain IYI_TIME_PASSES'
+fi
+
+echo '== 4b. alwaysinline overrides growth limits'
+if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" <<'PY'
+import os, subprocess, sys
+binary, work = sys.argv[1:]
+header = ('; iyi-ir 1\nsource_filename = "inline-budgets"\n'
+          'target triple = "aarch64-apple-darwin"\n'
+          'target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"\n')
+def check(name, required_work, caller_work):
+    path = os.path.join(work, name + '.ir')
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(header)
+        f.write('define internal i64 @required(i64 %x) [alwaysinline] {\nentry:\n')
+        value = '%x'
+        for i in range(required_work):
+            f.write('  %%r%d = add i64 %s, 1\n' % (i, value))
+            value = '%%r%d' % i
+        f.write('  ret i64 %s\n}\n' % value)
+        f.write('define internal i64 @ordinary(i64 %x) {\nentry:\n  ret i64 %x\n}\n')
+        f.write('define external i64 @caller(i64 %x) {\nentry:\n')
+        f.write('  %forced = call i64 (i64) @required(i64 %x)\n')
+        f.write('  %kept = call i64 (i64) @ordinary(i64 %forced)\n')
+        value = '%kept'
+        for i in range(caller_work):
+            f.write('  %%v%d = add i64 %s, 1\n' % (i, value))
+            value = '%%v%d' % i
+        f.write('  ret i64 %s\n}\n' % value)
+    try:
+        result = subprocess.run([binary, 'run', '--verify-each', 'inline', path],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError('%s could not run: %s' % (name, exc))
+    if result.returncode != 0:
+        raise RuntimeError('%s failed (%d): %s' %
+                           (name, result.returncode, result.stderr.decode('utf-8', 'replace')))
+    output = result.stdout.decode('utf-8')
+    if 'call i64 (i64) @required(' in output or 'call i64 (i64) @ordinary(' not in output:
+        raise RuntimeError('%s did not inline the required call and retain the ordinary call' % name)
+    print('  ok: %s' % name)
+try:
+    check('caller-over-3000', 0, 3001)
+    check('mandatory-growth-exhausts-module-budget', 9, 0)
+except RuntimeError as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(1)
+PY
+then
+  fail 'alwaysinline growth contract failed'
 fi
 
 echo '== 5. diamond-chain scaling'
@@ -271,7 +328,61 @@ then
   fail 'optimizer scale contract failed'
 fi
 
-echo '== 6. mutation proofs, each rebuilding iyi-opt'
+echo '== 6. release call-chain scaling'
+if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" "${NATIVE_OPT_RELEASE_SCALE_K:-4096}" <<'PY'
+import os, subprocess, sys, time
+binary, work, text_k = sys.argv[1:]
+try:
+    k = int(text_k)
+except ValueError:
+    sys.exit('NATIVE_OPT_RELEASE_SCALE_K must be an integer')
+if k < 64:
+    sys.exit('NATIVE_OPT_RELEASE_SCALE_K must be at least 64')
+
+def run(n, verified):
+    path = os.path.join(work, 'call-chain-%d.ir' % n)
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('; iyi-ir 1\nsource_filename = "call-chain"\n')
+        f.write('target triple = "aarch64-apple-darwin"\n')
+        f.write('target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"\n')
+        for i in range(n):
+            linkage = 'external' if i == 0 else 'internal'
+            f.write('define %s i64 @f%d(i64 %%x) {\nentry:\n' % (linkage, i))
+            if i + 1 < n:
+                f.write('  %%v = call i64 (i64) @f%d(i64 %%x)\n' % (i + 1))
+                f.write('  %next = add i64 %v, 1\n  ret i64 %next\n}\n')
+            else:
+                f.write('  ret i64 %x\n}\n')
+    cmd = [binary, 'run', '--verify-each' if verified else '--no-verify', 'release', path]
+    start = time.monotonic()
+    try:
+        completed = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError('release scale run could not complete: %s' % exc)
+    elapsed = time.monotonic() - start
+    if completed.returncode != 0:
+        raise RuntimeError('release scale failed (%d): %s' %
+                           (completed.returncode, completed.stderr.decode('utf-8', 'replace')))
+    return elapsed
+try:
+    run(max(8, k // 8), True)
+    small = run(k, False)
+    large = run(2 * k, False)
+    ratio = large / small if small > 0 else float('inf')
+    print('  release K=%d %.3fs, 2K=%d %.3fs, ratio %.3f' % (k, small, 2 * k, large, ratio))
+    if large < 0.5:
+        raise RuntimeError('release 2K run is under 0.5s; increase NATIVE_OPT_RELEASE_SCALE_K')
+    if ratio > 3.0:
+        raise RuntimeError('release 2K/K exceeds 3.0')
+except RuntimeError as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(1)
+PY
+then
+  fail 'release optimizer scale contract failed'
+fi
+
+echo '== 7. mutation proofs, each rebuilding iyi-opt'
 prove_mutation 'M1: iterated phi frontier' src/compiler/ir/opt/mem2reg.iyi \
   '        work << y # iterate: phi blocks define the slot too' \
   '        work << y if false # iterate: phi blocks define the slot too' \
@@ -297,8 +408,33 @@ prove_mutation 'M5: signed integer comparison' src/compiler/ir/opt/fold.iyi \
   '    return lhs_value.unsafe_to_u64 < rhs_value.unsafe_to_u64 # mutation M5: signed comparison' \
   -- mutation_check M5 simplify fold_icmp_signed || fail 'M5 was not caught'
 mutation_result M5
+prove_mutation 'M6: argument mapping' src/compiler/ir/opt/inline.iyi \
+  '    values[callee.params[k]] = call.args[k + 1] # mutation S6-arg: actual argument to parameter' \
+  '    values[callee.params[k]] = call.args[callee.params.size - k] # mutation S6-arg: actual argument to parameter' \
+  -- mutation_check M6 inline leaf_two || fail 'M6 was not caught'
+mutation_result M6
+prove_mutation 'M7: every return reaches the phi' src/compiler/ir/opt/inline.iyi \
+  '      result.add_incoming(mapped_value(term.args[0], values), dest) # mutation S6-return: every return edge' \
+  '      result.add_incoming(mapped_value(term.args[0], values), dest) if result.args.empty? # mutation S6-return: every return edge' \
+  -- mutation_check M7 inline returns || fail 'M7 was not caught'
+mutation_result M7
+prove_mutation 'M8: actual field offset' src/compiler/ir/opt/sroa.iyi \
+  '      offset = offset + mod.layout.offset_of(type, index) # mutation S6-offset: select the actual field' \
+  '      offset = offset + mod.layout.offset_of(type, 0) # mutation S6-offset: select the actual field' \
+  -- mutation_check M8 sroa fields || fail 'M8 was not caught'
+mutation_result M8
+prove_mutation 'M9: address-taken roots' src/compiler/ir/opt/deadfn.iyi \
+  '            note_address(value, live, work, seen) # mutation S6-address: keep address-taken functions' \
+  '            nil # mutation S6-address: keep address-taken functions' \
+  -- mutation_check M9 deadfn roots || fail 'M9 was not caught'
+mutation_result M9
+prove_mutation 'M10: callees before callers' src/compiler/ir/opt/callgraph.iyi \
+  '          pending[own] = pending[own] + 1 # mutation S6-order: caller waits for callee' \
+  '          pending[own] = pending[own] + 0 # mutation S6-order: caller waits for callee' \
+  -- mutation_check M10 inline bottom_up || fail 'M10 was not caught'
+mutation_result M10
 
-echo '== 7. verdict'
+echo '== 8. verdict'
 if [ "$failed" -eq 0 ]; then
   echo 'ALL NATIVE OPT CHECKS PASSED!'
   exit 0
