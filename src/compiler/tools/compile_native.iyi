@@ -1,6 +1,6 @@
 # iyi-compile-native: compiles one program to a signed arm64 Mach-O executable, with no LLVM and no host tool.
 #
-#   iyi-compile-native <program.iyi> -o <exe> [--backend native] [--target aarch64-apple-darwin] [-O0]
+#   iyi-compile-native <program.iyi> -o <exe> [--backend native] [--target aarch64-apple-darwin] [-O0|-O3|--release]
 #   iyi-compile-native <program.ir>  -o <exe> [--target aarch64-apple-darwin]
 #   iyi-compile-native <program.ir>  -o <exe>   with <program.ir>.imports beside it: one library per line, loaded too
 #   iyi-compile-native <program.iyi> -o <exe> --probe-phase   prints the phase each stage reached, and writes no executable on a refusal
@@ -86,7 +86,7 @@ module CompileNative
     IyiFiber.stack_bytes = PHASE_STACK_BYTES
     args = Program.args
     if args.size < 3 || args[1] != "-o"
-      fail("usage: iyi-compile-native <program.iyi|program.ir> -o <exe> [--backend native] [--target #{TARGET}] [-O0]")
+      fail("usage: iyi-compile-native <program.iyi|program.ir> -o <exe> [--backend native] [--target #{TARGET}] [-O0|-O3|--release]")
     end
     input = args[0]
     output = args[2]
@@ -148,9 +148,10 @@ module CompileNative
       elsif args[i] == "-O0"
         opt_tier = OptTier::None
         i = i + 1
-      elsif args[i] == "--release"
-        fail("--release is not in the self-hosted compiler yet")
-      elsif args[i] == "-O1" || args[i] == "-O2" || args[i] == "-O3" || args[i] == "-Os" || args[i] == "-Oz"
+      elsif args[i] == "--release" || args[i] == "-O3"
+        opt_tier = OptTier::Release
+        i = i + 1
+      elsif args[i] == "-O1" || args[i] == "-O2" || args[i] == "-Os" || args[i] == "-Oz"
         fail("-O #{args[i][2..-1]} is not in the self-hosted compiler yet")
       else
         fail("unknown argument #{args[i]}")

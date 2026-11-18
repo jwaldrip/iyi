@@ -8,9 +8,10 @@ still the codegen path; the integrator flips it.
 
 Phases, in order: `parse`, `declarations`, `bodies`, `lower`, `verify`, `opt`, `native`, `link`. The
 default `opt` tier runs CFG simplification, local promotion, simplification and dead-code elimination.
-`-O0` selects no IR passes. With `--probe-phase` each phase prints `[phase] X: start`, then
-`[phase] X: pass` when it passes. A refusal prints `X: fail: <message>` and `reached: <last pass>`
-and writes no output.
+`-O0` selects no IR passes. `--release` and `-O3` select a tier with aggregate promotion,
+inlining, repeated cleanup and dead-function removal. `-O1` and `-O2` are refused.
+With `--probe-phase` each phase prints `[phase] X: start`, then `[phase] X: pass` when it passes.
+A refusal prints `X: fail: <message>` and `reached: <last pass>` and writes no output.
 
 `--keep-going` (probe only) switches the body typer to total mode before the bodies phase: a construct it
 cannot type is recorded on its node with its reason, and typing goes on. After the bodies phase the tool prints
@@ -221,8 +222,8 @@ table: hello defs-reached=946 defs-typed-clean=946 root-refusals=0 refusal-sites
 table: hello defs-lowered-clean=771 lowering-refusal-sites=0
 table: parse defs-reached=4467 defs-typed-clean=4467 root-refusals=0 refusal-sites=0
 table: parse defs-lowered-clean=3862 lowering-refusal-sites=0
-table: compile_native defs-reached=34975 defs-typed-clean=34975 root-refusals=0 refusal-sites=0
-table: compile_native defs-lowered-clean=31400 lowering-refusal-sites=30
+table: compile_native defs-reached=35232 defs-typed-clean=35232 root-refusals=0 refusal-sites=0
+table: compile_native defs-lowered-clean=31615 lowering-refusal-sites=30
 table: compile_native lowering 18 owner=lowering core reason=lower: visit(loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)) (hosted codegen.cr) is not ported yet example=IyiGroup#spawn_pooled
 table: compile_native lowering 10 owner=lowering core reason=lower: visit(a call dispatched over (Array(Compiler::Semantic::TopLevel::Type) | Array(Compiler::Types::Types::GenericInstanceType)) with a block (hosted call.cr: codegen_dispatch)) (hosted codegen.cr) is not ported yet example=Compiler::Semantic::Restrictions::ArgRestriction.class#restrict_argument
 table: compile_native lowering 2 owner=lowering core reason=lower: visit(yield with no block in scope (hosted codegen.cr: visit(Yield), a block of an enclosing block body)) (hosted codegen.cr) is not ported yet example=Std::Dir::Dir.class#glob

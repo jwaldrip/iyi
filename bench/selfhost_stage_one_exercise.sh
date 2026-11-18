@@ -359,7 +359,8 @@ check_unsupported_options() {
   refuse_build --ll --ll || failed=1
   refuse_build --x86-asm-syntax --x86-asm-syntax intel || failed=1
   refuse_build --debug --debug || failed=1
-  refuse_build --release --release || failed=1
+  refuse_build '-O 1' -O1 || failed=1
+  refuse_build '-O 2' -O2 || failed=1
   local flag flag_file
   for flag in stale-key stale-accept stale-block stale-dump-elements stale-inputs; do
     flag_file="$WORK/out/$flag"
@@ -375,7 +376,6 @@ check_unsupported_options() {
       failed=1
     fi
   done
-  refuse_build -O -O 2 || failed=1
   refuse_build -D -D CUSTOM || failed=1
   refuse_build --mcpu --mcpu generic || failed=1
   refuse_build --mattr --mattr +test || failed=1
@@ -419,6 +419,17 @@ check_accepted_options() {
     { show_failure "accepted options exited $RC"; return 1; }
   execute_native "$WORK/out/accepted" && [ "$NATIVE_RC" -eq 0 ] &&
     cmp -s "$WORK/hello.expected" "$WORK/native.stdout" || return 1
+  execute_native "$WORK/out/hello" || return 1
+  local default_rc="$NATIVE_RC" flag
+  cp "$WORK/native.stdout" "$WORK/default-hello.stdout"
+  for flag in --release -O3; do
+    invoke_stage1 build -o "$WORK/out/accepted-release" "$flag" "$REPO/samples/iyi/hello.iyi"
+    [ "$RC" -eq 0 ] && [ ! -s "$WORK/stdout" ] && [ ! -s "$WORK/stderr" ] ||
+      { show_failure "$flag build exited $RC"; return 1; }
+    execute_native "$WORK/out/accepted-release" && [ "$NATIVE_RC" -eq "$default_rc" ] &&
+      cmp -s "$WORK/default-hello.stdout" "$WORK/native.stdout" ||
+      { show_failure "$flag output or status differs from default"; return 1; }
+  done
   local fixture="$REPO/bench/fixtures/lowprim_tuple_metaclass.iyi"
   IYI_PATH="$REPO/src" "$BOOTSTRAP" build --prelude empty -o "$WORK/out/empty.hosted" "$fixture" \
     >"$WORK/hosted-empty.log" 2>&1 || { cat "$WORK/hosted-empty.log"; return 1; }

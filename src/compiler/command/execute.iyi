@@ -64,8 +64,7 @@ pub class CommandExecutor
     return "--ll requires LLVM output, which the native compiler does not produce" if opts.dump_ll
     return "--x86-asm-syntax intel requires x86 assembly, which the native compiler does not produce" if opts.x86_asm_syntax == "intel"
     return "--debug is not in the self-hosted compiler yet" if opts.debug == "all"
-    return "--release is not in the self-hosted compiler yet" if opts.release
-    return "-O #{opts.optimization_mode} is not in the self-hosted compiler yet" if opts.optimization_mode != "0"
+    return "-O #{opts.optimization_mode} is not in the self-hosted compiler yet" if opts.optimization_mode != "0" && opts.optimization_mode != "3"
     return "-D is not in the self-hosted compiler yet" unless opts.flags.empty?
     return "--mcpu has no native backend setting" if opts.mcpu
     return "--mattr has no native backend setting" if opts.mattr
@@ -151,6 +150,7 @@ pub class CommandExecutor
     loader.load_prelude = opts.prelude == "iyi/prelude"
     config = CompilerConfig.new(output, false, nil, false, TARGET, false, false, false, true)
     config.opt_tier = OptTier::None if opts.specified_optimization
+    config.opt_tier = OptTier::Release if opts.optimization_mode == "3"
     compiler = Compiler.new(config, loader, NativeBackend.new)
     previous = File.info?(output)
     compiler.compile(opts.filenames[0])
