@@ -550,7 +550,206 @@ check_pointer_flag_collector() {
   check_collector "$1" "$FIX_RA/pointer_flag_fp.ir" check_pointer_flag_output
 }
 
+# Require a dying arithmetic source to share its result, a predecessor's
+# phi copy to disappear, and no identity copies to reach the encoder.
+check_coalescing() {
+  local drv=$1 out="$WORK/coalescing.mir"
+  [ -x "$drv" ] || return 2
+  if ! "$drv" mir "$FIX_RA/diamond.ir" pick >"$out" 2>&1; then
+    echo "could not emit the coalescing fixture"
+    return 2
+  fi
+  "$PY" - "$out" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+if not text.startswith("function pick\n"):
+    print("invalid MIR for coalescing")
+    sys.exit(2)
+identity = re.search(r"^  (?:Mov|FMov)/64f? (x\d+|d\d+), \1$", text, re.M)
+shared = re.search(r"^  AddImm/64 (x\d+), \1 #imm=1$", text, re.M)
+then = re.search(r"^block 1 then\n(.*?)(?=^block )", text, re.M | re.S)
+join = re.search(r"^block 3 join\n(.*)", text, re.M | re.S)
+if then is None or join is None:
+    print("invalid diamond MIR blocks")
+    sys.exit(2)
+phi = re.search(r"^  Eor/64 (x\d+),[^\n]*\n  B/64", then.group(1), re.M)
+merged = re.search(r"^  Add/64 (x\d+), (x\d+),", join.group(1), re.M)
+if identity or not shared or not phi or not merged or phi.group(1) != merged.group(2):
+    print("coalescing or identity removal is missing")
+    sys.exit(1)
+print("coalescing: dying source and phi copy share a register; no identity moves")
+PY
+}
+
+# This direct MIR fixture has a lower-numbered free register at the copy. Only
+# the copy preference gives the result its source's register.
+check_copy_hint() {
+  local ignored=$1 exe="$WORK/copy-hint-$RANDOM$EXE" line
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/copy_hint.iyi")" >"$WORK/copy-hint.log" 2>&1; then
+    cat "$WORK/copy-hint.log"
+    return 2
+  fi
+  if ! line=$("$exe"); then
+    echo "copy hint fixture could not run"
+    return 2
+  fi
+  "$PY" - "$line" <<'PY'
+import sys
+try:
+    source, dest, count = map(int, sys.argv[1].split())
+except ValueError:
+    print("invalid copy hint fixture output")
+    sys.exit(2)
+if source < 0 or source != dest or count != 4:
+    print("copy preference did not coalesce the source and destination")
+    sys.exit(1)
+print("copy preference: source and destination share a register")
+PY
+}
+
+check_fpr_frame() {
+  local drv=$1 out="$WORK/fpr-frame.mir"
+  [ -x "$drv" ] || return 2
+  if ! "$drv" mir "$FIX_RA/fp_callee_saved.ir" probe >"$out" 2>&1; then
+    echo "could not emit the floating-point frame fixture"
+    return 2
+  fi
+  "$PY" - "$out" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+if not text.startswith("function probe\n"):
+    print("invalid floating-point frame MIR")
+    sys.exit(2)
+blocks = re.split(r"^block \d+ [^\n]+\n", text, flags=re.M)
+if len(blocks) < 4 or text.count("  Ret/64\n") < 2:
+    print("invalid floating-point return paths")
+    sys.exit(2)
+saves = set(re.findall(r"^  SpStore/64f (d(?:8|9|1[0-5]))(?: #imm=(\d+))?$", text, re.M))
+if not saves:
+    print("no used callee-saved FPR was saved")
+    sys.exit(1)
+for block in blocks:
+    if "  Ret/64\n" not in block:
+        continue
+    restores = set(re.findall(r"^  SpLoad/64f (d(?:8|9|1[0-5]))(?: #imm=(\d+))?$", block, re.M))
+    if not saves <= restores:
+        print("a return does not restore every saved FPR")
+        sys.exit(1)
+print(f"floating-point frame: {len(saves)} registers saved on {text.count('  Ret/64') } return paths")
+PY
+}
+
+check_fpr_output() {
+  check_fixture_output "$1" "$FIX_RA/fp_callee_saved.ir"
+}
+
+check_spill_weights() {
+  local ignored=$1 exe="$WORK/spill-weights-$RANDOM$EXE" values
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/spill_weights.iyi")" >"$WORK/spill-weights.log" 2>&1; then
+    cat "$WORK/spill-weights.log"
+    return 2
+  fi
+  if ! values=$("$exe"); then
+    echo "spill weight fixture could not run"
+    return 2
+  fi
+  "$PY" - "$values" <<'PY'
+import sys
+try:
+    hot, cold, nested_hot, warm, cycle_hot, cycle_cold = map(int, sys.argv[1].split())
+except ValueError:
+    print("invalid spill weight fixture output")
+    sys.exit(2)
+if hot < 0 or cold != -1 or nested_hot < 0 or warm != -1 or cycle_hot < 0 or cycle_cold != -1:
+    print("a hotter interval spilled instead of a colder one")
+    sys.exit(1)
+print("spill weights: hot and inner-loop values stay in registers")
+PY
+}
+
+check_reload_reuse() {
+  local ignored=$1 exe="$WORK/reload-reuse-$RANDOM$EXE" values
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/reload_reuse.iyi")" >"$WORK/reload-reuse.log" 2>&1; then
+    cat "$WORK/reload-reuse.log"
+    return 2
+  fi
+  if ! values=$("$exe"); then
+    echo "reload reuse fixture could not run"
+    return 2
+  fi
+  "$PY" - "$values" <<'PY'
+import sys
+try:
+    gpr_loads, defined, used, fpr_loads, copies_loads = map(int, sys.argv[1].split())
+except ValueError:
+    print("invalid reload reuse fixture output")
+    sys.exit(2)
+if (gpr_loads, fpr_loads, copies_loads) != (3, 3, 3) or defined != used:
+    print("reload reuse or invalidation is incorrect")
+    sys.exit(1)
+print("reload reuse: GPR and FPR caches respect redefinitions and clobbers")
+PY
+}
+
 echo "== 6. mutation proofs"
+prove_mutation "reload reuse: reload each use instead of reusing a scratch register" \
+  src/compiler/native/regalloc_linear.iyi check_reload_reuse \
+  '    return r if cache[r] == v && (blocked & mask) == 0_u64' \
+  '    return r if false && cache[r] == v && (blocked & mask) == 0_u64'
+prove_mutation "reload reuse: ignore explicit physical definitions" \
+  src/compiler/native/regalloc_linear.iyi check_reload_reuse \
+  '        cache[op.reg] = -1 # physical-def-invalidates-reload' \
+  '        cache[op.reg] = cache[op.reg] # physical-def-invalidates-reload'
+prove_mutation "reload reuse: ignore call clobbers" \
+  src/compiler/native/regalloc_linear.iyi check_reload_reuse \
+  '      cache[reg] = -1 if reg >= 0 && reg < 64 # call-clobber-invalidates-reload' \
+  '      cache[reg] = cache[reg] if reg >= 0 && reg < 64 # call-clobber-invalidates-reload'
+prove_mutation "reload reuse: keep stale copies after a redefinition" \
+  src/compiler/native/regalloc_linear.iyi check_reload_reuse \
+  '          cache[r] = -1 if r != reg && cache[r] == v' \
+  '          cache[r] = cache[r] if r != reg && cache[r] == v'
+prove_mutation "spill weights: evict by furthest end instead of weight" \
+  src/compiler/native/regalloc_linear.iyi check_spill_weights \
+  '      cheaper = @weights[a] < @weights[iv] || (@weights[a] == @weights[iv] && @ends[a] > @ends[iv])' \
+  '      cheaper = @ends[a] > @ends[iv]'
+prove_mutation "spill weights: discard nesting depth" \
+  src/compiler/native/regalloc_linear.iyi check_spill_weights \
+  '    depth[v] = (owner[v] >= 0 ? depth[owner[v]] : 0) + (header[v] ? 1 : 0)' \
+  '    depth[v] = header[v] || owner[v] >= 0 ? 1 : 0'
+prove_mutation "spill weights: mistake irreducible edges for natural backedges" \
+  src/compiler/native/regalloc_linear.iyi check_spill_weights \
+  '      if dfs_ancestor?(number, last, s, b) && dfs_ancestor?(dom[0], dom[1], s, b)' \
+  '      if dfs_ancestor?(number, last, s, b)'
+prove_mutation "floating-point frame: omit callee-saved FPR stores" \
+  src/compiler/native/frame.iyi check_fpr_frame \
+  '    acc << m
+    i = i + 1' \
+  '    acc << m unless m.fp
+    i = i + 1'
+prove_mutation "floating-point frame: omit the FPR restore on the early return" \
+  src/compiler/native/frame.iyi check_fpr_frame \
+  '        acc << m
+        i = i + 1' \
+  '        acc << m unless m.fp && block.name == "negative"
+        i = i + 1'
+prove_mutation "coalescing: ignore virtual-register copy hints" \
+  src/compiler/native/regalloc_linear.iyi check_copy_hint \
+  '    preferred = @homes[other] if other >= 0 && @homes[other] >= 0' \
+  '    preferred = -1 if other >= 0 && @homes[other] >= 0'
+prove_mutation "coalescing: keep uses live through every definition" \
+  src/compiler/native/regalloc_linear.iyi check_coalescing \
+  '        use_end = distinct_inputs_and_defs?(@fn.isa, inst) ? pos + 1 : pos' \
+  '        use_end = pos + 1'
+prove_mutation "coalescing: retain identity copies" \
+  src/compiler/native/regalloc_linear.iyi check_coalescing \
+  '    acc << inst unless identity' \
+  '    acc << inst'
 if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_mutation "linear: a register is given to an interval that overlaps an active one" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
@@ -558,16 +757,20 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
     '      return reg unless reserved?(reg, @starts[iv], @ends[iv])'
   prove_mutation "rewrite: a spilled operand is read without its reload" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
-    '        reloads << slot_access(fn.isa, true, reg, fn.vreg_slot[v], fp)' \
+    '          reloads << slot_access(fn.isa, true, reg, fn.vreg_slot[v], fp)' \
     '        # the reload is dropped'
   prove_mutation "linear: a value that crosses a call may take a caller-saved register" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
     '      return @callee_pool' \
     '      return @caller_pool + @callee_pool'
+  prove_mutation "floating-point call: assign a caller-saved register across the call" \
+    src/compiler/native/regalloc_linear.iyi check_fpr_output \
+    '        return @callee_fpr_pool' \
+    '        return @fpr_pool'
   prove_mutation "collector: a floating-point value across a call may take an fp register, and the assertion is off" \
     src/compiler/native/regalloc_linear.iyi check_pointer_output \
-    '        return [] of Int32' \
-    '        return @fpr_pool' \
+    '        return [] of Int32 if @pointer[iv]' \
+    '        return @fpr_pool if @pointer[iv]' \
     '        if fp && @crossing[v] && @pointer[v]' \
     '        if false && fp && @crossing[v] && @pointer[v]'
 else
@@ -578,14 +781,12 @@ else
 fi
 prove_mutation "collector: a floating-point value across a call may take an fp register; the assertion catches it" \
   src/compiler/native/regalloc_linear.iyi check_pointer_collector \
-  '        return [] of Int32' \
-  '        return @fpr_pool'
+  '        return [] of Int32 if @pointer[iv]' \
+  '        return @callee_fpr_pool if @pointer[iv]'
 prove_mutation "collector: a flagged value may take a floating-point register across a call; the assertion catches it" \
   src/compiler/native/regalloc_linear.iyi check_pointer_flag_collector \
-  '      if @crossing[iv]
-        return [] of Int32' \
-  '      if @crossing[iv] && !@pointer[iv]
-        return [] of Int32'
+  '        return [] of Int32 if @pointer[iv]' \
+  '        return @callee_fpr_pool if @pointer[iv]'
 if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_mutation "linear: a value live into a block that starts with a call is not counted as crossing it" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
