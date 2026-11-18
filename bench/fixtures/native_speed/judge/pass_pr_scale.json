@@ -1,0 +1,35 @@
+{
+  "ceiling": "noise cycles 0.05\nnoise cpu 0.10\narith default cycles 1.20\narith release cycles 1.20\n",
+  "measurements": {
+    "rows": [
+      {
+        "workload": "arith",
+        "mode": "default",
+        "hosted": [
+          {
+            "wall": 1.0,
+            "cpu": 1.0,
+            "cycles": 100,
+            "instructions": 200,
+            "footprint": 1048576,
+            "result": "42"
+          }
+        ],
+        "native": [
+          {
+            "wall": 1.0,
+            "cpu": 1.0,
+            "cycles": 129.0,
+            "instructions": 200,
+            "footprint": 1048576,
+            "result": "42"
+          }
+        ],
+        "cosmetic": false
+      }
+    ]
+  },
+  "scale": 2,
+  "target": false,
+  "expect": "PASS"
+}

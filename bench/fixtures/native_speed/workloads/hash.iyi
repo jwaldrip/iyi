@@ -1,0 +1,18 @@
+
+def run(n : Int32) : Int64
+  counts = {} of Int32 => Int32
+  i = 0
+  while i < n
+    counts[i] = i
+    i = i + 1
+  end
+  sum = 0_i64
+  key = 0
+  while key < n
+    sum = sum + counts[key]
+    key = key + 1
+  end
+  sum
+end
+
+puts "result=#{run(3_000_000)}"
