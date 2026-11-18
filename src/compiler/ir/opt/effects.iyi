@@ -114,6 +114,7 @@ pub def pure?(i : Inst) : Bool
   !has_side_effects?(i) && !reads_memory?(i) && !writes_memory?(i) && !opaque?(i)
 end
 
+# Opaque runtime entries are not devirt.iyi's type-id sources, which also include IyiHeap.new_object.
 pub def runtime_entry?(f : Function) : Bool
   case f.name
   when "__iyi_new", "__iyi_malloc64", "__iyi_malloc_atomic64", "__iyi_realloc64",

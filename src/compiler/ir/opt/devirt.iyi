@@ -27,6 +27,7 @@ def private_function?(fn : Function) : Bool
 end
 
 
+# This type-id source set also includes IyiHeap.new_object; effects.iyi's runtime_entry? instead lists opaque calls.
 def new_object?(name : String) : Bool
   name.includes?("IyiHeap::new_object") || name.includes?("IyiHeap.new_object")
 end
