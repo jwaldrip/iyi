@@ -214,6 +214,10 @@ pub class Encoder
       load_store(inst, inst.defs[0].reg, inst.uses[0].reg, inst.imm, true)
     elsif op == MOp::Str
       load_store(inst, inst.uses[0].reg, inst.uses[1].reg, inst.imm, false)
+    elsif op == MOp::LdrReg || op == MOp::StrReg
+      register_access(inst, op == MOp::LdrReg)
+    elsif op == MOp::Ldp || op == MOp::Stp
+      pair_access(inst, op == MOp::Ldp)
     elsif op == MOp::LdrFrame
       load_store(inst, inst.defs[0].reg, 31, slot_offset(inst.uses[0]), true)
     elsif op == MOp::StrFrame
@@ -288,6 +292,10 @@ pub class Encoder
       word(0x9AC00800_i64 | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::Msub
       word(0x9B008000_i64 | (field(inst.uses[2].reg) << 16) | (field(inst.uses[0].reg) << 10) | (field(inst.uses[1].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::Madd
+      word(0x9B000000_i64 | (field(inst.uses[2].reg) << 16) | (field(inst.uses[0].reg) << 10) | (field(inst.uses[1].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::Neg
+      word(0xCB0003E0_i64 | (field(inst.uses[0].reg) << 16) | field(inst.defs[0].reg))
     elsif op == MOp::Lsl
       word(0x9AC02000_i64 | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::Lsr
@@ -472,6 +480,40 @@ pub class Encoder
       end
       @relocs << Reloc.new(base + r.offset.to_i64, r.kind, index, r.addend)
     end
+  end
+
+  def pair_access(inst : MInst, load : Bool) : Nil
+    if inst.fp
+      base = inst.size == 64 ? (load ? 0x6D400000_i64 : 0x6D000000_i64) : (load ? 0x2D400000_i64 : 0x2D000000_i64)
+    else
+      base = inst.size == 64 ? (load ? 0xA9400000_i64 : 0xA9000000_i64) : (load ? 0x29400000_i64 : 0x29000000_i64)
+    end
+    scale = inst.size // 8
+    raise "invalid pair offset #{inst.imm}" if inst.imm % scale.to_i64 != 0_i64 || inst.imm // scale.to_i64 < -64_i64 || inst.imm // scale.to_i64 > 63_i64
+    rt = load ? inst.defs[0].reg : inst.uses[0].reg
+    rt2 = load ? inst.defs[1].reg : inst.uses[1].reg
+    rn = load ? inst.uses[0].reg : inst.uses[2].reg
+    word(base | (((inst.imm // scale.to_i64) & 127_i64) << 15) | (field(rt2) << 10) | (field(rn) << 5) | field(rt))
+  end
+
+  # Register-offset accesses use UXTX and the access size's natural shift.
+  def register_access(inst : MInst, load : Bool) : Nil
+    if inst.fp
+      base = inst.size == 64 ? (load ? 0xFC606800_i64 : 0xFC206800_i64) : (load ? 0xBC606800_i64 : 0xBC206800_i64)
+    elsif inst.size == 64
+      base = load ? 0xF8606800_i64 : 0xF8206800_i64
+    elsif inst.size == 32
+      base = load ? (inst.signed ? 0xB8A06800_i64 : 0xB8606800_i64) : 0xB8206800_i64
+    elsif inst.size == 16
+      base = load ? (inst.signed ? 0x78A06800_i64 : 0x78606800_i64) : 0x78206800_i64
+    else
+      base = load ? (inst.signed ? 0x38A06800_i64 : 0x38606800_i64) : 0x38206800_i64
+    end
+    base = base | 0x1000_i64 if inst.size > 8 # indexed-access-scale
+    rt = load ? inst.defs[0].reg : inst.uses[0].reg
+    rn = load ? inst.uses[0].reg : inst.uses[1].reg
+    rm = load ? inst.uses[1].reg : inst.uses[2].reg
+    word(base | (field(rm) << 16) | (field(rn) << 5) | field(rt))
   end
 
   # Integer loads and stores. A load of `size` bits into a register is zero-extended unless `signed`.

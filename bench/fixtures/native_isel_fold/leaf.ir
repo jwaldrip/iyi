@@ -1,0 +1,102 @@
+; iyi-ir 1
+module "leaf"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+
+define internal i64 @plain_leaf(i64 %x) {
+entry:
+  %r = add i64 %x, 3
+  ret i64 %r
+}
+define internal i64 @slot_leaf(i64 %x) {
+entry:
+  %slot = alloca i64, align 8
+  store i64 %x, ptr %slot, align 8
+  %v = load i64, ptr %slot, align 8
+  ret i64 %v
+}
+define internal i64 @slot_caller() {
+entry:
+  %guard = alloca i64, align 8
+  store i64 777, ptr %guard, align 8
+  %v = call i64 (i64) @slot_leaf(i64 31)
+  %saved = load i64, ptr %guard, align 8
+  %sum = add i64 %saved, %v
+  ret i64 %sum
+}
+define internal i64 @stack_arg(i64 %a0, i64 %a1, i64 %a2, i64 %a3, i64 %a4, i64 %a5, i64 %a6, i64 %a7, i64 %a8) {
+entry:
+  ret i64 %a8
+}
+define internal i64 @asm_leaf(i64 %x) {
+entry:
+  call void () asm sideeffect "nop", ""()
+  %r = add i64 %x, 1
+  ret i64 %r
+}
+define internal i64 @saved_leaf(i64 %x) {
+entry:
+  %v1 = add i64 %x, 1
+  %v2 = add i64 %x, 2
+  %v3 = add i64 %x, 3
+  %v4 = add i64 %x, 4
+  %v5 = add i64 %x, 5
+  %v6 = add i64 %x, 6
+  %v7 = add i64 %x, 7
+  %v8 = add i64 %x, 8
+  %v9 = add i64 %x, 9
+  %v10 = add i64 %x, 10
+  %v11 = add i64 %x, 11
+  %v12 = add i64 %x, 12
+  %v13 = add i64 %x, 13
+  %v14 = add i64 %x, 14
+  %v15 = add i64 %x, 15
+  %v16 = add i64 %x, 16
+  %v17 = add i64 %x, 17
+  %v18 = add i64 %x, 18
+  %v19 = add i64 %x, 19
+  %v20 = add i64 %x, 20
+  %s1 = add i64 %v1, %v2
+  %s2 = add i64 %s1, %v3
+  %s3 = add i64 %s2, %v4
+  %s4 = add i64 %s3, %v5
+  %s5 = add i64 %s4, %v6
+  %s6 = add i64 %s5, %v7
+  %s7 = add i64 %s6, %v8
+  %s8 = add i64 %s7, %v9
+  %s9 = add i64 %s8, %v10
+  %s10 = add i64 %s9, %v11
+  %s11 = add i64 %s10, %v12
+  %s12 = add i64 %s11, %v13
+  %s13 = add i64 %s12, %v14
+  %s14 = add i64 %s13, %v15
+  %s15 = add i64 %s14, %v16
+  %s16 = add i64 %s15, %v17
+  %s17 = add i64 %s16, %v18
+  %s18 = add i64 %s17, %v19
+  %s19 = add i64 %s18, %v20
+  ret i64 %s19
+}
+define internal i64 @nonleaf(i64 %x) {
+entry:
+  %v = call i64 (i64) @plain_leaf(i64 %x)
+  ret i64 %v
+}
+define i32 @main() {
+entry:
+  %a = call i64 (i64) @plain_leaf(i64 5)
+  %b = call i64 () @slot_caller()
+  %c = call i64 (i64, i64, i64, i64, i64, i64, i64, i64, i64) @stack_arg(i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8, i64 9)
+  %d = call i64 (i64) @asm_leaf(i64 7)
+  %e = call i64 (i64) @saved_leaf(i64 1)
+  %f = call i64 (i64) @nonleaf(i64 5)
+  %p0 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %a)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %b)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %c)
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %d)
+  %p4 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %e)
+  %p5 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %f)
+  ret i32 0
+}

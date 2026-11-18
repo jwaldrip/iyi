@@ -27,6 +27,11 @@ fail() { echo "FAIL: $*"; failed=1; }
 export NATIVE_SIGNATURE_FAILURE_FILE="$WORK/signature-failure"
 FIX=bench/fixtures/native_isel_fold
 DRV="$WORK/native_cg$EXE"
+export S10_DIVISION_IR="$WORK/division.ir"
+if ! "$PY" "$(native_path "$FIX/division_table.py")" "$(native_path "$WORK")"; then
+  echo "SOME NATIVE ISEL FOLD CHECKS FAILED"
+  exit 1
+fi
 
 build_driver() {
   ./bin/iyi build -o "$(native_path "$1")" "$(native_path src/compiler/tools/native_cg.iyi)" >"$WORK/build.$(basename "$1").log" 2>&1
@@ -83,9 +88,10 @@ run_obj() {
 
 # A mismatch or a timeout is a detected behavioral defect; setup failures are invalid.
 check_output() {
-  local drv=$1 clean=$2 key=$3 prefix="$WORK/check.$3.$2" rc ext
+  local drv=$1 clean=$2 key=$3 prefix="$WORK/check.$3.$2" rc ext ir="$FIX/$3.ir"
+  [ "$key" != division ] || ir="$WORK/division.ir"
   [ -f "$WORK/expected.$key.out" ] && [ -f "$WORK/expected.$key.status" ] || return 2
-  emit_obj "$drv" "$clean" "$FIX/$key.ir" "$prefix" || { cat "$prefix.obj.log" 2>/dev/null || true; return 2; }
+  emit_obj "$drv" "$clean" "$ir" "$prefix" || { cat "$prefix.obj.log" 2>/dev/null || true; return 2; }
   run_obj "$prefix"
   rc=$?
   [ "$rc" -ne 1 ] || { echo "decisive: $key timed out"; return 1; }
@@ -205,7 +211,8 @@ checks = 0
 def dump(fixture, function, clean):
     env = dict(os.environ, IYI_NATIVE_MIR_CLEAN=str(clean))
     try:
-        proc = subprocess.run([drv, "mir", str(fixture_dir / (fixture + ".ir")), function],
+        ir = Path(os.environ["S10_DIVISION_IR"]) if fixture == "division" else fixture_dir / (fixture + ".ir")
+        proc = subprocess.run([drv, "mir", str(ir), function],
                               env=env, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired) as exc:
         errors.append(f"{function}: cannot run MIR driver: {exc}")
@@ -262,6 +269,40 @@ expect("deferred", "multi_bit", [op("AndImm"), r"^  Cb(n)?z/"], [op("Tbz"), op("
 for fn in ("nested_compare", "hint_compare"):
     expect("deferred", fn, [op("Cset"), r"^  Cb(n)?z/"], [op("Tbz"), op("Tbnz")])
 expect("deferred", "gep_other", [op("AddImm"), op("Ldr"), r"^  Cb(n)?z/"], [op("Tbz"), op("Tbnz")])
+for fn in ("load64", "load32", "load16", "load8"):
+    expect("indexed", fn, [op("LdrReg")], [op("Mul")])
+for fn in ("store64", "store32", "store16", "store8"):
+    expect("indexed", fn, [op("StrReg")], [op("Mul")])
+expect("indexed", "wrong_scale", [op("Mul"), op("Ldr")], [op("LdrReg")])
+expect("indexed", "shared_address", [op("Mul"), op("Ldr"), op("Str")], [op("LdrReg"), op("StrReg")])
+for fn in ("s8_p3", "s16_m7", "s32_p10", "s64_p7", "u8_p3", "u16_p7", "u32_p10", "u64_p7"):
+    expect("division", fn, [op("Umulh"), op("Msub")], [op("Sdiv"), op("Udiv")])
+for fn in ("u8_p2", "u16_p64", "u32_p2", "u64_p64"):
+    expect("division", fn, [op("LsrImm"), op("Msub")], [op("Sdiv"), op("Udiv"), op("Umulh")])
+for fn in ("add_left", "add_right", "narrow"):
+    expect("mulacc", fn, [op("Madd")], [op("Mul")])
+expect("mulacc", "sub_left", [op("Neg"), op("Madd")], [op("Mul")])
+expect("mulacc", "sub_right", [op("Msub")], [op("Mul")])
+expect("mulacc", "shared_mul", [op("Mul")], [op("Madd"), op("Msub")])
+expect("mulacc", "constant_add", [op("Mul"), op("AddImm")], [op("Madd"), op("Msub")])
+expect("mulacc", "constant_sub", [op("Mul"), op("SubImm")], [op("Madd"), op("Msub")])
+for fn in ("choose", "choose_hint"):
+    expect("select", fn, [op("CmpImm"), op("Csel")], [op("Cset")])
+expect("select", "choose_shared", [op("Cset"), op("Csel")])
+for fn in ("float_ordered", "float_unordered"):
+    expect("select", fn, [op("FCmp"), op("Csel")], [op("Cset")])
+expect("select", "float_composite", [op("FCmp"), op("Cset"), op("Csel")])
+for fn in ("load_pair", "interleaved", "reverse_pair", "narrow_pair", "float_pair"):
+    expect("pairs", fn, [op("Ldp")], [op("Ldr")])
+expect("pairs", "store_pair", [op("Stp")], [op("Str")])
+for fn in ("load_gap", "different_bases"):
+    expect("pairs", fn, [op("Ldr")], [op("Ldp")])
+expect("leaf", "plain_leaf", [op("Ret")], [op("StpFpLr"), op("MovFp"), op("LdpFpLr"), op("SpAdjust")])
+expect("leaf", "slot_leaf", [op("StpFpLr"), op("LdrFrame"), op("StrFrame"), op("LdpFpLr")])
+expect("leaf", "stack_arg", [op("StpFpLr"), r"Ldr/64 .*x29", op("LdpFpLr")])
+expect("leaf", "asm_leaf", [op("StpFpLr"), op("InlineAsm"), op("LdpFpLr")])
+expect("leaf", "saved_leaf", [op("StpFpLr"), op("SpStore"), op("SpLoad"), op("LdpFpLr")])
+expect("leaf", "nonleaf", [op("StpFpLr"), op("Bl"), op("LdpFpLr")])
 for problem in errors:
     print("INVALID: " + problem)
 for problem in defects:
@@ -287,8 +328,10 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       exit 1
     fi
   done
-  for key in branches memory immediates overflow deferred; do
-    if ! ./bin/iyi build -o "$(native_path "$WORK/$key.hosted$EXE")" "$(native_path "$FIX/$key.iyi")" >"$WORK/$key.hosted.log" 2>&1; then
+  for key in branches memory immediates overflow deferred indexed division mulacc select pairs leaf; do
+    source="$FIX/$key.iyi"
+    [ "$key" != division ] || source="$WORK/division.iyi"
+    if ! ./bin/iyi build -o "$(native_path "$WORK/$key.hosted$EXE")" "$(native_path "$source")" >"$WORK/$key.hosted.log" 2>&1; then
       cat "$WORK/$key.hosted.log"
       fail "$key: hosted twin did not build"
       continue
@@ -306,6 +349,10 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       if ! check_output "$DRV" "$mode" "$key"; then
         parity_ok=0
         fail "$key: clean=$mode differs from hosted"
+      fi
+      if [ "$key" = pairs ] && ! IYI_NATIVE_REGALLOC=pin check_output "$DRV" "$mode" "$key"; then
+        parity_ok=0
+        fail "$key: pin allocator clean=$mode differs from hosted"
       fi
     done
     [ "$parity_ok" -eq 0 ] || echo "parity: $key (clean=0,1)"
@@ -358,6 +405,13 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_fold_mutation "immediate: accept an out-of-range value" src/compiler/native/aarch64/fold.iyi '  value >= -4095_i64 && value <= 4095_i64 # fold-immediate-range' '  value >= -4095_i64 && value <= 4096_i64 # fold-immediate-range' immediates
   prove_fold_mutation "inversion: leave zero branch unchanged" src/compiler/native/target.iyi '      inst.opcode = MOp::Cbnz.value.to_i32 # invert-zero-branch' '      inst.opcode = inst.opcode # invert-zero-branch' branches
   prove_fold_mutation "deferred: overflow leaf is not a bit test" src/compiler/native/aarch64/isel.iyi '          if other.is_a?(Inst) && @deferred[other]? == DeferredKind::BitTest && bit_test(other) >= 0 # deferred-bit-test' '          if other.is_a?(Inst) && @deferred.has_key?(other) # deferred-bit-test' deferred
+  prove_fold_mutation "indexed: omit access-size scale" src/compiler/native/aarch64/encode.iyi '    base = base | 0x1000_i64 if inst.size > 8 # indexed-access-scale' '    base = base | 0_i64 if inst.size > 8 # indexed-access-scale' indexed
+  prove_fold_mutation "division: reciprocal constant off by one" src/compiler/native/aarch64/fold.iyi '  multiplier = quotient &+ 1_u64 # division-magic' '  multiplier = quotient &+ 2_u64 # division-magic' division
+  prove_fold_mutation "multiply-subtract: exchange the addend" src/compiler/native/aarch64/isel.iyi '    m.uses << vop(addend) # fused-mul-addend' '    m.uses << vop(a)
+    a = addend # fused-mul-addend' mulacc
+  prove_fold_mutation "select: exchange conditional arms" src/compiler/native/aarch64/isel.iyi '        regs << csel_cond(tv[k], fv[k], cond) # select-arms' '        regs << csel_cond(fv[k], tv[k], cond) # select-arms' select
+  prove_fold_mutation "pair: accept the wrong second offset" src/compiler/native/aarch64/isel.iyi '    return false unless high == low + scale # pair-adjacent-offset' '    return false unless high == low + scale * 2_i64 # pair-adjacent-offset' pairs
+  prove_fold_mutation "leaf: discard a required slot frame" src/compiler/native/frame.iyi '  return false unless f.slots.empty? # frameless-no-slots' '  return false unless true # frameless-no-slots' leaf
 else
   host_limited "runtime selector mutation proofs (macOS arm64)"
 fi
