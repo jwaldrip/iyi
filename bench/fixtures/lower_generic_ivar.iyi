@@ -8,4 +8,5 @@ class Box(T)
 end
 
 h = uninitialized Box(Int32)
+h = Box(Int32).new(7)
 h.value

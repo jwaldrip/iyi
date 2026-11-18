@@ -1,6 +1,6 @@
 # iyi-compile-native: compiles one program to a signed arm64 Mach-O executable, with no LLVM and no host tool.
 #
-#   iyi-compile-native <program.iyi> -o <exe> [--backend native] [--target aarch64-apple-darwin]
+#   iyi-compile-native <program.iyi> -o <exe> [--backend native] [--target aarch64-apple-darwin] [-O0]
 #   iyi-compile-native <program.ir>  -o <exe> [--target aarch64-apple-darwin]
 #   iyi-compile-native <program.ir>  -o <exe>   with <program.ir>.imports beside it: one library per line, loaded too
 #   iyi-compile-native <program.iyi> -o <exe> --probe-phase   prints the phase each stage reached, and writes no executable on a refusal
@@ -20,6 +20,7 @@ module compiler/tools/compile_native
 import compiler/ir/parser::{parse, IrParseError}
 import compiler/ir/module::{Module}
 import compiler/ir/verifier::{verify}
+import compiler/ir/opt/pipeline::{OptTier}
 import compiler/native/driver::{link_native_program}
 import compiler/native/rt/builtins_text::{builtins_ir}
 import compiler/native/rt/start_wasm32_text::{start_wasm32_ir}
@@ -85,7 +86,7 @@ module CompileNative
     IyiFiber.stack_bytes = PHASE_STACK_BYTES
     args = Program.args
     if args.size < 3 || args[1] != "-o"
-      fail("usage: iyi-compile-native <program.iyi|program.ir> -o <exe> [--backend native] [--target #{TARGET}]")
+      fail("usage: iyi-compile-native <program.iyi|program.ir> -o <exe> [--backend native] [--target #{TARGET}] [-O0]")
     end
     input = args[0]
     output = args[2]
@@ -99,6 +100,7 @@ module CompileNative
     keep_going = false
     stub_refused = false
     stub_also = [] of String
+    opt_tier = OptTier::Default
     i = 3
     while i < args.size
       if args[i] == "--target" && i + 1 < args.size
@@ -143,6 +145,13 @@ module CompileNative
       elsif args[i] == "--emit" && i + 1 < args.size && args[i + 1] == "ir"
         emit_ir = true
         i = i + 2
+      elsif args[i] == "-O0"
+        opt_tier = OptTier::None
+        i = i + 1
+      elsif args[i] == "--release"
+        fail("--release is not in the self-hosted compiler yet")
+      elsif args[i] == "-O1" || args[i] == "-O2" || args[i] == "-O3" || args[i] == "-Os" || args[i] == "-Oz"
+        fail("-O #{args[i][2..-1]} is not in the self-hosted compiler yet")
       else
         fail("unknown argument #{args[i]}")
       end
@@ -173,6 +182,7 @@ module CompileNative
       config.keep_going = keep_going
       config.stub_refused = stub_refused
       config.stub_also = stub_also
+      config.opt_tier = opt_tier
       loader = Loader.new
       loader.load_prelude = prelude
       compiler = Compiler.new(config, loader, NativeBackend.new)

@@ -1,0 +1,10 @@
+@[Unsafe("the C entry point accepts argc and argv")]
+fun main(argc : Int32, argv : UInt8**) : Int32
+  count = argc
+  total = 0
+  while count < 4
+    total = total &+ count
+    count = count &+ 1
+  end
+  total
+end

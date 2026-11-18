@@ -84,6 +84,7 @@ pub class CompilerOptions
   property use_iyimod : String?
   property release : Bool
   property optimization_mode : String
+  property specified_optimization : Bool = false
   property stats : Bool
   property progress : Bool
   property time : Bool
@@ -2489,6 +2490,7 @@ pub class CommandDriver
       parser.on("-O LEVEL", "Optimization mode: 0 (default), 1, 2, 3, s, z") do |level|
         if level == "0" || level == "1" || level == "2" || level == "3" || level == "s" || level == "z"
           opts.optimization_mode = level
+          opts.specified_optimization = true
         else
           abort "Invalid optimization mode: O#{level}", Exit::CODE_ERROR
           parser.stop

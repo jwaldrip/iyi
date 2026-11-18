@@ -4,6 +4,7 @@ import compiler/command/driver::{CommandDriver, CommandResult, CompilerOptions}
 import compiler/compiler::{Compiler, CompilerConfig}
 import compiler/loader::{Loader, IyiPath}
 import compiler/backend/native::{NativeBackend}
+import compiler/ir/opt/pipeline::{OptTier}
 import compiler/platform/target::{Target}
 import std/process::{Process, ProcessResult, ProcessError}
 import std/file
@@ -149,6 +150,7 @@ pub class CommandExecutor
     loader = Loader.new(IyiPath.new(nil, origin))
     loader.load_prelude = opts.prelude == "iyi/prelude"
     config = CompilerConfig.new(output, false, nil, false, TARGET, false, false, false, true)
+    config.opt_tier = OptTier::None if opts.specified_optimization
     compiler = Compiler.new(config, loader, NativeBackend.new)
     previous = File.info?(output)
     compiler.compile(opts.filenames[0])

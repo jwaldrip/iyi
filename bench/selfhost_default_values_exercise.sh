@@ -13,7 +13,7 @@ IYI="$REPO/bin/iyi"
 "$IYI" build -o "$WORK_NATIVE/native$EXE" "$REPO_NATIVE/src/compiler/tools/compile_native.iyi"
 
 fixture="$REPO_NATIVE/bench/fixtures/bodies_magic_payload.iyi"
-"$WORK/native$EXE" "$fixture" -o "$WORK_NATIVE/magic.ir" --pipeline typed --emit ir
+"$WORK/native$EXE" "$fixture" -o "$WORK_NATIVE/magic.ir" --pipeline typed --emit ir -O0
 grep -F 'call iyicc i32 (i32) @"*magic_line<Int32>:Int32"(i32 17)' "$WORK/magic.ir"
 grep -F 'call iyicc i32 (i32) @"*magic_end<Int32>:Int32"(i32 20)' "$WORK/magic.ir"
 grep -F "$fixture" "$WORK/magic.ir"
@@ -61,7 +61,7 @@ caller_native="$(native_path "$caller")"
 caller_dir_native="$(native_path "$caller_dir")"
 printf '\x13\x14\x28\x19\x0c\x0d\x07\x1b\x0b\x1c\x0c\x21\x1e\x1e' > "$WORK/cross.expected"
 "$IYI" build --prelude empty -o "$WORK_NATIVE/cross.hosted$EXE" "$caller_native"
-"$WORK/native$EXE" "$caller_native" -o "$WORK_NATIVE/cross.ir" --pipeline typed --emit ir
+"$WORK/native$EXE" "$caller_native" -o "$WORK_NATIVE/cross.ir" --pipeline typed --emit ir -O0
 grep -F "$caller_native" "$WORK/cross.ir"
 grep -F "$caller_dir_native\\00" "$WORK/cross.ir"
 helper_file="$caller_dir_native/./magic_site/helper.iyi"
