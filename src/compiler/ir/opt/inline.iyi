@@ -86,6 +86,9 @@ end
 # Refuse shapes whose control flow or calling convention cannot be cloned here.
 def callee_allowed?(fn : Function) : Bool
   return false if fn.declaration? || fn.fn_type.varargs? || runtime_entry?(fn)
+  # Keep the program-lifetime frame and the runtime's stack-clearing wrappers
+  # distinct even if a producer omits their noinline attributes.
+  return false if top_level?(fn) || fn.name == "__iyi_program" || fn.name == "__iyi_enter" # mutation entry-frame: preserve entry identities
   return false if has_attr?(fn.attrs, "noinline") || has_attr?(fn.attrs, "naked")
   return false if has_attr?(fn.attrs, "returns_twice") || has_attr?(fn.attrs, "noreturn")
   return false if restricted_params?(fn.param_attrs) || fn.personality
