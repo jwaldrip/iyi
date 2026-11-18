@@ -202,6 +202,14 @@ echo '== 3. default pipeline fixtures, determinism and idempotence'
 fixture_check default locals_loop changed
 fixture_check release full changed
 fixture_check release scalar_slot changed
+if ! "$DRV" print "$(native_path "$FIXTURES/licm/invariant_arith.out.ir")" >"$WORK/licm-release-expected.ir" 2>"$WORK/licm-release.err" || \
+   ! "$DRV" run --verify-each release "$(native_path "$FIXTURES/licm/invariant_arith.ir")" >"$WORK/licm-release-actual.ir" 2>"$WORK/licm-release.err" || \
+   ! cmp -s "$WORK/licm-release-expected.ir" "$WORK/licm-release-actual.ir"; then
+  fail 'release tier did not hoist live invariant arithmetic'
+  diff -u "$WORK/licm-release-expected.ir" "$WORK/licm-release-actual.ir" >&2 || true
+else
+  echo '  ok: release/live invariant arithmetic'
+fi
 
 echo '== 4. CLI contract'
 printf 'cfg-simplify\tdefault,release\nmem2reg\tdefault,release\nsimplify\tdefault,release\ndce\tdefault,release\nsroa\trelease\ninline\trelease\ndeadfn\trelease\ncse\trelease\nprove\trelease\nlicm\trelease\nlayout\trelease\n' >"$WORK/passes.expected"

@@ -126,11 +126,12 @@ class Cse
     writes_memory?(inst) || ((opaque?(inst) || marking_read?(inst)) && inst.op != Op::ThreadLocalAddr && inst.op != Op::ThreadPointer)
   end
 
-  # Clobber IDs, fresh join IDs and the entry ID are disjoint. A retreating
-  # edge always starts a fresh version, including a self-loop. Thus a common
-  # version at a dominated load proves every intervening path clobber-free.
+  # Number the clobbers first. Entry, per-block join IDs, and clobber IDs
+  # occupy disjoint ranges and stay stable across a dominator-tree walk.
   def number_memory_versions : Nil
     next_boundary = 1 + @cfg.size
+    components = [] of Array(Int32)
+    component = [] of Int32
     @fn.blocks.each do |block|
       last = -1
       block.insts.each do |inst|
@@ -143,27 +144,83 @@ class Cse
       @last_boundary << last
       @entry_version << 0
       @exit_version << 0
+      component << -1
     end
-    @cfg.rpo.each do |block|
-      version = 0
-      if block != 0
+
+    # Cfg's RPO is decreasing DFS finish order. A reverse-graph DFS in that
+    # order finds SCCs in topological order, without recursion or LoopInfo.
+    @cfg.rpo.each do |start|
+      next unless component[start] < 0
+      id = components.size
+      components << [] of Int32
+      component[start] = id
+      work = [start] of Int32
+      while !work.empty?
+        block = work.pop
+        @cfg.preds(block).each do |pred|
+          next unless @cfg.reachable?(pred) && component[pred] < 0
+          component[pred] = id
+          work << pred
+        end
+      end
+    end
+    # Bucket each SCC in RPO, so forward edges within a clobbered SCC have
+    # already been numbered. No decision depends on hash iteration order.
+    @cfg.rpo.each { |block| components[component[block]] << block }
+
+    id = 0
+    while id < components.size
+      blocks = components[id]
+      clobbered = false
+      blocks.each { |block| clobbered = true if @last_boundary[block] >= 0 }
+      if !clobbered
+        # Every internal path is clobber-free. Merge only external entries;
+        # their SCCs have already been processed in topological order.
+        version = 0
         have_pred = false
         fresh = false
-        @cfg.preds(block).each do |pred|
-          next unless @cfg.reachable?(pred)
-          if @cfg.rpo_number(pred) >= @cfg.rpo_number(block)
-            fresh = true
-          elsif !have_pred
-            version = @exit_version[pred]
-            have_pred = true
-          elsif version != @exit_version[pred]
-            fresh = true
+        blocks.each do |block|
+          @cfg.preds(block).each do |pred|
+            next unless @cfg.reachable?(pred) && component[pred] != id
+            if !have_pred
+              version = @exit_version[pred]
+              have_pred = true
+            elsif version != @exit_version[pred]
+              fresh = true
+            end
           end
         end
-        version = 1 + block if fresh || !have_pred
+        fresh = true if !have_pred && blocks[0] != 0
+        version = 1 + blocks[0] if fresh
+        blocks.each do |block|
+          @entry_version[block] = version
+          @exit_version[block] = version
+        end
+      else
+        # A clobbered SCC remains conservative at every retreating edge.
+        blocks.each do |block|
+          version = 0
+          if block != 0
+            have_pred = false
+            fresh = false
+            @cfg.preds(block).each do |pred|
+              next unless @cfg.reachable?(pred)
+              if component[pred] == id && @cfg.rpo_number(pred) >= @cfg.rpo_number(block)
+                fresh = true
+              elsif !have_pred
+                version = @exit_version[pred]
+                have_pred = true
+              elsif version != @exit_version[pred]
+                fresh = true
+              end
+            end
+            version = 1 + block if fresh || !have_pred
+          end
+          @entry_version[block] = version
+          @exit_version[block] = @last_boundary[block] < 0 ? version : @last_boundary[block]
+        end
       end
-      @entry_version[block] = version
-      @exit_version[block] = @last_boundary[block] < 0 ? version : @last_boundary[block]
+      id = id + 1
     end
   end
 

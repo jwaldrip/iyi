@@ -333,7 +333,7 @@ class Prover
     return nil if edge < 0
     truth = (edge == 0) != inverted
     pred = inverse(pred) unless truth
-    return nil unless signed_order?(pred)
+    return nil unless signed_order?(pred) || unsigned_order?(pred)
     Guard.new(pred, other)
   end
 
@@ -342,11 +342,13 @@ class Prover
     next_inst = next_value.as(Inst)
     op = next_inst.op
     args = next_inst.args
+    unsigned_add = false
     if op == Op::ExtractValue && next_inst.aux_int == 0_i64 && args[0].is_a?(Inst)
       pair = args[0].as(Inst)
       return nil unless pair.op == Op::Intrinsic && pair.aux.is_a?(IntrinsicAux)
       id = pair.aux.as(IntrinsicAux).id
-      if id == IntrinsicId::SAddOverflow
+      if id == IntrinsicId::SAddOverflow || id == IntrinsicId::UAddOverflow
+        unsigned_add = id == IntrinsicId::UAddOverflow
         op = Op::Add
       elsif id == IntrinsicId::SSubOverflow
         op = Op::Sub
@@ -367,29 +369,40 @@ class Prover
       constant = int_value(args[0])
     end
     return nil if constant.nil? || constant == 0_i64
+    return nil if unsigned_add && constant < 0_i64
     constant
   end
 
   def safe_induction_step(next_value : Value, latch : Int32, guard : Guard, step : Int64, bits : Int32) : Bool
     lo = min_int(bits)
     hi = max_int(bits)
+    pred = guard.pred
+    unsigned_guard = unsigned_order?(pred)
     next_inst = next_value.as(Inst)
-    if next_inst.op == Op::ExtractValue && next_inst.args[0].is_a?(Inst)
+    if !unsigned_guard && next_inst.op == Op::ExtractValue && next_inst.args[0].is_a?(Inst)
       pair = next_inst.args[0].as(Inst)
+      return false if pair.aux.is_a?(IntrinsicAux) && pair.aux.as(IntrinsicAux).id == IntrinsicId::UAddOverflow
       successor = @checked[pair]?
       return !successor.nil? && @dom.dominates?(successor, latch)
     end
     bound = base(guard.other)
+    if unsigned_guard
+      # The start is checked separately. A nonnegative bound and a step
+      # proven to stay in this signed interval also preclude unsigned wrap.
+      return false if bound.lo < 0_i64
+      lo = 0_i64
+      pred = signed_pred(pred)
+    end
     if step > 0_i64
-      if guard.pred == IntPredicate::SLT.value.to_i64 && bound.hi > lo
+      if pred == IntPredicate::SLT.value.to_i64 && bound.hi > lo
         return add_fits?(bound.hi - 1_i64, step, lo, hi)
-      elsif guard.pred == IntPredicate::SLE.value.to_i64
+      elsif pred == IntPredicate::SLE.value.to_i64
         return add_fits?(bound.hi, step, lo, hi)
       end
     else
-      if guard.pred == IntPredicate::SGT.value.to_i64 && bound.lo < hi
+      if pred == IntPredicate::SGT.value.to_i64 && bound.lo < hi
         return add_fits?(bound.lo + 1_i64, step, lo, hi)
-      elsif guard.pred == IntPredicate::SGE.value.to_i64
+      elsif pred == IntPredicate::SGE.value.to_i64
         return add_fits?(bound.lo, step, lo, hi)
       end
     end
@@ -401,19 +414,20 @@ class Prover
   # at the type limit instead of computing an overflowing bound.
   def induction_limit(guard : Guard, step : Int64, lo : Int64, hi : Int64) : Int64
     bound = base(guard.other)
+    pred = unsigned_order?(guard.pred) ? signed_pred(guard.pred) : guard.pred
     if step > 0_i64
-      if guard.pred == IntPredicate::SLT.value.to_i64 && bound.hi > lo
+      if pred == IntPredicate::SLT.value.to_i64 && bound.hi > lo
         upper = bound.hi - 1_i64
         return upper + step if add_fits?(upper, step, lo, hi) # mutation M15: widen induction range
-      elsif guard.pred == IntPredicate::SLE.value.to_i64
+      elsif pred == IntPredicate::SLE.value.to_i64
         return bound.hi + step if add_fits?(bound.hi, step, lo, hi)
       end
       return hi
     end
-    if guard.pred == IntPredicate::SGT.value.to_i64 && bound.lo < hi
+    if pred == IntPredicate::SGT.value.to_i64 && bound.lo < hi
       lower = bound.lo + 1_i64
       return lower + step if add_fits?(lower, step, lo, hi)
-    elsif guard.pred == IntPredicate::SGE.value.to_i64
+    elsif pred == IntPredicate::SGE.value.to_i64
       return bound.lo + step if add_fits?(bound.lo, step, lo, hi)
     end
     lo
@@ -427,6 +441,7 @@ class Prover
     hi = max_int(phi.type.bits)
     upper = lo
     lower = hi
+    uses_unsigned = false
     latches = 0
     k = 0
     while k < phi.args.size
@@ -441,6 +456,7 @@ class Prover
             return nil if !step.nil? && step != increment
             guard = header_guard(header, pred, phi)
             return nil unless guard
+            uses_unsigned = true if unsigned_order?(guard.pred)
             return nil unless safe_induction_step(value, pred, guard, increment, phi.type.bits)
             limit = induction_limit(guard, increment, lo, hi)
             upper = limit if increment > 0_i64 && limit > upper
@@ -458,6 +474,7 @@ class Prover
     end
     return nil unless start
     return nil unless step
+    return nil if uses_unsigned && start < 0_i64
     return nil if latches == 0
     if step > 0_i64
       upper = start if upper < start
