@@ -19,7 +19,6 @@ from decimal import Decimal, ROUND_CEILING
 
 
 DEFAULT_CEILING = Path(__file__).resolve().parent.parent / "native_speed.ceiling"
-REFUSAL = "Error: --release is not in the self-hosted compiler yet"
 TSV_COLUMNS = (
     "workload", "mode", "metric", "native", "hosted", "ratio", "ceiling", "noise", "scale",
     "spread_native", "spread_hosted", "verdict", "native_result", "hosted_result",
@@ -232,7 +231,6 @@ def measure(args):
 
 def compile_rounds(old, new, source, count, directory):
     runs = {"hosted": [], "native": []}
-    release = {"hosted": True, "native": True}
     for arm in runs:
         (directory / arm).mkdir(parents=True, exist_ok=True)
     for turn in range(count):
@@ -241,25 +239,16 @@ def compile_rounds(old, new, source, count, directory):
             order = tuple(reversed(order))
         for arm, compiler in order:
             output = directory / arm / "iyi"
-            while True:
-                if output.exists():
-                    output.unlink()
-                command = [compiler, "build"]
-                if release[arm]:
-                    command.append("--release")
-                command += ["-o", str(output), source]
-                sample = wait_timed(command, 300, require_result=False, allow_failure=True)
-                if "returncode" not in sample:
-                    if not output.is_file():
-                        raise GateError("compiler did not create " + str(output))
-                    runs[arm].append(sample)
-                    break
+            if output.exists():
+                output.unlink()
+            command = [compiler, "build", "--release", "-o", str(output), source]
+            sample = wait_timed(command, 300, require_result=False, allow_failure=True)
+            if "returncode" in sample:
                 diagnostic = sample["stdout"] + "\n" + sample["stderr"]
-                if release[arm] and REFUSAL in diagnostic.splitlines():
-                    print("  %s compiler refuses --release; using native default" % arm)
-                    release[arm] = False
-                    continue
                 raise GateError("compiler exited %s: %s" % (sample["returncode"], diagnostic[-4000:]))
+            if not output.is_file():
+                raise GateError("compiler did not create " + str(output))
+            runs[arm].append(sample)
     return runs
 
 

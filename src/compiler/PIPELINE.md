@@ -8,9 +8,10 @@ still the codegen path; the integrator flips it.
 
 Phases, in order: `parse`, `declarations`, `bodies`, `lower`, `verify`, `opt`, `native`, `link`. The
 default `opt` tier runs CFG simplification, local promotion, simplification and dead-code elimination.
-`-O0` selects no IR passes. With `--probe-phase` each phase prints `[phase] X: start`, then
-`[phase] X: pass` when it passes. A refusal prints `X: fail: <message>` and `reached: <last pass>`
-and writes no output.
+`-O0` selects no IR passes. `--release` and `-O3` select a tier with aggregate promotion,
+inlining, repeated cleanup and dead-function removal. `-O1` and `-O2` are refused.
+With `--probe-phase` each phase prints `[phase] X: start`, then `[phase] X: pass` when it passes.
+A refusal prints `X: fail: <message>` and `reached: <last pass>` and writes no output.
 
 `--keep-going` (probe only) switches the body typer to total mode before the bodies phase: a construct it
 cannot type is recorded on its node with its reason, and typing goes on. After the bodies phase the tool prints

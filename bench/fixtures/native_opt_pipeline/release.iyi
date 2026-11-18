@@ -1,0 +1,8 @@
+def increment(value : Int32) : Int32
+  value &+ 2
+end
+
+@[Unsafe("the C entry point accepts argc and argv")]
+fun main(argc : Int32, argv : UInt8**) : Int32
+  increment(argc)
+end

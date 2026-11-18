@@ -212,21 +212,15 @@ if [ "$HOST_ID" = darwin-arm64 ] && [ "$stage1_ok" -eq 1 ]; then
     if ! build "$STAGE1" "$src" "$ndefault" "$WORK/$name.native-default.log"; then
       fail "native default build failed for $name"; tail -n 20 "$WORK/$name.native-default.log"; builds_ok=0
     fi
-    if [ "$native_release" = unknown ] || [ "$native_release" = yes ]; then
-      if build "$STAGE1" "$src" "$nrelease" "$WORK/$name.native-release.log" --release; then
-        native_release=yes
-        if [ -f "$ndefault" ] && cmp -s "$ndefault" "$nrelease"; then
-          fail "--release changes nothing for $name"
-        fi
-      elif [ "$native_release" = unknown ] && grep -Fxq -- 'Error: --release is not in the self-hosted compiler yet' "$WORK/$name.native-release.log"; then
-        native_release=no
-        echo "  native --release is not in the self-hosted compiler yet; release rows use native default"
-      else
-        fail "native release build failed for $name"; tail -n 20 "$WORK/$name.native-release.log"; builds_ok=0
-        native_release=failed
+    if build "$STAGE1" "$src" "$nrelease" "$WORK/$name.native-release.log" --release; then
+      native_release=yes
+      if [ -f "$ndefault" ] && cmp -s "$ndefault" "$nrelease"; then
+        fail "--release changes nothing for $name"
       fi
+    else
+      fail "native release build failed for $name"; tail -n 20 "$WORK/$name.native-release.log"; builds_ok=0
+      native_release=failed
     fi
-    if [ "$native_release" = no ]; then nrelease="$ndefault"; fi
     printf '%s\tdefault\t%s\t%s\n' "$name" "$hdefault" "$ndefault" >>"$WORK/pairs.tsv"
     printf '%s\trelease\t%s\t%s\n' "$name" "$hrelease" "$nrelease" >>"$WORK/pairs.tsv"
   done
@@ -258,7 +252,7 @@ stage2_ok=0
 do_latency=0
 if [ "${NATIVE_SPEED_LATENCY:-0}" = 1 ] || [ "$target" -eq 1 ]; then
   do_latency=1
-elif [ "$HOST_ID" = darwin-arm64 ] && [ "${GITHUB_EVENT_NAME:-}" != pull_request ]; then
+elif [ "${NATIVE_SPEED_LATENCY+x}" != x ] && [ "$HOST_ID" = darwin-arm64 ] && [ "${GITHUB_EVENT_NAME:-}" != pull_request ]; then
   mem=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
   case "$mem" in ''|*[!0-9]*) mem=0 ;; esac
   [ "$mem" -lt 17179869184 ] || do_latency=1
@@ -266,23 +260,15 @@ fi
 if [ "$HOST_ID" != darwin-arm64 ]; then
   host_limited "latency arm and compiler bootstrap require macOS arm64"
 elif [ "$do_latency" -eq 0 ]; then
-  host_limited "latency arm requires NATIVE_SPEED_LATENCY=1 or a non-pull-request host with at least 16 GiB"
-elif [ "$stage1_ok" -eq 1 ] && [ "$native_release" != unknown ] && [ "$native_release" != failed ]; then
+  host_limited "latency arm disabled or requires a non-pull-request host with at least 16 GiB"
+elif [ "$stage1_ok" -eq 1 ] && [ "$native_release" = yes ]; then
   mkdir -p "$WORK/s2" "$WORK/s3"
-  if [ "$native_release" = yes ]; then
-    if build "$STAGE1" "$SOURCE" "$WORK/s2/iyi" "$WORK/s2.log" --release; then stage2_ok=1; fi
-  else
-    if build "$STAGE1" "$SOURCE" "$WORK/s2/iyi" "$WORK/s2.log"; then stage2_ok=1; fi
-  fi
+  if build "$STAGE1" "$SOURCE" "$WORK/s2/iyi" "$WORK/s2.log" --release; then stage2_ok=1; fi
   if [ "$stage2_ok" -ne 1 ]; then
     fail "stage2 build failed"; tail -n 40 "$WORK/s2.log"
   else
     stage3_ok=0
-    if [ "$native_release" = yes ]; then
-      if build "$WORK/s2/iyi" "$SOURCE" "$WORK/s3/iyi" "$WORK/s3.log" --release; then stage3_ok=1; fi
-    else
-      if build "$WORK/s2/iyi" "$SOURCE" "$WORK/s3/iyi" "$WORK/s3.log"; then stage3_ok=1; fi
-    fi
+    if build "$WORK/s2/iyi" "$SOURCE" "$WORK/s3/iyi" "$WORK/s3.log" --release; then stage3_ok=1; fi
     if [ "$stage3_ok" -ne 1 ]; then
       fail "stage3 build failed"; tail -n 40 "$WORK/s3.log"
     elif cmp -s "$WORK/s2/iyi" "$WORK/s3/iyi"; then
