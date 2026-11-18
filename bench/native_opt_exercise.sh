@@ -460,6 +460,52 @@ if entry_chain_check "$DRV" "$FIXTURES/release/entry_chain.ir" "$WORK/entry-firs
 else
   fail 'entry-chain release semantics, determinism or idempotence failed'
 fi
+echo '== 3b. devirtualized entry chain survives the second inline round'
+if "$PY" - "$(native_path "$DRV")" "$(native_path "$FIXTURES/release/entry_chain.ir")" "$(native_path "$WORK/entry-s9.ir")" <<'PY'
+import pathlib, subprocess, sys
+binary, original, output = sys.argv[1:]
+source = pathlib.Path(original).read_text()
+old = '''define internal i64 @__iyi_program(i64 %n) {
+entry:
+  %r = call i64 (i64) @__iyi_main(i64 %n)
+  ret i64 %r
+}
+'''
+new = '''define internal ptr @__iyi_new(i64 %size, i64 %type_id, i64 %flags) {
+entry:
+  ret ptr null
+}
+define internal i64 @__iyi_program(i64 %n) {
+entry:
+  %p = call ptr (i64, i64, i64) @__iyi_new(i64 8, i64 7, i64 1)
+  %id_ptr = getelementptr i8, ptr %p, i64 -4
+  %id = load i32, ptr %id_ptr, align 4
+  %known = icmp eq i32 %id, 7
+  br i1 %known, label %run, label %other
+run:
+  %r = call i64 (i64) @__iyi_main(i64 %n)
+  ret i64 %r
+other:
+  ret i64 0
+}
+'''
+if source.count(old) != 1:
+    sys.exit('entry-chain template changed')
+pathlib.Path(output).write_text(source.replace(old, new))
+result = subprocess.run([binary, 'run', '--verify-each', 'devirt', output],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+if result.returncode or b'%id = load i32' in result.stdout:
+    sys.exit('the entry-chain devirtualization trigger did not fire')
+PY
+then
+  if entry_chain_check "$DRV" "$WORK/entry-s9.ir" "$WORK/entry-s9-out.ir"; then
+    echo '  ok: devirtualized entry chain survives reinlining'
+  else
+    fail 'devirtualized entry chain failed'
+  fi
+else
+  fail 'devirtualized entry-chain fixture could not run'
+fi
 fixture_check default locals_loop changed
 fixture_check release full changed
 fixture_check release scalar_slot changed
@@ -978,6 +1024,86 @@ prove_mutation 'S9P1: invalidate a devirtualized callee before reinlining' src/c
   '                nil # mutation S9-inline-cache: devirtualization changes the callee' \
   -- mutation_check S9P1 release devirt_inline_cache || fail 'S9P1 was not caught'
 mutation_result S9P1
+prove_mutation 'S9B1: heap pointer stores retain their barriers' src/compiler/ir/opt/barrier.iyi \
+  '        return false unless constant_nonpointer?(store.args[0]) # mutation S9B1: only pointer-free stored values' \
+  '        return false unless true # mutation S9B1: only pointer-free stored values' \
+  -- mutation_check S9B1 barrier heap_keep || fail 'S9B1 was not caught'
+mutation_result S9B1
+prove_mutation 'S9B3: merged stores preexist the bracket' src/compiler/ir/opt/barrier.iyi \
+  '      return false if forbidden.has_key?(store.args[0]) # mutation S9B3: values must be live at a stop before the bracket' \
+  '      return false if false # mutation S9B3: values must be live at a stop before the bracket' \
+  -- mutation_check S9B3 barrier merge_value_between_keep || fail 'S9B3 was not caught'
+mutation_result S9B3
+prove_mutation 'S9B4: partition publication keeps barriers' src/compiler/ir/opt/barrier.iyi \
+  '  return false if partitioned # mutation S9B4: partition publication needs the untouched barrier' \
+  '  return false if false # mutation S9B4: partition publication needs the untouched barrier' \
+  -- mutation_check S9B4 barrier partition_publish_call_keep || fail 'S9B4 was not caught'
+mutation_result S9B4
+prove_mutation 'S9B5: merged barriers shade the full range' src/compiler/ir/opt/barrier.iyi \
+  '          following.shade.args[2] = new_inst(Op::ConstInt, @mod.types.int64, [] of Value, (upper - lower) // 8_i64) # mutation S9B5: shade the union' \
+  '          following.shade.args[2] = new_inst(Op::ConstInt, @mod.types.int64, [] of Value, 1_i64) # mutation S9B5: shade the union' \
+  -- mutation_check S9B5 barrier merge_fields || fail 'S9B5 was not caught'
+mutation_result S9B5
+prove_mutation 'S9D1: only headed allocations expose a type id' src/compiler/ir/opt/devirt.iyi \
+  '      return (flags & 1_i64) == 1_i64 # mutation S9-headed: require a headed allocation' \
+  '      return true # mutation S9-headed: require a headed allocation' \
+  -- mutation_check S9D1 devirt headless_keep || fail 'S9D1 was not caught'
+mutation_result S9D1
+prove_mutation 'S9D2: present heap classes remain possible' src/compiler/ir/opt/devirt.iyi \
+  '    return false unless @classes[id]? && !@possible[id]? # mutation S9-absent-id: require an absent heap-class id' \
+  '    return false unless @classes[id]? # mutation S9-absent-id: require an absent heap-class id' \
+  -- mutation_check S9D2 devirt present_keep || fail 'S9D2 was not caught'
+mutation_result S9D2
+prove_mutation 'S9D3: unknown allocation ids refuse the type set' src/compiler/ir/opt/devirt.iyi \
+  '      refuse("allocation entry has a nonconstant type id") # mutation S9-unknown-id: do not infer an incomplete set' \
+  '      nil # mutation S9-unknown-id: do not infer an incomplete set' \
+  -- mutation_check S9D3 devirt unknown_id_keep || fail 'S9D3 was not caught'
+mutation_result S9D3
+prove_mutation 'S9D4: devirtualization reads the high header half' src/compiler/ir/opt/devirt.iyi \
+  '  return nil unless int_value(gep.args[1]) == -4_i64 # mutation S9-header-half: read the high half at P-4' \
+  '  return nil unless int_value(gep.args[1]) == -8_i64 # mutation S9-header-half: read the high half at P-4' \
+  -- mutation_check S9D4 devirt header_runtime || fail 'S9D4 was not caught'
+mutation_result S9D4
+prove_mutation 'S9E1: stored object pointers escape' src/compiler/ir/opt/escape.iyi \
+  '            safe = false # mutation S9-store: change false to true' \
+  '            safe = true # mutation S9-store: change false to true' \
+  -- mutation_check S9E1 escape stored_global || fail 'S9E1 was not caught'
+mutation_result S9E1
+prove_mutation 'S9E2: ordinary call arguments escape' src/compiler/ir/opt/escape.iyi \
+  '            safe = barrier_use?(inst, index) && bounded_barrier?(inst, candidate, offsets) && argument_attributes_safe?(inst, index, candidate, offsets) # mutation S9-call: change to true' \
+  '            safe = true # mutation S9-call: change to true' \
+  -- mutation_check S9E2 escape passed_call || fail 'S9E2 was not caught'
+mutation_result S9E2
+prove_mutation 'S9E3: loop-carried objects escape' src/compiler/ir/opt/escape.iyi \
+  '              safe = false if cyclic_phi[inst] # mutation S9-loop: change false to true' \
+  '              safe = true if cyclic_phi[inst] # mutation S9-loop: change false to true' \
+  -- mutation_check S9E3 escape loop_carried || fail 'S9E3 was not caught'
+mutation_result S9E3
+prove_mutation 'S9E4: program-lifetime frames are excluded' src/compiler/ir/opt/escape.iyi \
+  '  return false if fn.declaration? || frames.protects?(fn) # mutation S9-top-call: remove top-level exclusion' \
+  '  return false if fn.declaration? # mutation S9-top-call: remove top-level exclusion' \
+  -- mutation_check S9E4 escape top_level || fail 'S9E4 was not caught'
+mutation_result S9E4
+prove_mutation 'S9E5: each loop iteration clears its object' src/compiler/ir/opt/escape.iyi \
+  '    zero_site = site # mutation S9-zero: change site to entry_anchor' \
+  '    zero_site = entry_anchor # mutation S9-zero: change site to entry_anchor' \
+  -- mutation_check S9E5 escape loop_local || fail 'S9E5 was not caught'
+mutation_result S9E5
+prove_mutation 'S9E6: headed objects receive a header store' src/compiler/ir/opt/escape.iyi \
+  '      add_before(insertions, site, header_store) # mutation S9-header: remove this line' \
+  '      nil # mutation S9-header: remove this line' \
+  -- mutation_check S9E6 escape headed || fail 'S9E6 was not caught'
+mutation_result S9E6
+prove_mutation 'S9E7: partition entry uses disable promotion' src/compiler/ir/opt/escape.iyi \
+  '      return true if value.name == "__iyi_new_shared" || value.name == "__iyi_publish" # mutation S9-partition: return false here' \
+  '      return false if value.name == "__iyi_new_shared" || value.name == "__iyi_publish" # mutation S9-partition: return false here' \
+  -- mutation_check S9E7 escape partition_shared_call || fail 'S9E7 was not caught'
+mutation_result S9E7
+prove_mutation 'S9E8: heap pointer slots remain aligned on stack' src/compiler/ir/opt/escape.iyi \
+  '      if offset && offset >= 0_i64 && offset <= 9223372036854775799_i64 && offset % 8_i64 == 0_i64 # mutation S9-layout: remove the alignment test' \
+  '      if offset && offset >= 0_i64 && offset <= 9223372036854775799_i64 # mutation S9-layout: remove the alignment test' \
+  -- mutation_check S9E8 escape packed_integer_store || fail 'S9E8 was not caught'
+mutation_result S9E8
 
 echo '== 8. verdict'
 if [ "$failed" -eq 0 ]; then

@@ -1,0 +1,68 @@
+; iyi-ir 1
+source_filename = "global"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+@header = internal global i64 0
+@"Live:headed" = internal constant i8 1
+@"Live:type_id" = internal constant i32 3
+@"Dead:headed" = internal constant i8 1
+@"Dead:type_id" = internal constant i32 8
+@"DeadChild:headed" = internal constant i8 1
+@"DeadChild:type_id" = internal constant i32 9
+@"Nil:type_id" = internal constant i32 0
+@"Int32:type_id" = internal constant i32 5
+define internal ptr @__iyi_new(i64 %size, i64 %tid, i64 %flags) {
+entry:
+  %h = shl i64 %tid, 32
+  store i64 %h, ptr @header, align 8
+  %p = getelementptr i8, ptr @header, i64 8
+  ret ptr %p
+}
+define internal i1 @"~match<Dead+>"(i32 %id) {
+entry:
+  %lo = icmp sge i32 %id, 8
+  %hi = icmp sle i32 %id, 9
+  %both = and i1 %lo, %hi
+  ret i1 %both
+}
+define internal i1 @"~match<Unknown+>"(i32 %id) {
+entry:
+  %lo = icmp sge i32 %id, 8
+  %hi = icmp sle i32 %id, 10
+  %both = and i1 %lo, %hi
+  ret i1 %both
+}
+define internal i1 @"~match<Primitive+>"(i32 %id) {
+entry:
+  %lo = icmp sge i32 %id, 5
+  %hi = icmp sle i32 %id, 8
+  %both = and i1 %lo, %hi
+  ret i1 %both
+}
+define internal i1 @dispatch(ptr %obj) {
+entry:
+  %header = getelementptr i8, ptr %obj, i64 -4
+  %id = load i32, ptr %header, align 4
+  %dead = icmp eq i32 %id, 8
+  %range = call i1 (i32) @"~match<Dead+>"(i32 %id)
+  %unknown_range = call i1 (i32) @"~match<Unknown+>"(i32 %id)
+  %primitive_range = call i1 (i32) @"~match<Primitive+>"(i32 %id)
+  %live = icmp eq i32 %id, 3
+  %nil = icmp eq i32 %id, 0
+  %primitive = icmp eq i32 %id, 5
+  %unknown = icmp eq i32 %id, 10
+  %a = or i1 %dead, %range
+  %b = or i1 %unknown_range, %live
+  %c = or i1 %nil, %primitive
+  %d = or i1 %a, %b
+  %e = or i1 %c, %unknown
+  %combined = or i1 %d, %e
+  %answer = or i1 %combined, %primitive_range
+  ret i1 %answer
+}
+define external i1 @main() {
+entry:
+  %p = call ptr (i64, i64, i64) @__iyi_new(i64 8, i64 3, i64 1)
+  %answer = call i1 (ptr) @dispatch(ptr %p)
+  ret i1 %answer
+}

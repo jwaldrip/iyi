@@ -15,7 +15,7 @@ import compiler/ir/opt/cse::{run_cse}
 import compiler/ir/opt/prove::{run_prove}
 import compiler/ir/opt/licm::{run_licm}
 import compiler/ir/opt/layout::{run_layout}
-import compiler/ir/opt/escape::{run_escape, run_escape_checked, partitioned_heap?}
+import compiler/ir/opt/escape::{run_escape, EscapeInfo, partitioned_heap?}
 import compiler/ir/opt/devirt::{run_devirt, DevirtInfo}
 import compiler/ir/opt/barrier::{run_barrier, run_stack_barrier, run_barrier_checked, run_stack_barrier_checked}
 import std/time::{Time}
@@ -144,14 +144,14 @@ end
 
 # S9 module facts and the inlining budget are shared by the whole phase, not
 # rebuilt for every function. The early barrier is restricted to stack writes.
-def run_scheduled_pass(mod : Module, fn : Function, id : PassId, graph : CallGraph?, budget : InlineBudget?, devirt : DevirtInfo?, partitioned : Bool) : Bool
+def run_scheduled_pass(mod : Module, fn : Function, id : PassId, graph : CallGraph?, budget : InlineBudget?, devirt : DevirtInfo?, escape : EscapeInfo?, partitioned : Bool) : Bool
   case id
   when PassId::Inline
     run_inline(mod, fn, graph.as(CallGraph), budget.as(InlineBudget))
   when PassId::Devirt
     devirt.as(DevirtInfo).run(fn)
   when PassId::Escape
-    run_escape_checked(mod, fn, partitioned)
+    escape.as(EscapeInfo).run(fn)
   when PassId::Barrier
     run_barrier_checked(mod, fn, partitioned)
   when PassId::BarrierStack
@@ -232,7 +232,7 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
         id = passes[end_at]
         break if id == PassId::Prove || id == PassId::Licm || id == PassId::Layout || id == PassId::Devirt || id == PassId::Escape
         break if id == PassId::Barrier || (id == PassId::BarrierStack && (!release || passes[begin_at] != PassId::Escape))
-        break if release && passes[begin_at] == PassId::Devirt && id == PassId::Inline
+        break if id == PassId::Inline && (passes[begin_at] == PassId::Devirt || passes[begin_at] == PassId::Escape)
       end
       has_inline = true if passes[end_at] == PassId::Inline
       has_devirt = true if passes[end_at] == PassId::Devirt
@@ -243,6 +243,7 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
     graph = has_inline ? CallGraph.new(mod) : nil
     budget = has_inline ? (release ? shared_budget : InlineBudget.new(mod)) : nil
     devirt = has_devirt ? DevirtInfo.new(mod, partitioned) : nil
+    escape = passes[begin_at] == PassId::Escape ? EscapeInfo.new(mod, partitioned) : nil
     selective_inline = release && has_inline && inline_round == 2
     selective_devirt = release && passes[begin_at] == PassId::Devirt
     selective_escape = release && passes[begin_at] == PassId::Escape
@@ -257,10 +258,10 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
           break if k > begin_at && (selective_devirt || selective_escape) && !gate_changed
           if clock = timings
             started = Time.monotonic
-            changed = run_scheduled_pass(mod, fn, passes[k], graph, budget, devirt, partitioned)
+            changed = run_scheduled_pass(mod, fn, passes[k], graph, budget, devirt, escape, partitioned)
             clock.add(k, (Time.monotonic - started).total_nanoseconds.to_i64, changed)
           else
-            changed = run_scheduled_pass(mod, fn, passes[k], graph, budget, devirt, partitioned)
+            changed = run_scheduled_pass(mod, fn, passes[k], graph, budget, devirt, escape, partitioned)
           end
           if k == begin_at && (selective_devirt || selective_escape)
             gate_changed = changed
@@ -287,6 +288,12 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
         end
       end
       f = f + 1
+    end
+    if info = devirt
+      if Program.env("IYI_DEVIRT_STATS") == "1"
+        reason = info.refusal_reason || "none"
+        STDERR.puts "devirt-summary\tlocal=#{info.local_folds}\tglobal=#{info.global_folds}\trefused=#{reason}"
+      end
     end
     begin_at = end_at
   end
