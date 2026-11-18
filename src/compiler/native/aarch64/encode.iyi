@@ -290,6 +290,10 @@ pub class Encoder
       word(0x9AC00800_i64 | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::Msub
       word(0x9B008000_i64 | (field(inst.uses[2].reg) << 16) | (field(inst.uses[0].reg) << 10) | (field(inst.uses[1].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::Madd
+      word(0x9B000000_i64 | (field(inst.uses[2].reg) << 16) | (field(inst.uses[0].reg) << 10) | (field(inst.uses[1].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::Neg
+      word(0xCB0003E0_i64 | (field(inst.uses[0].reg) << 16) | field(inst.defs[0].reg))
     elsif op == MOp::Lsl
       word(0x9AC02000_i64 | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::Lsr
