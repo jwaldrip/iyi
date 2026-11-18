@@ -116,6 +116,105 @@ mutation_result() {
   fi
 }
 
+# Return 1 only when the entry-frame behavior differs; 2 means the proof could
+# not run, so a compiler failure cannot be counted as a caught mutation.
+entry_chain_check() {
+  local binary="$1" input="$2" output="$3"
+  "$PY" - "$(native_path "$binary")" "$(native_path "$input")" "$(native_path "$output")" <<'PY'
+import re, subprocess, sys
+binary, source, output = sys.argv[1:]
+try:
+    result = subprocess.run([binary, 'run', '--verify-each', 'release', source],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+except (OSError, subprocess.TimeoutExpired) as exc:
+    print('entry-chain proof unavailable:', exc, file=sys.stderr)
+    sys.exit(2)
+if result.returncode != 0:
+    print('entry-chain optimizer failed:', result.stderr.decode('utf-8', 'replace'), file=sys.stderr)
+    sys.exit(2)
+try:
+    lines = result.stdout.decode('utf-8').splitlines()
+    with open(output, 'wb') as f:
+        f.write(result.stdout)
+except (OSError, UnicodeError) as exc:
+    print('entry-chain output unavailable:', exc, file=sys.stderr)
+    sys.exit(2)
+functions = {}
+name = None
+for line in lines:
+    if line.startswith('define '):
+        match = re.search(r'@([A-Za-z_][A-Za-z0-9_.$]*)\(', line)
+        name = match.group(1) if match else None
+        if name:
+            functions[name] = []
+    elif line == '}':
+        name = None
+    elif name:
+        functions[name].append(line)
+def need(condition, reason):
+    if not condition:
+        print('FAIL: ' + reason, file=sys.stderr)
+        sys.exit(1)
+def has_call(body, target):
+    return any(re.search(r'\bcall\b.*@' + re.escape(target) + r'\(', line) for line in body)
+for required in ('main', '__iyi_enter', '__iyi_program', '__iyi_main', '__crystal_main', 'empty_entry', 'f'):
+    need(required in functions, 'entry function @%s is missing' % required)
+for caller, callee in (('main', '__iyi_enter'), ('__iyi_enter', '__iyi_program'),
+                       ('__iyi_program', '__iyi_main'), ('empty_entry', '__crystal_main')):
+    need(has_call(functions[caller], callee), '@%s no longer calls @%s' % (caller, callee))
+top = functions['__iyi_main']
+need(has_call(top, 'f'), 'the top-level non-loop call to @f was inlined')
+need(not any(has_call(functions[caller], 'f') for caller in ('main', '__iyi_enter', '__iyi_program')),
+     '@f moved into the entry chain')
+need(not has_call(top, 'g'), 'the top-level loop call to @g was not inlined')
+need(not has_call(top, 'force'), 'the alwaysinline callee was not inlined')
+need(any(re.search(r'\bxor i64\b.*\b991\b', line) for line in top),
+     'the alwaysinline callee body is absent')
+blocks = {}
+block = None
+for line in top:
+    match = re.match(r'^([A-Za-z_.$][A-Za-z0-9_.$]*):', line)
+    if match:
+        block = match.group(1)
+        blocks[block] = []
+    elif block:
+        blocks[block].append(line)
+successors = {block: [target for line in body for target in re.findall(r'label %([A-Za-z_.$][A-Za-z0-9_.$]*)', line)]
+              for block, body in blocks.items()}
+def cyclic(start):
+    todo = list(successors[start])
+    seen = set()
+    while todo:
+        current = todo.pop()
+        if current == start:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        todo.extend(successors.get(current, []))
+    return False
+need(any(cyclic(block) and any(re.search(r'\bxor i64\b.*\b777\b', line) for line in body)
+         for block, body in blocks.items()), 'the inlined @g body is not inside a loop')
+PY
+}
+
+entry_mutation_check() {
+  local status="$WORK/ENTRY.status" rc=0
+  printf '2\n' >"$status"
+  if ! build_driver "$MUTANT"; then
+    echo 'entry-frame mutant did not build' >&2; cat "$WORK/build.log" >&2; return 2
+  fi
+  entry_chain_check "$MUTANT" "$FIXTURES/release/entry_chain.ir" "$WORK/entry-mutant.ir" || rc=$?
+  if [ "$rc" -eq 1 ]; then
+    printf '1\n' >"$status"; return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    return 2
+  fi
+  printf '0\n' >"$status"
+  return 0
+}
+
 expect_status() {
   local expected="$1" label="$2" rc=0
   shift 2
@@ -157,6 +256,16 @@ fixture_check deadfn asm_keep keep
 echo '== 3. default pipeline fixtures, determinism and idempotence'
 fixture_check default locals_loop changed
 fixture_check release full changed
+echo '== 3a. preserve entry frames across release rounds'
+if entry_chain_check "$DRV" "$FIXTURES/release/entry_chain.ir" "$WORK/entry-first.ir" && \
+   entry_chain_check "$DRV" "$FIXTURES/release/entry_chain.ir" "$WORK/entry-second.ir" && \
+   cmp -s "$WORK/entry-first.ir" "$WORK/entry-second.ir" && \
+   entry_chain_check "$DRV" "$WORK/entry-first.ir" "$WORK/entry-again.ir" && \
+   cmp -s "$WORK/entry-first.ir" "$WORK/entry-again.ir"; then
+  echo '  ok: entry-chain semantics, determinism and idempotence'
+else
+  fail 'entry-chain release semantics, determinism or idempotence failed'
+fi
 
 echo '== 4. CLI contract'
 printf 'cfg-simplify\tdefault,release\nmem2reg\tdefault,release\nsimplify\tdefault,release\ndce\tdefault,release\nsroa\trelease\ninline\trelease\ndeadfn\trelease\n' >"$WORK/passes.expected"
@@ -439,6 +548,11 @@ prove_mutation 'M10: callees before callers' src/compiler/ir/opt/callgraph.iyi \
   '          pending[own] = pending[own] + 0 # mutation S6-order: caller waits for callee' \
   -- mutation_check M10 inline bottom_up || fail 'M10 was not caught'
 mutation_result M10
+prove_mutation 'ENTRY: preserve entry-frame identities' src/compiler/ir/opt/inline.iyi \
+  '  return false if top_level?(fn) || fn.name == "__iyi_program" || fn.name == "__iyi_enter" # mutation entry-frame: preserve entry identities' \
+  '  return false if false # mutation entry-frame: preserve entry identities' \
+  -- entry_mutation_check || fail 'ENTRY was not caught'
+mutation_result ENTRY
 
 echo '== 8. verdict'
 if [ "$failed" -eq 0 ]; then
