@@ -198,6 +198,30 @@ done
 fixture_stats simplify "$FIXTURES/simplify/constant_global.ir"
 fixture_stats simplify "$FIXTURES/simplify/constant_global_keep.ir"
 
+echo '== 2e. devirtualization'
+for file in "$FIXTURES/devirt/"*.ir; do
+  case "$file" in *.out.ir) continue ;; esac
+  name=$(basename "$file" .ir)
+  if [ -f "$FIXTURES/devirt/$name.out.ir" ]; then fixture_check devirt "$name" changed; else fixture_check devirt "$name" keep; fi
+  fixture_stats devirt "$file"
+done
+
+echo '== 2f. allocation escape'
+for file in "$FIXTURES/escape/"*.ir; do
+  case "$file" in *.out.ir) continue ;; esac
+  name=$(basename "$file" .ir)
+  if [ -f "$FIXTURES/escape/$name.out.ir" ]; then fixture_check escape "$name" changed; else fixture_check escape "$name" keep; fi
+  fixture_stats escape "$file"
+done
+
+echo '== 2g. write barriers'
+for file in "$FIXTURES/barrier/"*.ir; do
+  case "$file" in *.out.ir) continue ;; esac
+  name=$(basename "$file" .ir)
+  if [ -f "$FIXTURES/barrier/$name.out.ir" ]; then fixture_check barrier "$name" changed; else fixture_check barrier "$name" keep; fi
+  fixture_stats barrier "$file"
+done
+
 echo '== 3. default pipeline fixtures, determinism and idempotence'
 fixture_check default locals_loop changed
 fixture_check release full changed
@@ -319,7 +343,7 @@ echo '== 5. diamond-chain scaling'
 # Each size is run three times and the least figure is kept: the child's CPU
 # time where the host reports it, so other jobs on the machine do not stretch
 # it, and elapsed time elsewhere.
-if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" "${NATIVE_OPT_SCALE_K:-2048}" "${NATIVE_OPT_RELEASE_SCALE_K:-4096}" "${NATIVE_OPT_LOOP_SCALE_K:-2048}" <<'PY'
+if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" "${NATIVE_OPT_SCALE_K:-2048}" "${NATIVE_OPT_RELEASE_SCALE_K:-4096}" "${NATIVE_OPT_LOOP_SCALE_K:-2048}" "${NATIVE_OPT_ALLOC_SCALE_K:-2048}" <<'PY'
 import os, subprocess, sys, time
 try:
     import resource
