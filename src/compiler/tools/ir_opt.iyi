@@ -93,7 +93,7 @@ module IrOpt
     command = args[0]
     if command == "passes"
       usage unless args.size == 1
-      passes = [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::Sroa, PassId::Inline, PassId::DeadFn, PassId::Cse, PassId::Prove, PassId::Licm, PassId::Layout]
+      passes = [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::Sroa, PassId::Inline, PassId::DeadFn, PassId::Cse, PassId::Prove, PassId::Licm, PassId::Layout, PassId::Escape, PassId::Barrier, PassId::BarrierStack]
       k = 0
       while k < passes.size
         tiers = k < 4 ? "default,release" : "release"
@@ -113,17 +113,15 @@ module IrOpt
     verify_each = false
     no_verify = command == "stats"
     index = 1
-    if command == "run"
-      while index < args.size
-        if args[index] == "--verify-each"
-          verify_each = true
-        elsif args[index] == "--no-verify"
-          no_verify = true
-        else
-          break
-        end
-        index = index + 1
+    while index < args.size
+      if command == "run" && args[index] == "--verify-each"
+        verify_each = true
+      elsif command == "run" && args[index] == "--no-verify"
+        no_verify = true
+      else
+        break
       end
+      index = index + 1
     end
     usage unless args.size == index + 2
     usage if verify_each && no_verify
