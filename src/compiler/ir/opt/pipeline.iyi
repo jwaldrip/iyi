@@ -257,6 +257,12 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
             end
           end
           k = k + 1
+          # Escape rewrote a candidate, so the selective group repeats until a round changes nothing.
+          # Each repeated round promotes or frame-cap-marks one uncapped __iyi_new call, and candidate_for never offers either again.
+          if k == end_at && selective_escape && gate_changed # mutation S9-escape-fixed-point: revisit candidates after cleanup
+            k = begin_at
+            gate_changed = false
+          end
         end
         if group_changed
           if inline_budget = budget

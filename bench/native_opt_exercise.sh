@@ -460,6 +460,8 @@ fixture_check default locals_loop changed
 fixture_check release full changed
 fixture_check release scalar_slot changed
 fixture_check release frame_cap changed
+fixture_check release returns_twice changed
+fixture_check release nested_objects changed
 if ! "$DRV" print "$(native_path "$FIXTURES/licm/invariant_arith.out.ir")" >"$WORK/licm-release-expected.ir" 2>"$WORK/licm-release.err" || \
    ! "$DRV" run --verify-each release "$(native_path "$FIXTURES/licm/invariant_arith.ir")" >"$WORK/licm-release-actual.ir" 2>"$WORK/licm-release.err" || \
    ! cmp -s "$WORK/licm-release-expected.ir" "$WORK/licm-release-actual.ir"; then
@@ -1104,9 +1106,9 @@ prove_mutation 'S9E13: declarations may call back' src/compiler/ir/opt/escape.iy
   '      nil if fn.declaration? # mutation S9-declaration: a declaration may call back' \
   -- mutation_check S9E13 escape declaration_callback || fail 'S9E13 was not caught'
 mutation_result S9E13
-prove_mutation 'S9E14: callback targets are address taken' src/compiler/ir/opt/escape.iyi \
-  '      edges[hub] << k if addresses.has_key?(fn) # mutation S9-hub: only address-taken functions are reached' \
-  '      edges[hub] << k # mutation S9-hub: only address-taken functions are reached' \
+prove_mutation 'S9E14: every function is a callback target' src/compiler/ir/opt/escape.iyi \
+  '      edges[hub] << k if addresses.has_key?(fn) ||' \
+  '      edges[hub] << k if true ||' \
   -- mutation_check S9E14 escape indirect_nonrecursive || fail 'S9E14 was not caught'
 mutation_result S9E14
 prove_mutation 'S9E15: persist frame-cap rejection' src/compiler/ir/opt/escape.iyi \
@@ -1283,6 +1285,83 @@ prove_mutation 'S9B22: second merge address must be inbounds' src/compiler/ir/op
   -- mutation_check S9B22 barrier merge_non_inbounds_keep || fail 'S9B22 was not caught'
 mutation_result S9B22
 
+prove_mutation 'S9R1: promotion is refused in a function that can return twice' src/compiler/ir/opt/escape.iyi \
+  '  return false if function_returns_twice?(fn) # mutation S9-returns-twice: promoted objects cannot cross a second return' \
+  '  nil if function_returns_twice?(fn) # mutation S9-returns-twice: promoted objects cannot cross a second return' \
+  -- mutation_check S9R1 release returns_twice || fail 'S9R1 was not caught'
+mutation_result S9R1
+prove_mutation 'S9R2: the selective escape group repeats to a fixed point' src/compiler/ir/opt/pipeline.iyi \
+  '&& gate_changed # mutation S9-escape-fixed-point' \
+  '&& false # mutation S9-escape-fixed-point' \
+  -- mutation_check S9R2 release nested_objects || fail 'S9R2 was not caught'
+mutation_result S9R2
+prove_mutation 'S9R3a: externally visible definitions are callback targets' src/compiler/ir/opt/escape.iyi \
+  ' || (!fn.declaration? && fn.linkage != Linkage::Internal && fn.linkage != Linkage::Private) # mutation S9-hub' \
+  ' || false # mutation S9-hub' \
+  -- mutation_check S9R3a escape external_callback || fail 'S9R3a was not caught'
+mutation_result S9R3a
+prove_mutation 'S9R3b: assembly-named functions are address taken' src/compiler/ir/opt/escape.iyi \
+  '@addresses[candidate] = true if template.includes?(candidate.name) # mutation S9-asm-address' \
+  'nil if template.includes?(candidate.name) # mutation S9-asm-address' \
+  -- mutation_check S9R3b escape asm_callback || fail 'S9R3b was not caught'
+mutation_result S9R3b
+prove_mutation 'S9R4a: a first GEP index of i1 true is sign-extended' src/compiler/ir/opt/escape.iyi \
+  '    first = gep_index(inst.args[1]) # mutation S9-escape-gep-i1-first: sign-extend i1' \
+  '    first = int_value(inst.args[1]) # mutation S9-escape-gep-i1-first: sign-extend i1' \
+  -- mutation_check S9R4a escape header_i1_keep || fail 'S9R4a was not caught'
+mutation_result S9R4a
+prove_mutation 'S9R4b: a nested GEP index of i1 true is sign-extended' src/compiler/ir/opt/escape.iyi \
+  '      index = gep_index(inst.args[k]) # mutation S9-escape-gep-i1-nested: sign-extend i1' \
+  '      index = int_value(inst.args[k]) # mutation S9-escape-gep-i1-nested: sign-extend i1' \
+  -- mutation_check S9R4b escape nested_i1_keep || fail 'S9R4b was not caught'
+mutation_result S9R4b
+prove_mutation 'S9R4c: a sizeof GEP index of i1 true is sign-extended' src/compiler/ir/opt/escape.iyi \
+  '  return nil unless gep_index(gep.args[1]) == 1_i64 # mutation S9-sizeof-i1: GEP indices are signed' \
+  '  return nil unless int_value(gep.args[1]) == 1_i64 # mutation S9-sizeof-i1: GEP indices are signed' \
+  -- mutation_check S9R4c escape sizeof_i1_keep || fail 'S9R4c was not caught'
+mutation_result S9R4c
+prove_mutation 'S9R5a: a memset stays within the object' src/compiler/ir/opt/escape.iyi \
+  '  return false unless target.low >= 0_i64 && target.high <= candidate.size && length >= 0_i64 && length <= candidate.size - target.high' \
+  '  return false unless target.low >= 0_i64 # mutation S9-bulk-bound: the extent check is dropped' \
+  -- mutation_check S9R5a escape memset_oversize_keep || fail 'S9R5a was not caught'
+mutation_result S9R5a
+prove_mutation 'S9R5b: a memcpy stays within the object' src/compiler/ir/opt/escape.iyi \
+  '  return false unless target.low >= 0_i64 && target.high <= candidate.size && length >= 0_i64 && length <= candidate.size - target.high' \
+  '  return false unless target.low >= 0_i64 # mutation S9-bulk-bound: the extent check is dropped' \
+  -- mutation_check S9R5b escape memcpy_oversize_keep || fail 'S9R5b was not caught'
+mutation_result S9R5b
+prove_mutation 'S9R5c: a dereferenceable parameter stays within the object' src/compiler/ir/opt/escape.iyi \
+  '      return false if attr.int_value > (candidate.size - span.high).to_u64' \
+  '      nil if attr.int_value > (candidate.size - span.high).to_u64' \
+  -- mutation_check S9R5c escape dereferenceable_oversize_keep || fail 'S9R5c was not caught'
+mutation_result S9R5c
+prove_mutation 'S9R5d: a store stays within the object' src/compiler/ir/opt/escape.iyi \
+  '    return false if span.high > candidate.size || info.store > candidate.size - span.high' \
+  '    nil if span.high > candidate.size || info.store > candidate.size - span.high' \
+  -- mutation_check S9R5d escape out_of_bounds_store || fail 'S9R5d was not caught'
+mutation_result S9R5d
+prove_mutation 'S9R5e: a load stays within the object' src/compiler/ir/opt/escape.iyi \
+  '    return false if span.high > candidate.size || info.store > candidate.size - span.high' \
+  '    nil if span.high > candidate.size || info.store > candidate.size - span.high' \
+  -- mutation_check S9R5e escape out_of_bounds_load || fail 'S9R5e was not caught'
+mutation_result S9R5e
+prove_mutation 'S9R5f: existing allocas count against the frame budget' src/compiler/ir/opt/escape.iyi \
+  '    next unless inst.op == Op::Alloca' \
+  '    next # mutation S9-frame-existing: existing allocas do not count' \
+  -- mutation_check S9R5f escape existing_frame || fail 'S9R5f was not caught'
+mutation_result S9R5f
+prove_mutation 'S9R5g: a second candidate in a shared set poisons the first' src/compiler/ir/opt/escape.iyi \
+  '      previous.bad = true' \
+  '      nil # mutation S9-poison-previous: the first candidate of a shared set stays promotable' \
+  -- mutation_check S9R5g escape mixed_candidates || fail 'S9R5g was not caught'
+mutation_result S9R5g
+prove_mutation 'S9R5h: a second candidate in a shared set is poisoned' src/compiler/ir/opt/escape.iyi \
+  '      previous.bad = true
+      candidate.bad = true' \
+  '      previous.bad = true
+      nil # mutation S9-poison-candidate: the second candidate of a shared set stays promotable' \
+  -- mutation_check S9R5h escape mixed_candidates || fail 'S9R5h was not caught'
+mutation_result S9R5h
 echo '== 8. verdict'
 if [ "$failed" -eq 0 ]; then
   echo 'ALL NATIVE OPT CHECKS PASSED!'

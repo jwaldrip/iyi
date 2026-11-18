@@ -11,7 +11,7 @@ define internal void @__iyi_publish(ptr %value) {
 entry:
   ret void
 }
-define external i64 @local() {
+define internal i64 @local() {
 entry:
   %0 = alloca [8 x i8], align 16
   intrinsic llvm.memset.p0.i64(ptr %0, i8 0, i64 8, i1 false)

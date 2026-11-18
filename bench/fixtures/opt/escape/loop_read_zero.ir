@@ -4,7 +4,7 @@ target triple = "aarch64-apple-darwin"
 target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
 %Point = type { i64, i64 }
 declare external ptr @__iyi_new(i64, i64, i64)
-define external i64 @loop_read_zero() {
+define internal i64 @loop_read_zero() {
 entry:
   br label %loop
 loop:

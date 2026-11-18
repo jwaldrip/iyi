@@ -3,7 +3,7 @@ source_filename = "escape_loop_carried"
 target triple = "aarch64-apple-darwin"
 target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
 declare external ptr @__iyi_new(i64, i64, i64)
-define external i64 @carried(i1 %again, i1 %restart) {
+define internal i64 @carried(i1 %again, i1 %restart) {
 entry:
   br label %allocate
 allocate:
