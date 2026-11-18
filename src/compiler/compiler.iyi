@@ -33,6 +33,7 @@ import compiler/lower/context::{Lowerer}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
 import compiler/ir/verifier::{verify}
+import compiler/ir/opt/pipeline::{OptTier, PassOptions, tier_passes, run_passes}
 import compiler/ir/printer::{print}
 import std/file
 alias PlatformTarget = ::Compiler::Platform::Target::Target
@@ -57,6 +58,7 @@ pub struct CompilerConfig
   property keep_going : Bool
   property stub_refused : Bool
   property stub_also : Array(String)
+  property opt_tier : OptTier
 
   def initialize(
     @output_filename : String = "a.out",
@@ -71,6 +73,7 @@ pub struct CompilerConfig
     @keep_going : Bool = false,
     @stub_refused : Bool = false,
     @stub_also : Array(String) = [] of String,
+    @opt_tier : OptTier = OptTier::Default,
   )
   end
 end
@@ -414,6 +417,19 @@ pub class Compiler
       return typed_refuse("verify", reached, "the IR verifier refused the module: " + errors[0].to_s)
     end
     reached = typed_pass("verify")
+
+    typed_start("opt")
+    options = PassOptions.from_env
+    if refusal = run_passes(mod, tier_passes(@config.opt_tier), options)
+      return typed_refuse("opt", reached, refusal)
+    end
+    unless options.verify_each
+      opt_errors = verify(mod)
+      unless opt_errors.empty?
+        return typed_refuse("opt", reached, "the IR verifier refused the module: " + opt_errors[0].to_s)
+      end
+    end
+    reached = typed_pass("opt")
     if @config.stub_refused
       lines = [] of String
       stubbed_defs.each do |name, reason|

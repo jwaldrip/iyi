@@ -5,7 +5,7 @@
 #
 # For each fixture (bench/fixtures/lower_*, lowcall_*, lowprim_*, lowglob_*):
 #   - the tool runs with --probe-phase and reaches a phase: parse, declarations, bodies, lower,
-#     verify, native, link. A refusal names its phase on stdout and exits 1 with no output file.
+#     verify, opt, native, link. A refusal names its phase on stdout and exits 1 with no output file.
 #   - a fixture that reaches link is run; its stdout and exit status must equal the hosted
 #     executable (built with --prelude empty, except lowglob_cvar_lazy which uses the
 #     lowglob_abi prelude). That is run-equal.
@@ -78,7 +78,7 @@ COMPILE_NATIVE_ROOT="src/compiler/tools/compile_native.iyi"
 rank() {
   case "$1" in
     none) echo 0 ;; parse) echo 1 ;; declarations) echo 2 ;; bodies) echo 3 ;; lower) echo 4 ;;
-    verify) echo 5 ;; native) echo 6 ;; link) echo 7 ;; run-equal) echo 8 ;; *) echo -1 ;;
+    verify) echo 5 ;; opt) echo 6 ;; native) echo 7 ;; link) echo 8 ;; run-equal) echo 9 ;; *) echo -1 ;;
   esac
 }
 
@@ -974,10 +974,10 @@ fi
 layout_check() {
   build_tool "$TOOL_SRC" "$WORK/layout_tool" || return 2
   rm -f "$WORK/layout_box.ll" "$WORK/layout_str.ll"
-  if ! "$WORK/layout_tool$EXE" "$REPO_NATIVE/bench/fixtures/lower_class_new.iyi" -o "$WORK_NATIVE/layout_box.ll" --pipeline typed --emit ir >"$WORK/layout_box.log" 2>&1; then
+  if ! "$WORK/layout_tool$EXE" "$REPO_NATIVE/bench/fixtures/lower_class_new.iyi" -o "$WORK_NATIVE/layout_box.ll" --pipeline typed --emit ir -O0 >"$WORK/layout_box.log" 2>&1; then
     echo "  INVALID: class layout IR did not compile" >&2; cat "$WORK/layout_box.log" >&2; return 2
   fi
-  if ! "$WORK/layout_tool$EXE" "$REPO_NATIVE/bench/fixtures/lower_string_fields.iyi" -o "$WORK_NATIVE/layout_str.ll" --pipeline typed --emit ir >"$WORK/layout_str.log" 2>&1; then
+  if ! "$WORK/layout_tool$EXE" "$REPO_NATIVE/bench/fixtures/lower_string_fields.iyi" -o "$WORK_NATIVE/layout_str.ll" --pipeline typed --emit ir -O0 >"$WORK/layout_str.log" 2>&1; then
     echo "  INVALID: string layout IR did not compile" >&2; cat "$WORK/layout_str.log" >&2; return 2
   fi
   [ -f "$WORK/layout_box.ll" ] && [ -f "$WORK/layout_str.ll" ] || { echo "  INVALID: layout IR was not written" >&2; return 2; }
