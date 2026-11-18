@@ -510,6 +510,7 @@ fixture_check default locals_loop changed
 fixture_check release full changed
 fixture_check release scalar_slot changed
 fixture_check release devirt_inline_cache changed
+fixture_check release devirt_ancestors changed
 if ! "$DRV" print "$(native_path "$FIXTURES/licm/invariant_arith.out.ir")" >"$WORK/licm-release-expected.ir" 2>"$WORK/licm-release.err" || \
    ! "$DRV" run --verify-each release "$(native_path "$FIXTURES/licm/invariant_arith.ir")" >"$WORK/licm-release-actual.ir" 2>"$WORK/licm-release.err" || \
    ! cmp -s "$WORK/licm-release-expected.ir" "$WORK/licm-release-actual.ir"; then
@@ -1005,8 +1006,8 @@ prove_mutation 'S6P1: forward five-arm dispatch limit' src/compiler/ir/opt/inlin
   -- generated_mutation_check S6P1 inline dispatch5 || fail 'S6P1 was not caught'
 mutation_result S6P1
 prove_mutation 'S6P2: invalidate callee after cleanup' src/compiler/ir/opt/pipeline.iyi \
-  '          inline_budget.invalidate(fn) # mutation S6P2: invalidate after function cleanup' \
-  '          nil # mutation S6P2: invalidate after function cleanup' \
+  '            inline_budget.invalidate(fn) # mutation S6P2: invalidate after function cleanup' \
+  '            nil # mutation S6P2: invalidate after function cleanup' \
   -- generated_mutation_check S6P2 release cache_cleanup || fail 'S6P2 was not caught'
 mutation_result S6P2
 prove_mutation 'S6P3: count earlier dispatch starts' src/compiler/ir/opt/inline.iyi \

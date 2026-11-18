@@ -7,13 +7,6 @@ entry:
   ret ptr null
 }
 
-define internal i64 @callee(i64 %x) {
-entry:
-  %0 = alloca [16 x i8], align 16
-  intrinsic llvm.memset.p0.i64(ptr %0, i8 0, i64 16, i1 false)
-  store i64 30064771072, ptr %0, align 8
-  ret i64 %x
-}
 
 define external i64 @caller(i64 %x) {
 entry:
@@ -28,6 +21,8 @@ entry:
 
 define external i64 @second_caller(i64 %x) {
 entry:
-  %result = call i64 (i64) @callee(i64 %x)
-  ret i64 %result
+  %0 = alloca [16 x i8], align 16
+  intrinsic llvm.memset.p0.i64(ptr %0, i8 0, i64 16, i1 false)
+  store i64 30064771072, ptr %0, align 8
+  ret i64 %x
 }

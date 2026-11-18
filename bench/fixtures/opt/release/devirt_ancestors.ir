@@ -1,0 +1,77 @@
+; iyi-ir 1
+source_filename = "devirt_ancestors"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal ptr @__iyi_new(i64 %size, i64 %type_id, i64 %flags) {
+entry:
+  ret ptr null
+}
+define internal i64 @c(i64 %x) {
+entry:
+  %p = call ptr (i64, i64, i64) @__iyi_new(i64 8, i64 7, i64 1)
+  %tag_ptr = getelementptr i8, ptr %p, i64 -4
+  %tag = load i32, ptr %tag_ptr, align 4
+  %known = icmp eq i32 %tag, 7
+  br i1 %known, label %fast, label %slow
+fast:
+  ret i64 %x
+slow:
+  %v0 = add i64 %x, 1
+  %v1 = add i64 %v0, 1
+  %v2 = add i64 %v1, 1
+  %v3 = add i64 %v2, 1
+  %v4 = add i64 %v3, 1
+  %v5 = add i64 %v4, 1
+  %v6 = add i64 %v5, 1
+  %v7 = add i64 %v6, 1
+  %v8 = add i64 %v7, 1
+  %v9 = add i64 %v8, 1
+  %v10 = add i64 %v9, 1
+  %v11 = add i64 %v10, 1
+  %v12 = add i64 %v11, 1
+  %v13 = add i64 %v12, 1
+  %v14 = add i64 %v13, 1
+  %v15 = add i64 %v14, 1
+  %v16 = add i64 %v15, 1
+  %v17 = add i64 %v16, 1
+  %v18 = add i64 %v17, 1
+  %v19 = add i64 %v18, 1
+  %v20 = add i64 %v19, 1
+  %v21 = add i64 %v20, 1
+  %v22 = add i64 %v21, 1
+  %v23 = add i64 %v22, 1
+  %v24 = add i64 %v23, 1
+  %v25 = add i64 %v24, 1
+  %v26 = add i64 %v25, 1
+  %v27 = add i64 %v26, 1
+  %v28 = add i64 %v27, 1
+  %v29 = add i64 %v28, 1
+  %v30 = add i64 %v29, 1
+  %v31 = add i64 %v30, 1
+  %v32 = add i64 %v31, 1
+  %v33 = add i64 %v32, 1
+  %v34 = add i64 %v33, 1
+  %v35 = add i64 %v34, 1
+  %v36 = add i64 %v35, 1
+  %v37 = add i64 %v36, 1
+  %v38 = add i64 %v37, 1
+  %v39 = add i64 %v38, 1
+  %v40 = add i64 %v39, 1
+  %v41 = add i64 %v40, 1
+  ret i64 %v41
+}
+define internal i64 @b(i64 %x) {
+entry:
+  %r = call i64 (i64) @c(i64 %x)
+  ret i64 %r
+}
+define external i64 @a(i64 %x) {
+entry:
+  %r = call i64 (i64) @b(i64 %x)
+  ret i64 %r
+}
+define external i64 @other(i64 %x) {
+entry:
+  %r = call i64 (i64) @c(i64 %x)
+  ret i64 %r
+}

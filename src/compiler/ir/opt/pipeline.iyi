@@ -1,6 +1,7 @@
 module compiler/ir/opt/pipeline
 
 import compiler/ir/function::{Function}
+import compiler/ir/inst::{Op}
 import compiler/ir/module::{Module}
 import compiler/ir/verifier::{verify_function}
 import compiler/ir/opt/cfg_simplify::{run_cfg_simplify}
@@ -188,6 +189,49 @@ class PassTimings
   end
 end
 
+# Find all direct callers, including transitive callers, of functions whose
+# devirtualization can change an inlining decision. The graph is rebuilt after
+# devirt so the closure reflects the calls seen by the second inline round.
+def inline_ancestors(mod : Module, changed : Hash(Function, Bool)) : Hash(Function, Bool)
+  callers = Hash(Function, Array(Function)).new
+  mod.functions.each do |fn|
+    fn.blocks.each do |block|
+      block.insts.each do |inst|
+        if (inst.op == Op::Call || inst.op == Op::Invoke) && !inst.args.empty? && inst.args[0].is_a?(Function)
+          callee = inst.args[0].as(Function)
+          list = callers[callee]?
+          unless list
+            list = [] of Function
+            callers[callee] = list
+          end
+          list << fn
+        end
+      end
+    end
+  end
+  selected = Hash(Function, Bool).new
+  pending = [] of Function
+  mod.functions.each do |fn|
+    if changed.has_key?(fn)
+      selected[fn] = true
+      pending << fn
+    end
+  end
+  k = 0
+  while k < pending.size
+    if incoming = callers[pending[k]]?
+      incoming.each do |caller|
+        unless selected.has_key?(caller)
+          selected[caller] = true
+          pending << caller
+        end
+      end
+    end
+    k = k + 1
+  end
+  selected
+end
+
 pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) : String?
   # Inline and its cleanup run bottom-up per function. The later proof,
   # loop and layout phases each begin only after the preceding module phase.
@@ -245,15 +289,19 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
     devirt = has_devirt ? DevirtInfo.new(mod, partitioned) : nil
     escape = passes[begin_at] == PassId::Escape ? EscapeInfo.new(mod, partitioned) : nil
     selective_inline = release && has_inline && inline_round == 2
+    inline_selected = selective_inline ? inline_ancestors(mod, changed_by_devirt.as(Hash(Function, Bool))) : nil
+    inline_visited = 0
     selective_devirt = release && passes[begin_at] == PassId::Devirt
     selective_escape = release && passes[begin_at] == PassId::Escape
     functions = graph ? graph.order : mod.functions
     f = 0
     while f < functions.size
       fn = functions[f]
-      unless fn.declaration? || (selective_inline && !changed_by_devirt.as(Hash(Function, Bool)).has_key?(fn))
+      unless fn.declaration? || (selective_inline && !inline_selected.as(Hash(Function, Bool)).has_key?(fn))
+        inline_visited = inline_visited + 1 if selective_inline
         k = begin_at
         gate_changed = false
+        group_changed = false
         while k < end_at
           break if k > begin_at && (selective_devirt || selective_escape) && !gate_changed
           if clock = timings
@@ -263,6 +311,7 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
           else
             changed = run_scheduled_pass(mod, fn, passes[k], graph, budget, devirt, escape, partitioned)
           end
+          group_changed = true if changed
           if k == begin_at && (selective_devirt || selective_escape)
             gate_changed = changed
             if selective_devirt && changed
@@ -283,11 +332,16 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
           end
           k = k + 1
         end
-        if inline_budget = budget
-          inline_budget.invalidate(fn) # mutation S6P2: invalidate after function cleanup
+        if group_changed
+          if inline_budget = budget
+            inline_budget.invalidate(fn) # mutation S6P2: invalidate after function cleanup
+          end
         end
       end
       f = f + 1
+    end
+    if selective_inline && Program.env("IYI_DEVIRT_STATS") == "1"
+      STDERR.puts "devirt-inline\tchanged=#{changed_by_devirt.as(Hash(Function, Bool)).size}\tvisited=#{inline_visited}"
     end
     if info = devirt
       if Program.env("IYI_DEVIRT_STATS") == "1"
