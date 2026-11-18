@@ -1,0 +1,72 @@
+; iyi-ir 1
+module "select"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+
+define internal i64 @choose(i64 %x, i64 %yes, i64 %no) {
+entry:
+  %c = icmp slt i64 %x, 0
+  %r = select i1 %c, i64 %yes, i64 %no
+  ret i64 %r
+}
+define internal i64 @choose_hint(i64 %x, i64 %yes, i64 %no) {
+entry:
+  %c = icmp sgt i64 %x, 5
+  %hint = intrinsic llvm.expect.i1(i1 %c, i1 true)
+  %r = select i1 %hint, i64 %yes, i64 %no
+  ret i64 %r
+}
+define internal i64 @choose_shared(i64 %x, i64 %yes, i64 %no) {
+entry:
+  %c = icmp sgt i64 %x, 5
+  %r = select i1 %c, i64 %yes, i64 %no
+  %w = zext i1 %c to i64
+  %sum = add i64 %r, %w
+  ret i64 %sum
+}
+define internal i64 @float_ordered(double %x) {
+entry:
+  %c = fcmp olt double %x, 0.000000e+00
+  %r = select i1 %c, double 2.000000e+00, double 3.000000e+00
+  %v = fptosi double %r to i64
+  ret i64 %v
+}
+define internal i64 @float_unordered(double %x) {
+entry:
+  %c = fcmp ult double %x, 0.000000e+00
+  %r = select i1 %c, i64 4, i64 5
+  ret i64 %r
+}
+define internal i64 @float_composite(double %x) {
+entry:
+  %c = fcmp ueq double %x, 0.000000e+00
+  %r = select i1 %c, i64 6, i64 7
+  ret i64 %r
+}
+define i32 @main() {
+entry:
+  %nan = bitcast i64 9221120237041090560 to double
+  %a = call i64 (i64, i64, i64) @choose(i64 -1, i64 11, i64 22)
+  %b = call i64 (i64, i64, i64) @choose(i64 1, i64 11, i64 22)
+  %c = call i64 (i64, i64, i64) @choose_hint(i64 6, i64 31, i64 32)
+  %d = call i64 (i64, i64, i64) @choose_hint(i64 4, i64 31, i64 32)
+  %e = call i64 (i64, i64, i64) @choose_shared(i64 6, i64 41, i64 42)
+  %f = call i64 (i64, i64, i64) @choose_shared(i64 4, i64 41, i64 42)
+  %g = call i64 (double) @float_ordered(double -1.000000e+00)
+  %h = call i64 (double) @float_ordered(double %nan)
+  %i = call i64 (double) @float_unordered(double %nan)
+  %j = call i64 (double) @float_composite(double %nan)
+  %p0 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %a)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %b)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %c)
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %d)
+  %p4 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %e)
+  %p5 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %f)
+  %p6 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %g)
+  %p7 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %h)
+  %p8 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %i)
+  %p9 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %j)
+  ret i32 0
+}

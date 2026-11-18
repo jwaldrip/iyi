@@ -284,6 +284,12 @@ for fn in ("add_left", "add_right", "narrow"):
 expect("mulacc", "sub_left", [op("Neg"), op("Madd")], [op("Mul")])
 expect("mulacc", "sub_right", [op("Msub")], [op("Mul")])
 expect("mulacc", "shared_mul", [op("Mul")], [op("Madd"), op("Msub")])
+for fn in ("choose", "choose_hint"):
+    expect("select", fn, [op("CmpImm"), op("Csel")], [op("Cset")])
+expect("select", "choose_shared", [op("Cset"), op("Csel")])
+for fn in ("float_ordered", "float_unordered"):
+    expect("select", fn, [op("FCmp"), op("Csel")], [op("Cset")])
+expect("select", "float_composite", [op("FCmp"), op("Cset"), op("Csel")])
 for problem in errors:
     print("INVALID: " + problem)
 for problem in defects:
@@ -309,7 +315,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       exit 1
     fi
   done
-  for key in branches memory immediates overflow deferred indexed division mulacc; do
+  for key in branches memory immediates overflow deferred indexed division mulacc select; do
     source="$FIX/$key.iyi"
     [ "$key" != division ] || source="$WORK/division.iyi"
     if ! ./bin/iyi build -o "$(native_path "$WORK/$key.hosted$EXE")" "$(native_path "$source")" >"$WORK/$key.hosted.log" 2>&1; then
@@ -385,6 +391,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_fold_mutation "indexed: omit access-size scale" src/compiler/native/aarch64/encode.iyi '    base = base | 0x1000_i64 if inst.size > 8 # indexed-access-scale' '    base = base | 0_i64 if inst.size > 8 # indexed-access-scale' indexed
   prove_fold_mutation "division: reciprocal constant off by one" src/compiler/native/aarch64/fold.iyi '  multiplier = quotient &+ 1_u64 # division-magic' '  multiplier = quotient &+ 2_u64 # division-magic' division
   prove_fold_mutation "multiply-subtract: exchange the addend" src/compiler/native/aarch64/isel.iyi '    m.uses << vop(addend) # fused-mul-addend' '    m.uses << vop(a) # fused-mul-addend' mulacc
+  prove_fold_mutation "select: exchange conditional arms" src/compiler/native/aarch64/isel.iyi '        regs << csel_cond(tv[k], fv[k], cond) # select-arms' '        regs << csel_cond(fv[k], tv[k], cond) # select-arms' select
 else
   host_limited "runtime selector mutation proofs (macOS arm64)"
 fi
