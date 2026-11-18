@@ -239,19 +239,11 @@ def compile_rounds(old, new, source, count, directory, timeout):
             order = tuple(reversed(order))
         for arm, compiler in order:
             output = directory / arm / "iyi"
-            while True:
-                if output.exists():
-                    output.unlink()
-                command = [compiler, "build"]
-                if release[arm]:
-                    command.append("--release")
-                command += ["-o", str(output), source]
-                sample = wait_timed(command, timeout, require_result=False, allow_failure=True)
-                if "returncode" not in sample:
-                    if not output.is_file():
-                        raise GateError("compiler did not create " + str(output))
-                    runs[arm].append(sample)
-                    break
+            if output.exists():
+                output.unlink()
+            command = [compiler, "build", "--release", "-o", str(output), source]
+            sample = wait_timed(command, timeout, require_result=False, allow_failure=True)
+            if "returncode" in sample:
                 diagnostic = sample["stdout"] + "\n" + sample["stderr"]
                 raise GateError("compiler exited %s: %s" % (sample["returncode"], diagnostic[-4000:]))
             if not output.is_file():
