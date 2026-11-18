@@ -66,7 +66,7 @@ check_barriers() {
     echo 'INVALID: GC barrier compiler signature failed'
     return 2
   fi
-  if ! "$WORK/stage1$EXE" "$fixture" -o "$WORK_NATIVE/port.ir" --pipeline typed --prelude --emit ir >"$WORK/emit.log" 2>&1; then
+  if ! "$WORK/stage1$EXE" "$fixture" -o "$WORK_NATIVE/port.ir" --pipeline typed --prelude --emit ir -O0 >"$WORK/emit.log" 2>&1; then
     echo 'INVALID: GC barrier compiler did not emit IR'
     cat "$WORK/emit.log"
     return 2
