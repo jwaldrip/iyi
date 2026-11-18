@@ -154,6 +154,8 @@ pub enum MOp
   Tbnz       # branch when bit imm of uses[0] is one
   LdrReg     # dst <- [uses[0] + uses[1] * access size]
   StrReg     # [uses[1] + uses[2] * access size] <- uses[0]
+  Madd       # dst <- uses[0] + uses[1] * uses[2]
+  Neg        # dst <- -uses[0]
 end
 
 pub class Operand

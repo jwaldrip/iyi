@@ -90,6 +90,7 @@ end
 enum DeferredKind
   Address
   IndexedAddress
+  Multiply
   Compare
   Hint
   BitTest
@@ -321,7 +322,7 @@ class Isel
     if v.is_a?(Inst)
       inst = v.as(Inst)
       kind = @deferred[v]?
-      if kind == DeferredKind::Address || kind == DeferredKind::IndexedAddress || kind == DeferredKind::Compare || kind == DeferredKind::Hint || kind == DeferredKind::BitTest
+      if kind == DeferredKind::Address || kind == DeferredKind::IndexedAddress || kind == DeferredKind::Multiply || kind == DeferredKind::Compare || kind == DeferredKind::Hint || kind == DeferredKind::BitTest
         @deferred.delete(v)
         lower_inst(inst)
       elsif kind == DeferredKind::Overflow
@@ -714,6 +715,8 @@ class Isel
           plan_address(i.args[0], i.type, block)
         elsif i.op == Op::Store && !release_on_store?(i.aux.as(MemAux).ordering)
           plan_address(i.args[1], i.args[0].type, block)
+        elsif i.op == Op::Add || i.op == Op::Sub
+          plan_mul_add(i, block)
         end
       end
       block = block + 1
@@ -723,6 +726,20 @@ class Isel
   def single_local_use?(v : Value, block : Int32) : Bool
     (@uses[v]? || 0) == 1 && @inst_blocks[v]? == block
   end
+  def plan_mul_add(i : Inst, block : Int32) : Nil
+    return unless i.type.int? && i.type.bits <= 64
+    first = i.op == Op::Sub ? 1 : 0
+    k = 0
+    while k < 2
+      value = i.args[(first + k) % 2]
+      if value.is_a?(Inst) && value.as(Inst).op == Op::Mul && single_local_use?(value, block)
+        @deferred[value] = DeferredKind::Multiply
+        return
+      end
+      k = k + 1
+    end
+  end
+
 
   def plan_address(v : Value, access : IrType, block : Int32) : Nil
     return unless v.is_a?(Inst) && single_local_use?(v, block)
@@ -1389,12 +1406,44 @@ class Isel
     true
   end
 
+  def lower_mul_add(i : Inst) : Bool
+    return false unless i.op == Op::Add || i.op == Op::Sub
+    side = -1
+    side = 0 if @deferred[i.args[0]]? == DeferredKind::Multiply
+    side = 1 if @deferred[i.args[1]]? == DeferredKind::Multiply
+    return false if side < 0
+    value = i.args[side]
+    return false unless value.is_a?(Inst) && value.as(Inst).op == Op::Mul
+    mul = value.as(Inst)
+    a = first_leaf(mul.args[0])
+    b = first_leaf(mul.args[1])
+    addend = first_leaf(i.args[1 - side])
+    if i.op == Op::Sub && side == 0
+      negated = gpr
+      neg = mop(MOp::Neg)
+      neg.defs << vop(negated)
+      neg.uses << vop(addend)
+      emit(neg)
+      addend = negated
+    end
+    result = gpr
+    m = mop(i.op == Op::Sub && side == 1 ? MOp::Msub : MOp::Madd)
+    m.defs << vop(result)
+    m.uses << vop(addend) # fused-mul-addend
+    m.uses << vop(a)
+    m.uses << vop(b)
+    emit(m)
+    bind_result(i, [canon(result, i.type)])
+    true
+  end
+
   def lower_int_binop(i : Inst) : Nil
     t = i.type
     if i128?(t)
       wide_binop(i)
       return
     end
+    return if lower_mul_add(i)
     return if lower_constant_division(i)
     return if lower_immediate(i)
     a = first_leaf(i.args[0])

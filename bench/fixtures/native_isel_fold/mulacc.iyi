@@ -1,0 +1,12 @@
+module mulacc
+
+a = 3_i64
+b = -5_i64
+c = 20_i64
+puts "#{a * b + c}"
+puts "#{c + a * b}"
+puts "#{a * b - c}"
+puts "#{c - 3_i64 * 5_i64}"
+product = 3_i64 * 5_i64
+puts "#{(product + c) - product}"
+puts "#{((100_i64 * 2_i64 + 30_i64 + 128_i64) & 255_i64) - 128_i64}"

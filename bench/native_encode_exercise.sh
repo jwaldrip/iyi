@@ -97,6 +97,8 @@ strh w1, [x2, x3, lsl #1]
 strb w1, [x2, x3]
 str d1, [x2, x3, lsl #3]
 str s1, [x2, x3, lsl #2]
+madd x0, x1, x2, x3
+neg x0, x1
 FORMS
 
 echo "== 3. the oracle: every form in one naked function, built by the hosted compiler"

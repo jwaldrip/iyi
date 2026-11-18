@@ -279,6 +279,11 @@ for fn in ("s8_p3", "s16_m7", "s32_p10", "s64_p7", "u8_p3", "u16_p7", "u32_p10",
     expect("division", fn, [op("Umulh"), op("Msub")], [op("Sdiv"), op("Udiv")])
 for fn in ("u8_p2", "u16_p64", "u32_p2", "u64_p64"):
     expect("division", fn, [op("LsrImm"), op("Msub")], [op("Sdiv"), op("Udiv"), op("Umulh")])
+for fn in ("add_left", "add_right", "narrow"):
+    expect("mulacc", fn, [op("Madd")], [op("Mul")])
+expect("mulacc", "sub_left", [op("Neg"), op("Madd")], [op("Mul")])
+expect("mulacc", "sub_right", [op("Msub")], [op("Mul")])
+expect("mulacc", "shared_mul", [op("Mul")], [op("Madd"), op("Msub")])
 for problem in errors:
     print("INVALID: " + problem)
 for problem in defects:
@@ -304,7 +309,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       exit 1
     fi
   done
-  for key in branches memory immediates overflow deferred indexed division; do
+  for key in branches memory immediates overflow deferred indexed division mulacc; do
     source="$FIX/$key.iyi"
     [ "$key" != division ] || source="$WORK/division.iyi"
     if ! ./bin/iyi build -o "$(native_path "$WORK/$key.hosted$EXE")" "$(native_path "$source")" >"$WORK/$key.hosted.log" 2>&1; then
@@ -379,6 +384,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_fold_mutation "deferred: overflow leaf is not a bit test" src/compiler/native/aarch64/isel.iyi '          if other.is_a?(Inst) && @deferred[other]? == DeferredKind::BitTest && bit_test(other) >= 0 # deferred-bit-test' '          if other.is_a?(Inst) && @deferred.has_key?(other) # deferred-bit-test' deferred
   prove_fold_mutation "indexed: omit access-size scale" src/compiler/native/aarch64/encode.iyi '    base = base | 0x1000_i64 if inst.size > 8 # indexed-access-scale' '    base = base | 0_i64 if inst.size > 8 # indexed-access-scale' indexed
   prove_fold_mutation "division: reciprocal constant off by one" src/compiler/native/aarch64/fold.iyi '  multiplier = quotient &+ 1_u64 # division-magic' '  multiplier = quotient &+ 2_u64 # division-magic' division
+  prove_fold_mutation "multiply-subtract: exchange the addend" src/compiler/native/aarch64/isel.iyi '    m.uses << vop(addend) # fused-mul-addend' '    m.uses << vop(a) # fused-mul-addend' mulacc
 else
   host_limited "runtime selector mutation proofs (macOS arm64)"
 fi
