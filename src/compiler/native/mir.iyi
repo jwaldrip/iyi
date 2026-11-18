@@ -156,6 +156,8 @@ pub enum MOp
   StrReg     # [uses[1] + uses[2] * access size] <- uses[0]
   Madd       # dst <- uses[0] + uses[1] * uses[2]
   Neg        # dst <- -uses[0]
+  Ldp        # two defs <- [uses[0] + imm], then the adjacent element
+  Stp        # [uses[2] + imm] <- uses[0], then uses[1]
 end
 
 pub class Operand
