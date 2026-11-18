@@ -3,7 +3,7 @@ module compiler/ir/opt/escape
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/ir/inst::{Op, Inst, Block, GepAux, MemAux, CallAux, IntrinsicAux, AsmAux, IntPredicate, Ordering}
-import compiler/ir/function::{Function, Global, Linkage}
+import compiler/ir/function::{Function, Global}
 import compiler/ir/module::{Module}
 import compiler/ir/builder::{Builder}
 import compiler/ir/intrinsics::{IntrinsicId}
@@ -140,6 +140,76 @@ class SizeTable
   end
 end
 
+# Record pointer-bearing words in the IR type, including integer storage that
+# can carry a pointer through a mixed-union representation. The collector scans
+# stack words at 8-byte alignment; a packed slot is not an eligible object.
+class SlotShape
+  getter has_word : Bool
+  getter aligned : Bool
+
+  def initialize(@has_word : Bool, @aligned : Bool)
+  end
+end
+
+class SlotShapes
+  def initialize(@sizes : SizeTable, @integer_words : Bool)
+    @known = Hash(IrType, SlotShape).new
+    @bad = Hash(IrType, Bool).new
+    @active = Hash(IrType, Bool).new
+  end
+
+  def get(type : IrType, depth : Int32 = 0) : SlotShape?
+    if result = @known[type]?
+      return result
+    end
+    return nil if depth > 128 || @bad.has_key?(type) || @active.has_key?(type)
+    @active[type] = true
+    result = calculate(type, depth)
+    @active.delete(type)
+    if result
+      @known[type] = result
+    else
+      @bad[type] = true
+    end
+    result
+  end
+
+  private def calculate(type : IrType, depth : Int32) : SlotShape?
+    info = @sizes.get(type)
+    return nil unless info
+    return SlotShape.new(true, info.store == 8_i64) if type.pointer?
+    return SlotShape.new(@integer_words && info.store >= 8_i64, true) if type.int?
+    return SlotShape.new(false, true) if type.float?
+    if type.array?
+      return SlotShape.new(false, true) if type.count == 0_i64
+      if @integer_words && type.element_type.int? && type.element_type.bits == 8 && info.store >= 8_i64
+        return SlotShape.new(true, true)
+      end
+      child = get(type.element_type, depth + 1)
+      child_size = @sizes.get(type.element_type)
+      return nil unless child && child_size
+      aligned = child.aligned && (!child.has_word || type.count == 1_i64 || child_size.alloc % 8_i64 == 0_i64)
+      return SlotShape.new(child.has_word, aligned)
+    end
+    if type.struct? && !type.opaque?
+      has_word = false
+      aligned = true
+      k = 0
+      while k < type.fields.size
+        child = get(type.fields[k], depth + 1)
+        return nil unless child
+        if child.has_word
+          has_word = true
+          aligned = false unless child.aligned && info.offsets[k] % 8_i64 == 0_i64
+        end
+        k = k + 1
+      end
+      return SlotShape.new(has_word, aligned)
+    end
+    nil
+  end
+end
+
 
 # The generated size is commonly `ptrtoint (gep %T, null, 1)`, not a literal.
 def sizeof_type(value : Value) : IrType?
@@ -184,180 +254,6 @@ class Candidate
 
   def headed? : Bool
     (@flags & 1_i64) != 0_i64
-  end
-end
-
-class ScanProof
-  getter aligned : Bool
-  getter extent : Int64
-
-  def initialize(@aligned : Bool, @extent : Int64)
-  end
-end
-
-# The runtime table, not an IR field's apparent type, decides which words are
-# roots. Mixed-union payloads, for example, may be i64 arrays in the IR.
-# A mutable or unbound table cannot prove anything. Lookup mirrors the
-# collector's binary search; each type id's offsets are visited once per run.
-class CollectorLayouts
-  def initialize(mod : Module)
-    @words = [] of Value
-    @count = 0
-    @scan_count = 0
-    @bad_prefix = [0] of Int32
-    @max_tree = [] of Int64
-    @available = false
-    @null_table = false
-    @cache = Hash(Int64, ScanProof).new
-    @all_proof = nil.as(ScanProof?)
-    symbol = mod.global?("__iyi_gc_layouts")
-    return unless symbol && symbol.constant && (symbol.linkage == Linkage::Internal || symbol.linkage == Linkage::Private)
-    init = symbol.initializer
-    return unless init
-    if init.is_a?(Inst) && (init.as(Inst).op == Op::ConstNull || init.as(Inst).op == Op::ConstZero)
-      @available = true
-      @null_table = true
-      return
-    end
-    value = init.as(Value)
-    if value.is_a?(Inst) && value.as(Inst).op == Op::GlobalAddr && value.as(Inst).args.size == 1
-      value = value.as(Inst).args[0]
-    end
-    return unless value.is_a?(Global)
-    table = value.as(Global)
-    return unless table.constant && (table.linkage == Linkage::Internal || table.linkage == Linkage::Private)
-    return unless table.value_type.array? && table.value_type.element_type.int? && table.value_type.element_type.bits == 64
-    data = table.initializer
-    return unless data && data.is_a?(Inst) && data.as(Inst).op == Op::ConstAggregate
-    words = data.as(Inst).args
-    return if words.empty? || table.value_type.count != words.size.to_i64
-    count = int_value(words[0])
-    return unless count && count >= 0_i64 && count <= ((words.size - 1) // 5).to_i64
-    @words = words
-    @count = count.to_i32
-    start = 1 + @count * 5
-    @scan_count = words.size - start
-    return if @scan_count > 1073741823
-    (@scan_count * 2).times { @max_tree << 0_i64 }
-    k = 0
-    while k < @scan_count
-      offset = int_value(words[start + k])
-      if offset && offset >= 0_i64 && offset <= 9223372036854775799_i64 && offset % 8_i64 == 0_i64 # mutation S9-layout: remove the alignment test
-        @bad_prefix << @bad_prefix.last
-        @max_tree[@scan_count + k] = offset + 8_i64
-      else
-        @bad_prefix << @bad_prefix.last + 1
-      end
-      k = k + 1
-    end
-    k = @scan_count - 1
-    while k > 0
-      left = @max_tree[k * 2]
-      right = @max_tree[k * 2 + 1]
-      @max_tree[k] = left > right ? left : right
-      k = k - 1
-    end
-    @available = true
-  end
-
-  def safe?(candidate : Candidate) : Bool
-    return true if (candidate.flags & 2_i64) != 0_i64
-    return true if @available && @null_table
-    tid = int_value(candidate.call.args[2])
-    proof = nil.as(ScanProof?)
-    if tid
-      id = candidate.headed? ? (tid & 4294967295_i64) : (tid & 65535_i64)
-      # The collector always falls back to scanning aligned words for id zero.
-      return true if id == 0_i64
-      return false unless @available
-      proof = @cache[id]?
-      unless proof
-        proof = find(id)
-        @cache[id] = proof
-      end
-    else
-      return false unless @available
-      proof = all_layouts
-    end
-    return false unless proof
-    rounded = ((candidate.size + 7_i64) // 8_i64) * 8_i64
-    proof.aligned && proof.extent <= rounded
-  end
-
-  private def range_max(first : Int32, last : Int32) : Int64
-    left = first + @scan_count
-    right = last + @scan_count
-    result = 0_i64
-    while left < right
-      if (left & 1) != 0
-        result = @max_tree[left] if @max_tree[left] > result
-        left = left + 1
-      end
-      if (right & 1) != 0
-        right = right - 1
-        result = @max_tree[right] if @max_tree[right] > result
-      end
-      left = left // 2
-      right = right // 2
-    end
-    result
-  end
-
-  private def entry_proof(entry : Int32) : ScanProof
-    count = int_value(@words[entry + 3])
-    index = int_value(@words[entry + 4])
-    return ScanProof.new(false, 0_i64) unless count && index && count >= 0_i64 && index >= 0_i64
-    remaining = @scan_count.to_i64
-    return ScanProof.new(false, 0_i64) if index > remaining || count > remaining - index
-    first = index.to_i32
-    last = (index + count).to_i32
-    return ScanProof.new(false, 0_i64) if @bad_prefix[last] != @bad_prefix[first]
-    ScanProof.new(true, range_max(first, last))
-  end
-
-  private def all_layouts : ScanProof
-    if cached = @all_proof
-      return cached
-    end
-    k = 0
-    while k < @count
-      entry = 1 + k * 5
-      id = int_value(@words[entry])
-      proof = entry_proof(entry)
-      unless id && id >= 0_i64 && proof.aligned
-        result = ScanProof.new(false, 0_i64)
-        @all_proof = result
-        return result
-      end
-      k = k + 1
-    end
-    if @bad_prefix.last != 0
-      result = ScanProof.new(false, 0_i64)
-    else
-      extent = @scan_count == 0 ? 0_i64 : @max_tree[1]
-      result = ScanProof.new(true, extent)
-    end
-    @all_proof = result
-    result
-  end
-
-  private def find(id : Int64) : ScanProof
-    low = 0
-    high = @count
-    while low < high
-      mid = low + (high - low) // 2
-      entry = 1 + mid * 5
-      other = int_value(@words[entry])
-      return ScanProof.new(false, 0_i64) unless other && other >= 0_i64
-      return entry_proof(entry) if other == id
-      if other < id
-        low = mid + 1
-      else
-        high = mid
-      end
-    end
-    # No matching entry means the runtime's aligned conservative word walk.
-    ScanProof.new(true, 0_i64)
   end
 end
 
@@ -442,6 +338,100 @@ class LongLivedFrames
 
   def protects?(fn : Function) : Bool
     @uncertain || @protected.has_key?(fn)
+  end
+end
+
+# Direct call SCCs are computed once per module. Reusing one frame slot in a
+# recursive call chain would multiply its footprint with recursion depth.
+class DirectCycles
+  def initialize(mod : Module)
+    @recursive = Hash(Function, Bool).new
+    ids = Hash(Function, Int32).new
+    edges = [] of Array(Int32)
+    index = [] of Int32
+    low = [] of Int32
+    active = [] of Bool
+    k = 0
+    mod.functions.each do |fn|
+      ids[fn] = k
+      edges << [] of Int32
+      index << -1
+      low << -1
+      active << false
+      k = k + 1
+    end
+    k = 0
+    mod.functions.each do |fn|
+      fn.blocks.each do |block|
+        block.insts.each do |inst|
+          if (inst.op == Op::Call || inst.op == Op::Invoke) && !inst.args.empty? && inst.args[0].is_a?(Function)
+            if target = ids[inst.args[0].as(Function)]?
+              edges[k] << target
+            end
+          end
+        end
+      end
+      k = k + 1
+    end
+    stack = [] of Int32
+    nodes = [] of Int32
+    next_edge = [] of Int32
+    serial = 0
+    root = 0
+    while root < edges.size
+      if index[root] < 0
+        index[root] = serial
+        low[root] = serial
+        serial = serial + 1
+        active[root] = true
+        stack << root
+        nodes << root
+        next_edge << 0
+        while !nodes.empty?
+          top = nodes.size - 1
+          node = nodes[top]
+          at = next_edge[top]
+          if at < edges[node].size
+            target = edges[node][at]
+            next_edge[top] = at + 1
+            if index[target] < 0
+              index[target] = serial
+              low[target] = serial
+              serial = serial + 1
+              active[target] = true
+              stack << target
+              nodes << target
+              next_edge << 0
+            elsif active[target] && index[target] < low[node]
+              low[node] = index[target]
+            end
+          else
+            nodes.pop
+            next_edge.pop
+            if !nodes.empty? && low[node] < low[nodes.last]
+              low[nodes.last] = low[node]
+            end
+            if low[node] == index[node]
+              members = [] of Int32
+              while true
+                member = stack.pop
+                active[member] = false
+                members << member
+                break if member == node
+              end
+              cyclic = members.size > 1
+              edges[node].each { |target| cyclic = true if target == node } unless cyclic
+              members.each { |member| @recursive[mod.functions[member]] = true } if cyclic
+            end
+          end
+        end
+      end
+      root = root + 1
+    end
+  end
+
+  def recursive?(fn : Function) : Bool
+    @recursive.has_key?(fn)
   end
 end
 
@@ -853,6 +843,17 @@ def aligned_memory?(inst : Inst, index : Int32, candidate : Candidate, offsets :
   aligned_pointer?(candidate, inst.args[index], alignment, offsets)
 end
 
+def aligned_slot_access?(inst : Inst, index : Int32, candidate : Candidate, offsets : Offsets, pointer_shapes : SlotShapes, word_shapes : SlotShapes) : Bool
+  type = inst.op == Op::Load ? inst.type : inst.args[0].type
+  shapes = (candidate.flags & 2_i64) == 0_i64 ? word_shapes : pointer_shapes
+  shape = shapes.get(type)
+  return false unless shape && shape.aligned
+  return true unless shape.has_word
+  span = offsets.span(inst.args[index])
+  return false unless span
+  aligned_span?(span, 0_i64, 8_i64) # mutation S9-slot: accept an unaligned pointer word
+end
+
 def argument_attributes_safe?(inst : Inst, index : Int32, candidate : Candidate, offsets : Offsets) : Bool
   if inst.aux.is_a?(CallAux)
     attrs = inst.aux.as(CallAux).param_attrs
@@ -1006,12 +1007,12 @@ end
 
 pub class EscapeInfo
   def initialize(@mod : Module, @partitioned : Bool)
-    @layouts = CollectorLayouts.new(@mod)
     @frames = LongLivedFrames.new(@mod)
+    @cycles = DirectCycles.new(@mod)
   end
 
   def run(fn : Function) : Bool
-    run_escape_with_layouts(@mod, fn, @partitioned, @layouts, @frames)
+    run_escape_with_facts(@mod, fn, @partitioned, @frames, @cycles)
   end
 end
 
@@ -1023,11 +1024,14 @@ pub def run_escape_checked(mod : Module, fn : Function, partitioned : Bool) : Bo
   EscapeInfo.new(mod, partitioned).run(fn)
 end
 
-def run_escape_with_layouts(mod : Module, fn : Function, partitioned : Bool, layouts : CollectorLayouts, frames : LongLivedFrames) : Bool
+def run_escape_with_facts(mod : Module, fn : Function, partitioned : Bool, frames : LongLivedFrames, cycles : DirectCycles) : Bool
   return false if partitioned
   return false if fn.declaration? || frames.protects?(fn) # mutation S9-top-call: remove top-level exclusion
+  return false if cycles.recursive?(fn) # mutation S9-recursion: remove this guard
   return false unless mod.layout.pointer_size(0) == 8
   sizes = SizeTable.new(mod)
+  pointer_shapes = SlotShapes.new(sizes, false)
+  word_shapes = SlotShapes.new(sizes, true)
   frame = reserved_frame(fn, sizes)
   return false unless frame
   candidates = [] of Candidate
@@ -1036,7 +1040,11 @@ def run_escape_with_layouts(mod : Module, fn : Function, partitioned : Bool, lay
   fn.blocks.each do |bb|
     bb.insts.each do |inst|
       if candidate = candidate_for(inst, block, sizes)
-        candidate.bad = true unless layouts.safe?(candidate) # mutation S9-layout-proof: accept an unknown type id
+        if hint = candidate.hint
+          shapes = (candidate.flags & 2_i64) == 0_i64 ? word_shapes : pointer_shapes
+          shape = shapes.get(hint)
+          candidate.bad = true unless shape && shape.aligned # mutation S9-layout: ignore unaligned pointer slots
+        end
         candidates << candidate
         by_call[inst] = candidate
       end
@@ -1113,11 +1121,11 @@ def run_escape_with_layouts(mod : Module, fn : Function, partitioned : Bool, lay
           elsif inst.op == Op::Select && index > 0
             safe = true
           elsif inst.op == Op::Load && index == 0 && normal_memory?(inst)
-            safe = aligned_memory?(inst, index, candidate, offsets, sizes)
+            safe = aligned_memory?(inst, index, candidate, offsets, sizes) && aligned_slot_access?(inst, index, candidate, offsets, pointer_shapes, word_shapes)
           elsif inst.op == Op::Store && index == 0
             safe = false # mutation S9-store: change false to true
           elsif inst.op == Op::Store && index == 1 && normal_memory?(inst)
-            safe = aligned_memory?(inst, index, candidate, offsets, sizes)
+            safe = aligned_memory?(inst, index, candidate, offsets, sizes) && aligned_slot_access?(inst, index, candidate, offsets, pointer_shapes, word_shapes)
           elsif inst.op == Op::Call
             safe = barrier_use?(inst, index) && bounded_barrier?(inst, candidate, offsets) && argument_attributes_safe?(inst, index, candidate, offsets) # mutation S9-call: change to true
           elsif bulk_use?(inst, index, candidate, offsets, sizes)

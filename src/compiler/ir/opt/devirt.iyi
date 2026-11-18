@@ -162,7 +162,7 @@ pub class DevirtInfo
       next unless id
       prefix = global.name[0, global.name.bytesize - 8]
       headed = @mod.global?(prefix + ":headed")
-      unless headed && headed.constant && headed.value_type.int? && headed.value_type.bits == 8 && headed.initializer && !int_value(headed.initializer.not_nil!).nil?
+      unless headed && headed.constant && headed.value_type.int? && headed.value_type.bits == 8 && headed.initializer && !int_value(headed.initializer.as(Value)).nil?
         @possible[canonical(32, id)] = true
       end
     end
@@ -262,7 +262,7 @@ pub class DevirtInfo
   private def inspect_functions : Nil
     @mod.functions.each do |fn|
       next if named_entry?(fn.name) && !@named_used[fn]?
-      note_address(fn.personality.not_nil!) if fn.personality
+      note_address(fn.personality.as(Value)) if fn.personality
       fn.blocks.each do |block|
         block.insts.each do |inst|
           if inst.op == Op::Call || inst.op == Op::Invoke
@@ -405,7 +405,7 @@ pub class DevirtInfo
           elsif inst.type.int?
             if inst.op == Op::Load && inst.args.size == 1 && inst.args[0].is_a?(Global)
               global = inst.args[0].as(Global)
-              if !opaque?(inst) && global.constant && global.initializer && !int_value(global.initializer.not_nil!).nil?
+              if !opaque?(inst) && global.constant && global.initializer && !int_value(global.initializer.as(Value)).nil?
                 seed(inst)
               end
             else
