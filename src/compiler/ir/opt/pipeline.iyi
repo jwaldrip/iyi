@@ -15,6 +15,9 @@ import compiler/ir/opt/cse::{run_cse}
 import compiler/ir/opt/prove::{run_prove}
 import compiler/ir/opt/licm::{run_licm}
 import compiler/ir/opt/layout::{run_layout}
+import compiler/ir/opt/escape::{run_escape, run_escape_checked, partitioned_heap?}
+import compiler/ir/opt/devirt::{run_devirt, DevirtInfo}
+import compiler/ir/opt/barrier::{run_barrier, run_stack_barrier, run_barrier_checked, run_stack_barrier_checked}
 import std/time::{Time}
 
 pub enum PassId
@@ -29,6 +32,10 @@ pub enum PassId
   Prove
   Licm
   Layout
+  Devirt
+  Escape
+  Barrier
+  BarrierStack
 end
 
 pub enum OptTier
@@ -62,6 +69,10 @@ pub def pass_name(id : PassId) : String
   when PassId::Prove       then "prove"
   when PassId::Licm        then "licm"
   when PassId::Layout      then "layout"
+  when PassId::Devirt      then "devirt"
+  when PassId::Escape      then "escape"
+  when PassId::Barrier     then "barrier"
+  when PassId::BarrierStack then "barrier-stack"
   else
     raise "BUG: unknown IR pass"
   end
@@ -80,6 +91,10 @@ pub def pass_named(name : String) : PassId?
   when "prove"        then PassId::Prove
   when "licm"         then PassId::Licm
   when "layout"       then PassId::Layout
+  when "devirt"       then PassId::Devirt
+  when "escape"       then PassId::Escape
+  when "barrier"      then PassId::Barrier
+  when "barrier-stack" then PassId::BarrierStack
   else
     nil
   end
@@ -92,8 +107,11 @@ pub def tier_passes(tier : OptTier) : Array(PassId)
             PassId::Inline,
             PassId::CfgSimplify, PassId::Sroa, PassId::Simplify, PassId::Cse, PassId::Dce, PassId::CfgSimplify,
             PassId::CfgSimplify, PassId::Sroa, PassId::Simplify, PassId::Cse, PassId::Dce, PassId::CfgSimplify,
+            PassId::Devirt, PassId::Simplify, PassId::Dce, PassId::CfgSimplify, PassId::Inline,
+            PassId::CfgSimplify, PassId::Sroa, PassId::Simplify, PassId::Cse, PassId::Dce, PassId::CfgSimplify,
+            PassId::Escape, PassId::BarrierStack, PassId::Sroa, PassId::Simplify, PassId::Dce,
             PassId::Prove, PassId::Simplify, PassId::Dce, PassId::CfgSimplify,
-            PassId::Licm, PassId::Layout, PassId::DeadFn]
+            PassId::Licm, PassId::Barrier, PassId::Layout, PassId::DeadFn]
   end
   [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::CfgSimplify]
 end
@@ -115,8 +133,31 @@ pub def run_function_pass(mod : Module, fn : Function, id : PassId) : Bool
   when PassId::Prove       then run_prove(mod, fn)
   when PassId::Licm        then run_licm(mod, fn)
   when PassId::Layout      then run_layout(mod, fn)
+  when PassId::Devirt      then run_devirt(mod, fn)
+  when PassId::Escape      then run_escape(mod, fn)
+  when PassId::Barrier     then run_barrier(mod, fn)
+  when PassId::BarrierStack then run_stack_barrier(mod, fn)
   else
     raise "BUG: unknown IR pass"
+  end
+end
+
+# S9 module facts and the inlining budget are shared by the whole phase, not
+# rebuilt for every function. The early barrier is restricted to stack writes.
+def run_scheduled_pass(mod : Module, fn : Function, id : PassId, graph : CallGraph?, budget : InlineBudget?, devirt : DevirtInfo?, partitioned : Bool) : Bool
+  case id
+  when PassId::Inline
+    run_inline(mod, fn, graph.as(CallGraph), budget.as(InlineBudget))
+  when PassId::Devirt
+    devirt.as(DevirtInfo).run(fn)
+  when PassId::Escape
+    run_escape_checked(mod, fn, partitioned)
+  when PassId::Barrier
+    run_barrier_checked(mod, fn, partitioned)
+  when PassId::BarrierStack
+    run_stack_barrier_checked(mod, fn, partitioned)
+  else
+    run_function_pass(mod, fn, id)
   end
 end
 
@@ -151,6 +192,13 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
   # Inline and its cleanup run bottom-up per function. The later proof,
   # loop and layout phases each begin only after the preceding module phase.
   timings = options.time_passes ? PassTimings.new(passes.size) : nil
+  uses_s9 = false
+  passes.each { |id| uses_s9 = true if id == PassId::Devirt || id == PassId::Escape || id == PassId::Barrier || id == PassId::BarrierStack }
+  release = uses_s9 && passes == tier_passes(OptTier::Release)
+  partitioned = uses_s9 ? partitioned_heap?(mod) : false
+  changed_by_devirt = release ? Hash(Function, Bool).new : nil
+  shared_budget = nil.as(InlineBudget?)
+  inline_round = 0
   begin_at = 0
   while begin_at < passes.size
     if passes[begin_at] == PassId::DeadFn
@@ -178,32 +226,50 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
     end
     end_at = begin_at
     has_inline = false
+    has_devirt = false
     while end_at < passes.size && passes[end_at] != PassId::DeadFn
-      break if end_at > begin_at && (passes[end_at] == PassId::Prove || passes[end_at] == PassId::Licm || passes[end_at] == PassId::Layout)
+      if end_at > begin_at
+        id = passes[end_at]
+        break if id == PassId::Prove || id == PassId::Licm || id == PassId::Layout || id == PassId::Devirt || id == PassId::Escape
+        break if id == PassId::Barrier || (id == PassId::BarrierStack && (!release || passes[begin_at] != PassId::Escape))
+        break if release && passes[begin_at] == PassId::Devirt && id == PassId::Inline
+      end
       has_inline = true if passes[end_at] == PassId::Inline
+      has_devirt = true if passes[end_at] == PassId::Devirt
       end_at = end_at + 1
     end
+    inline_round = inline_round + 1 if release && has_inline
+    shared_budget = InlineBudget.new(mod) if release && has_inline && shared_budget.nil?
     graph = has_inline ? CallGraph.new(mod) : nil
-    budget = has_inline ? InlineBudget.new(mod) : nil
+    budget = has_inline ? (release ? shared_budget : InlineBudget.new(mod)) : nil
+    devirt = has_devirt ? DevirtInfo.new(mod, partitioned) : nil
+    selective_inline = release && has_inline && inline_round == 2
+    selective_devirt = release && passes[begin_at] == PassId::Devirt
+    selective_escape = release && passes[begin_at] == PassId::Escape
     functions = graph ? graph.order : mod.functions
     f = 0
     while f < functions.size
       fn = functions[f]
-      unless fn.declaration?
+      unless fn.declaration? || (selective_inline && !changed_by_devirt.as(Hash(Function, Bool)).has_key?(fn))
         k = begin_at
+        gate_changed = false
         while k < end_at
+          break if k > begin_at && (selective_devirt || selective_escape) && !gate_changed
           if clock = timings
             started = Time.monotonic
-            if passes[k] == PassId::Inline
-              changed = run_inline(mod, fn, graph.as(CallGraph), budget.as(InlineBudget))
-            else
-              changed = run_function_pass(mod, fn, passes[k])
-            end
+            changed = run_scheduled_pass(mod, fn, passes[k], graph, budget, devirt, partitioned)
             clock.add(k, (Time.monotonic - started).total_nanoseconds.to_i64, changed)
-          elsif passes[k] == PassId::Inline
-            changed = run_inline(mod, fn, graph.as(CallGraph), budget.as(InlineBudget))
           else
-            changed = run_function_pass(mod, fn, passes[k])
+            changed = run_scheduled_pass(mod, fn, passes[k], graph, budget, devirt, partitioned)
+          end
+          if k == begin_at && (selective_devirt || selective_escape)
+            gate_changed = changed
+            if selective_devirt && changed
+              changed_by_devirt.as(Hash(Function, Bool))[fn] = true
+              if inline_budget = shared_budget
+                inline_budget.invalidate(fn) # mutation S9-inline-cache: devirtualization changes the callee
+              end
+            end
           end
           if changed && options.verify_each
             errors = verify_function(mod, fn)

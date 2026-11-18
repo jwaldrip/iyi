@@ -26,9 +26,9 @@ build_driver() {
 
 # A missing .out.ir means the canonical input is expected unchanged.
 fixture_check() {
-  local pass="$1" name="$2" changed="$3" file expected
-  file="$FIXTURES/$pass/$name.ir"
-  expected="$FIXTURES/$pass/$name.out.ir"
+  local pass="$1" name="$2" changed="$3" folder="${4:-$1}" file expected
+  file="$FIXTURES/$folder/$name.ir"
+  expected="$FIXTURES/$folder/$name.out.ir"
   if [ ! -f "$file" ]; then fail "missing fixture $pass/$name.ir"; return; fi
   if [ "$changed" = changed ] && [ ! -f "$expected" ]; then
     fail "missing changed-output golden $pass/$name.out.ir"; return
@@ -79,17 +79,17 @@ fixture_stats() {
 # behavior is observed. Older mutation.sh counts every nonzero as caught, so
 # the caller separately requires status 1, never a build/runtime failure (2).
 mutation_check() {
-  local label="$1" pass="$2" name="$3" status="$WORK/$1.status" rc=0 expected
+  local label="$1" pass="$2" name="$3" folder="${4:-$2}" status="$WORK/$1.status" rc=0 expected
   printf '2\n' >"$status"
   if ! build_driver "$MUTANT"; then
     echo "mutant $label did not build" >&2; cat "$WORK/build.log" >&2; return 2
   fi
-  expected="$FIXTURES/$pass/$name.out.ir"
-  [ -f "$expected" ] || expected="$FIXTURES/$pass/$name.ir"
+  expected="$FIXTURES/$folder/$name.out.ir"
+  [ -f "$expected" ] || expected="$FIXTURES/$folder/$name.ir"
   if ! "$DRV" print "$(native_path "$expected")" >"$WORK/mut-expected.ir" 2>"$WORK/mut-expected.err"; then
     echo "cannot print golden for $label" >&2; return 2
   fi
-  "$PY" - "$(native_path "$MUTANT")" "$pass" "$(native_path "$FIXTURES/$pass/$name.ir")" \
+  "$PY" - "$(native_path "$MUTANT")" "$pass" "$(native_path "$FIXTURES/$folder/$name.ir")" \
     "$(native_path "$WORK/mut-actual.ir")" "$(native_path "$WORK/mut-actual.err")" <<'PY' || rc=$?
 import subprocess, sys
 binary, name, source, output, error = sys.argv[1:]
@@ -325,7 +325,7 @@ done
 fixture_stats simplify "$FIXTURES/simplify/constant_global.ir"
 fixture_stats simplify "$FIXTURES/simplify/constant_global_keep.ir"
 
-echo '== 2e. devirtualization'
+echo '== 2f. devirtualization'
 for file in "$FIXTURES/devirt/"*.ir; do
   case "$file" in *.out.ir) continue ;; esac
   name=$(basename "$file" .ir)
@@ -333,7 +333,7 @@ for file in "$FIXTURES/devirt/"*.ir; do
   fixture_stats devirt "$file"
 done
 
-echo '== 2f. allocation escape'
+echo '== 2g. allocation escape'
 for file in "$FIXTURES/escape/"*.ir; do
   case "$file" in *.out.ir) continue ;; esac
   name=$(basename "$file" .ir)
@@ -341,18 +341,20 @@ for file in "$FIXTURES/escape/"*.ir; do
   fixture_stats escape "$file"
 done
 
-echo '== 2g. write barriers'
+echo '== 2h. write barriers'
 for file in "$FIXTURES/barrier/"*.ir; do
-  case "$file" in *.out.ir) continue ;; esac
+  case "$file" in *.out.ir|*/stack_mode_heap_keep.ir) continue ;; esac
   name=$(basename "$file" .ir)
   if [ -f "$FIXTURES/barrier/$name.out.ir" ]; then fixture_check barrier "$name" changed; else fixture_check barrier "$name" keep; fi
   fixture_stats barrier "$file"
 done
+fixture_check barrier-stack stack_mode_heap_keep keep barrier
 
 echo '== 3. default pipeline fixtures, determinism and idempotence'
 fixture_check default locals_loop changed
 fixture_check release full changed
 fixture_check release scalar_slot changed
+fixture_check release devirt_inline_cache changed
 if ! "$DRV" print "$(native_path "$FIXTURES/licm/invariant_arith.out.ir")" >"$WORK/licm-release-expected.ir" 2>"$WORK/licm-release.err" || \
    ! "$DRV" run --verify-each release "$(native_path "$FIXTURES/licm/invariant_arith.ir")" >"$WORK/licm-release-actual.ir" 2>"$WORK/licm-release.err" || \
    ! cmp -s "$WORK/licm-release-expected.ir" "$WORK/licm-release-actual.ir"; then
@@ -363,7 +365,7 @@ else
 fi
 
 echo '== 4. CLI contract'
-printf 'cfg-simplify\tdefault,release\nmem2reg\tdefault,release\nsimplify\tdefault,release\ndce\tdefault,release\nsroa\trelease\ninline\trelease\ndeadfn\trelease\ncse\trelease\nprove\trelease\nlicm\trelease\nlayout\trelease\n' >"$WORK/passes.expected"
+printf 'cfg-simplify\tdefault,release\nmem2reg\tdefault,release\nsimplify\tdefault,release\ndce\tdefault,release\nsroa\trelease\ninline\trelease\ndeadfn\trelease\ncse\trelease\nprove\trelease\nlicm\trelease\nlayout\trelease\ndevirt\trelease\nescape\trelease\nbarrier\trelease\nbarrier-stack\trelease\n' >"$WORK/passes.expected"
 if ! "$DRV" passes >"$WORK/passes.actual" 2>"$WORK/cli.err" || ! cmp -s "$WORK/passes.expected" "$WORK/passes.actual"; then
   fail 'passes did not list the expected names and tiers'
 fi
@@ -470,13 +472,13 @@ echo '== 5. diamond-chain scaling'
 # Each size is run three times and the least figure is kept: the child's CPU
 # time where the host reports it, so other jobs on the machine do not stretch
 # it, and elapsed time elsewhere.
-if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" "${NATIVE_OPT_SCALE_K:-2048}" "${NATIVE_OPT_RELEASE_SCALE_K:-4096}" "${NATIVE_OPT_LOOP_SCALE_K:-2048}" "${NATIVE_OPT_ALLOC_SCALE_K:-2048}" <<'PY'
+if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" "${NATIVE_OPT_SCALE_K:-2048}" "${NATIVE_OPT_RELEASE_SCALE_K:-4096}" "${NATIVE_OPT_LOOP_SCALE_K:-2048}" "${NATIVE_OPT_ALLOC_SCALE_K:-2048}" "${NATIVE_OPT_INDEGREE_SCALE_K:-2048}" <<'PY'
 import os, subprocess, sys, time
 try:
     import resource
 except ImportError:
     resource = None
-binary, work, text_k, text_release_k, text_loop_k = sys.argv[1:]
+binary, work, text_k, text_release_k, text_loop_k, text_alloc_k, text_indegree_k = sys.argv[1:]
 try:
     k = int(text_k)
 except ValueError:
@@ -495,6 +497,18 @@ except ValueError:
     sys.exit('NATIVE_OPT_LOOP_SCALE_K must be an integer')
 if loop_k < 64:
     sys.exit('NATIVE_OPT_LOOP_SCALE_K must be at least 64')
+try:
+    alloc_k = int(text_alloc_k)
+except ValueError:
+    sys.exit('NATIVE_OPT_ALLOC_SCALE_K must be an integer')
+if alloc_k < 64:
+    sys.exit('NATIVE_OPT_ALLOC_SCALE_K must be at least 64')
+try:
+    indegree_k = int(text_indegree_k)
+except ValueError:
+    sys.exit('NATIVE_OPT_INDEGREE_SCALE_K must be an integer')
+if indegree_k < 64:
+    sys.exit('NATIVE_OPT_INDEGREE_SCALE_K must be at least 64')
 
 def generate(n, path):
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
@@ -565,6 +579,36 @@ def generate_loops(n, path, nested):
         result = '%seed' if nested else '%%acc%d' % (n - 1)
         f.write('done:\n  ret i64 %s\n}\n' % result)
 
+def generate_allocations(n, path):
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('; iyi-ir 1\nsource_filename = "allocation-scale"\n')
+        f.write('target triple = "aarch64-apple-darwin"\n')
+        f.write('target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"\n')
+        f.write('declare external void @consume_allocation(ptr)\n')
+        f.write('define internal ptr @__iyi_new(i64 %size, i64 %type, i64 %flags) {\nentry:\n  ret ptr null\n}\n')
+        f.write('define external void @allocations() {\nentry:\n')
+        for i in range(n):
+            f.write('  %%p%d = call ptr (i64, i64, i64) @__iyi_new(i64 8, i64 1, i64 0)\n' % i)
+            if i % 2:
+                f.write('  call void (ptr) @consume_allocation(ptr %%p%d)\n' % i)
+            else:
+                f.write('  store i64 %d, ptr %%p%d, align 8\n' % (i, i))
+        f.write('  ret void\n}\n')
+
+def generate_indegree(n, path):
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('; iyi-ir 1\nsource_filename = "high-indegree"\n')
+        f.write('target triple = "aarch64-apple-darwin"\n')
+        f.write('target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"\n')
+        f.write('define external i64 @indegree(i1 %condition, i64 %value) {\nentry:\n  br label %branch0\n')
+        for i in range(n):
+            f.write('branch%d:\n' % i)
+            if i + 1 < n:
+                f.write('  br i1 %%condition, label %%join, label %%branch%d\n' % (i + 1))
+            else:
+                f.write('  br label %join\n')
+        f.write('join:\n  ret i64 %value\n}\n')
+
 def child_cpu():
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     return usage.ru_utime + usage.ru_stime
@@ -574,6 +618,10 @@ def run(n, verified, repeats=1, tier='default', shape='calls'):
         path = os.path.join(work, '%s-%d.ir' % (shape, n))
         if shape == 'calls':
             generate_release(n, path)
+        elif shape == 'allocations':
+            generate_allocations(n, path)
+        elif shape == 'high-indegree':
+            generate_indegree(n, path)
         else:
             generate_loops(n, path, shape == 'nested-loops')
     else:
@@ -593,8 +641,18 @@ def run(n, verified, repeats=1, tier='default', shape='calls'):
         if completed.returncode != 0:
             raise RuntimeError('scale run failed (%d): %s' %
                                (completed.returncode, completed.stderr.decode('utf-8', 'replace')))
-        if verified and shape != 'calls' and tier == 'release' and completed.stdout.count(b' = phi ') < n:
-            raise RuntimeError('%s scale input lost loop headers' % shape)
+        if verified and tier == 'release' and shape in ('sequential-loops', 'nested-loops'):
+            if completed.stdout.count(b' = phi ') < n:
+                raise RuntimeError('%s scale input lost loop headers' % shape)
+        if verified and tier == 'release' and shape == 'allocations':
+            kept = sum(1 for line in completed.stdout.splitlines()
+                       if b'call ' in line and b'@__iyi_new(' in line)
+            if kept < n // 2 or kept >= n:
+                raise RuntimeError('allocation scale must retain escaping sites and promote local sites: %d/%d kept' % (kept, n))
+        if verified and tier == 'release' and shape == 'high-indegree':
+            incoming = completed.stdout.count(b'label %join')
+            if incoming < n:
+                raise RuntimeError('high-indegree scale lost incoming edges: %d/%d' % (incoming, n))
         spent = child_cpu() - before if resource else elapsed
         if least is None or spent < least:
             least = spent
@@ -646,6 +704,38 @@ for shape in ('sequential-loops', 'nested-loops'):
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         failed = True
+print('== 6. release allocation-site scaling')
+try:
+    run(max(8, alloc_k // 8), True, tier='release', shape='allocations')
+    small = run(alloc_k, False, 3, 'release', 'allocations')
+    large = run(2 * alloc_k, False, 3, 'release', 'allocations')
+    ratio = large / small if small > 0 else float('inf')
+    print('  allocations K=%d %.3fs, 2K=%d %.3fs, ratio %.3f (%s, least of 3)' %
+          (alloc_k, small, 2 * alloc_k, large, ratio,
+           'cpu' if resource else 'elapsed'))
+    if large < 0.5:
+        raise RuntimeError('allocation 2K run is under 0.5s; increase NATIVE_OPT_ALLOC_SCALE_K')
+    if ratio > 3.0:
+        raise RuntimeError('allocation 2K/K exceeds 3.0')
+except RuntimeError as exc:
+    print(str(exc), file=sys.stderr)
+    failed = True
+print('== 6. release high-indegree scaling')
+try:
+    run(max(8, indegree_k // 8), True, tier='release', shape='high-indegree')
+    small = run(indegree_k, False, 3, 'release', 'high-indegree')
+    large = run(2 * indegree_k, False, 3, 'release', 'high-indegree')
+    ratio = large / small if small > 0 else float('inf')
+    print('  high-indegree K=%d %.3fs, 2K=%d %.3fs, ratio %.3f (%s, least of 3)' %
+          (indegree_k, small, 2 * indegree_k, large, ratio,
+           'cpu' if resource else 'elapsed'))
+    if large < 0.5:
+        raise RuntimeError('high-indegree 2K run is under 0.5s; increase NATIVE_OPT_INDEGREE_SCALE_K')
+    if ratio > 3.0:
+        raise RuntimeError('high-indegree 2K/K exceeds 3.0')
+except RuntimeError as exc:
+    print(str(exc), file=sys.stderr)
+    failed = True
 sys.exit(1 if failed else 0)
 PY
 then
@@ -764,6 +854,16 @@ prove_mutation 'S6P3: count earlier dispatch starts' src/compiler/ir/opt/inline.
   '        return true if length + 1 > 5 # mutation S6P3: earlier chain starts also count' \
   -- generated_mutation_check S6P3 inline dispatch5 || fail 'S6P3 was not caught'
 mutation_result S6P3
+prove_mutation 'S9B2: early barrier never removes a heap destination' src/compiler/ir/opt/barrier.iyi \
+  '    return stack if stack_only # mutation S9B2: early pass must not remove a heap barrier' \
+  '    return true if stack_only # mutation S9B2: early pass must not remove a heap barrier' \
+  -- mutation_check S9B2 barrier-stack stack_mode_heap_keep barrier || fail 'S9B2 was not caught'
+mutation_result S9B2
+prove_mutation 'S9P1: invalidate a devirtualized callee before reinlining' src/compiler/ir/opt/pipeline.iyi \
+  '                inline_budget.invalidate(fn) # mutation S9-inline-cache: devirtualization changes the callee' \
+  '                nil # mutation S9-inline-cache: devirtualization changes the callee' \
+  -- mutation_check S9P1 release devirt_inline_cache || fail 'S9P1 was not caught'
+mutation_result S9P1
 
 echo '== 8. verdict'
 if [ "$failed" -eq 0 ]; then
