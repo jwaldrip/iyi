@@ -1137,7 +1137,7 @@ mutation_result S9E19
 prove_mutation 'S9E20: alien aliases poison a candidate' src/compiler/ir/opt/escape.iyi \
   '    candidate.bad = true unless alias_instruction?(value) # mutation S9-alias: alien pointers poison the candidate' \
   '    nil # mutation S9-alias: alien pointers poison the candidate' \
-  -- mutation_check S9E20 escape mixed_select || fail 'S9E20 was not caught'
+  -- mutation_check S9E20 escape mixed_unused_keep || fail 'S9E20 was not caught'
 mutation_result S9E20
 prove_mutation 'S9E21: address-taken entry excludes all frames' src/compiler/ir/opt/escape.iyi \
   '      @uncertain = true if @addresses.has_key?(fn)' \
@@ -1170,8 +1170,8 @@ prove_mutation 'S9E26: bulk copy preserves pointer alignment' src/compiler/ir/op
   -- mutation_check S9E26 escape bulk_align_keep || fail 'S9E26 was not caught'
 mutation_result S9E26
 prove_mutation 'S9E27: barrier call alignment is honored' src/compiler/ir/opt/escape.iyi \
-  '      return false if attr.int_value > 16_u64 # mutation S9-call-align: preserve required alignment' \
-  '      nil # mutation S9-call-align: preserve required alignment' \
+  '      return false unless aligned_pointer?(candidate, inst.args[index], attr.int_value.to_i64, offsets) # mutation S9-call-offset-align: honor actual pointer offset' \
+  '      nil # mutation S9-call-offset-align: honor actual pointer offset' \
   -- mutation_check S9E27 escape barrier_align_keep || fail 'S9E27 was not caught'
 mutation_result S9E27
 prove_mutation 'S9E28: object pointer compares are permitted' src/compiler/ir/opt/escape.iyi \
@@ -1204,12 +1204,12 @@ prove_mutation 'S9B7: canonical nested GEP index' src/compiler/ir/opt/barrier.iy
 mutation_result S9B7
 prove_mutation 'S9B8: sign extend i1 GEP index' src/compiler/ir/opt/barrier.iyi \
   '    first = -1_i64 if inst.args[1].type.bits == 1 && first == 1_i64 # mutation S9-gep-i1-first: sign-extend i1' \
-  '    first = first if inst.args[1].type.bits == 1 && first == 1_i64 # mutation S9-gep-i1-first: sign-extend i1' \
+  '    nil if inst.args[1].type.bits == 1 && first == 1_i64 # mutation S9-gep-i1-first: sign-extend i1' \
   -- mutation_check S9B8 barrier merge_narrow_gep_keep || fail 'S9B8 was not caught'
 mutation_result S9B8
 prove_mutation 'S9B9: sign extend nested i1 GEP index' src/compiler/ir/opt/barrier.iyi \
   '      n = -1_i64 if inst.args[index].type.bits == 1 && n == 1_i64 # mutation S9-gep-i1-nested: sign-extend i1' \
-  '      n = n if inst.args[index].type.bits == 1 && n == 1_i64 # mutation S9-gep-i1-nested: sign-extend i1' \
+  '      nil if inst.args[index].type.bits == 1 && n == 1_i64 # mutation S9-gep-i1-nested: sign-extend i1' \
   -- mutation_check S9B9 barrier merge_narrow_gep_keep || fail 'S9B9 was not caught'
 mutation_result S9B9
 prove_mutation 'S9B10: all selected destinations must be stack' src/compiler/ir/opt/barrier.iyi \

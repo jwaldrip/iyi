@@ -883,7 +883,7 @@ def argument_attributes_safe?(inst : Inst, index : Int32, candidate : Candidate,
   attrs[arg].each do |attr|
     if attr.name == "align"
       return false if attr.int_value > 16_u64 # mutation S9-call-align: preserve required alignment
-      return false unless aligned_pointer?(candidate, inst.args[index], attr.int_value.to_i64, offsets)
+      return false unless aligned_pointer?(candidate, inst.args[index], attr.int_value.to_i64, offsets) # mutation S9-call-offset-align: honor actual pointer offset
     elsif attr.name == "dereferenceable" || attr.name == "dereferenceable_or_null"
       span = offsets.span(inst.args[index])
       return false unless span && span.low >= 0_i64 && span.high <= candidate.size
