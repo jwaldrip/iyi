@@ -57,12 +57,15 @@ jobs:
           make -f Makefile.win crystal || exit /b 1
           make -f Makefile.win iyi
       - name: Set the producer compiler path
+        id: producer
         run: echo "IYI=$(cygpath -m "$PWD/.build/iyi.exe")" >> "$GITHUB_ENV"
       - name: Verify RG8 and its dropped-body negative control
         run: bash bench/stale_callpath.sh rg8
       - name: Exercise Windows loader paths
+        if: ${{ !cancelled() && steps.producer.outcome == 'success' }}
         run: |
           .build/iyi.exe run bench/fixtures/probe_windows_loader_paths.iyi
           .build/iyi.exe run bench/selfhost_loader_if_exercise.iyi
       - name: Run semantic probes with their fixture arguments
+        if: ${{ !cancelled() && steps.producer.outcome == 'success' }}
         run: python3 bench/probe_windows_semantics.py "$(cygpath -m "$PWD")" "$IYI" "$(cygpath -m "$RUNNER_TEMP")/pipeline-windows-probe"
