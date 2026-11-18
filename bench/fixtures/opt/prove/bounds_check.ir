@@ -2,7 +2,7 @@
 source_filename = "bounds_check"
 target triple = "aarch64-apple-darwin"
 target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
-define internal void @bounds_check(i64 %size) {
+define external void @bounds_check(i64 %size) {
 entry:
   br label %head
 head:
