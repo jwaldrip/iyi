@@ -92,6 +92,9 @@ enum DeferredKind
   IndexedAddress
   Multiply
   Compare
+  SelectCompare
+  SelectFloatCompare
+  SelectHint
   Hint
   BitTest
   Overflow
@@ -322,7 +325,7 @@ class Isel
     if v.is_a?(Inst)
       inst = v.as(Inst)
       kind = @deferred[v]?
-      if kind == DeferredKind::Address || kind == DeferredKind::IndexedAddress || kind == DeferredKind::Multiply || kind == DeferredKind::Compare || kind == DeferredKind::Hint || kind == DeferredKind::BitTest
+      if kind == DeferredKind::Address || kind == DeferredKind::IndexedAddress || kind == DeferredKind::Multiply || kind == DeferredKind::Compare || kind == DeferredKind::Hint || kind == DeferredKind::BitTest || kind == DeferredKind::SelectCompare || kind == DeferredKind::SelectFloatCompare || kind == DeferredKind::SelectHint
         @deferred.delete(v)
         lower_inst(inst)
       elsif kind == DeferredKind::Overflow
@@ -723,6 +726,8 @@ class Isel
           plan_address(i.args[1], i.args[0].type, block)
         elsif i.op == Op::Add || i.op == Op::Sub
           plan_mul_add(i, block)
+        elsif i.op == Op::Select
+          plan_select(i, block)
         end
       end
       block = block + 1
@@ -732,6 +737,28 @@ class Isel
   def single_local_use?(v : Value, block : Int32) : Bool
     (@uses[v]? || 0) == 1 && @inst_blocks[v]? == block
   end
+  def plan_select(i : Inst, block : Int32) : Nil
+    value = i.args[0]
+    hint = nil
+    if value.is_a?(Inst) && single_local_use?(value, block)
+      inst = value.as(Inst)
+      if inst.op == Op::Intrinsic && inst.aux.as(IntrinsicAux).id == IntrinsicId::ExpectI1
+        hint = inst
+        value = inst.args[0]
+      end
+    end
+    return unless value.is_a?(Inst) && single_local_use?(value, block)
+    cmp = value.as(Inst)
+    if cmp.op == Op::ICmp && !i128?(cmp.args[0].type)
+      @deferred[cmp] = DeferredKind::SelectCompare
+    elsif cmp.op == Op::FCmp && cmp.aux_int >= 1_i64 && cmp.aux_int <= 14_i64 && cmp.aux_int != 6_i64 && cmp.aux_int != 8_i64
+      @deferred[cmp] = DeferredKind::SelectFloatCompare
+    else
+      return
+    end
+    @deferred[hint.as(Inst)] = DeferredKind::SelectHint if hint
+  end
+
   def plan_mul_add(i : Inst, block : Int32) : Nil
     return unless i.type.int? && i.type.bits <= 64
     first = i.op == Op::Sub ? 1 : 0
@@ -1849,31 +1876,58 @@ class Isel
     bind_result(i, [set_flag(cond)])
   end
 
-  def csel(a : Int32, b : Int32) : Int32
-    d = gpr
-    m = mop(MOp::Csel)
-    m.cond = cond_ne
-    m.defs << vop(d)
-    m.uses << vop(a)
-    m.uses << vop(b)
-    emit(m)
-    d
+  # Emit a floating compare whose predicate maps to one A64 condition. The
+  # ordered-not-equal and unordered-equal cases need two conditions and stay unfused.
+  def select_float_compare(i : Inst) : Int32
+    a = first_leaf(i.args[0])
+    b = first_leaf(i.args[1])
+    cmp = mop(MOp::FCmp)
+    cmp.fp = true
+    cmp.size = i.args[0].type.bits
+    cmp.uses << vop(a)
+    cmp.uses << vop(b)
+    emit(cmp)
+    ordinal = i.aux_int
+    return cond_gt if ordinal == 2_i64
+    return cond_ge if ordinal == 3_i64
+    return cond_mi if ordinal == 4_i64
+    return cond_ls if ordinal == 5_i64
+    return cond_vc if ordinal == 7_i64
+    return cond_hi if ordinal == 9_i64
+    return cond_cs if ordinal == 10_i64
+    return cond_lt if ordinal == 11_i64
+    return cond_le if ordinal == 12_i64
+    return cond_ne if ordinal == 13_i64
+    return cond_vs if ordinal == 14_i64
+    cond_eq
   end
 
   def lower_select(i : Inst) : Nil
-    c = first_leaf(i.args[0])
+    condition = i.args[0]
+    if condition.is_a?(Inst) && @deferred[condition]? == DeferredKind::SelectHint
+      condition = condition.as(Inst).args[0]
+    end
     tv = materialize(i.args[1])
     fv = materialize(i.args[2])
-    compare_zero(c)
+    cond = cond_ne
+    if condition.is_a?(Inst) && @deferred[condition]? == DeferredKind::SelectCompare && condition.as(Inst).op == Op::ICmp
+      cmp = condition.as(Inst)
+      emit_icmp(cmp)
+      cond = int_cond(cmp.aux_int)
+    elsif condition.is_a?(Inst) && @deferred[condition]? == DeferredKind::SelectFloatCompare && condition.as(Inst).op == Op::FCmp
+      cond = select_float_compare(condition.as(Inst))
+    else
+      compare_zero(first_leaf(condition))
+    end
     regs = [] of Int32
     flat = flatten_leaves(@layout, i.type)
     k = 0
     while k < flat.size
       lt = flat[k][1]
       if lt.float?
-        regs << move_bits_to_fp(csel(move_bits_to_gp(tv[k], lt.bits), move_bits_to_gp(fv[k], lt.bits)), lt.bits)
+        regs << move_bits_to_fp(csel_cond(move_bits_to_gp(tv[k], lt.bits), move_bits_to_gp(fv[k], lt.bits), cond), lt.bits)
       else
-        regs << csel(tv[k], fv[k])
+        regs << csel_cond(tv[k], fv[k], cond) # select-arms
       end
       k = k + 1
     end

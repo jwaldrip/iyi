@@ -1,0 +1,38 @@
+module select_fixture
+
+def choose(x : Int64, yes : Int64, no : Int64) : Int64
+  x < 0_i64 ? yes : no
+end
+
+def choose_hint(x : Int64, yes : Int64, no : Int64) : Int64
+  x > 5_i64 ? yes : no
+end
+
+def choose_shared(x : Int64, yes : Int64, no : Int64) : Int64
+  x > 5_i64 ? yes + 1_i64 : no
+end
+
+def float_ordered(x : Float64) : Int64
+  x < 0.0_f64 ? 2_i64 : 3_i64
+end
+
+def float_unordered(x : Float64) : Int64
+  (x != x || x < 0.0_f64) ? 4_i64 : 5_i64
+end
+
+def float_composite(x : Float64) : Int64
+  (x != x || x == 0.0_f64) ? 6_i64 : 7_i64
+end
+
+zero = 0.0_f64
+nan = zero / zero
+puts "#{choose(-1_i64, 11_i64, 22_i64)}"
+puts "#{choose(1_i64, 11_i64, 22_i64)}"
+puts "#{choose_hint(6_i64, 31_i64, 32_i64)}"
+puts "#{choose_hint(4_i64, 31_i64, 32_i64)}"
+puts "#{choose_shared(6_i64, 41_i64, 42_i64)}"
+puts "#{choose_shared(4_i64, 41_i64, 42_i64)}"
+puts "#{float_ordered(-1.0_f64)}"
+puts "#{float_ordered(nan)}"
+puts "#{float_unordered(nan)}"
+puts "#{float_composite(nan)}"
