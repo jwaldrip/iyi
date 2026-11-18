@@ -1043,8 +1043,8 @@ prove_mutation 'S9B4: partition publication keeps barriers' src/compiler/ir/opt/
   -- mutation_check S9B4 barrier partition_publish_call_keep || fail 'S9B4 was not caught'
 mutation_result S9B4
 prove_mutation 'S9B5: merged barriers shade the full range' src/compiler/ir/opt/barrier.iyi \
-  '          following.shade.args[2] = new_inst(Op::ConstInt, @mod.types.int64, [] of Value, (upper - lower) // 8_i64) # mutation S9B5: shade the union' \
-  '          following.shade.args[2] = new_inst(Op::ConstInt, @mod.types.int64, [] of Value, 1_i64) # mutation S9B5: shade the union' \
+  'union_words = (upper - lower) // 8_i64 # mutation S9B5: shade the union' \
+  'union_words = 1_i64 # mutation S9B5: shade the union' \
   -- mutation_check S9B5 barrier merge_fields || fail 'S9B5 was not caught'
 mutation_result S9B5
 prove_mutation 'S9E1: stored object pointers escape' src/compiler/ir/opt/escape.iyi \

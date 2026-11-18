@@ -397,6 +397,7 @@ pub class Block
   def initialize(@name : String)
     @insts = [] of Inst
     @preds = [] of Block
+    @pred_set = Hash(Block, Bool).new
     @no_vectorize = false
   end
 
@@ -427,9 +428,13 @@ pub class Block
 
   def clear_preds : Nil
     @preds = [] of Block
+    @pred_set = Hash(Block, Bool).new
   end
 
+  # Membership is a hash lookup, so relinking a block with many predecessors is linear, not quadratic.
   def add_pred(block : Block) : Nil
-    @preds << block unless @preds.any? { |p| p == block }
+    return if @pred_set.has_key?(block)
+    @pred_set[block] = true
+    @preds << block
   end
 end

@@ -330,25 +330,7 @@ pub class DomTree
       k = k + 1
     end
     return if @cfg.rpo.empty?
-    @idom[0] = 0
-    changed = true
-    while changed
-      changed = false
-      r = 1
-      while r < @cfg.rpo.size
-        b = @cfg.rpo[r]
-        next_idom = -1
-        @cfg.preds(b).each do |pred|
-          next if @idom[pred] < 0
-          next_idom = next_idom < 0 ? pred : intersect(pred, next_idom)
-        end
-        if next_idom >= 0 && @idom[b] != next_idom
-          @idom[b] = next_idom
-          changed = true
-        end
-        r = r + 1
-      end
-    end
+    compute_idoms
     r = 1
     while r < @cfg.rpo.size
       b = @cfg.rpo[r]
@@ -380,18 +362,102 @@ pub class DomTree
     end
   end
 
-  private def intersect(first : Int32, second : Int32) : Int32
-    a = first
-    b = second
-    while a != b
-      while @cfg.rpo_number(a) > @cfg.rpo_number(b)
-        a = @idom[a] # mutation M4: advance the first finger
-      end
-      while @cfg.rpo_number(b) > @cfg.rpo_number(a)
-        b = @idom[b]
+  # Lengauer and Tarjan's immediate dominators. Cooper, Harvey and Kennedy's intersect walks the idom chain once per
+  # predecessor, which is quadratic for a block whose predecessors sit at increasing depth (a chain of tests that
+  # all reach one join). The result is the same immediate dominator for every reachable block.
+  private def compute_idoms : Nil
+    n = @cfg.size
+    dfn = [] of Int32
+    vertex = [] of Int32
+    parent = [] of Int32
+    semi = [] of Int32
+    ancestor = [] of Int32
+    label = [] of Int32
+    bucket = [] of Array(Int32)
+    k = 0
+    while k < n
+      dfn << -1
+      parent << -1
+      semi << -1
+      ancestor << -1
+      label << k
+      bucket << [] of Int32
+      k = k + 1
+    end
+    dfn[0] = 0
+    semi[0] = 0
+    vertex << 0
+    nodes = [0] of Int32
+    next_edge = [0] of Int32
+    while !nodes.empty?
+      top = nodes.size - 1
+      v = nodes[top]
+      at = next_edge[top]
+      succs = @cfg.succs(v)
+      if at < succs.size
+        next_edge[top] = at + 1
+        w = succs[at]
+        if dfn[w] < 0
+          dfn[w] = vertex.size
+          semi[w] = dfn[w]
+          vertex << w
+          parent[w] = v
+          nodes << w
+          next_edge << 0
+        end
+      else
+        nodes.pop
+        next_edge.pop
       end
     end
-    a
+    i = vertex.size - 1
+    while i >= 1
+      w = vertex[i]
+      @cfg.preds(w).each do |v|
+        next if dfn[v] < 0
+        u = lt_eval(v, ancestor, label, semi)
+        semi[w] = semi[u] if semi[u] < semi[w]
+      end
+      bucket[vertex[semi[w]]] << w
+      p = parent[w]
+      ancestor[w] = p
+      bucket[p].each do |v|
+        u = lt_eval(v, ancestor, label, semi)
+        @idom[v] = semi[u] < semi[v] ? u : p # mutation M4: take the parent, not the semidominator
+      end
+      bucket[p] = [] of Int32
+      i = i - 1
+    end
+    i = 1
+    while i < vertex.size
+      w = vertex[i]
+      @idom[w] = @idom[@idom[w]] unless @idom[w] == vertex[semi[w]]
+      i = i + 1
+    end
+    @idom[0] = 0
+  end
+
+  # The label of the vertex with the least semidominator on the path from v to the root of its forest tree.
+  private def lt_eval(v : Int32, ancestor : Array(Int32), label : Array(Int32), semi : Array(Int32)) : Int32
+    return label[v] if ancestor[v] < 0
+    lt_compress(v, ancestor, label, semi)
+    label[v]
+  end
+
+  # Path compression without recursion: every vertex on the path points at the root's child with a path-minimal label.
+  private def lt_compress(v : Int32, ancestor : Array(Int32), label : Array(Int32), semi : Array(Int32)) : Nil
+    path = [] of Int32
+    x = v
+    while ancestor[ancestor[x]] >= 0
+      path << x
+      x = ancestor[x]
+    end
+    while !path.empty?
+      x = path.pop
+      a = ancestor[x]
+      label[x] = label[a] if semi[label[a]] < semi[label[x]]
+      ancestor[x] = ancestor[a]
+    end
   end
 
   def idom(i : Int32) : Int32
