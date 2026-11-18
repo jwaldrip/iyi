@@ -630,7 +630,8 @@ class BarrierPass
           end
           replacements[following.tail.terminator] = conditional(first.condition, following.shade_block, following.done)
           following.shade.args[1] = low_address
-          following.shade.args[2] = new_inst(Op::ConstInt, @mod.types.int64, [] of Value, (upper - lower) // 8_i64) # mutation S9B5: shade the union
+          union_words = (upper - lower) // 8_i64 # mutation S9B5: shade the union
+          following.shade.args[2] = new_inst(Op::ConstInt, @mod.types.int64, [] of Value, union_words)
           claimed[following] = true
           current = following
         end

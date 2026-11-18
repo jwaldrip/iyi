@@ -15,7 +15,7 @@ entry:
   %sum = add i64 %v, %next
   ret i64 %sum
 }
-define external i64 @start(i64 %n) {
+define internal i64 @start(i64 %n) {
 entry:
   %result = call i64 (ptr, i64) @caller(ptr @target, i64 %n)
   ret i64 %result

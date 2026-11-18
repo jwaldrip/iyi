@@ -3,13 +3,14 @@ module compiler/ir/opt/escape
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/ir/inst::{Op, Inst, Block, GepAux, MemAux, CallAux, Attribute, IntrinsicAux, AsmAux, IntPredicate, Ordering}
-import compiler/ir/function::{Function, Global}
+import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/module::{Module}
 import compiler/ir/builder::{Builder}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/opt/analysis::{DefUse}
 import compiler/ir/opt/edit::{new_inst}
 import compiler/ir/opt/fold::{int_value}
+import compiler/ir/opt/effects::{function_returns_twice?}
 
 # Publication is not a GC barrier. Look for uses rather than definitions:
 # non-partitioned runtimes also define these helpers without calling them.
@@ -211,6 +212,14 @@ class SlotShapes
 end
 
 
+# GEP indices are signed, including i1 true, which fold represents as 1.
+def gep_index(value : Value) : Int64?
+  index = int_value(value)
+  return nil unless index
+  return -1_i64 if value.type.bits == 1 && index == 1_i64
+  index
+end
+
 # The generated size is commonly `ptrtoint (gep %T, null, 1)`, not a literal.
 def sizeof_type(value : Value) : IrType?
   return nil unless value.is_a?(Inst) && value.type.int? && value.type.bits == 64
@@ -222,7 +231,7 @@ def sizeof_type(value : Value) : IrType?
   return nil unless gep_ok && gep.aux.is_a?(GepAux) && gep.args.size == 2
   base = gep.args[0]
   return nil unless base.is_a?(Inst) && base.as(Inst).op == Op::ConstNull && base.type.pointer? && base.type.address_space == 0
-  return nil unless int_value(gep.args[1]) == 1_i64
+  return nil unless gep_index(gep.args[1]) == 1_i64 # mutation S9-sizeof-i1: GEP indices are signed
   gep.aux.as(GepAux).source_type
 end
 
@@ -282,6 +291,19 @@ class LongLivedFrames
       end
       fn.blocks.each do |block|
         block.insts.each do |inst|
+          assembly = nil.as(AsmAux?)
+          if inst.aux.is_a?(AsmAux)
+            assembly = inst.aux.as(AsmAux)
+          elsif !inst.args.empty? && inst.args[0].is_a?(Inst)
+            target = inst.args[0].as(Inst)
+            assembly = target.aux.as(AsmAux) if target.aux.is_a?(AsmAux)
+          end
+          if inline_asm = assembly
+            template = inline_asm.template
+            mod.functions.each do |candidate|
+              @addresses[candidate] = true if template.includes?(candidate.name) # mutation S9-asm-address: assembly can name a function
+            end
+          end
           k = 0
           while k < inst.args.size
             operand = inst.args[k]
@@ -344,7 +366,7 @@ class LongLivedFrames
 end
 
 # One synthetic hub represents the edges from indirect calls and declarations
-# to every address-taken function, without constructing their Cartesian product.
+# to address-taken and externally visible definitions, without their Cartesian product.
 class CallCycles
   def initialize(mod : Module, addresses : Hash(Function, Bool))
     @recursive = Hash(Function, Bool).new
@@ -385,7 +407,7 @@ class CallCycles
         end
       end
       edges[k] << hub if indirect # mutation S9-indirect: indirect calls may reach address-taken functions
-      edges[hub] << k if addresses.has_key?(fn) # mutation S9-hub: only address-taken functions are reached
+      edges[hub] << k if addresses.has_key?(fn) || (!fn.declaration? && fn.linkage != Linkage::Internal && fn.linkage != Linkage::Private) # mutation S9-hub: externally visible symbols can be called back
       k = k + 1
     end
     stack = [] of Int32
@@ -769,13 +791,13 @@ class Offsets
   private def gep_offset(inst : Inst) : Int64?
     return nil unless inst.aux.is_a?(GepAux) && inst.args.size >= 2
     type = inst.aux.as(GepAux).source_type
-    first = int_value(inst.args[1])
+    first = gep_index(inst.args[1]) # mutation S9-escape-gep-i1-first: sign-extend i1
     layout = @sizes.get(type)
     return nil unless first && layout && first >= -1024_i64 && first <= 1024_i64 && layout.alloc <= 1024_i64
     offset = first * layout.alloc
     k = 2
     while k < inst.args.size
-      index = int_value(inst.args[k])
+      index = gep_index(inst.args[k]) # mutation S9-escape-gep-i1-nested: sign-extend i1
       return nil unless index && index >= 0_i64 && index <= 1024_i64
       if type.struct?
         info = @sizes.get(type)
@@ -1060,6 +1082,7 @@ def run_escape_with_facts(mod : Module, fn : Function, partitioned : Bool, frame
   return false if partitioned
   return false if fn.declaration? || frames.protects?(fn) # mutation S9-top-call: remove top-level exclusion
   return false if cycles.recursive?(fn) # mutation S9-recursion: remove this guard
+  return false if function_returns_twice?(fn) # mutation S9-returns-twice: promoted objects cannot cross a second return
   return false unless mod.layout.pointer_size(0) == 8
   sizes = SizeTable.new(mod)
   pointer_shapes = SlotShapes.new(sizes, false)

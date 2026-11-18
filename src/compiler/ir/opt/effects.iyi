@@ -1,8 +1,24 @@
 module compiler/ir/opt/effects
 
-import compiler/ir/inst::{Op, Inst, MemAux, IntrinsicAux, Ordering, terminator_op?}
+import compiler/ir/inst::{Op, Inst, MemAux, CallAux, IntrinsicAux, Ordering, terminator_op?}
 import compiler/ir/function::{Function, Global}
 import compiler/ir/intrinsics::{IntrinsicId}
+
+pub def returns_twice_call?(inst : Inst) : Bool
+  return false unless inst.op == Op::Call || inst.op == Op::Invoke
+  if inst.aux.is_a?(CallAux)
+    return true if inst.aux.as(CallAux).fn_attrs.any? { |attr| attr.name == "returns_twice" }
+  end
+  return false if inst.args.empty? || !inst.args[0].is_a?(Function)
+  inst.args[0].as(Function).attrs.any? { |attr| attr.name == "returns_twice" }
+end
+
+pub def function_returns_twice?(fn : Function) : Bool
+  fn.blocks.each do |block|
+    block.insts.each { |inst| return true if returns_twice_call?(inst) }
+  end
+  false
+end
 
 def ordered_memory?(i : Inst) : Bool
   return false unless i.aux.is_a?(MemAux)
