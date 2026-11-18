@@ -14,7 +14,7 @@ end
 
 module IrOpt
   def self.usage : NoReturn
-    STDERR.puts "iyi-opt: usage: run [--verify-each] [--no-verify] PASSES FILE | print FILE | passes | stats PASSES FILE"
+    STDERR.puts "iyi-opt: usage: run [--verify-each] [--no-verify] [--closed-world] PASSES FILE | print FILE | passes | stats [--closed-world] PASSES FILE"
     LibC.exit(2)
   end
 
@@ -112,18 +112,19 @@ module IrOpt
 
     verify_each = false
     no_verify = command == "stats"
+    closed_world = false
     index = 1
-    if command == "run"
-      while index < args.size
-        if args[index] == "--verify-each"
-          verify_each = true
-        elsif args[index] == "--no-verify"
-          no_verify = true
-        else
-          break
-        end
-        index = index + 1
+    while index < args.size
+      if args[index] == "--closed-world"
+        closed_world = true
+      elsif command == "run" && args[index] == "--verify-each"
+        verify_each = true
+      elsif command == "run" && args[index] == "--no-verify"
+        no_verify = true
+      else
+        break
       end
+      index = index + 1
     end
     usage unless args.size == index + 2
     usage if verify_each && no_verify
@@ -145,7 +146,7 @@ module IrOpt
       end
     end
     env_options = PassOptions.from_env
-    options = PassOptions.new(!no_verify && (verify_each || env_options.verify_each), env_options.time_passes)
+    options = PassOptions.new(!no_verify && (verify_each || env_options.verify_each), env_options.time_passes, closed_world)
     if reason = run_passes(mod, passes, options)
       STDERR.puts "iyi-opt: #{reason}"
       LibC.exit(1)

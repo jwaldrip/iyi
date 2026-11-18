@@ -79,7 +79,7 @@ fixture_stats() {
 # behavior is observed. Older mutation.sh counts every nonzero as caught, so
 # the caller separately requires status 1, never a build/runtime failure (2).
 mutation_check() {
-  local label="$1" pass="$2" name="$3" folder="${4:-$2}" status="$WORK/$1.status" rc=0 expected
+  local label="$1" pass="$2" name="$3" folder="${4:-$2}" option="${5:-}" status="$WORK/$1.status" rc=0 expected
   printf '2\n' >"$status"
   if ! build_driver "$MUTANT"; then
     echo "mutant $label did not build" >&2; cat "$WORK/build.log" >&2; return 2
@@ -90,12 +90,12 @@ mutation_check() {
     echo "cannot print golden for $label" >&2; return 2
   fi
   "$PY" - "$(native_path "$MUTANT")" "$pass" "$(native_path "$FIXTURES/$folder/$name.ir")" \
-    "$(native_path "$WORK/mut-actual.ir")" "$(native_path "$WORK/mut-actual.err")" <<'PY' || rc=$?
+    "$(native_path "$WORK/mut-actual.ir")" "$(native_path "$WORK/mut-actual.err")" "$option" <<'PY' || rc=$?
 import subprocess, sys
-binary, name, source, output, error = sys.argv[1:]
+binary, name, source, output, error, option = sys.argv[1:]
 try:
     with open(output, 'wb') as out, open(error, 'wb') as err:
-        result = subprocess.run([binary, 'run', '--no-verify', name, source],
+        result = subprocess.run([binary, 'run', '--no-verify'] + ([option] if option else []) + [name, source],
                                 stdout=out, stderr=err, timeout=60)
 except (OSError, subprocess.TimeoutExpired) as exc:
     print('mutant execution unavailable:', exc, file=sys.stderr)
@@ -431,6 +431,22 @@ for file in "$FIXTURES/devirt/"*.ir; do
   if [ -f "$FIXTURES/devirt/$name.out.ir" ]; then fixture_check devirt "$name" changed; else fixture_check devirt "$name" keep; fi
   fixture_stats devirt "$file"
 done
+echo '== 2f1. opt-in closed-world devirtualization'
+if ! "$DRV" print "$(native_path "$FIXTURES/release/closed_world.ir")" >"$WORK/closed-off-expected.ir" || \
+   ! "$DRV" run --verify-each devirt "$(native_path "$FIXTURES/release/closed_world.ir")" >"$WORK/closed-off.ir" || \
+   ! cmp -s "$WORK/closed-off-expected.ir" "$WORK/closed-off.ir"; then
+  fail 'closed-world off did not retain the dispatch'
+fi
+if ! "$DRV" print "$(native_path "$FIXTURES/release/closed_world.out.ir")" >"$WORK/closed-on-expected.ir" || \
+   ! "$DRV" run --verify-each --closed-world devirt "$(native_path "$FIXTURES/release/closed_world.ir")" >"$WORK/closed-on.ir" || \
+   ! cmp -s "$WORK/closed-on-expected.ir" "$WORK/closed-on.ir"; then
+  fail 'closed-world on did not fold the absent type'
+fi
+if ! "$DRV" print "$(native_path "$FIXTURES/devirt/external_units.out.ir")" >"$WORK/closed-unit-expected.ir" || \
+   ! "$DRV" run --verify-each --closed-world devirt "$(native_path "$FIXTURES/devirt/external_units.ir")" >"$WORK/closed-unit.ir" || \
+   ! cmp -s "$WORK/closed-unit-expected.ir" "$WORK/closed-unit.ir"; then
+  fail 'closed-world did not refuse a unit marker'
+fi
 
 echo '== 2g. allocation escape'
 for file in "$FIXTURES/escape/"*.ir; do
@@ -1131,6 +1147,11 @@ for pass in devirt escape barrier barrier-stack; do
     -- mutation_check "$label" "$pass" partition_asm_keep release || fail "$label was not caught"
   mutation_result "$label"
 done
+prove_mutation 'S9UNIT: closed-world never ignores a unit marker' src/compiler/ir/opt/devirt.iyi \
+  '      if value != 0_i64 && (name.includes?("unit") || name.includes?("iyimod") || name.includes?("external")) # mutation S9-unit: units remain forbidden' \
+  '      if !@closed_world && value != 0_i64 && (name.includes?("unit") || name.includes?("iyimod") || name.includes?("external")) # mutation S9-unit: units remain forbidden' \
+  -- mutation_check S9UNIT devirt external_units devirt --closed-world || fail 'S9UNIT was not caught'
+mutation_result S9UNIT
 
 echo '== 8. verdict'
 if [ "$failed" -eq 0 ]; then

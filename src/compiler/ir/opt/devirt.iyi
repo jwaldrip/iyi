@@ -65,7 +65,7 @@ pub class DevirtInfo
   getter global_folds : Int32
 
   # The scheduler supplies the shared partition-use scan result.
-  def initialize(@mod : Module, partitioned : Bool)
+  def initialize(@mod : Module, partitioned : Bool, @closed_world : Bool = false)
     @partitioned = partitioned
     @refusal_reason = nil.as(String?)
     @local_folds = 0
@@ -113,16 +113,16 @@ pub class DevirtInfo
 
   private def inspect_environment : Nil
     @mod.flags.each do |name, value|
-      if value != 0_i64 && (name.includes?("unit") || name.includes?("iyimod") || name.includes?("external"))
+      if value != 0_i64 && (name.includes?("unit") || name.includes?("iyimod") || name.includes?("external")) # mutation S9-unit: units remain forbidden
         refuse("external unit or iyimod marker")
       end
     end
     @mod.functions.each do |fn|
-      refuse("external function declaration") if fn.declaration? # mutation S9-external: unknown declarations invalidate the set
+      refuse("external function declaration") if fn.declaration? && !@closed_world # mutation S9-external: unknown declarations invalidate the set
       refuse("allocation entry can be called by an external unit") if allocator?(fn.name) && !fn.declaration? && !private_function?(fn)
     end
     @mod.globals.each do |global|
-      refuse("external global declaration") unless global.initializer
+      refuse("external global declaration") unless global.initializer || @closed_world
     end
   end
 
@@ -145,7 +145,7 @@ pub class DevirtInfo
       end
     end
     @mod.globals.each do |global|
-      unless global.linkage == Linkage::Internal || global.linkage == Linkage::Private
+      unless global.linkage == Linkage::Internal || global.linkage == Linkage::Private || (@closed_world && !global.initializer)
         refuse("externally visible global")
       end
       init = global.initializer

@@ -48,8 +48,9 @@ end
 pub class PassOptions
   getter verify_each : Bool
   getter time_passes : Bool
+  getter closed_world : Bool
 
-  def initialize(@verify_each : Bool = false, @time_passes : Bool = false)
+  def initialize(@verify_each : Bool = false, @time_passes : Bool = false, @closed_world : Bool = false)
   end
 
   def self.from_env : PassOptions
@@ -286,7 +287,7 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
     shared_budget = InlineBudget.new(mod) if release && has_inline && shared_budget.nil?
     graph = has_inline ? CallGraph.new(mod) : nil
     budget = has_inline ? (release ? shared_budget : InlineBudget.new(mod)) : nil
-    devirt = has_devirt ? DevirtInfo.new(mod, partitioned) : nil
+    devirt = has_devirt ? DevirtInfo.new(mod, partitioned, options.closed_world) : nil
     escape = passes[begin_at] == PassId::Escape ? EscapeInfo.new(mod, partitioned) : nil
     selective_inline = release && has_inline && inline_round == 2
     inline_selected = selective_inline ? inline_ancestors(mod, changed_by_devirt.as(Hash(Function, Bool))) : nil
