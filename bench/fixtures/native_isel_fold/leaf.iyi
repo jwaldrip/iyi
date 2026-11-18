@@ -1,0 +1,32 @@
+module leaf
+
+def plain_leaf(x : Int64) : Int64
+  x + 3_i64
+end
+
+def slot_caller : Int64
+  guard = 777_i64
+  value = 31_i64
+  guard + value
+end
+
+def stack_arg(a0 : Int64, a1 : Int64, a2 : Int64, a3 : Int64, a4 : Int64, a5 : Int64, a6 : Int64, a7 : Int64, a8 : Int64) : Int64
+  a8
+end
+
+def saved_leaf(x : Int64) : Int64
+  n = 1_i64
+  sum = 0_i64
+  while n <= 20_i64
+    sum = sum + x + n
+    n = n + 1_i64
+  end
+  sum
+end
+
+puts "#{plain_leaf(5_i64)}"
+puts "#{slot_caller}"
+puts "#{stack_arg(1_i64, 2_i64, 3_i64, 4_i64, 5_i64, 6_i64, 7_i64, 8_i64, 9_i64)}"
+puts "#{7_i64 + 1_i64}"
+puts "#{saved_leaf(1_i64)}"
+puts "#{plain_leaf(5_i64)}"
