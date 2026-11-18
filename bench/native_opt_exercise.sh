@@ -1082,7 +1082,7 @@ mutation_result S9E3
 prove_mutation 'S9E4: program-lifetime frames are excluded' src/compiler/ir/opt/escape.iyi \
   '  return false if fn.declaration? || frames.protects?(fn) # mutation S9-top-call: remove top-level exclusion' \
   '  return false if fn.declaration? # mutation S9-top-call: remove top-level exclusion' \
-  -- mutation_check S9E4 escape top_level || fail 'S9E4 was not caught'
+  -- mutation_check S9E4 escape entry_chain || fail 'S9E4 was not caught'
 mutation_result S9E4
 prove_mutation 'S9E5: each loop iteration clears its object' src/compiler/ir/opt/escape.iyi \
   '    zero_site = site # mutation S9-zero: change site to entry_anchor' \
@@ -1100,10 +1100,25 @@ prove_mutation 'S9E7: partition entry uses disable promotion' src/compiler/ir/op
   -- mutation_check S9E7 escape partition_shared_call || fail 'S9E7 was not caught'
 mutation_result S9E7
 prove_mutation 'S9E8: heap pointer slots remain aligned on stack' src/compiler/ir/opt/escape.iyi \
-  '      if offset && offset >= 0_i64 && offset <= 9223372036854775799_i64 && offset % 8_i64 == 0_i64 # mutation S9-layout: remove the alignment test' \
-  '      if offset && offset >= 0_i64 && offset <= 9223372036854775799_i64 # mutation S9-layout: remove the alignment test' \
-  -- mutation_check S9E8 escape packed_integer_store || fail 'S9E8 was not caught'
+  '          candidate.bad = true unless shape && shape.aligned # mutation S9-layout: ignore unaligned pointer slots' \
+  '          candidate.bad = true unless shape # mutation S9-layout: ignore unaligned pointer slots' \
+  -- mutation_check S9E8 escape packed_partial_store || fail 'S9E8 was not caught'
 mutation_result S9E8
+prove_mutation 'S9E9: direct entry frames are excluded' src/compiler/ir/opt/escape.iyi \
+  '  fn.name == "__iyi_main" || fn.name == "__crystal_main" || fn.name == "__iyi_program" || fn.name == "__iyi_enter" || fn.name == "main" # mutation S9-top: return false' \
+  '  false # mutation S9-top: return false' \
+  -- mutation_check S9E9 escape top_level || fail 'S9E9 was not caught'
+mutation_result S9E9
+prove_mutation 'S9E10: recursive functions are excluded' src/compiler/ir/opt/escape.iyi \
+  '  return false if cycles.recursive?(fn) # mutation S9-recursion: remove this guard' \
+  '  nil # mutation S9-recursion: remove this guard' \
+  -- mutation_check S9E10 escape recursive || fail 'S9E10 was not caught'
+mutation_result S9E10
+prove_mutation 'S9E11: literal pointer slots remain aligned' src/compiler/ir/opt/escape.iyi \
+  '  aligned_span?(span, 0_i64, 8_i64) # mutation S9-slot: accept an unaligned pointer word' \
+  '  true # mutation S9-slot: accept an unaligned pointer word' \
+  -- mutation_check S9E11 escape unaligned_pointer_literal || fail 'S9E11 was not caught'
+mutation_result S9E11
 
 echo '== 8. verdict'
 if [ "$failed" -eq 0 ]; then
