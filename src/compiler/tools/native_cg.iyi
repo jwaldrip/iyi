@@ -318,6 +318,83 @@ def forms : Array(Form)
   m.uses << reg(2)
   m.uses << reg(3)
   acc << Form.new("ldr x1, [x2, x3, lsl #3]", m)
+  m = mk(MOp::LdrReg)
+  m.defs << reg(1)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("ldr x1, [x2, x3, lsl #3]", m)
+  m = mk(MOp::LdrReg)
+  m.size = 32
+  m.signed = true
+  m.defs << reg(1)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("ldrsw x1, [x2, x3, lsl #2]", m)
+  m = mk(MOp::LdrReg)
+  m.size = 16
+  m.signed = true
+  m.defs << reg(1)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("ldrsh x1, [x2, x3, lsl #1]", m)
+  m = mk(MOp::LdrReg)
+  m.size = 8
+  m.signed = true
+  m.defs << reg(1)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("ldrsb x1, [x2, x3]", m)
+  m = mk(MOp::LdrReg)
+  m.size = 64
+  m.fp = true
+  m.defs << reg(33)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("ldr d1, [x2, x3, lsl #3]", m)
+  m = mk(MOp::LdrReg)
+  m.size = 32
+  m.fp = true
+  m.defs << reg(33)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("ldr s1, [x2, x3, lsl #2]", m)
+  m = mk(MOp::StrReg)
+  m.uses << reg(1)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("str x1, [x2, x3, lsl #3]", m)
+  m = mk(MOp::StrReg)
+  m.size = 32
+  m.uses << reg(1)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("str w1, [x2, x3, lsl #2]", m)
+  m = mk(MOp::StrReg)
+  m.size = 16
+  m.uses << reg(1)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("strh w1, [x2, x3, lsl #1]", m)
+  m = mk(MOp::StrReg)
+  m.size = 8
+  m.uses << reg(1)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("strb w1, [x2, x3]", m)
+  m = mk(MOp::StrReg)
+  m.size = 64
+  m.fp = true
+  m.uses << reg(33)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("str d1, [x2, x3, lsl #3]", m)
+  m = mk(MOp::StrReg)
+  m.size = 32
+  m.fp = true
+  m.uses << reg(33)
+  m.uses << reg(2)
+  m.uses << reg(3)
+  acc << Form.new("str s1, [x2, x3, lsl #2]", m)
   acc << Form.new("ret", mk(MOp::Ret))
   m = mk(MOp::Brk)
   m.imm = 1_i64

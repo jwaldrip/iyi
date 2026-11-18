@@ -1,0 +1,22 @@
+module indexed
+
+import std/static_array
+import std/int
+
+values64 = StaticArray(Int64, 4).new
+values32 = StaticArray(Int32, 4).new
+values16 = StaticArray(Int16, 4).new
+values8 = StaticArray(Int8, 4).new
+values64[1] = 257_i64
+values64[2] = 513_i64
+values32[2] = -301_i32
+values16[2] = -123_i16
+values8[2] = -13_i8
+puts "#{values64[1]}"
+puts "#{values64[2]}"
+puts "#{values32[2].to_i64}"
+puts "#{values16[2].to_i64}"
+puts "#{values8[2].to_i64}"
+puts "#{values64[1]}"
+puts "#{values64[2]}"
+puts "#{values64[1]}"

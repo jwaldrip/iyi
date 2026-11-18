@@ -85,6 +85,18 @@ cbz x1, .
 cbnz x1, .
 tbz x1, #5, .
 tbnz x1, #63, .
+ldr x1, [x2, x3, lsl #3]
+ldrsw x1, [x2, x3, lsl #2]
+ldrsh x1, [x2, x3, lsl #1]
+ldrsb x1, [x2, x3]
+ldr d1, [x2, x3, lsl #3]
+ldr s1, [x2, x3, lsl #2]
+str x1, [x2, x3, lsl #3]
+str w1, [x2, x3, lsl #2]
+strh w1, [x2, x3, lsl #1]
+strb w1, [x2, x3]
+str d1, [x2, x3, lsl #3]
+str s1, [x2, x3, lsl #2]
 FORMS
 
 echo "== 3. the oracle: every form in one naked function, built by the hosted compiler"

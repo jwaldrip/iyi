@@ -262,6 +262,12 @@ expect("deferred", "multi_bit", [op("AndImm"), r"^  Cb(n)?z/"], [op("Tbz"), op("
 for fn in ("nested_compare", "hint_compare"):
     expect("deferred", fn, [op("Cset"), r"^  Cb(n)?z/"], [op("Tbz"), op("Tbnz")])
 expect("deferred", "gep_other", [op("AddImm"), op("Ldr"), r"^  Cb(n)?z/"], [op("Tbz"), op("Tbnz")])
+for fn in ("load64", "load32", "load16", "load8"):
+    expect("indexed", fn, [op("LdrReg")], [op("Mul")])
+for fn in ("store64", "store32", "store16", "store8"):
+    expect("indexed", fn, [op("StrReg")], [op("Mul")])
+expect("indexed", "wrong_scale", [op("Mul"), op("Ldr")], [op("LdrReg")])
+expect("indexed", "shared_address", [op("Mul"), op("Ldr"), op("Str")], [op("LdrReg"), op("StrReg")])
 for problem in errors:
     print("INVALID: " + problem)
 for problem in defects:
@@ -287,7 +293,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       exit 1
     fi
   done
-  for key in branches memory immediates overflow deferred; do
+  for key in branches memory immediates overflow deferred indexed; do
     if ! ./bin/iyi build -o "$(native_path "$WORK/$key.hosted$EXE")" "$(native_path "$FIX/$key.iyi")" >"$WORK/$key.hosted.log" 2>&1; then
       cat "$WORK/$key.hosted.log"
       fail "$key: hosted twin did not build"
@@ -358,6 +364,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_fold_mutation "immediate: accept an out-of-range value" src/compiler/native/aarch64/fold.iyi '  value >= -4095_i64 && value <= 4095_i64 # fold-immediate-range' '  value >= -4095_i64 && value <= 4096_i64 # fold-immediate-range' immediates
   prove_fold_mutation "inversion: leave zero branch unchanged" src/compiler/native/target.iyi '      inst.opcode = MOp::Cbnz.value.to_i32 # invert-zero-branch' '      inst.opcode = inst.opcode # invert-zero-branch' branches
   prove_fold_mutation "deferred: overflow leaf is not a bit test" src/compiler/native/aarch64/isel.iyi '          if other.is_a?(Inst) && @deferred[other]? == DeferredKind::BitTest && bit_test(other) >= 0 # deferred-bit-test' '          if other.is_a?(Inst) && @deferred.has_key?(other) # deferred-bit-test' deferred
+  prove_fold_mutation "indexed: omit access-size scale" src/compiler/native/aarch64/encode.iyi '    base = base | 0x1000_i64 if inst.size > 8 # indexed-access-scale' '    base = base | 0_i64 if inst.size > 8 # indexed-access-scale' indexed
 else
   host_limited "runtime selector mutation proofs (macOS arm64)"
 fi

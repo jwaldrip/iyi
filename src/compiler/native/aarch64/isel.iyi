@@ -89,6 +89,7 @@ end
 # may be used by later blocks.
 enum DeferredKind
   Address
+  IndexedAddress
   Compare
   Hint
   BitTest
@@ -320,7 +321,7 @@ class Isel
     if v.is_a?(Inst)
       inst = v.as(Inst)
       kind = @deferred[v]?
-      if kind == DeferredKind::Address || kind == DeferredKind::Compare || kind == DeferredKind::Hint || kind == DeferredKind::BitTest
+      if kind == DeferredKind::Address || kind == DeferredKind::IndexedAddress || kind == DeferredKind::Compare || kind == DeferredKind::Hint || kind == DeferredKind::BitTest
         @deferred.delete(v)
         lower_inst(inst)
       elsif kind == DeferredKind::Overflow
@@ -716,9 +717,9 @@ class Isel
         if i.op == Op::CondBr
           plan_branch(i, block)
         elsif i.op == Op::Load && !acquire_on_load?(i.aux.as(MemAux).ordering)
-          plan_address(i.args[0], block)
+          plan_address(i.args[0], i.type, block)
         elsif i.op == Op::Store && !release_on_store?(i.aux.as(MemAux).ordering)
-          plan_address(i.args[1], block)
+          plan_address(i.args[1], i.args[0].type, block)
         end
       end
       block = block + 1
@@ -729,13 +730,27 @@ class Isel
     (@uses[v]? || 0) == 1 && @inst_blocks[v]? == block
   end
 
-  def plan_address(v : Value, block : Int32) : Nil
+  def plan_address(v : Value, access : IrType, block : Int32) : Nil
     return unless v.is_a?(Inst) && single_local_use?(v, block)
     gep = v.as(Inst)
     return unless gep.op == Op::Gep
     plan = plan_gep(@layout, gep.aux.as(GepAux).source_type, gep.args)
     return if plan.is_a?(String)
-    @deferred[gep] = DeferredKind::Address if plan.as(GepPlan).terms.empty?
+    shape = plan.as(GepPlan)
+    if shape.terms.empty?
+      @deferred[gep] = DeferredKind::Address
+      return
+    end
+    flat = flatten_leaves(@layout, access)
+    return unless flat.size == 1 && flat[0][0] == 0_i64 && shape.const_off == 0_i64 && shape.terms.size == 1
+    leaf = flat[0][1]
+    return unless leaf.int? || leaf.float? || leaf.pointer?
+    bits = mem_bits(leaf)
+    return unless bits == 8 || bits == 16 || bits == 32 || bits == 64
+    term = shape.terms[0]
+    index = gep.args[term[0]]
+    return unless index.type.int? && index.type.bits <= 64
+    @deferred[gep] = DeferredKind::IndexedAddress if term[1] == (bits // 8).to_i64
   end
 
   def bit_test(v : Value) : Int32
@@ -1156,6 +1171,15 @@ class Isel
     {vop(first_leaf(base)), offset}
   end
 
+  # The planner selected exactly one dynamic GEP term at the access width.
+  def indexed_address(pointer : Value) : {Int32, Int32}
+    gep = pointer.as(Inst)
+    plan = plan_gep(@layout, gep.aux.as(GepAux).source_type, gep.args).as(GepPlan)
+    value = gep.args[plan.terms[0][0]]
+    index = signed_value(canon(first_leaf(value), value.type), value.type)
+    {first_leaf(gep.args[0]), index}
+  end
+
   def lower_load(i : Inst) : Nil
     aux = i.aux.as(MemAux)
     base = acquire_on_load?(aux.ordering) ? first_leaf(i.args[0]) : -1
@@ -1173,15 +1197,22 @@ class Isel
         emit(m)
         regs << (lt.float? ? move_bits_to_fp(g, lt.bits) : canon(g, lt))
       else
-        addr = memory_address(i.args[0], off)
         d = @mf.new_vreg(leaf_class(lt))
-        m = mop(addr[0].kind == OperandKind::FrameSlot ? MOp::LdrFrame : MOp::Ldr)
+        if @deferred[i.args[0]]? == DeferredKind::IndexedAddress
+          address = indexed_address(i.args[0])
+          m = mop(MOp::LdrReg)
+          m.uses << vop(address[0])
+          m.uses << vop(address[1])
+        else
+          addr = memory_address(i.args[0], off)
+          m = mop(addr[0].kind == OperandKind::FrameSlot ? MOp::LdrFrame : MOp::Ldr)
+          m.imm = addr[1]
+          m.uses << addr[0]
+        end
         m.size = mem_bits(lt)
         m.fp = lt.float?
         m.signed = lt.int? && lt.bits > 1
-        m.imm = addr[1]
         m.defs << vop(d)
-        m.uses << addr[0]
         emit(m)
         regs << d
       end
@@ -1207,13 +1238,21 @@ class Isel
         m.uses << vop(add_imm(base, off))
         emit(m)
       else
-        addr = memory_address(i.args[1], off)
-        m = mop(addr[0].kind == OperandKind::FrameSlot ? MOp::StrFrame : MOp::Str)
+        if @deferred[i.args[1]]? == DeferredKind::IndexedAddress
+          address = indexed_address(i.args[1])
+          m = mop(MOp::StrReg)
+          m.uses << vop(v)
+          m.uses << vop(address[0])
+          m.uses << vop(address[1])
+        else
+          addr = memory_address(i.args[1], off)
+          m = mop(addr[0].kind == OperandKind::FrameSlot ? MOp::StrFrame : MOp::Str)
+          m.imm = addr[1]
+          m.uses << vop(v)
+          m.uses << addr[0]
+        end
         m.size = mem_bits(lt)
         m.fp = lt.float?
-        m.imm = addr[1]
-        m.uses << vop(v)
-        m.uses << addr[0]
         emit(m)
       end
       k = k + 1
