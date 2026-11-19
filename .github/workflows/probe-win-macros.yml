@@ -1,0 +1,96 @@
+# Probe: runs the macro gate (bench/selfhost_macros_exercise.sh) on the runner
+# and Git bash that upstream's selfhost-windows job uses (iyi.yml), so a run
+# here shows what that job's macro gate does. Probe branch only: this file is
+# not part of the change the delivery branch carries.
+name: probe-win-macros
+
+on:
+  push:
+    branches: ["probe/pr210-win-macros-20261119"]
+
+permissions:
+  contents: read
+
+# The same workflow-level env the selfhost-windows steps read (iyi.yml 92-102).
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: "*"
+  PYTHONUTF8: "1"
+
+jobs:
+  macros-windows:
+    name: "The macro gate, on Windows x86_64 (probe)"
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      SELFHOST_HOST: windows-x86_64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1.9.5
+        with:
+          crystal: 1.21.0
+
+      - name: What this machine has
+        shell: pwsh
+        run: |
+          if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
+            choco install make --version 4.4.1 --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco could not install make 4.4.1" }
+            $make = Join-Path $env:ChocolateyInstall 'lib\make\tools\install\bin\make.exe'
+            $hash = (Get-FileHash -Algorithm SHA256 $make).Hash.ToLower()
+            if ($hash -ne 'cc6dc291113dcbcc7735835acbfc23c52ed037e4e124ff2d7a0aeae6df563a9f') {
+              throw "Chocolatey's make.exe is not the one pinned here: $hash"
+            }
+          }
+          $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
+          if (-not (Test-Path "$lib\llvm_VERSION")) {
+            throw "no llvm_VERSION beside the Crystal package's libraries, at $lib"
+          }
+          $llvm = (Get-Content "$lib\llvm_VERSION")[0].Trim()
+          Write-Host "bootstrap libraries: $lib"
+          Write-Host "llvm: $llvm"
+          "CRYSTAL_LIBRARY_PATH=$lib" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "LLVM_VERSION=$llvm" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          crystal --version
+
+      - name: Build the fork's compiler, then `iyi`
+        shell: cmd
+        run: |
+          make -f Makefile.win crystal || exit /b 1
+          make -f Makefile.win iyi
+
+      # The gate keeps its work directory when this is set, so a red run leaves
+      # both sides' output for the last step to print.
+      - name: Where the gate keeps its work
+        shell: bash
+        run: echo "MACRO_GATE_KEEP=$(cygpath -m "$RUNNER_TEMP")/macro-keep" >> "$GITHUB_ENV"
+
+      - name: The macro gate
+        shell: bash
+        run: bash bench/selfhost_macros_exercise.sh
+
+      - name: Each case's hosted and port output
+        if: always()
+        shell: bash
+        run: |
+          d="$MACRO_GATE_KEEP/confine"
+          if [ ! -d "$d" ]; then
+            echo "the gate wrote no confinement output"
+            exit 0
+          fi
+          for f in "$d"/hosted/*.out; do
+            name="$(basename "$f" .out)"
+            echo "== $name"
+            echo "-- hosted:"
+            cat "$f"
+            echo "-- port:"
+            cat "$d/port/$name.out"
+            if [ -s "$d/hosted/$name.err" ]; then echo "-- hosted stderr:"; cat "$d/hosted/$name.err"; fi
+            if [ -s "$d/port/$name.err" ]; then echo "-- port stderr:"; cat "$d/port/$name.err"; fi
+          done
