@@ -2161,7 +2161,6 @@ pub class MainVisitor < TypeNodeHost
     ""
   end
 
-
   def def_inline_file : String
     if cd = @current_def
       if loc = cd.location
