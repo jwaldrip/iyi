@@ -858,6 +858,37 @@ print("reload reuse: GPR and FPR caches respect redefinitions and clobbers")
 PY
 }
 
+# The MIR fixture: a loop constant moves to its preheader once, a spilled one is rebuilt at its use with no slot,
+# two-operand functions home values in x12..x15, and a seven-operand inline asm keeps seven scratch registers.
+check_mir_constants() {
+  local exe expect out
+  exe="$WORK/mir_constants$EXE"
+  expect='hoist: hoisted=1 body_movimm=0 entry_movimm=3 entry_const=1
+remat: body_movimm=1 imm_ok=true const_slot=-1 frame_slots=6 entry_movimm=2
+homes: 0 1 2 3 4 5 6 7 8 12 13 14 15 19
+asm: 9 10 11 12 13 14 15'
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/mir_constants.iyi")" >"$WORK/mir_constants.build.log" 2>&1; then
+    cat "$WORK/mir_constants.build.log"
+    return 2
+  fi
+  if ! out=$("$exe" 2>&1); then
+    printf '%s\n' "$out"
+    echo "mir constants fixture exited nonzero"
+    return 1
+  fi
+  if [ "$out" != "$expect" ]; then
+    printf 'expected:\n%s\ngot:\n%s\n' "$expect" "$out"
+    return 1
+  fi
+  echo "mir constants: hoisting, rematerialisation, pool order and seven scratch registers match"
+}
+if check_mir_constants >"$WORK/mir_constants.pristine.log" 2>&1; then
+  cat "$WORK/mir_constants.pristine.log"
+else
+  cat "$WORK/mir_constants.pristine.log"
+  fail "MIR constants fixture"
+fi
+
 echo "== 6. mutation proofs"
 prove_mutation "floating ABI: flag typed parameters and call results" \
   src/compiler/native/regalloc_linear.iyi check_typed_abi_fprs \
@@ -1001,7 +1032,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
     '      return reg unless reserved?(reg, @starts[iv], @ends[iv])'
   prove_mutation "rewrite: a spilled operand is read without its reload" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
-    '          reloads << slot_access(fn.isa, true, reg, fn.vreg_slot[v], fp)' \
+    '          reloads << reload_inst(fn, v, reg)' \
     '        # the reload is dropped'
   prove_mutation "linear: a value that crosses a call may take a caller-saved register" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
@@ -1039,6 +1070,18 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
 else
   host_limited "runtime mutation: a value live into a call-headed block is not counted as crossing (macOS arm64)"
 fi
+prove_mutation "hoisting: a constant moves into the block that reads it, not into its preheader" \
+  src/compiler/native/mir_const.iyi check_mir_constants \
+  '    target[b] = pre[best] if best >= 0' \
+  '    target[b] = b if best >= 0'
+prove_mutation "rematerialization: a spilled constant is rebuilt with the wrong immediate" \
+  src/compiler/native/regalloc_linear.iyi check_mir_constants \
+  '  m.imm = fn.vreg_remat[v]' \
+  '  m.imm = fn.vreg_remat[v] + 1_i64'
+prove_mutation "spill scratch: one register fewer than the largest instruction needs" \
+  src/compiler/native/regalloc_linear.iyi check_mir_constants \
+  '  largest # spill-scratch-count' \
+  '  largest - 1 # spill-scratch-count'
 echo "mutation totals: $mutation_caught/$mutation_total detected"
 echo "a mutation that changes nothing is refused by the proof helper:"
 [ ! -e "$NATIVE_SIGNATURE_FAILURE_FILE" ] || fail "a native executable failed signature verification"

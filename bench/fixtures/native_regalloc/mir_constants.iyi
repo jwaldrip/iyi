@@ -1,0 +1,153 @@
+module mir_constants
+
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, AsmBody}
+import compiler/native/mir_const::{hoist_constants}
+import compiler/native/regalloc::{allocate}
+import compiler/native/regalloc_linear::{rewrite_spills}
+
+def movimm_count(block : MBlock) : Int32
+  n = 0
+  block.insts.each do |inst|
+    n = n + 1 if inst.opcode == MOp::MovImm.value.to_i32
+  end
+  n
+end
+
+def movimm_with(block : MBlock, imm : Int64) : Int32
+  n = 0
+  block.insts.each do |inst|
+    n = n + 1 if inst.opcode == MOp::MovImm.value.to_i32 && inst.imm == imm
+  end
+  n
+end
+
+def put_inst(block : MBlock, op : MOp, defs : Array(Int32), uses : Array(Int32), imm : Int64) : Nil
+  m = MInst.new(op.value.to_i32)
+  defs.each { |d| m.defs << Operand.new(OperandKind::Virtual, d) }
+  uses.each { |u| m.uses << Operand.new(OperandKind::Virtual, u) }
+  m.imm = imm
+  block.insts << m
+end
+
+def branch(block : MBlock, target : Int32) : Nil
+  m = MInst.new(MOp::B.value.to_i32)
+  m.target = target
+  block.insts << m
+end
+
+def conditional(block : MBlock, target : Int32) : Nil
+  m = MInst.new(MOp::Bcond.value.to_i32)
+  m.target = target
+  m.cond = 10
+  block.insts << m
+end
+
+# Every vreg spilled: a frame slot for each one that is not rematerializable.
+def spill_everything(fn : MFunction) : Nil
+  v = 0
+  while v < fn.vreg_count
+    fn.vreg_home << -1
+    if fn.vreg_rematerializable[v]
+      fn.vreg_slot << -1
+    else
+      fn.vreg_slot << fn.frame.add_slot(8_i64, 8)
+    end
+    v = v + 1
+  end
+end
+
+# Parts 1 and 2: a loop with two equal 64-bit constants (one is a duplicate) and a counter. The constants move to the
+# loop's preheader, once. Then every vreg is spilled, so the constant is rebuilt at its use with no frame slot.
+big = 1234567890123_i64
+fn = MFunction.new("remat")
+entry = MBlock.new(0, "entry")
+head = MBlock.new(1, "head")
+body = MBlock.new(2, "body")
+exit = MBlock.new(3, "exit")
+fn.blocks << entry
+fn.blocks << head
+fn.blocks << body
+fn.blocks << exit
+i = fn.new_vreg(RegClass::Gpr)
+lim = fn.new_vreg(RegClass::Gpr)
+put_inst(entry, MOp::MovImm, [i], [] of Int32, 0_i64)
+put_inst(entry, MOp::MovImm, [lim], [] of Int32, 3_i64)
+put_inst(head, MOp::Cmp, [] of Int32, [i, lim], 0_i64)
+conditional(head, 3)
+c2 = fn.new_vreg(RegClass::Gpr)
+c3 = fn.new_vreg(RegClass::Gpr)
+u = fn.new_vreg(RegClass::Gpr)
+w = fn.new_vreg(RegClass::Gpr)
+i2 = fn.new_vreg(RegClass::Gpr)
+put_inst(body, MOp::MovImm, [c2], [] of Int32, big)
+put_inst(body, MOp::MovImm, [c3], [] of Int32, big)
+put_inst(body, MOp::Add, [u], [c2, i], 0_i64)
+put_inst(body, MOp::Add, [w], [c3, u], 0_i64)
+put_inst(body, MOp::AddImm, [i2], [i], 1_i64)
+put_inst(body, MOp::Mov, [i], [i2], 0_i64)
+branch(body, 1)
+exit.insts << MInst.new(MOp::Ret.value.to_i32)
+
+hoisted = hoist_constants(fn)
+puts "hoist: hoisted=#{hoisted} body_movimm=#{movimm_count(body)} entry_movimm=#{movimm_count(entry)} entry_const=#{movimm_with(entry, big)}"
+
+spill_everything(fn)
+rewrite_spills(fn)
+reloads = movimm_count(body)
+same = movimm_with(body, big) == reloads
+puts "remat: body_movimm=#{reloads} imm_ok=#{same} const_slot=#{fn.vreg_slot[c2]} frame_slots=#{fn.frame.slots.size} entry_movimm=#{movimm_count(entry)}"
+
+# Part 3: fourteen values alive at once, each read by a two-operand instruction. The allocator homes them in the
+# caller-saved registers in pool order: x0..x8, then x12..x15 (two-operand functions keep three spill scratch
+# registers), then a callee-saved register.
+home_fn = MFunction.new("homes")
+home_block = MBlock.new(0, "entry")
+home_fn.blocks << home_block
+vals = [] of Int32
+k = 0
+while k < 14
+  v = home_fn.new_vreg(RegClass::Gpr)
+  put_inst(home_block, MOp::MovImm, [v], [] of Int32, k.to_i64 + 100_i64)
+  vals << v
+  k = k + 1
+end
+k = 0
+while k < 14
+  r = home_fn.new_vreg(RegClass::Gpr)
+  put_inst(home_block, MOp::AddImm, [r], [vals[k]], 1_i64)
+  k = k + 1
+end
+home_block.insts << MInst.new(MOp::Ret.value.to_i32)
+allocate(home_fn)
+homes = ""
+vals.each do |v|
+  homes = homes + " " + home_fn.vreg_home[v].to_s
+end
+puts "homes:#{homes}"
+
+# Part 4: one inline-asm instruction with seven distinct gpr operands, all spilled, so it needs seven scratch registers.
+asm_fn = MFunction.new("asm")
+asm_block = MBlock.new(0, "entry")
+asm_fn.blocks << asm_block
+seven = [] of Int32
+k = 0
+while k < 7
+  v = asm_fn.new_vreg(RegClass::Gpr)
+  put_inst(asm_block, MOp::MovImm, [v], [] of Int32, k.to_i64)
+  seven << v
+  k = k + 1
+end
+asm_inst = MInst.new(MOp::InlineAsm.value.to_i32)
+asm_inst.asm = AsmBody.new("nop", 0, 7, Hash(String, Int32).new, true)
+seven.each do |v|
+  asm_inst.uses << Operand.new(OperandKind::Virtual, v)
+end
+asm_block.insts << asm_inst
+asm_block.insts << MInst.new(MOp::Ret.value.to_i32)
+spill_everything(asm_fn)
+rewrite_spills(asm_fn)
+regs = ""
+asm_inst.uses.each do |op|
+  regs = regs + " " + op.reg.to_s
+end
+puts "asm:#{regs}"
