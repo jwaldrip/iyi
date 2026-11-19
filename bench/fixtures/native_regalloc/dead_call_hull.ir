@@ -1,0 +1,41 @@
+; iyi-ir 1
+module "dead_call_hull"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external void @exit(i32)
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+
+; The trap block is laid out between the loop header and its body, so every loop value's interval hull covers the
+; exit call. The call never returns and no value is live after it, so no value crosses it: the loop values need no
+; callee-saved register and no frame slot. The trap reads the accumulator, so the accumulator is live into the trap.
+define internal i64 @sum_to(i64 %n) {
+entry:
+  %ok = icmp sgt i64 %n, 0
+  br i1 %ok, label %head, label %zero
+zero:
+  ret i64 0
+head:
+  %i = phi i64 [ 0, label %entry ], [ %i2, label %body ]
+  %acc = phi i64 [ 0, label %entry ], [ %acc2, label %body ]
+  %more = icmp slt i64 %i, %n
+  br i1 %more, label %body, label %exit
+trap:
+  %code = trunc i64 %acc to i32
+  call void (i32) @exit(i32 %code)
+  unreachable
+body:
+  %acc2 = add i64 %acc, %i
+  %i2 = add i64 %i, 1
+  %big = icmp sgt i64 %acc2, 1000000000000
+  br i1 %big, label %trap, label %head
+exit:
+  ret i64 %acc
+}
+
+define i32 @main() {
+entry:
+  %r = call i64 (i64) @sum_to(i64 100)
+  %p = call i32 (ptr, ...) @printf(ptr @fmt, i64 %r)
+  ret i32 0
+}

@@ -12,9 +12,10 @@ module compiler/native/regalloc_linear
 # result up to the move that takes it, an incoming argument from function entry, and a return value up to
 # the return or branch. These reservations are the pre-coloured intervals: no virtual interval overlaps one.
 #
-# Calls. A call-crossing interval takes a callee-saved GPR or an 8-byte
-# callee-saved FPR, or lives in a frame slot. Pointer-carrying FPR intervals
-# must spill even when a callee-saved floating register is available.
+# Calls. A value that is live after a call or an inline asm body, and not defined by it, takes a callee-saved GPR or an
+# 8-byte callee-saved FPR, or lives in a frame slot. Liveness decides this, not the interval hull: a boundary in a block
+# the value never reaches (a raise path laid out inside the hull) does not cross it. Pointer-carrying FPR intervals must
+# spill even when a callee-saved floating register is available.
 #
 # Spills. A spilled interval has one 8-byte frame slot for the whole function. Each instruction reloads the
 # spilled operands it reads into scratch registers and stores the spilled value it writes from one.
@@ -82,6 +83,10 @@ end
 
 def bit_set(row : Array(UInt64), v : Int32) : Nil
   row[v >> 6] = row[v >> 6] | (1_u64 << (v & 63))
+end
+
+def bit_clear(row : Array(UInt64), v : Int32) : Nil
+  row[v >> 6] = row[v >> 6] & ((1_u64 << (v & 63)) ^ 18446744073709551615_u64)
 end
 
 def bit?(row : Array(UInt64), v : Int32) : Bool
@@ -680,7 +685,6 @@ class LinearScan
   property npos : Int32
   property block_first : Array(Int32)
   property block_last : Array(Int32)
-  property call_prefix : Array(Int32)
   property succs : Array(Array(Int32))
   property live_in : Array(Array(UInt64))
   property live_out : Array(Array(UInt64))
@@ -707,7 +711,6 @@ class LinearScan
     @npos = 0
     @block_first = [] of Int32
     @block_last = [] of Int32
-    @call_prefix = [] of Int32
     @succs = [] of Array(Int32)
     @live_in = [] of Array(UInt64)
     @live_out = [] of Array(UInt64)
@@ -793,15 +796,6 @@ class LinearScan
       @block_last << (pos - 1)
     end
     @npos = pos
-    @call_prefix = int_row(pos + 1, 0)
-    p = 0
-    @fn.blocks.each do |block|
-      block.insts.each do |inst|
-        @call_prefix[p + 1] = @call_prefix[p] + (inst.call || !inst.asm.nil? ? 1 : 0) # collector-boundary
-        @call_prefix[p + 2] = @call_prefix[p + 1]
-        p = p + 2
-      end
-    end
   end
 
   def build_successors : Nil
@@ -911,19 +905,61 @@ class LinearScan
       b = b + 1
     end
     pointers = pointer_fprs
+    across = measure_crossing
     v = 0
     while v < n
       has = @starts[v] <= @ends[v]
       @has_interval << has
-      cross = false
-      # A call defines no virtual register, so a call at the start of an interval is one the value must survive.
-      if has && @ends[v] > @starts[v]
-        cross = @call_prefix[@ends[v]] - @call_prefix[@starts[v]] > 0
-      end
-      @crossing << cross
+      @crossing << (has && across[v])
       @pointer << (pointers[v] || @fn.vreg_pointer[v])
       v = v + 1
     end
+  end
+
+  # Whether each virtual register is live after a call or an inline asm body and not defined by it: the values that must
+  # survive the boundary. Each block is walked backwards from its live-out set: a definition leaves the set, a boundary
+  # reads it, then the uses join it, so the set read at a boundary is exactly what lives past the instruction. An interval
+  # hull covers every block laid out between a value's definition and its last use, so a raise path that never returns
+  # and reaches no use used to count as a crossing; liveness does not count it.
+  def measure_crossing : Array(Bool)
+    words = (@vcount + 63) >> 6
+    across = bit_row(@vcount)
+    b = 0
+    while b < @fn.blocks.size
+      live = [] of UInt64
+      w = 0
+      while w < words
+        live << @live_out[b][w]
+        w = w + 1
+      end
+      insts = @fn.blocks[b].insts
+      i = insts.size - 1
+      while i >= 0
+        inst = insts[i]
+        inst.defs.each do |op|
+          bit_clear(live, op.reg) if op.kind == OperandKind::Virtual
+        end
+        if inst.call || !inst.asm.nil? # collector-boundary
+          w = 0
+          while w < words
+            across[w] = across[w] | live[w]
+            w = w + 1
+          end
+        end
+        inst.uses.each do |op|
+          bit_set(live, op.reg) if op.kind == OperandKind::Virtual
+        end
+        i = i - 1
+      end
+      b = b + 1
+    end
+    flags = bool_row(@vcount)
+    v = 0
+    while v < @vcount
+      flags[v] = bit?(across, v)
+      v = v + 1
+    end
+    flags
   end
 
   # A copy prefers the other operand's existing home. The earlier interval is
