@@ -1211,6 +1211,7 @@ class LinearScan
       return @fpr_pool
     end
     if @crossing[iv]
+      return [] of Int32 if @fn.vreg_rematerializable[iv] # a rebuilt constant beats a callee-saved save and restore per call
       return @callee_pool
     end
     @caller_pool + @callee_pool
