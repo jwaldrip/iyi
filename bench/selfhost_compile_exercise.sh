@@ -83,6 +83,7 @@ FIXTURES=(
   "bench/fixtures/compile_macro_for_expand.iyi"
   "bench/fixtures/compile_macro_expr_expand.iyi"
   "bench/fixtures/compile_expr_position_unused.iyi"
+  "bench/fixtures/compile_require_unused_builds.iyi"
 )
 
 matched=0
@@ -609,6 +610,10 @@ check_refusal() {
       site='compile_macro_for_refused\.iyi:5:1'
       expected="port limitation: the port cannot expand the macro for at compile_macro_for_refused.iyi:5:1 (undefined macro method 'TypeNode#nope'), so it refuses instead of dropping it"
       ;;
+    compile_require_read_refused.iyi)
+      site='unsupported node: Require at an unlocated site'
+      expected="port limitation: unsupported node: Require at an unlocated site (can't require inside def)"
+      ;;
     compile_macro_expr_refused.iyi)
       site='compile_macro_expr_refused\.iyi:5:1'
       expected="port limitation: the port cannot expand the macro expression at compile_macro_expr_refused.iyi:5:1 (undefined macro method 'TypeNode#nope'), so it refuses instead of loading its imports"
@@ -728,6 +733,8 @@ clean_must_pass "compile_ivar_infer expects 12" check_compile_rc "$REPO/bench/fi
 clean_must_pass "compile_diamond expects 52" check_compile_rc "$REPO/bench/fixtures/compile_diamond.iyi" 52
 clean_must_pass "fixture arithmetic expects 26" check_fixture_rc "$REPO/bench/fixtures/compile_arith.iyi" 26
 clean_must_pass "stdout fixture matches hosted" check_stdout_parity "$REPO/bench/fixtures/compile_stdout.iyi" "$WORK/oracle_stdout.txt"
+clean_must_pass "a require reached through a read constant is refused by name" check_refusal "$REPO/bench/fixtures/compile_require_read_refused.iyi" "port limitation: unsupported node: Require"
+clean_must_pass "a require in an unread constant builds and exits 0" check_compile_rc "$REPO/bench/fixtures/compile_require_unused_builds.iyi" 0
 clean_must_pass "object emission honors its path" check_object_path
 clean_must_pass "rescue refusal" check_refusal "$REPO/bench/fixtures/compile_rescue_refused.iyi" "iyi has no exceptions to rescue"
 clean_must_pass "raise refusal" check_refusal "$REPO/bench/fixtures/compile_raise_norescue.iyi" "undefined method 'raise' for top-level"
@@ -890,6 +897,14 @@ mutate_compiler_source "a macro if expansion is not walked" \
   '    extract_declarations(expanded.as(ASTNode), classes, funs, defs, libs, top_level, flags, host_flags)' \
   '    nil' \
   -- check_compile_rc "$REPO/bench/fixtures/compile_macro_if_expand.iyi" 42 || status=1
+
+# A require that reaches code generation is refused by name. Making its visit return without the refusal lets the read
+# fixture build with the require dropped, which the refusal check reports as a caught difference.
+mutate_compiler_source "a require that reaches code generation is dropped instead of refused" \
+  "$REPO/src/compiler/codegen/codegen.iyi" \
+  '  def visit(node : Compiler::Syntax::Ast::Require) : Bool' \
+  $'  def visit(node : Compiler::Syntax::Ast::Require) : Bool\n    return false' \
+  -- check_refusal_rebuilt "$REPO/bench/fixtures/compile_require_read_refused.iyi" "port limitation: unsupported node: Require" || status=1
 else
   echo "  FAIL: mutation proofs require their clean baselines"
   status=1

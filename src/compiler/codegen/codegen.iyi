@@ -2715,6 +2715,21 @@ pub class CodeGenVisitor < Visitor
     false
   end
 
+  # A require that reaches code generation came from an expansion parsed outside its file, where the parser's def check
+  # does not see it. The hosted compiler refuses it: `can't require inside def` (parser.cr check_not_inside_def). Refused
+  # by name, at the require.
+  def visit(node : Compiler::Syntax::Ast::Require) : Bool
+    where = "an unlocated site"
+    if loc = node.location
+      where = "line #{loc.line_number}, column #{loc.column_number}"
+      unless loc.filename.empty?
+        parts = loc.filename.split('/')
+        where = "#{parts[parts.size - 1]}:#{loc.line_number}:#{loc.column_number}"
+      end
+    end
+    refuse_port("port limitation: unsupported node: Require at #{where} (can't require inside def)")
+  end
+
   def visit(node : Call) : Bool
     if node.name == "as" && node.args.size == 1 && (as_obj = node.obj)
       as_obj.accept(self)
