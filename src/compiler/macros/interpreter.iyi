@@ -10,13 +10,16 @@ import compiler/macros/answers::{MacroAnswers}
 
 # Why an expansion stopped: a `raise`, an undefined name, or a refused macro
 # method. The line and column are the node that failed, as the hosted compiler
-# reports them.
+# reports them. `refused` marks a port refusal (a method the port refuses or does
+# not port), which is not an error the macro raised: a caller answers it as a port
+# limitation, with the site's position.
 pub class MacroFailure
   property message : String
   property line : Int32
   property column : Int32
+  property refused : Bool
 
-  def initialize(@message : String, @line : Int32, @column : Int32)
+  def initialize(@message : String, @line : Int32, @column : Int32, @refused : Bool = false)
   end
 end
 
@@ -251,8 +254,8 @@ pub class MacroInterpreter
   end
 
   # Records the first failure, at the node that failed. A later one is not
-  # reported: the expansion stopped at the first.
-  def fail_at(node : ASTNode, message : String) : Nil
+  # reported: the expansion stopped at the first. `refused` marks a port refusal.
+  def fail_at(node : ASTNode, message : String, refused : Bool = false) : Nil
     if @failure.nil?
       line = 0
       column = 0
@@ -262,7 +265,7 @@ pub class MacroInterpreter
         line = loc.line_number
         column = loc.column_number
       end
-      @failure = MacroFailure.new(message, line, column)
+      @failure = MacroFailure.new(message, line, column, refused)
     end
     @last = Nop.new
   end
@@ -430,7 +433,7 @@ pub class MacroInterpreter
       if order = MacroMethods.compare_versions(MacroMethods.to_macro_id(first), MacroMethods.to_macro_id(second))
         return NumberLiteral.new(order.to_s, NumberKind::I32)
       end
-      fail_at(node, "compare_versions compares MAJOR.MINOR.PATCH versions: prerelease and build forms are not ported")
+      fail_at(node, "compare_versions compares MAJOR.MINOR.PATCH versions: prerelease and build forms are not ported", true)
       return Nop.new
     end
 
@@ -479,7 +482,7 @@ pub class MacroInterpreter
       if format
         # The hosted compiler prints the expansion formatted. This engine has
         # no formatter, so a formatted debug would print different text.
-        fail_at(node, "debug with formatting is not ported: write debug(format: false)")
+        fail_at(node, "debug with formatting is not ported: write debug(format: false)", true)
         return Nop.new
       end
       puts @str.to_s
@@ -499,7 +502,7 @@ pub class MacroInterpreter
     end
 
     if name == "p" || name == "pp" || name == "p!" || name == "pp!"
-      fail_at(node, "macro method '#{name}' is not ported")
+      fail_at(node, "macro method '#{name}' is not ported", true)
       return Nop.new
     end
 
@@ -509,12 +512,12 @@ pub class MacroInterpreter
     end
 
     if name == "system" || name == "`"
-      fail_at(node, "macro method '#{name}' is refused: it runs a command")
+      fail_at(node, "macro method '#{name}' is refused: it runs a command", true)
       return Nop.new
     end
 
     if name == "run"
-      fail_at(node, "macro method 'run' is refused: it runs another program")
+      fail_at(node, "macro method 'run' is refused: it runs another program", true)
       return Nop.new
     end
 
@@ -661,7 +664,7 @@ pub class MacroInterpreter
           return top
         end
         if MacroAnswers.receiverless?(cl.name)
-          fail_at(cl, "macro method '#{cl.name}' is not ported")
+          fail_at(cl, "macro method '#{cl.name}' is not ported", true)
         elsif cl.args.empty?
           fail_at(cl, "undefined macro variable '#{cl.name}'")
         else
@@ -700,10 +703,10 @@ pub class MacroInterpreter
         return value
       end
       if err = MacroMethods.take_error
-        fail_at(cl, err)
+        fail_at(cl, err, MacroMethods.last_error_refused?)
         return Nop.new
       end
-      fail_at(cl, "macro method '#{class_name}##{cl.name}' is not ported")
+      fail_at(cl, "macro method '#{class_name}##{cl.name}' is not ported", true)
       return Nop.new
     end
 

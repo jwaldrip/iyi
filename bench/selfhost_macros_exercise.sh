@@ -959,6 +959,22 @@ prove_mutation "an unknown program name answers false instead of being refused" 
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# A name the program's names do not hold is absent, never answered present: the fixtures ask for names the program
+# does not declare, and their dumps must still match the oracle's.
+prove_mutation "a name the program's names do not hold answers present" "$METHODS" \
+  "return BoolLiteral.new(facts.names.includes?(to_macro_id(args[0])))" \
+  "return BoolLiteral.new(true)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# The program's names reach the engine at its report entry point. Dropping them there refuses every has_constant?
+# that the positive fixtures ask of @top_level, and their dumps then differ from the oracle's.
+prove_mutation "the program's names are dropped at the engine's report entry point" "$ENGINE" \
+  "interp.program_facts = program" \
+  "interp.program_facts = nil" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 # ArrayLiteral#find returns the element whose block is truthy (macro_array_find.iyi).
 # Always-false makes the expansion nil instead of 2.
 prove_mutation "ArrayLiteral#find never matches" "$INTERP" \

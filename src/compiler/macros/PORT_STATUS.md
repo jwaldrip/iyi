@@ -253,10 +253,16 @@ Annotation and Macro accessors (`args`, `name`, `type`, `var`, `exp`,
   ported` when it does (`interpreter.iyi:664, 693`). No fixture reaches the second
   message. The `has_constant?` refusal of an unknown name is reached by
   `macro_top_level_names_unknown.iyi`.
-- `has_constant?` on `@top_level` answers only from the program's names that a caller
-  supplied: the `program` argument of the engine's entry points, with `names_known`.
-  Without them it is refused by name, with `is refused`, and nothing answers false
-  for a name it does not know.
+- `has_constant?` on `@top_level` answers from the program's root names (hosted `type.types`): the top-level
+  types, constants, aliases, libs and enums of the files read, the prelude's included. A name in a module unit, a
+  nested type, a method or a macro is absent, as in hosted. The declarations pass gives a site the names declared
+  before it, and a def body typed after the declarations all of them. A site in a file that imports or requires at
+  or after its line is refused by name instead, because the port declares a file's imports before it walks the file
+  and hosted does not yet have them. A site an expansion writes is refused by name too. Without names it is refused
+  by name, with `is refused`, and nothing answers false for a name it does not know. `constants` and `constant` still
+  need the constants the caller supplies.
+- A single top-level macro site as the whole of a file is refused by name: the declarations walk re-reads the site
+  as written, without the names. A file with another top-level node before or after the site is not affected.
 - `verbatim` keeps the body's raw text. The hosted compiler re-prints the body from
   its parse, so `{{i}}` comes out as `{{ i }}`. Fixtures use the spelling that
   re-prints unchanged.

@@ -1,0 +1,13 @@
+# top-level: Int32
+# top-level: Earlier
+# top-level: EARLY_CONST
+# top-level: EarlyMod
+# top-level: EarlyAlias
+# top-level: EarlyColor
+# top-level: LibFoo
+# top-level: Ann
+macro top_names
+  {{ @top_level.has_constant?("Int32") }}|{{ @top_level.has_constant?("Earlier") }}|{{ @top_level.has_constant?("EARLY_CONST") }}|{{ @top_level.has_constant?("EarlyMod") }}|{{ @top_level.has_constant?("EarlyAlias") }}|{{ @top_level.has_constant?("EarlyColor") }}|{{ @top_level.has_constant?("LibFoo") }}|{{ @top_level.has_constant?("Ann") }}|{{ @top_level.has_constant?("Later") }}|{{ @top_level.has_constant?("Inner") }}|{{ @top_level.has_constant?("my_macro") }}|{{ @top_level.has_constant?("some_method") }}
+end
+
+top_names

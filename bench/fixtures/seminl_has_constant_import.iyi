@@ -1,0 +1,9 @@
+require "./seminl_hc_helpers/imp_a"
+
+{% if @top_level.has_constant?("ImpA") %}
+  class ImportSeen
+  end
+{% else %}
+  class ImportMissing
+  end
+{% end %}

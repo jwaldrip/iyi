@@ -17,9 +17,11 @@ pub class MacroTypeFacts
   getter annotation_types : Hash(String, String)
   property annotations_known : Bool = false
   property constants_known : Bool = false
-  # The program's names: every top-level type, constant and macro name, when a
-  # caller supplied all of them (names_known). `has_constant?` on `@top_level`
-  # reads them, and no other answer does: `constants` and `constant` still need
+  # The program's names, when a caller supplied all of them (names_known): the keys of the
+  # program's root type table, as hosted `type.types` holds them. Those are the top-level
+  # types, constants, aliases, libs and enums of the files read so far, the prelude's included.
+  # A name in a module unit, a nested type, a method or a macro is not among them. `has_constant?`
+  # on `@top_level` reads them, and no other answer does: `constants` and `constant` still need
   # constants_known.
   property names_known : Bool = false
   property instance_vars_known : Bool = false
@@ -39,6 +41,14 @@ pub class MacroTypeFacts
     @ancestors = [] of MacroAncestorFact
     @methods = [] of Def
     @names = [] of String
+  end
+
+  # The facts of the program for `@top_level`, from every root name the caller read (see names_known).
+  def self.program(names : Array(String)) : MacroTypeFacts
+    facts = MacroTypeFacts.new
+    facts.names_known = true
+    names.each { |name| facts.names << name }
+    facts
   end
 end
 

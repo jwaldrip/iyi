@@ -528,6 +528,71 @@ prove_mutation "a site inside a lib body is parsed as an ordinary body" "$MUT_IN
   -- check_lib_parser_mode || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+MUT_METHODS="$REPO/src/compiler/macros/methods.iyi"
+
+# A walk-time site whose file imports or requires at or after it is refused by name, never answered: hosted has not
+# declared that import yet, and the port declares it first (top_level.iyi macro_names_at). The program lives outside
+# the fixtures, which must keep refusing no site. check_hc_import_after returns 0 while the site is refused, 1 when
+# it is answered, and 2 when the driver cannot be built or run.
+mkdir -p "$WORK/hc_after"
+printf 'class ImpA\nend\n' > "$WORK/hc_after/imp_a.iyi"
+cat > "$WORK/hc_after/root.iyi" <<'IYI'
+{% if @top_level.has_constant?("ImpA") %}
+  class ImportSeen
+  end
+{% else %}
+  class ImportMissing
+  end
+{% end %}
+
+require "./imp_a"
+IYI
+check_hc_import_after() {
+  local probe="$WORK/mut_hc$EXE" refused_hc
+  if ! "$IYI" build -o "$WORK_NATIVE/mut_hc$EXE" "$REPO_NATIVE/bench/selfhost_semantic_inline_macros_exercise.iyi" > "$WORK/mut_hc.build" 2>&1; then
+    echo "INVALID MUTATION: inline driver build failed"
+    cat "$WORK/mut_hc.build"
+    return 2
+  fi
+  if ! "$probe" --ledger "$WORK_NATIVE/hc_after/root.iyi" > "$WORK/mut_hc.txt" 2>"$WORK/mut_hc.err"; then
+    echo "INVALID OBSERVATION: inline ledger failed for the import-after program"
+    cat "$WORK/mut_hc.err"
+    return 2
+  fi
+  refused_hc=$(awk '$1 == "refused_total" { count++; value=$2 } END { if (count == 1) print value }' "$WORK/mut_hc.txt")
+  case "$refused_hc" in
+    ""|*[!0-9]*) echo "INVALID OBSERVATION: malformed refusal count for the import-after program"; return 2 ;;
+    0) echo "decisive: the import-after site is answered, not refused by name"; return 1 ;;
+  esac
+  return 0
+}
+rc_hc=0
+check_hc_import_after || rc_hc=$?
+if [ "$rc_hc" -eq 0 ]; then
+  echo "  an import after a walk-time site refuses that site by name"
+else
+  echo "  FAIL: the import-after site is not refused by name (check exit $rc_hc)"
+  status=1
+fi
+
+prove_mutation "a site whose file imports after it is answered, not refused by name" "$MUT_SEM" \
+  "return nil if last >= loc.line_number" \
+  "return nil if false" \
+  -- check_hc_import_after || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a walk-time site is given no program names, so every declared name is refused there" "$MUT_SEM" \
+  "@program.macro_names_at(site)" \
+  "nil" \
+  -- check_inline_fixtures_diverge refuse_port "has_constant" || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a refused has_constant? answers false, taking the else branch" "$MUT_METHODS" \
+  "return refuse_has_constant(tn)" \
+  "return BoolLiteral.new(false)" \
+  -- check_hc_import_after || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo
 echo "== 8. Pipeline reach: each root through the pipeline tool with the prelude, against bench/selfhost_inline_reach.floor"
 REACH_FLOOR="$REPO/bench/selfhost_inline_reach.floor"

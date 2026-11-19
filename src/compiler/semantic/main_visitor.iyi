@@ -1,13 +1,15 @@
 module compiler/semantic/main_visitor
 
 import compiler/foundation/location::{Location}
+import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/ast::{ASTNode, Primitive, NodeMap, Alias, AlignOf, And, Annotation, AnnotationDef, Arg, ArrayLiteral, Asm, AsmOperand, Assign, AssocTypeDecl, Block, BoolLiteral, Break, CStructOrUnionDef, Call, Case, Cast, CharLiteral, ClassDef, ClassVar, Def, Defer, DoubleSplat, EnumDef, ExceptionHandler, Expressions, Extend, ExternalVar, FunDef, Generic, Global, HashLiteral, If, ImplDef, ImplicitObj, ImportDecl, Include, InstanceAlignOf, InstanceSizeOf, InstanceVar, IsA, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MagicConstant, Metaclass, ModuleDef, ModuleHeader, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, NilableCast, Nop, Not, NumberLiteral, OffsetOf, OpAssign, Or, Out, Path, PointerOf, ProcLiteral, ProcNotation, ProcPointer, Propagate, RangeLiteral, ReadInstanceVar, Recover, RegexLiteral, Require, Rescue, RespondsTo, Return, Select, Self, SizeOf, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TraitDef, TupleLiteral, TypeDeclaration, TypeDef, TypeOf, Underscore, UninitializedVar, Union, Unless, Until, UsingDecl, Var, VisibilityModifier, When, While, Yield}
 import compiler/syntax/token::{NumberKind, TokenKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
 import compiler/macros/interpreter::{MacroFailure, MacroFreeBinding}
-import compiler/semantic/inline_macros::{InlineMacroLedger, expand_inline_macro, splice_body_node, splice_inline_sites}
+import compiler/macros/type_facts::{MacroTypeFacts}
+import compiler/semantic/inline_macros::{InlineMacroLedger, expand_inline_macro, macro_call_refusal, macro_site_refusal, splice_body_node, splice_inline_sites}
 import compiler/semantic/macro_bindings::{MacroBindings}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{InstanceVarInitializer}
@@ -619,6 +621,35 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # A macro site the engine refused: the port's refusal, named at the site's position.
+  def refuse_macro_site(node : ASTNode, reason : String) : Bool
+    refuse_macro_message(node, macro_site_refusal(node, reason))
+  end
+
+  # A macro call the engine refused. A port refusal names the call and the place in the macro's body that
+  # refuses it. A macro's own error keeps its message, as `refuse` raises it.
+  def refuse_macro_call(node : Call, a_macro : Macro, failure : MacroFailure) : Bool
+    if failure.refused
+      return refuse_macro_message(node, macro_call_refusal(node, a_macro, failure))
+    end
+    refuse(node, failure.message)
+  end
+
+  # Strict typing stops the compile with the port's refusal: a refused site left untyped makes its parent
+  # report `BUG: node has no type`. Total and speculative typing record the refusal on the node and answer false.
+  def refuse_macro_message(node : ASTNode, message : String) : Bool
+    if @dead_depth > 0
+      @untyped_reasons[node] = message
+      return false
+    end
+    record_refusal(node, message)
+    if @total || @speculation.depth > 0
+      @untyped_reasons[node] = message
+      return false
+    end
+    refuse_port(message)
+  end
+
   # Appends one Refusal for `node`: the reason, the node's file, line and column
   # (0 when it has no location), and the def whose body was being typed, named
   # `Owner#name` inside a type and `name` at top level.
@@ -970,15 +1001,15 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : MacroIf) : Bool
     if saved = InlineMacroLedger.sites(node).first?
       if reason = saved.reason
-        return refuse(node, "macro control expansion: #{reason}")
+        return refuse_macro_site(node, reason)
       end
     end
     expanded = @expansions[node]?
     if expanded.nil?
-      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope), nil, macro_program_names)
       if expanded.nil?
         if reason = InlineMacroLedger.sites.last.reason
-          return untyped(node, "macro control expansion: #{reason}")
+          return refuse_macro_site(node, reason)
         end
         expanded = Nop.new
       end
@@ -994,15 +1025,15 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : MacroFor) : Bool
     if saved = InlineMacroLedger.sites(node).first?
       if reason = saved.reason
-        return refuse(node, "macro control expansion: #{reason}")
+        return refuse_macro_site(node, reason)
       end
     end
     expanded = @expansions[node]?
     if expanded.nil?
-      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope), nil, macro_program_names)
       if expanded.nil?
         if reason = InlineMacroLedger.sites.last.reason
-          return untyped(node, "macro control expansion: #{reason}")
+          return refuse_macro_site(node, reason)
         end
         expanded = Nop.new
       end
@@ -1018,15 +1049,15 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : MacroExpression) : Bool
     if saved = InlineMacroLedger.sites(node).first?
       if reason = saved.reason
-        return refuse(node, "macro control expansion: #{reason}")
+        return refuse_macro_site(node, reason)
       end
     end
     expanded = @expansions[node]?
     if expanded.nil?
-      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope), nil, macro_program_names)
       if expanded.nil?
         if reason = InlineMacroLedger.sites.last.reason
-          return untyped(node, "macro control expansion: #{reason}")
+          return refuse_macro_site(node, reason)
         end
         expanded = Nop.new
       end
@@ -1042,10 +1073,10 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : MacroVerbatim) : Bool
     expanded = @expansions[node]?
     if expanded.nil?
-      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope), nil, macro_program_names)
       if expanded.nil?
         if reason = InlineMacroLedger.sites.last.reason
-          return untyped(node, "macro control expansion: #{reason}")
+          return refuse_macro_site(node, reason)
         end
         expanded = Nop.new
       end
@@ -1433,9 +1464,9 @@ pub class MainVisitor < TypeNodeHost
       lookup_type = @scope || @current_type
       if a_macro = lookup_type.is_a?(ModuleType) ? lookup_type.as(ModuleType).lookup_call_macro?(node) : nil
         engine = MacroEngine.new(@program.normalizer.macro_flags)
-        expanded_ast = engine.expand_or_failure(a_macro, node, @program.normalizer)
+        expanded_ast = engine.expand_or_failure(a_macro, node, @program.normalizer, MacroTypeFacts.program(@program.macro_root_names))
         if expanded_ast.is_a?(MacroFailure)
-          refuse(node, expanded_ast.message)
+          refuse_macro_call(node, a_macro, expanded_ast)
           return true
         end
         node.expanded = expanded_ast
@@ -2219,19 +2250,27 @@ pub class MainVisitor < TypeNodeHost
     node.is_a?(MacroIf) || node.is_a?(MacroFor) || node.is_a?(MacroExpression)
   end
 
+  # The program's root names, read when a site expands: the names every top-level declaration has made so far.
+  # A def body typed after the declarations reads all of them, as hosted `type.types` does.
+  def macro_program_names : Proc(ASTNode, Array(String)?)
+    ->(site : ASTNode) : Array(String)? do
+      @program.macro_root_names
+    end
+  end
+
   # Every Expressions of every def body passes here, so the names and bindings are built only for a
   # body that holds a site: a body with none is left as it is.
   def splice_def_inline_sites(node : Expressions) : Nil
     return nil if @current_def.nil?
     return nil unless node.expressions.any? { |exp| inline_site?(exp) }
-    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, @program.normalizer, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true)
+    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, @program.normalizer, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true, nil, nil, macro_program_names)
     nil
   end
 
   def splice_def_body(node : ASTNode) : ASTNode
     return node if @current_def.nil?
     return node unless inline_site?(node)
-    splice_body_node(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true)
+    splice_body_node(node, def_inline_scope_name, def_inline_file, false, @program.normalizer, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope), true, nil, macro_program_names)
   end
 
   # An inline macro site that is the whole value of a constant (`CHANNEL_WAIT = {% if ... %}512{% else %}2048{% end %}`)
@@ -2250,7 +2289,7 @@ pub class MainVisitor < TypeNodeHost
         file = first_loc.filename
       end
     end
-    spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType), @program.normalizer)
+    spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType), @program.normalizer, [] of String, nil, nil, false, nil, macro_program_names)
     if spliced.is_a?(Expressions)
       only = spliced.as(Expressions).expressions
       spliced = only[0] if only.size == 1

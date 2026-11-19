@@ -7,9 +7,11 @@ import compiler/syntax/token::{NumberKind}
 import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, AssocTypeDecl, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, ExternalVar, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/ast::{Splat, Underscore, Yield}
 import compiler/syntax/visitor::{Visitor}
+import compiler/macros/interpreter::{MacroFailure}
+import compiler/macros/type_facts::{MacroTypeFacts}
 import compiler/macros/engine::{MacroEngine}
 import compiler/macros/target_flags::{MacroTargetFlags}
-import compiler/semantic/inline_macros::{expand_inline_macro, splice_body_node, splice_inline_sites}
+import compiler/semantic/inline_macros::{expand_inline_macro, macro_call_refusal, splice_body_node, splice_inline_sites}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/type_param_renamer::{TypeParamRenamer}
 
@@ -1649,6 +1651,88 @@ pub class SemanticProgram < NonGenericModuleType
     @normalizer.iyi_prelude
   end
 
+  # The names `@top_level.has_constant?` answers from: the keys of this program's root type table, which
+  # is hosted `type.types` (see `MacroTypeFacts.program`). A def body typed after the declarations reads all
+  # of them. A site the declarations pass expands reads the names `macro_names_at` allows.
+  def macro_root_names : Array(String)
+    types.keys
+  end
+
+  @file_import_lines : Hash(String, Int32) = Hash(String, Int32).new
+
+  # The names a walk-time macro site reads for `@top_level`, or nil when they may not match hosted's. Hosted
+  # declares a file's imports and requires in walk order, but this port declares a file's imports before it
+  # walks the file. So a site with an import or require of its own file at or after its line would see names
+  # hosted has not declared yet, and it is refused by name. Any other site reads every name declared so far.
+  def macro_names_at(site : ASTNode) : Array(String)?
+    loc = site.location
+    return nil if loc.nil?
+    file = loc.filename
+    return nil unless File.exists?(file)
+    last = @file_import_lines[file]?
+    if last.nil?
+      scan = ImportLineScan.new
+      unit_tree_or_parse(file).accept(scan)
+      last = scan.last
+      text_last = last_import_text_line(file)
+      last = text_last if text_last > last
+      @file_import_lines[file] = last
+    end
+    return nil if last >= loc.line_number
+    macro_root_names
+  end
+
+  # The last line of the file's text that writes an import or a require. The tree may not place one (a require
+  # the parser leaves without a location), so the text is read too. A comment is not counted.
+  def last_import_text_line(file : String) : Int32
+    last = 0
+    lines = File.read(file).split('\n')
+    i = 0
+    while i < lines.size
+      trimmed = lines[i].strip
+      if trimmed.starts_with?("require ") || trimmed.starts_with?("require\"") || trimmed.starts_with?("import ")
+        last = i + 1
+      elsif trimmed.starts_with?("{%") && (trimmed.includes?("require") || trimmed.includes?("import "))
+        last = i + 1
+      end
+      i = i + 1
+    end
+    last
+  end
+
+  # The last line of the imports and requires a tree holds (0 when it holds none). See macro_names_at.
+  private class ImportLineScan < Visitor
+    getter last : Int32
+
+    def initialize
+      @last = 0
+    end
+
+    def visit(node : ImportDecl) : Bool
+      note(node)
+    end
+
+    def visit(node : Require) : Bool
+      note(node)
+    end
+
+    # A `require "x"` the parser reads as a call (the loader reads both forms the same way).
+    def visit(node : Call) : Bool
+      if node.obj.nil? && node.name == "require"
+        note(node)
+        return false
+      end
+      true
+    end
+
+    def note(node : ASTNode) : Bool
+      if loc = node.location
+        @last = loc.line_number if loc.line_number > @last
+      end
+      false
+    end
+  end
+
   @value_type : ClassType?
   @reference_type : ClassType?
   @struct_type : ClassType?
@@ -2998,6 +3082,7 @@ pub class TopLevelVisitor < Visitor
   def initialize(@program : SemanticProgram, @file : String? = nil)
     @current_type = @program
     @exp_nest = 0
+    @in_expansion = false
     @pending_ivars = [] of PendingIvar
     @pending_annotations = [] of Annotation
     if file = @file
@@ -3037,7 +3122,10 @@ pub class TopLevelVisitor < Visitor
         found = @program.lookup_type_path?(path, scope)
         found.is_a?(Const) ? found.as(Const).value : nil
       end
-      node.expressions = splice_inline_sites(node.expressions, @current_type.full_name, @file || "", @current_type.is_a?(LibType), @program.normalizer, [] of String, nil, nil, false, lookup, self)
+      names = ->(site : ASTNode) : Array(String)? do
+        walk_names_at(site)
+      end
+      node.expressions = splice_inline_sites(node.expressions, @current_type.full_name, @file || "", @current_type.is_a?(LibType), @program.normalizer, [] of String, nil, nil, false, lookup, self, names)
     else
       i = 0
       while i < node.expressions.size
@@ -4619,13 +4707,33 @@ pub class TopLevelVisitor < Visitor
     false
   end
 
+  # The names a walk-time site reads for `@top_level`: none inside a macro's expansion, whose nodes carry the
+  # expansion's text lines and not the file's (see macro_names_at).
+  def walk_names_at(site : ASTNode) : Array(String)?
+    return nil if @in_expansion
+    @program.macro_names_at(site)
+  end
+
   def visit(node : Call) : Bool
     if node.obj.nil?
       if a_macro = @current_type.lookup_call_macro?(node)
         engine = MacroEngine.new(@program.normalizer.macro_flags)
-        expanded_ast = engine.expand(a_macro, node, @program.normalizer)
+        program : MacroTypeFacts? = nil
+        if names = walk_names_at(node)
+          program = MacroTypeFacts.program(names)
+        end
+        expanded_ast = engine.expand_or_failure(a_macro, node, @program.normalizer, program)
+        if expanded_ast.is_a?(MacroFailure)
+          if expanded_ast.refused
+            refuse_port(macro_call_refusal(node, a_macro, expanded_ast))
+          end
+          raise(expanded_ast.message)
+        end
         node.expanded = expanded_ast
+        was_in_expansion = @in_expansion
+        @in_expansion = true
         expanded_ast.accept(self)
+        @in_expansion = was_in_expansion
         return false
       end
     end

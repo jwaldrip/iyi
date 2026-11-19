@@ -9,12 +9,16 @@ import compiler/macros/answers::{MacroAnswers}
 import compiler/macros/type_facts::{MacroTypeFacts}
 
 pub class MacroMethods
-  # A hosted method refusal (`undefined method 'size' ...`), read once by the
-  # interpreter. Nil when the method is simply not ported.
+  # A method error, read once by the interpreter. The hosted compiler answers an error such as
+  # `undefined method 'size' ...`; a refused method (`refused`) is one the port does not answer, which
+  # the caller reports as a port limitation. Nil when there is no error.
   @@method_error : String? = nil
+  @@method_refused : Bool = false
+  @@last_error_refused : Bool = false
 
-  def self.refuse(message : String) : Nil
+  def self.refuse(message : String, refused : Bool = false) : Nil
     @@method_error = message
+    @@method_refused = refused
     nil
   end
 
@@ -22,14 +26,21 @@ pub class MacroMethods
   # message names the type. Answering false for a name it does not know would
   # be a guess.
   def self.refuse_has_constant(tn : TypeNode) : ASTNode?
-    refuse("macro method 'TypeNode#has_constant?' is refused: the names of #{tn.name} are not known to the macro engine")
+    refuse("macro method 'TypeNode#has_constant?' is refused: the names of #{tn.name} are not known to the macro engine", true)
     nil
   end
 
   def self.take_error : String?
     err = @@method_error
+    @@last_error_refused = @@method_refused
     @@method_error = nil
+    @@method_refused = false
     err
+  end
+
+  # Whether the error the last take_error returned is a port refusal rather than a hosted error.
+  def self.last_error_refused? : Bool
+    @@last_error_refused
   end
 
   def self.truthy?(node : ASTNode) : Bool

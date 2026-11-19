@@ -1,0 +1,137 @@
+class Earlier
+end
+
+{% if @top_level.has_constant?("Earlier") %}
+  class EarlierSeen
+  end
+{% else %}
+  class EarlierMissing
+  end
+{% end %}
+
+{% if @top_level.has_constant?("Later") %}
+  class LaterSeen
+  end
+{% else %}
+  class LaterMissing
+  end
+{% end %}
+
+class Later
+end
+
+EARLY_CONST = 1
+
+{% if @top_level.has_constant?("EARLY_CONST") %}
+  class ConstSeen
+  end
+{% else %}
+  class ConstMissing
+  end
+{% end %}
+
+{% if @top_level.has_constant?("LATE_CONST") %}
+  class LateConstSeen
+  end
+{% else %}
+  class LateConstMissing
+  end
+{% end %}
+
+LATE_CONST = 2
+
+module EarlyMod
+end
+
+{% if @top_level.has_constant?("EarlyMod") %}
+  class ModSeen
+  end
+{% else %}
+  class ModMissing
+  end
+{% end %}
+
+alias EarlyAlias = Earlier
+
+{% if @top_level.has_constant?("EarlyAlias") %}
+  class AliasSeen
+  end
+{% else %}
+  class AliasMissing
+  end
+{% end %}
+
+enum EarlyColor
+  Red
+end
+
+{% if @top_level.has_constant?("EarlyColor") %}
+  class EnumSeen
+  end
+{% else %}
+  class EnumMissing
+  end
+{% end %}
+
+class Outer
+  class Inner
+  end
+end
+
+{% if @top_level.has_constant?("Inner") %}
+  class ShortSeen
+  end
+{% else %}
+  class ShortMissing
+  end
+{% end %}
+
+{% if @top_level.has_constant?("Outer::Inner") %}
+  class FullSeen
+  end
+{% else %}
+  class FullMissing
+  end
+{% end %}
+
+macro my_macro
+end
+
+{% if @top_level.has_constant?("my_macro") %}
+  class MacroSeen
+  end
+{% else %}
+  class MacroMissing
+  end
+{% end %}
+
+class ClassHoldsSite
+  {% if @top_level.has_constant?("ClassHoldsSite") %}
+    class SelfSeen
+    end
+  {% else %}
+    class SelfMissing
+    end
+  {% end %}
+
+  {% if @top_level.has_constant?("Later") %}
+    class InnerLaterSeen
+    end
+  {% else %}
+    class InnerLaterMissing
+    end
+  {% end %}
+end
+
+{% for name in %w(GenA) %}
+  class {{name.id}}
+  end
+{% end %}
+
+{% if @top_level.has_constant?("GenA") %}
+  class GeneratedSeen
+  end
+{% else %}
+  class GeneratedMissing
+  end
+{% end %}
