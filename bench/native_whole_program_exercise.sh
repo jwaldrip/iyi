@@ -272,9 +272,11 @@ else
   else
     for pair in "$parser" "$exercise"; do
       if ! bash bench/lib/parse_corpus_diff.sh "$pair/hosted" "$pair/native" >"$pair/corpus.log" 2>&1; then
-        grep -E '^(differ |summary:)' "$pair/corpus.log"
+        grep -E '^(slow |differ |summary:)' "$pair/corpus.log"
         fail "corpus differs for $pair"
       else
+        # A pair that needed the slow limit is shown: it passed, and it says the host was loaded.
+        grep -E '^slow ' "$pair/corpus.log" || true
         tail -n 1 "$pair/corpus.log"
       fi
     done

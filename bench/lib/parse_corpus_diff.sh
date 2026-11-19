@@ -34,11 +34,17 @@ trap 'rm -rf "$work"' EXIT
 cd "$root" || exit 2
 agree=0
 differ=0
+# A run gets the limit (30 seconds). A file that needs longer on a loaded host (src/std/unicode.iyi
+# took 33 seconds in both executables) is not a difference, so a pair in which either side hit
+# the limit is run once more with the slow limit (300 seconds) before it is judged. A side that
+# still does not finish is reported as a timeout and fails the comparison.
+limit="${PARSE_CORPUS_LIMIT:-30}"
+slow_limit="${PARSE_CORPUS_SLOW_LIMIT:-300}"
 run_timed() {
   "$PY" - "$@" <<'PY'
 import subprocess, sys
 try:
-    result = subprocess.run(sys.argv[1:], stdin=subprocess.DEVNULL, timeout=30)
+    result = subprocess.run(sys.argv[2:], stdin=subprocess.DEVNULL, timeout=float(sys.argv[1]))
 except subprocess.TimeoutExpired:
     sys.exit(142)
 except OSError as error:
@@ -50,15 +56,26 @@ PY
 compare() {
   local label="$1" hs cs
   shift
-  run_timed "$hosted_native" "$@" >"$work/hosted.out" 2>"$work/hosted.err"
+  run_timed "$limit" "$hosted_native" "$@" >"$work/hosted.out" 2>"$work/hosted.err"
   hs=$?
-  run_timed "$candidate_native" "$@" >"$work/candidate.out" 2>"$work/candidate.err"
+  run_timed "$limit" "$candidate_native" "$@" >"$work/candidate.out" 2>"$work/candidate.err"
   cs=$?
+  if [ "$hs" -eq 142 ] || [ "$cs" -eq 142 ]; then
+    printf 'slow %s (status %s/%s at %s seconds; run again with %s)\n' "$label" "$hs" "$cs" "$limit" "$slow_limit"
+    run_timed "$slow_limit" "$hosted_native" "$@" >"$work/hosted.out" 2>"$work/hosted.err"
+    hs=$?
+    run_timed "$slow_limit" "$candidate_native" "$@" >"$work/candidate.out" 2>"$work/candidate.err"
+    cs=$?
+  fi
   if [ "$hs" -ne 142 ] && [ "$cs" -ne 142 ] && [ "$hs" -eq "$cs" ] && cmp -s "$work/hosted.out" "$work/candidate.out" && cmp -s "$work/hosted.err" "$work/candidate.err"; then
     printf 'agree %s\n' "$label"
     agree=$((agree + 1))
   else
-    printf 'differ %s (status %s/%s; stdout ' "$label" "$hs" "$cs"
+    if [ "$hs" -eq 142 ] || [ "$cs" -eq 142 ]; then
+      printf 'differ %s (timeout after %s seconds, status %s/%s; stdout ' "$label" "$slow_limit" "$hs" "$cs"
+    else
+      printf 'differ %s (status %s/%s; stdout ' "$label" "$hs" "$cs"
+    fi
     if cmp -s "$work/hosted.out" "$work/candidate.out"; then printf 'equal'; else printf 'different'; fi
     printf '; stderr '
     if cmp -s "$work/hosted.err" "$work/candidate.err"; then printf 'equal'; else printf 'different'; fi
