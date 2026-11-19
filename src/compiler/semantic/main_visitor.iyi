@@ -1406,6 +1406,20 @@ pub class MainVisitor < TypeNodeHost
     true
   end
 
+  # A splat is typed only as an argument of a call. visit(Call) expands that call first
+  # (expand_splat_call), so this visit is reached only from a yield or a tuple literal, which
+  # stay unported and are refused by name.
+  def visit(node : Splat) : Bool
+    untyped(node, "not ported: a splat outside a call's arguments (hosted codegen.cr: visit(Yield), visit(TupleLiteral))")
+    true
+  end
+
+  # A double splat is typed only as an argument of a call, where expand_splat_call refuses it.
+  def visit(node : DoubleSplat) : Bool
+    untyped(node, "not ported: a double splat outside a call's arguments")
+    true
+  end
+
   def expand_macro(node : Call) : Bool
     if exp = node.expanded
       exp.accept(self)
@@ -5423,6 +5437,132 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # Hosted call.cr:157-208 and 1014-1056, main_visitor.cr:1573-1580 and 1667-1728: a splatted
+  # tuple becomes one argument per element, `operand[i]`, and a splat whose operand is not a
+  # variable is first evaluated once, into a temporary, before the call. The expanded call has
+  # no splats in it, so every reader of a call's arguments sees the flat list, and lowering reads
+  # the expansion the same way it reads a bare local read.
+  def call_has_splats?(node : Call) : Bool
+    node.args.any? { |arg| arg.is_a?(Splat) || arg.is_a?(DoubleSplat) }
+  end
+
+  def splat_operand(arg : ASTNode) : ASTNode?
+    if arg.is_a?(Splat)
+      arg.as(Splat).exp
+    elsif arg.is_a?(DoubleSplat)
+      arg.as(DoubleSplat).exp
+    else
+      nil
+    end
+  end
+
+  def variable_operand?(exp : ASTNode) : Bool
+    exp.is_a?(Var) || exp.is_a?(InstanceVar) || exp.is_a?(ClassVar) || exp.is_a?(Global)
+  end
+
+  def call_hoists_splats?(node : Call) : Bool
+    node.args.each do |arg|
+      if operand = splat_operand(arg)
+        return true unless variable_operand?(operand)
+      end
+    end
+    false
+  end
+
+  # The hoist (hosted replace_call_splats): each operand that is not a variable is assigned to a
+  # temporary, in argument order, and the copy of the call splats the temporary instead.
+  def hoisted_splat_call(node : Call) : ASTNode
+    copy = node.clone
+    exps = [] of ASTNode
+    copy.args.each do |arg|
+      if operand = splat_operand(arg)
+        unless variable_operand?(operand)
+          temp = Var.new(@program.normalizer.new_temp_var_name(arg)).at(arg)
+          exps << Assign.new(temp.clone, operand).at(arg)
+          replace_splat_operand(arg, temp.clone)
+        end
+      end
+    end
+    exps << copy
+    Expressions.new(exps).at(node)
+  end
+
+  def replace_splat_operand(arg : ASTNode, value : ASTNode) : Nil
+    if arg.is_a?(Splat)
+      splat = arg.as(Splat)
+      splat.exp = value
+    else
+      double = arg.as(DoubleSplat)
+      double.exp = value
+    end
+  end
+
+  # The copy of the call with each splatted tuple replaced by its elements (hosted
+  # call.cr:1014-1056). Every operand is a variable here, so each element reads the same value.
+  # A splat that hosted refuses is refused here by name, with hosted's wording where it has one.
+  def flattened_splat_call(node : Call) : Call?
+    copy = node.clone
+    flat = [] of ASTNode
+    copy.args.each do |arg|
+      if operand = splat_operand(arg)
+        operand.accept(self)
+        operand_type = child_type(operand)
+        if operand_type.nil?
+          untyped(node, "an argument was not typed: #{arg}")
+          return nil
+        end
+        if arg.is_a?(DoubleSplat)
+          if operand_type.is_a?(UnionType)
+            refuse(arg, "double splatting a union #{operand_type.full_name} is not yet supported")
+          elsif operand_type.is_a?(NamedTupleInstanceType)
+            refuse(arg, "not ported: a double splat of a named tuple (hosted call.cr replace_splats)")
+          else
+            refuse(arg, "argument to double splat must be a named tuple, not #{operand_type.full_name}")
+          end
+          return nil
+        end
+        if operand_type.is_a?(UnionType)
+          refuse(arg, "splatting a union #{operand_type.full_name} is not yet supported")
+          return nil
+        end
+        unless operand_type.is_a?(TupleInstanceType)
+          refuse(arg, "argument to splat must be a tuple, not #{operand_type.full_name}")
+          return nil
+        end
+        count = operand_type.as(TupleInstanceType).tuple_types.size
+        i = 0
+        while i < count
+          flat << Call.new(operand.clone, "[]", [NumberLiteral.new(i.to_s)] of ASTNode).at(arg)
+          i += 1
+        end
+      else
+        flat << arg
+      end
+    end
+    copy.args = flat
+    copy
+  end
+
+  # Expands a call with splat arguments once and types the expansion, as the bare local read does.
+  def expand_splat_call(node : Call) : Bool
+    expanded = @expansions[node]?
+    if expanded.nil?
+      if call_hoists_splats?(node)
+        expanded = hoisted_splat_call(node)
+      else
+        copy = flattened_splat_call(node)
+        return false if copy.nil?
+        expanded = copy
+      end
+      @expansions[node] = expanded
+    end
+    expanded.accept(self)
+    if et = child_type(expanded)
+      set_type(node, et)
+    end
+    false
+  end
+
   def visit(node : Call) : Bool
     @call_arguments.delete(node)
     if block = node.block
@@ -5430,6 +5570,11 @@ pub class MainVisitor < TypeNodeHost
     end
     if expand_macro(node)
       return false
+    end
+    # Hosted main_visitor.cr:1573-1580: a call with splat arguments is typed as the call it
+    # expands into (expand_splat_call), before any of its arguments is read.
+    if call_has_splats?(node)
+      return expand_splat_call(node)
     end
 
     if !node.global && !node.has_parentheses && node.obj.nil? && node.args.empty? && node.named_args.nil? && node.block.nil? && node.block_arg.nil?

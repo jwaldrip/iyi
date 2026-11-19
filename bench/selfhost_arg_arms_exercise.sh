@@ -233,6 +233,101 @@ else
   cat "$WORK/path.log"
   exit 1
 fi
+# Splat arguments (hosted call.cr:157-208 and 1014-1056, main_visitor.cr:1573-1580 and 1667-1728).
+# The typed build of lowcall_splat_arg exits as the hosted build does, and each refusal names its
+# construct with hosted's wording. The status changes if a splat operand is evaluated twice, or
+# after the call's other arguments.
+SPLAT_FIXTURE="$REPO_NATIVE/bench/fixtures/lowcall_splat_arg.iyi"
+rc=0
+"$IYI" build --prelude empty --no-debug -o "$WORK_NATIVE/splat-hosted$EXE" "$SPLAT_FIXTURE" > "$WORK/splat-hosted.build" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "INVALID: hosted build of lowcall_splat_arg exited $rc"
+  cat "$WORK/splat-hosted.build"
+  exit 2
+fi
+rc=0
+"$WORK/splat-hosted$EXE" > "$WORK/splat-hosted.out" 2>&1 || rc=$?
+SPLAT_STATUS="$rc"
+if [ "$SPLAT_STATUS" -ne 212 ]; then
+  echo "INVALID: hosted lowcall_splat_arg exited $SPLAT_STATUS, not 212"
+  exit 2
+fi
+
+# splat_run <compiler> <tag>: 0 when the typed build runs with the hosted status; 1 when it is
+# refused or runs differently; 2 when it fails without a refusal.
+splat_run() {
+  local compiler="$1" tag="$2" rc=0 run=0
+  "$compiler" "$SPLAT_FIXTURE" -o "$WORK_NATIVE/$tag$EXE" --pipeline typed > "$WORK/$tag.compile" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if port_refusal "$rc" "$WORK/$tag.compile"; then return 1; fi
+    echo "INVALID: $tag build exited $rc without a refusal" >&2
+    return 2
+  fi
+  "$WORK/$tag$EXE" > "$WORK/$tag.run" 2>&1 || run=$?
+  if [ "$run" -eq "$SPLAT_STATUS" ]; then return 0; fi
+  return 1
+}
+
+# splat_refusal <compiler> <fixture> <message-ERE>: 0 when the typed build refuses the fixture
+# with hosted's wording; 1 when it accepts it or refuses with other wording; 2 when it fails
+# without a refusal.
+splat_refusal() {
+  local compiler="$1" name="$2" message="$3" rc=0
+  "$compiler" "$REPO_NATIVE/bench/fixtures/$name.iyi" -o "$WORK_NATIVE/$name.refusal$EXE" --pipeline typed > "$WORK/$name.refusal" 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ]; then return 1; fi
+  if expected_refusal "$rc" "$WORK/$name.refusal" src/compiler/semantic/main_visitor.iyi "$message"; then return 0; fi
+  if port_refusal "$rc" "$WORK/$name.refusal"; then return 1; fi
+  echo "INVALID: $name build exited $rc without a refusal" >&2
+  return 2
+}
+
+# Mutation checks: a mutant compiler is built from the patched tree; a build failure is invalid.
+check_splat_run() {
+  "$IYI" build -o "$WORK_NATIVE/splat-mut-compiler$EXE" "$REPO_NATIVE/src/compiler/tools/compile_native.iyi" > "$WORK/splat-mut.build" 2>&1 || return 2
+  local rc=0
+  splat_run "$WORK_NATIVE/splat-mut-compiler$EXE" splat-mut || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+check_splat_refusal() {
+  "$IYI" build -o "$WORK_NATIVE/splat-refusal-mut-compiler$EXE" "$REPO_NATIVE/src/compiler/tools/compile_native.iyi" > "$WORK/splat-refusal-mut.build" 2>&1 || return 2
+  local rc=0
+  splat_refusal "$WORK_NATIVE/splat-refusal-mut-compiler$EXE" "$1" "$2" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+# The unmutated typed build runs as hosted does, and both refusals use hosted's wording.
+rc=0
+splat_run "$WORK/compiler$EXE" splat-base || rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "FAIL: lowcall_splat_arg does not build and run with hosted's status $SPLAT_STATUS (check $rc)"
+  cat "$WORK/splat-base.compile" "$WORK/splat-base.run" 2>/dev/null
+  exit 1
+fi
+rc=0
+splat_refusal "$WORK/compiler$EXE" sem_arms_splat_union 'splatting a union \(Int32 \| Tuple\(Int32, Int32\)\) is not yet supported' || rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "FAIL: a splat of a union is not refused with hosted's wording (check $rc)"
+  cat "$WORK/sem_arms_splat_union.refusal" 2>/dev/null
+  exit 1
+fi
+rc=0
+splat_refusal "$WORK/compiler$EXE" sem_arms_double_splat_union 'double splatting a union \(Int32 \| NamedTuple\(a: Int32, b: Int32\)\) is not yet supported' || rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "FAIL: a double splat of a union is not refused with hosted's wording (check $rc)"
+  cat "$WORK/sem_arms_double_splat_union.refusal" 2>/dev/null
+  exit 1
+fi
+oracle_result sem_arms_splat_union "$WORK/splat-union-oracle" refuse 'splatting a union (Int32 | Tuple(Int32, Int32)) is not yet supported' || exit $?
+oracle_result sem_arms_double_splat_union "$WORK/splat-double-oracle" refuse 'double splatting a union (Int32 | NamedTuple(a: Int32, b: Int32)) is not yet supported' || exit $?
 status=0
 prove_mutation 'cover requires a matching arm for each combination' "$REPO/src/compiler/semantic/cover.iyi" \
   '        return true if accepted' '        return false if accepted' -- check_arms || status=1
@@ -300,4 +395,18 @@ prove_mutation 'named numeric nodes participate in the autocast pass' "$REPO/src
 prove_mutation 'named autocast selects the differing argument for ambiguity' "$REPO/src/compiler/semantic/main_visitor.iyi" \
   '      if names.size > 1 && NumericAutocast.supports?(named_nodes[i], type_of(named_nodes[i]))' \
   '      if false' -- check_arms || status=1
+prove_mutation 'a splat call is typed as its expansion before its arguments are read' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '    if call_has_splats?(node)' \
+  '    if false && call_has_splats?(node)' -- check_splat_run || status=1
+prove_mutation 'a splat operand that is not a variable is evaluated once, before the call' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        return true unless variable_operand?(operand)' \
+  '        return false unless variable_operand?(operand)' -- check_splat_run || status=1
+prove_mutation 'a splat of a union is refused with hosted wording' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        if operand_type.is_a?(UnionType)
+          refuse(arg, "splatting a union' \
+  '        if false
+          refuse(arg, "splatting a union' -- check_splat_refusal sem_arms_splat_union 'splatting a union \(Int32 \| Tuple\(Int32, Int32\)\) is not yet supported' || status=1
+prove_mutation 'a double splat of a union is refused with hosted wording' "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  '        if arg.is_a?(DoubleSplat)' \
+  '        if false' -- check_splat_refusal sem_arms_double_splat_union 'double splatting a union \(Int32 \| NamedTuple\(a: Int32, b: Int32\)\) is not yet supported' || status=1
 exit "$status"
