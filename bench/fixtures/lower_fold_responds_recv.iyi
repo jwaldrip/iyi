@@ -1,0 +1,35 @@
+# A decided responds_to? whose receiver is a call with an effect. The hosted module runs the receiver before the test folds,
+# so the probe prints p before each branch is taken. Output: pnpo.
+@[Unsafe("calls C putchar to report each value")]
+lib LibC
+  fun putchar(value : Int32) : Int32
+end
+
+class Node
+end
+
+class Sub < Node
+  def hello : Int32
+    1
+  end
+end
+
+class Ledger
+  def self.record(a : Int32, node : Node? = nil) : Nil
+    LibC.putchar(node.nil? ? 110 : 111)
+    nil
+  end
+end
+
+def probe : Sub
+  LibC.putchar(112)
+  Sub.new
+end
+
+def responds(site : Node) : Nil
+  Ledger.record(1, probe.responds_to?(:hello) ? nil : site)
+  Ledger.record(2, probe.responds_to?(:missing) ? nil : site)
+  nil
+end
+
+responds(Sub.new)
