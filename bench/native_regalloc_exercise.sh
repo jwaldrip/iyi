@@ -969,6 +969,84 @@ else
   fail "dead-call crossing MIR fixture"
 fi
 
+# R10 copy renaming: a copy whose source dies where the destination is not live merges; the copy whose source is
+# redefined while the destination is still read stays. The fixture prints the merge count and the moves it leaves.
+check_copy_rename() {
+  local ignored=$1 exe="$WORK/copy-rename-$RANDOM$EXE" out="$WORK/copy-rename.out"
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/copy_rename.iyi")" >"$WORK/copy-rename.log" 2>&1; then
+    cat "$WORK/copy-rename.log"
+    return 2
+  fi
+  if ! "$exe" >"$out" 2>&1; then
+    echo "copy renaming fixture could not run"
+    return 2
+  fi
+  "$PY" - "$out" <<'PY'
+import sys
+from pathlib import Path
+
+lines = Path(sys.argv[1]).read_text().splitlines()
+if not lines or lines[0] != "merged 1":
+    print("copy renaming: expected exactly one merge, got " + (lines[0] if lines else "nothing"))
+    sys.exit(1)
+moves = [line for line in lines if line.startswith("  Mov/64")]
+if len(moves) != 1:
+    print(f"copy renaming: {len(moves)} moves remain, expected only the copy that shares a live range")
+    sys.exit(1)
+print("copy renaming: a copy whose source dies merges; the copy whose source is redefined stays")
+PY
+}
+
+# R10 spilled copies and dead spill stores: a copy between a spilled value and a fixed register is one load or store, a
+# copy into an unread spilled value is dropped, and a store to a slot that no reload reads is removed.
+check_spill_copies() {
+  local ignored=$1 exe="$WORK/spill-copies-$RANDOM$EXE" out="$WORK/spill-copies.out"
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/spill_copies.iyi")" >"$WORK/spill-copies.log" 2>&1; then
+    cat "$WORK/spill-copies.log"
+    return 2
+  fi
+  if ! "$exe" >"$out" 2>&1; then
+    echo "spilled copy fixture could not run"
+    return 2
+  fi
+  "$PY" - "$out" <<'PY'
+import sys
+from pathlib import Path
+
+lines = Path(sys.argv[1]).read_text().splitlines()
+if not lines or lines[0] != "function spilled":
+    print("invalid MIR for the spilled-copy fixture")
+    sys.exit(2)
+if any(line.startswith("  Mov/") for line in lines):
+    print("spilled copies: a copy still goes through a scratch register")
+    sys.exit(1)
+for need in ("  LdrFrame/64 x1, slot0+0", "  StrFrame/64 x0, slot1+0", "  LdrFrame/64 x0, slot1+0"):
+    if need not in lines:
+        print("spilled copies: expected " + need.strip())
+        sys.exit(1)
+stores = [line for line in lines if line.startswith("  StrFrame/")]
+if len(stores) != 2 or any("slot3" in line or "slot4" in line for line in stores):
+    print(f"dead spill stores: {len(stores)} stores remain, expected only the two that are reloaded")
+    sys.exit(1)
+if any(" x2" in line for line in lines):
+    print("spilled copies: the dead copy into an unread value still reaches the dump")
+    sys.exit(1)
+print("spilled copies: each copy to or from a fixed register is one load or store; dead stores are gone")
+PY
+}
+if check_copy_rename "$DRV" >"$WORK/copy_rename.pristine.log" 2>&1; then
+  cat "$WORK/copy_rename.pristine.log"
+else
+  cat "$WORK/copy_rename.pristine.log"
+  fail "copy renaming fixture"
+fi
+if check_spill_copies "$DRV" >"$WORK/spill_copies.pristine.log" 2>&1; then
+  cat "$WORK/spill_copies.pristine.log"
+else
+  cat "$WORK/spill_copies.pristine.log"
+  fail "spilled copy and dead store fixture"
+fi
+
 echo "== 6. mutation proofs"
 prove_mutation "floating ABI: flag typed parameters and call results" \
   src/compiler/native/regalloc_linear.iyi check_typed_abi_fprs \
@@ -1166,6 +1244,18 @@ prove_mutation "crossing: a value live into a block with a boundary counts as cr
   src/compiler/native/regalloc_linear.iyi check_dead_call_crossing \
   '        live << @live_out[b][w]' \
   '        live << (@live_out[b][w] | @live_in[b][w])'
+prove_mutation "copy renaming: a source redefined while the destination is live does not block the merge" \
+  src/compiler/native/regalloc_linear.iyi check_copy_rename \
+  '          conflict[k] = true if op.reg == cand_src[k] && bit?(live, cand_dst[k])' \
+  '          conflict[k] = false if op.reg == cand_src[k] && bit?(live, cand_dst[k])'
+prove_mutation "spilled copy: a copy between a spilled value and a fixed register goes through scratch" \
+  src/compiler/native/regalloc_linear.iyi check_spill_copies \
+  '      if d.kind == OperandKind::Physical && d.reg >= 0 && d.reg < 31 && s.kind == OperandKind::Virtual && spilled_gpr?(fn, s.reg)' \
+  '      if false && d.kind == OperandKind::Physical && d.reg >= 0 && d.reg < 31 && s.kind == OperandKind::Virtual && spilled_gpr?(fn, s.reg)'
+prove_mutation "dead spill stores: a store to a slot that no reload reads is kept" \
+  src/compiler/native/regalloc_linear.iyi check_spill_copies \
+  '  drop_dead_spill_stores(fn)' \
+  '  nil'
 prove_mutation "hoisting: a constant used only as an argument copy is hoisted anyway" \
   src/compiler/native/mir_const.iyi check_mir_constants \
   ' && other_use[inst.defs[0].reg]' \
