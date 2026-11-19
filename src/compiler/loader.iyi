@@ -19,12 +19,15 @@ end
 
 # Resolves module import paths against search paths and relative directories.
 pub class IyiPath
+  # The default search path, relative to the compiler's own location. It is a literal, not a
+  # value read from the build environment: only the compiling package's macros may call `env`
+  # (upstream #189), and this module is imported. `IYI_PATH` overrides it at run time.
   {% if flag?(:win32) %}
     PATH_DELIMITER = ';'
-    CONFIG_PATH = {{ env("IYI_CONFIG_PATH") || "$ORIGIN/../share/iyi/src;$ORIGIN/../src" }}
+    CONFIG_PATH    = "$ORIGIN/../share/iyi/src;$ORIGIN/../src"
   {% else %}
     PATH_DELIMITER = ':'
-    CONFIG_PATH = {{ env("IYI_CONFIG_PATH") || "$ORIGIN/../share/iyi/src:$ORIGIN/../src" }}
+    CONFIG_PATH    = "$ORIGIN/../share/iyi/src:$ORIGIN/../src"
   {% end %}
 
   property entries : Array(String)
