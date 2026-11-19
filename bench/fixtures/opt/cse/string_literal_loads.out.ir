@@ -1,0 +1,21 @@
+; iyi-ir 1
+source_filename = "string_literal_loads"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+@message = external constant [5 x i8]
+declare external void @raise(ptr)
+
+define internal i64 @string_literal_loads(ptr %array, i64 %index) {
+entry:
+  %buffer = load ptr, ptr %array, align 8
+  %slot = getelementptr i64, ptr %buffer, i64 %index
+  %element = load i64, ptr %slot, align 8
+  %sum = add i64 %element, %element
+  %negative = icmp slt i64 %index, 0
+  br i1 %negative, label %raise, label %done
+raise:
+  call void (ptr) @raise(ptr getelementptr ([5 x i8], ptr @message, i64 0, i64 0))
+  unreachable
+done:
+  ret i64 %sum
+}

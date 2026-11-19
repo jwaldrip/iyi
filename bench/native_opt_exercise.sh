@@ -439,6 +439,9 @@ for file in "$FIXTURES/cse/"*.ir; do
   if [ -f "$FIXTURES/cse/$name.out.ir" ]; then fixture_check cse "$name" changed; else fixture_check cse "$name" keep; fi
   fixture_stats cse "$file"
 done
+# R2: precise marking roots and the dead zeroing memset. Two fixtures change, two keep, pinned here by name.
+for name in string_literal_loads memset_dead; do fixture_check cse "$name" changed; done
+for name in marking_flag_kept memset_live; do fixture_check cse "$name" keep; done
 
 echo '== 2b. range proof'
 for file in "$FIXTURES/prove/"*.ir; do
@@ -1045,6 +1048,21 @@ prove_mutation 'M13: opaque accesses cannot be merged' src/compiler/ir/opt/cse.i
   '      if false # mutation CSE-opaque: preserve opaque operations' \
   -- mutation_check M13 cse opaque_keep || fail 'M13 was not caught'
 mutation_result M13
+prove_mutation 'R2a: a constant reaches the flag only through its operands' src/compiler/ir/opt/cse.iyi \
+  '    return false unless constant_node?(value) # mutation R2-root: only a constant that reaches the flag is a root' \
+  '    return true if value.as(Inst).op == Op::ConstExpr # mutation R2-root: only a constant that reaches the flag is a root' \
+  -- mutation_check R2a cse string_literal_loads || fail 'R2a was not caught'
+mutation_result R2a
+prove_mutation 'R2b: an escaping address falls back to every returned value' src/compiler/ir/opt/cse.iyi \
+  '    return unless @escaped # mutation R2-escape: the fallback runs only when the address escapes' \
+  '    return unless false # mutation R2-escape: the fallback runs only when the address escapes' \
+  -- mutation_check R2b cse marking_flag_kept || fail 'R2b was not caught'
+mutation_result R2b
+prove_mutation 'R2c: a read of the zeroed object ends the window' src/compiler/ir/opt/cse.iyi \
+  '    return false if reads_memory?(inst) # mutation R2-read: a read of the zeroed object ends the window' \
+  '    return false if false # mutation R2-read: a read of the zeroed object ends the window' \
+  -- mutation_check R2c cse memset_live || fail 'R2c was not caught'
+mutation_result R2c
 prove_mutation 'M14: a fact belongs only to its own successor' src/compiler/ir/opt/prove.iyi \
   '        truth = @cfg.index(term.targets[0]) == block # mutation M14: opposite successor fact' \
   '        truth = @cfg.index(term.targets[0]) != block # mutation M14: opposite successor fact' \
