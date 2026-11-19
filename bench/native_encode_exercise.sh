@@ -110,6 +110,10 @@ stp x1, x3, [x2, #-16]
 stp w1, w3, [x2, #8]
 stp d1, d3, [x2, #16]
 stp s1, s3, [x2]
+adds x0, x1, x2
+subs x0, x1, x2
+adds w0, w1, w2
+subs w0, w1, w2
 FORMS
 
 echo "== 3. the oracle: every form in one naked function, built by the hosted compiler"
