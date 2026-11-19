@@ -727,6 +727,38 @@ class Counter < Iyi::Visitor
   end
 end
 
+# The location walk, for the gate. The same identity as the port's walk (bench/selfhost_parser_exercise.iyi): a node with no
+# location is named by its dump label and its ordinal among the location-less nodes of that label, and each proc pointer by
+# its ordinal among the proc pointers. A node that has a location does not shift these names.
+class LocationWalk < Iyi::Visitor
+  getter nodes = 0
+  getter lines = [] of String
+  getter ordinals = Hash(String, Int32).new(0)
+  getter pointers = 0
+
+  def visit_any(node) : Bool
+    @nodes += 1
+    if node.location.nil?
+      kind = dump_ast(node).split('\n').first.split(' ').first
+      @ordinals[kind] += 1
+      @lines << "#{kind} #{@ordinals[kind]} without a location"
+    end
+    if node.is_a?(Iyi::ProcPointer)
+      @pointers += 1
+      @lines << "ProcPointer #{@pointers} start #{where(node.location)} end #{where(node.end_location)}"
+    end
+    true
+  end
+
+  def visit(node) : Bool
+    true
+  end
+
+  def where(loc)
+    loc ? "#{loc.line_number}:#{loc.column_number}" : "none"
+  end
+end
+
 if ARGV.size == 2 && ARGV[0] == "--verdicts"
   # One verdict per file in the list: ACCEPT, or REFUSE with the error's line and column and its message.
   File.read_lines(ARGV[1]).each do |path|
@@ -744,6 +776,16 @@ if ARGV.size == 2 && ARGV[0] == "--verdicts"
       puts "REFUSE #{path} #{text}"
     end
   end
+  exit 0
+end
+
+if ARGV.size == 2 && ARGV[0] == "--locations"
+  parser = Iyi::Parser.new(File.read(ARGV[1]))
+  parser.filename = ARGV[1]
+  walk = LocationWalk.new
+  parser.parse.accept(walk)
+  puts "nodes #{walk.nodes}"
+  walk.lines.each { |line| puts line }
   exit 0
 end
 
@@ -766,6 +808,87 @@ CRYSTAL_PATH="$REPO_NATIVE/src" "$HOSTED_COMPILER" build -o "$WORK_NATIVE/dump_h
 
 fixture_count=0
 total_matched_nodes=0
+
+# The location walks of each parity fixture. The port's walk (exercise --locations) and the hosted walk (dump_hosted
+# --locations) name each node with no location by its dump label and its ordinal among those, and each proc pointer by its
+# start and end. The port must not leave unlocated a node that hosted locates. A node the port locates and hosted does not
+# is accepted only where location_allowed names it. Any other difference fails, and so does a named difference that no
+# longer occurs.
+location_allowed() {
+  case "$1" in
+    */expr_ranges_and_tuples.iyi)
+      printf '%s\n' "Nop 3 without a location" "Nop 4 without a location" "Nop 5 without a location" ;;
+    */syntax_macro_keywords_and_escapes.iyi)
+      printf '%s\n' "MacroFor 1 without a location" ;;
+  esac
+}
+loc_fixtures=0; loc_failed=0; loc_port_less=0; loc_hosted_less=0; loc_extra=0; loc_proc=0; loc_nodes=0; loc_hosted_nodes=0
+location_check() {
+  local native="$1" name="$2" nodes_port nodes_hosted port_less hosted_less extra proc
+  if ! "$WORK/exercise-plain$EXE" --locations "$native" > "$WORK/loc_port.out" 2> "$WORK/loc_port.err"; then
+    echo "  $name: port location walk did not run"
+    cat "$WORK/loc_port.err"
+    return 1
+  fi
+  if ! "$WORK/dump_hosted$EXE" --locations "$native" > "$WORK/loc_hosted.out" 2> "$WORK/loc_hosted.err"; then
+    echo "  $name: hosted location walk did not run"
+    cat "$WORK/loc_hosted.err"
+    return 1
+  fi
+  nodes_port=$(sed -n 's/^nodes //p' "$WORK/loc_port.out" || true)
+  nodes_hosted=$(sed -n 's/^nodes //p' "$WORK/loc_hosted.out" || true)
+  loc_nodes=$((loc_nodes + ${nodes_port:-0}))
+  loc_hosted_nodes=$((loc_hosted_nodes + ${nodes_hosted:-0}))
+  LC_ALL=C grep -v '^nodes ' "$WORK/loc_port.out" | LC_ALL=C sort > "$WORK/loc_port.set" || true
+  LC_ALL=C grep -v '^nodes ' "$WORK/loc_hosted.out" | LC_ALL=C sort > "$WORK/loc_hosted.set" || true
+  location_allowed "$name" | LC_ALL=C sort > "$WORK/loc_allowed.set" || true
+  LC_ALL=C comm -23 "$WORK/loc_port.set" "$WORK/loc_hosted.set" > "$WORK/loc_port_only"
+  LC_ALL=C comm -13 "$WORK/loc_port.set" "$WORK/loc_hosted.set" > "$WORK/loc_hosted_only"
+  LC_ALL=C comm -12 "$WORK/loc_allowed.set" "$WORK/loc_hosted_only" > "$WORK/loc_accepted"
+  LC_ALL=C comm -13 "$WORK/loc_allowed.set" "$WORK/loc_hosted_only" > "$WORK/loc_unexpected"
+  LC_ALL=C comm -23 "$WORK/loc_allowed.set" "$WORK/loc_hosted_only" > "$WORK/loc_stale"
+  port_less=$(grep -c 'without a location' "$WORK/loc_port.set" || true)
+  hosted_less=$(grep -c 'without a location' "$WORK/loc_hosted.set" || true)
+  extra=$(grep -c . "$WORK/loc_accepted" || true)
+  proc=$(grep -c '^ProcPointer ' "$WORK/loc_port.set" || true)
+  loc_port_less=$((loc_port_less + port_less))
+  loc_hosted_less=$((loc_hosted_less + hosted_less))
+  loc_extra=$((loc_extra + extra))
+  loc_proc=$((loc_proc + proc))
+  if [ ! -s "$WORK/loc_port_only" ] && [ ! -s "$WORK/loc_unexpected" ] && [ ! -s "$WORK/loc_stale" ]; then
+    return 0
+  fi
+  echo "  $name: LOCATION MISMATCH"
+  if [ -s "$WORK/loc_port_only" ]; then
+    echo "    only the port prints (its location is missing, or its proc pointer differs from hosted):"
+    sed 's/^/      /' "$WORK/loc_port_only"
+  fi
+  if [ -s "$WORK/loc_unexpected" ]; then
+    echo "    only hosted prints, and it is not allowlisted:"
+    sed 's/^/      /' "$WORK/loc_unexpected"
+  fi
+  if [ -s "$WORK/loc_stale" ]; then
+    echo "    allowlisted, but hosted no longer prints it alone:"
+    sed 's/^/      /' "$WORK/loc_stale"
+  fi
+  return 1
+}
+# A mutant of the proc pointer parse must change the walk of its fixture. The walk is rebuilt from the parser as it
+# stands, so the check runs the mutant. It returns non-zero (caught) only when the port's walk differs from hosted.
+check_proc_pointer_locations() {
+  local native="$REPO_NATIVE/bench/fixtures/syntax_proc_pointers.iyi"
+  if ! "$IYI" build -o "$WORK_NATIVE/proc_pointer_walk$EXE" "$REPO_NATIVE/bench/selfhost_parser_exercise.iyi" > "$WORK/pp_build.log" 2>&1; then
+    invalid_mutant "proc pointer location probe did not build"
+    return $?
+  fi
+  if ! "$WORK/proc_pointer_walk$EXE" --locations "$native" > "$WORK/pp_port.out" 2> "$WORK/pp_port.err"; then
+    invalid_mutant "proc pointer location probe did not run"
+    return $?
+  fi
+  LC_ALL=C grep -v '^nodes ' "$WORK/pp_port.out" > "$WORK/pp_port.cmp" || true
+  "$WORK/dump_hosted$EXE" --locations "$native" | LC_ALL=C grep -v '^nodes ' > "$WORK/pp_hosted.cmp" || true
+  cmp -s "$WORK/pp_port.cmp" "$WORK/pp_hosted.cmp"
+}
 
 for fixture in \
   "$REPO"/bench/fixtures/expr_literals.iyi \
@@ -829,10 +952,16 @@ for fixture in \
     echo "  $fixture_name: identical ($nodes_count normalized nodes match hosted frontend)"
     total_matched_nodes=$((total_matched_nodes + nodes_count))
   fi
+  if ! location_check "$fixture_native" "$fixture_name"; then
+    loc_failed=$((loc_failed + 1))
+    status=1
+  fi
+  loc_fixtures=$((loc_fixtures + 1))
   fixture_count=$((fixture_count + 1))
 done
 
 echo "  Parity summary: $((fixture_count - diverged))/$fixture_count syntax fixtures match ($total_matched_nodes total nodes)"
+echo "  Location summary: $((loc_fixtures - loc_failed))/$loc_fixtures fixtures match hosted; location-less nodes: port $loc_port_less, hosted $loc_hosted_less; port-located and hosted-unlocated (allowlisted): $loc_extra; proc pointers: $loc_proc; nodes visited: port $loc_nodes, hosted $loc_hosted_nodes (informational, not compared)"
 
 echo "== Unspaced sign and regex forms after a local, against the hosted parser"
 # Written here, not kept as a fixture: the repository's format check rewrites `x -1` as `x - 1` in every tracked
@@ -2154,6 +2283,14 @@ corpus_hold() {
 prove_mutation "mutation 66: a string-keyed named tuple is refused, found by the whole-corpus check" "$PARSER" \
   '        return parse_named_tuple(location, first_key.value)' \
   '        syntax_error("a named tuple has no string name", @token.location)' -- corpus_hold || status=1
+# Mutations 67 and 68: a proc pointer's start and end locations. Each mutant is checked by the proc pointer fixture's
+# location walk against the hosted walk, rebuilt from the mutated parser.
+prove_mutation "mutation 67: a proc pointer loses its start location" "$PARSER" \
+  'return parse_fun_pointer.at(location) unless @token.keyword == Keyword::DO' \
+  'return parse_fun_pointer unless @token.keyword == Keyword::DO' -- check_proc_pointer_locations || status=1
+prove_mutation "mutation 68: a proc pointer loses its end location" "$PARSER" \
+  'ProcPointer.new(obj, name, types, global_call).at_end(end_location)' \
+  'ProcPointer.new(obj, name, types, global_call)' -- check_proc_pointer_locations || status=1
 
 echo
 echo "== Rebuilding and running restored parser exercise"

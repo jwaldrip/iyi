@@ -886,8 +886,73 @@ module BenchSelfhostParserExercise
   end
 end
 
+# The location walk, for the gate. Each node with no location is named by its kind and its ordinal among the nodes with no
+# location of that kind (its dump label is the first word of its dump line), and each proc pointer by its ordinal among the
+# proc pointers. Nodes that have a location do not shift these names: a traversal that visits a node the other side does
+# not (ClassDef visits its name Path here) would move a pre-order index, so the index is not used. The gate compares this
+# output with the hosted walk of the same file, and the count line is information only.
+class LocationWalk < Visitor
+  getter nodes : Int32
+  getter lines : Array(String)
+  getter kinds : Array(String)
+  getter ordinals : Array(Int32)
+  getter pointers : Int32
+
+  def initialize
+    @nodes = 0
+    @lines = [] of String
+    @kinds = [] of String
+    @ordinals = [] of Int32
+    @pointers = 0
+  end
+
+  # The count of location-less nodes of this kind so far, this one included.
+  def ordinal_of(kind : String) : Int32
+    i = 0
+    while i < @kinds.size
+      if @kinds[i] == kind
+        @ordinals[i] = @ordinals[i] + 1
+        return @ordinals[i]
+      end
+      i = i + 1
+    end
+    @kinds << kind
+    @ordinals << 1
+    1
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    @nodes = @nodes + 1
+    if node.location.nil?
+      kind = BenchSelfhostParserExercise.dump_ast(node).split('\n')[0].split(' ')[0]
+      @lines << "#{kind} #{ordinal_of(kind)} without a location"
+    end
+    if node.is_a?(ProcPointer)
+      @pointers = @pointers + 1
+      @lines << "ProcPointer #{@pointers} start #{where(node.location)} end #{where(node.end_location)}"
+    end
+    true
+  end
+
+  def where(loc : Location?) : String
+    if l = loc
+      "#{l.line_number}:#{l.column_number}"
+    else
+      "none"
+    end
+  end
+end
+
 if Program.args.size == 2 && Program.args[0] == "--verdicts"
   BenchSelfhostParserExercise.verdicts(Program.args[1])
+elsif Program.args.size == 2 && Program.args[0] == "--locations"
+  source = File.read(Program.args[1])
+  parser = Parser.new(source, Program.args[1])
+  node = parser.parse
+  walk = LocationWalk.new
+  node.accept(walk)
+  puts "nodes #{walk.nodes}"
+  walk.lines.each { |line| puts line }
 elsif Program.args.size > 0
   if Program.args[0] == "-e" && Program.args.size > 1
     source = Program.args[1]
