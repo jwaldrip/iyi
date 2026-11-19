@@ -15,6 +15,16 @@ import compiler/native/mir::{MFunction, MInst, Operand, OperandKind, RegClass, R
 import compiler/native/target::{is_role?, terminator?, integer_literal?}
 import compiler/native/regalloc_linear::{block_loop_nest, block_successors, LoopNest}
 
+def flags_of(n : Int32) : Array(Bool)
+  acc = [] of Bool
+  i = 0
+  while i < n
+    acc << false
+    i = i + 1
+  end
+  acc
+end
+
 def ints_of(n : Int32, value : Int32) : Array(Int32)
   acc = [] of Int32
   i = 0
@@ -135,6 +145,18 @@ pub def hoist_constants(fn : MFunction) : Int32
     end
   end
 
+  # A constant whose every use is a copy into a fixed physical register (call argument staging, a return value) is not
+  # hoisted. Before hoisting, its MovImm lands in the register and the copy coalesces into one instruction; hoisted, it
+  # is rebuilt into a scratch register and then copied, two instructions per use.
+  other_use = flags_of(fn.vreg_count)
+  fn.blocks.each do |block|
+    block.insts.each do |inst|
+      copy_to_phys = is_role?(fn.isa, inst, Role::Copy) && inst.defs.size == 1 && inst.defs[0].kind == OperandKind::Physical
+      inst.uses.each do |op|
+        other_use[op.reg] = true if op.kind == OperandKind::Virtual && !copy_to_phys
+      end
+    end
+  end
   # Where each block's constants go: the preheader of the outermost loop around the block that has one, provided that
   # loop's header dominates the block. The chain runs from the innermost loop outward, so the last match is the outermost.
   target = ints_of(n, -1)
@@ -168,7 +190,7 @@ pub def hoist_constants(fn : MFunction) : Int32
     fn.blocks[b].insts.each do |inst|
       if target[b] >= 0 && integer_literal?(fn.isa, inst) && inst.defs.size == 1 && inst.uses.empty? && inst.asm.nil? &&
          inst.defs[0].kind == OperandKind::Virtual && fn.vreg_classes[inst.defs[0].reg] == RegClass::Gpr &&
-         defs[inst.defs[0].reg] == 1
+         defs[inst.defs[0].reg] == 1 && other_use[inst.defs[0].reg]
         v = inst.defs[0].reg
         key = "#{target[b]}:#{inst.imm}:#{fn.vreg_pointer[v]}"
         first = table[key]?
