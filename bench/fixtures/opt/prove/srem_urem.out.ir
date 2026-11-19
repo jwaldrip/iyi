@@ -1,0 +1,21 @@
+; iyi-ir 1
+source_filename = "srem_urem"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i32 @srem_urem(i32 %n) {
+entry:
+  br label %head
+head:
+  %i = phi i32 [ 0, label %entry ], [ %next, label %body ]
+  %sum = phi i32 [ 0, label %entry ], [ %sum2, label %body ]
+  %more = icmp slt i32 %i, %n
+  br i1 %more, label %body, label %done
+body:
+  %0 = urem i32 %i, 7
+  %sum2 = add i32 %sum, %0
+  %next = add i32 %i, 1
+  br label %head
+done:
+  ret i32 %sum
+}
+
