@@ -27,6 +27,7 @@ import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/engine::{MacroEngine}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/methods::{MacroMethods}
+import compiler/foundation/errors::{refuse_port}
 import compiler/lower/program::{TypedProgram, declare_program, assemble_root, type_bodies, lower_program, native_objects, link_program, link_names, refusal_table, lowering_table}
 import compiler/lower/context::{Lowerer}
 
@@ -700,6 +701,30 @@ pub class Compiler
     end
   end
 
+  # A macro `if` that the declarations walk reaches after the semantic pass refused it: its condition did not evaluate,
+  # so neither branch is what the program means. The pass keeps a refused site as written for this walk, which used to
+  # take the else branch, or drop the then branch, with no message. The port refuses by name, at the condition.
+  def self.refuse_macro_if(mif : MacroIf, interp : MacroInterpreter) : NoReturn
+    reason = "skip_file ends the file's expansion early, which the port does not expand"
+    if failure = interp.failure
+      reason = failure.message
+    end
+    where = "an unlocated site"
+    if place = mif.cond.location || mif.location
+      where = "line #{place.line_number}, column #{place.column_number}"
+      unless place.filename.empty?
+        idx = Compiler.last_index_of(place.filename, '/')
+        base = if i = idx
+                 place.filename[i + 1, place.filename.size - i - 1]
+               else
+                 place.filename
+               end
+        where = "#{base}:#{place.line_number}:#{place.column_number}"
+      end
+    end
+    refuse_port("port limitation: the port cannot evaluate the macro if condition at #{where} (#{reason}), so it refuses instead of taking either branch")
+  end
+
   pub def self.extract_declarations(
     node : ASTNode,
     classes : Array(ClassDef),
@@ -757,6 +782,10 @@ pub class Compiler
       mif = node.as(MacroIf)
       interp = MacroInterpreter.new(nil, target_flags, "<Program>", shared_host)
       cond_val = interp.evaluate(mif.cond)
+      # The condition did not evaluate, so neither branch is the program's meaning: refuse by name, at the condition.
+      if interp.halted?
+        Compiler.refuse_macro_if(mif, interp)
+      end
       branch = MacroMethods.truthy?(cond_val) ? mif.then : mif.else
       extract_declarations(branch, classes, funs, defs, libs, top_level, target_flags, shared_host)
     elsif node.is_a?(Alias) || node.is_a?(ImplDef) || node.is_a?(MacroFor) || node.is_a?(MacroExpression)
