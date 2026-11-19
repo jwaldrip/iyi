@@ -14,7 +14,6 @@ import compiler/ir/layout::{DataLayout}
 import compiler/ir/opt/analysis::{Cfg, DomTree, DefUse}
 import compiler/ir/opt/edit::{Editor}
 import compiler/ir/opt/effects::{opaque?, pure?, reads_memory?, writes_memory?, has_side_effects?}
-import compiler/ir/opt/escape::{sizeof_value}
 import compiler/ir/opt/fold::{canonical, int_value}
 
 class CseFrame
@@ -186,6 +185,20 @@ def split_pointer(layout : DataLayout, value : Value) : CseAddress
     end
   end
   CseAddress.new(current, offset, exact)
+end
+
+# The byte count of a memset length: an integer constant, or the sizeof form ptrtoint (gep T, null, 1) read through the
+# data layout, the same size codegen emits for that form. nil for anything else.
+def length_value(layout : DataLayout, value : Value) : Int64?
+  constant = int_value(value)
+  return constant unless constant.nil?
+  return nil unless value.is_a?(Inst)
+  cast = value.as(Inst)
+  return nil unless cast.args.size == 1 && (cast.op == Op::PtrToInt || (cast.op == Op::ConstExpr && cast.aux_int == Op::PtrToInt.value.to_i64))
+  address = split_pointer(layout, cast.args[0])
+  return nil unless address.exact && address.base.type.pointer? && address.base.type.address_space == 0
+  return nil unless address.base.is_a?(Inst) && address.base.as(Inst).op == Op::ConstNull
+  address.offset
 end
 
 # An undef use may choose a new value each time. Do not key operations on it,
@@ -582,7 +595,7 @@ class Cse
     return nil unless inst.op == Op::Intrinsic && inst.aux.is_a?(IntrinsicAux) && inst.args.size == 4
     return nil unless inst.aux.as(IntrinsicAux).id == IntrinsicId::Memset
     return nil unless int_value(inst.args[1]) == 0_i64 && int_value(inst.args[3]) == 0_i64
-    length = sizeof_value(@mod, inst.args[2])
+    length = length_value(@mod.layout, inst.args[2])
     return nil if length.nil?
     count = length.as(Int64)
     return nil if count <= 0_i64 || count > ZEROING_LIMIT
