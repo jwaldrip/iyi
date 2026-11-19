@@ -13,7 +13,7 @@
 #     and write no output.
 # The floor (bench/selfhost_pipeline.floor) records the phase each fixture reaches. A phase may
 # only rise; SELFHOST_PIPELINE_RAISE=1 writes the measured phases. The rows under ROOTS are the
-# prelude programs and the compiler's own tools, measured with --prelude and the iyi prelude on
+# prelude programs, every samples/iyi program, and the compiler's own tools, measured with --prelude and the iyi prelude on
 # IYI_PATH; they are recorded and must not fall.
 #
 # Mutation proofs patch the tool's own code (the typed branch, the program assembly, the tool's
@@ -54,7 +54,29 @@ PROGRAM_SRC="$REPO/src/compiler/lower/program.iyi"
 LOWER_SRC="$REPO/src/compiler/lower/lower.iyi"
 COMPILER_SRC="$REPO/src/compiler/compiler.iyi"
 LOADER_SRC="$REPO/src/compiler/loader.iyi"
-ROOTS="samples/iyi/hello.iyi src/compiler/tools/parse.iyi src/compiler/tools/compile_native.iyi"
+# Every top-level samples/iyi program is a root: CI runs each one (iyi.yml, "Run every sample"), so the gate measures each one too.
+SAMPLE_ROOTS="samples/iyi/basics.iyi samples/iyi/calc.iyi samples/iyi/collections.iyi samples/iyi/config.iyi samples/iyi/cores.iyi samples/iyi/derive.iyi \
+  samples/iyi/enums.iyi samples/iyi/errors.iyi samples/iyi/files.iyi samples/iyi/format.iyi samples/iyi/formatting.iyi samples/iyi/generics.iyi \
+  samples/iyi/grid.iyi samples/iyi/hello.iyi samples/iyi/immutable.iyi samples/iyi/init_order.iyi samples/iyi/inventory.iyi samples/iyi/io.iyi \
+  samples/iyi/modules.iyi samples/iyi/sessions.iyi samples/iyi/shapes.iyi samples/iyi/socket.iyi samples/iyi/std_iterator.iyi samples/iyi/std_text.iyi \
+  samples/iyi/std_time.iyi samples/iyi/visited.iyi samples/iyi/webapp.iyi samples/iyi/workers.iyi"
+ROOTS="$SAMPLE_ROOTS src/compiler/tools/parse.iyi src/compiler/tools/compile_native.iyi"
+printf '%s\n' $ROOTS > "$WORK/roots.list"
+# roots_cover_check LIST: 0 when every samples/iyi/*.iyi is a line of LIST, 1 when one is missing, 2 when none exist.
+roots_cover_check() {
+  local list="$1" f name n=0 missing=0
+  for f in "$REPO"/samples/iyi/*.iyi; do
+    [ -f "$f" ] || continue
+    n=$((n + 1))
+    name="samples/iyi/${f##*/}"
+    if ! grep -qxF "$name" "$list"; then
+      echo "  $name: not a root (add it to ROOTS in bench/selfhost_pipeline_exercise.sh)"
+      missing=$((missing + 1))
+    fi
+  done
+  [ "$n" -gt 0 ] || { echo "  no samples/iyi/*.iyi found"; return 2; }
+  [ "$missing" -eq 0 ]
+}
 
 # The compile_native closure reached 31,025 defs and exceeded 64 GB on 2026-11-15.
 # Keep it on hosts with headroom; smaller CI runners still exercise hello and parse.
@@ -100,6 +122,9 @@ build_tool() {
 
 # A shell status alone cannot distinguish exit 145 from signal 17 or a
 # deliberate exit 124 from timeout. Record the child termination separately.
+# The program gets no stdin and runs in the work directory, so io and calc read nothing, files writes into the
+# work directory rather than the tree, and socket and cores bind loopback ports. CI's sample step runs each sample
+# from the repository root with </dev/null; this gate uses the work directory so the clean tree stays clean.
 run_fixture() {
   local executable="$1" stem="$2" seconds="${RUN_FIXTURE_TIMEOUT:-30}"
   shift 2
@@ -114,8 +139,8 @@ import sys
 executable, stem, seconds = sys.argv[1:4]
 with open(stem + ".out", "wb") as out, open(stem + ".err", "wb") as err:
     try:
-        child = subprocess.Popen([executable] + sys.argv[4:], stdout=out, stderr=err,
-                                 start_new_session=(os.name != "nt"))
+        child = subprocess.Popen([executable] + sys.argv[4:], stdin=subprocess.DEVNULL, stdout=out,
+                                 stderr=err, cwd=os.path.dirname(stem), start_new_session=(os.name != "nt"))
         try:
             rc = child.wait(timeout=float(seconds))
             result = f"exit {rc}" if rc >= 0 else f"signal {-rc}"
@@ -263,6 +288,14 @@ for fixture in $fixtures; do
 done
 echo "  fixtures: $run_equal run-equal of $total, $refused refused with no output, $failed failed"
 
+echo
+echo "== 3a. Every samples/iyi program is a root"
+if roots_cover_check "$WORK/roots.list"; then
+  echo "  every samples/iyi/*.iyi is a root"
+else
+  echo "  FAIL: a samples/iyi program is not measured by this gate"
+  status=1
+fi
 echo
 echo "== 3. The prelude programs and the compiler's own tools: the phase each reaches"
 for root in $ROOTS; do
@@ -596,6 +629,8 @@ done
 
 echo
 echo "== 5. Mutation proofs: the gate must catch each patch"
+prove_mutation "a samples/iyi program is dropped from the gate's roots" "$WORK/roots.list" \
+  "samples/iyi/calc.iyi" "" -- roots_cover_check "$WORK/roots.list" || status=1
 # The check rebuilds the tool from the patched source and requires: one fixture that links and runs equal, a
 # fixture that must exit nonzero and write nothing (the refusal), and the typed build of a program with its
 # top-level code. It returns 0 only on the unmutated behaviour.
