@@ -1,0 +1,320 @@
+module compiler/semantic/share_reach
+
+import compiler/syntax/ast::{ASTNode, Call, ClassVar, Def, LibDef, Macro, Path, ProcLiteral}
+import compiler/syntax/visitor::{Visitor}
+import compiler/foundation/location::{Location}
+import compiler/semantic/top_level::{Const, MetaTypeVar, ModuleType, SemanticProgram, Type}
+import compiler/semantic/main_visitor::{MainVisitor}
+
+# A constant or a class variable a body names, once per state (hosted ShareReach::Named). The key is the
+# state's object identity; the label is how the source spells it, and the use is the expression naming it.
+pub class ReachedState
+  getter key : UInt64
+  getter label : String
+  getter type : Type
+  getter use : String
+  getter const_state : Const?
+  getter class_state : MetaTypeVar?
+
+  def initialize(@key : UInt64, @label : String, @type : Type, @use : String, @const_state : Const?, @class_state : MetaTypeVar?)
+  end
+
+  def constant? : Bool
+    !@const_state.nil?
+  end
+end
+
+# What one body names and calls (hosted ShareReach::Facts): the states it names, the program's own defs it
+# calls, and the std or prelude defs it calls, which the walk passes through for what they call back.
+pub class ReachFacts
+  getter named : Array(ReachedState)
+  getter calls : Array(Def)
+  getter std_calls : Array(Def)
+
+  def initialize(@named : Array(ReachedState), @calls : Array(Def), @std_calls : Array(Def))
+  end
+end
+
+# A state the walk met, and the defs leading to it from the block: the first is one the block calls, the
+# last names the state (hosted ShareReach::Found).
+pub class ReachFound
+  getter named : ReachedState
+  getter path : Array(Def)
+
+  def initialize(@named : ReachedState, @path : Array(Def))
+  end
+end
+
+# The path with one more def at its end, as a new array (the path a walk keeps is never shared).
+def reach_path_with(path : Array(Def), tail : Def) : Array(Def)
+  extended = [] of Def
+  path.each { |step| extended << step }
+  extended << tail
+  extended
+end
+
+# The def as a path names it (hosted ShareReach.called): a top-level def by its name, a class method as
+# `Type.name`, an instance method as `Type#name`.
+pub def reach_called(visitor : MainVisitor, a_def : Def) : String
+  name = a_def.name.split(':')[0]
+  owner = visitor.program.def_owner(a_def)
+  return name if owner.nil? || owner.is_a?(SemanticProgram)
+  short = owner.to_s.split('(')[0].split("::").last.split(".class")[0]
+  if a_def.receiver
+    "#{short}.#{name}"
+  else
+    "#{short}##{name}"
+  end
+end
+
+# The module state a block that crosses threads reaches through the defs it calls (SPEC.md III.4.4): the
+# port of hosted ShareReach (share_reach.cr 127-203, and its Scanner). A def written in std or the prelude is
+# read for its calls alone, and a constant that std declares is std's to keep safe. The walk is breadth first,
+# so a state is reported by the shortest path that reaches it, and each state once. Artifact reaches are not
+# read: the port writes no artifacts, so nothing it reads can name state it does not see.
+pub class ShareReach
+  def initialize(@visitor : MainVisitor)
+    @facts = Hash(UInt64, ReachFacts).new
+    @exits = Hash(UInt64, Array(Def)).new
+    @std_dirs = Hash(String, Bool).new
+  end
+
+  # What the block whose body is *block_def*'s reaches through the defs it calls, each state once. The states
+  # the block names in its own text are left out: the boundary checks ask about those.
+  def reach(block_def : Def, owner : ModuleType?) : Array(ReachFound)
+    start = scan_body(block_def.body, owner, true)
+    seen = Set(UInt64).new
+    start.named.each { |named| seen.add(named.key) }
+    walk(start, seen)
+  end
+
+  # Whether a def's body is std's or the prelude's, from the file it was written in.
+  def std_at?(location : Location?) : Bool
+    if at = location
+      file = at.filename
+      return false if file.empty?
+      return std_dir?(File.dirname(File.expand_path(file)))
+    end
+    false
+  end
+
+  # Whether a directory is std's: it holds `iyi/prelude.iyi`, or an ancestor of it does.
+  def std_dir?(dir : String) : Bool
+    if cached = @std_dirs[dir]?
+      return cached
+    end
+    parent = File.dirname(dir)
+    result = File.file?(File.join(dir, "iyi", "prelude.iyi")) || (parent != dir && std_dir?(parent))
+    @std_dirs[dir] = result
+    result
+  end
+
+  def walks?(a_def : Def) : Bool
+    !std_at?(a_def.location)
+  end
+
+  def walk(start : ReachFacts, seen : Set(UInt64)) : Array(ReachFound)
+    visited = Set(UInt64).new
+    queue_defs = [] of Def
+    queue_paths = [] of Array(Def)
+    enqueue(start, [] of Def, visited, queue_defs, queue_paths)
+    found = [] of ReachFound
+    index = 0
+    while index < queue_defs.size
+      a_def = queue_defs[index]
+      path = queue_paths[index]
+      index += 1
+      facts = facts_of(a_def)
+      facts.named.each do |named|
+        next if seen.includes?(named.key)
+        seen.add(named.key)
+        found << ReachFound.new(named, path)
+      end
+      enqueue(facts, path, visited, queue_defs, queue_paths)
+    end
+    found
+  end
+
+  def enqueue(facts : ReachFacts, path : Array(Def), visited : Set(UInt64), queue_defs : Array(Def), queue_paths : Array(Array(Def))) : Nil
+    facts.calls.each do |target|
+      next if visited.includes?(target.node_id)
+      visited.add(target.node_id)
+      queue_defs << target
+      queue_paths << reach_path_with(path, target)
+    end
+    facts.std_calls.each do |std_def|
+      exits_of(std_def).each do |target|
+        next if visited.includes?(target.node_id)
+        visited.add(target.node_id)
+        queue_defs << target
+        queue_paths << reach_path_with(reach_path_with(path, std_def), target)
+      end
+    end
+  end
+
+  # The program's own defs a std def may call back through std alone (hosted exits_of): an `==` that
+  # `Array#includes?` asks, a `to_s` an interpolation asks. Only std's own state stays std's to keep safe.
+  def exits_of(std_def : Def) : Array(Def)
+    if cached = @exits[std_def.node_id]?
+      return cached
+    end
+    exits = [] of Def
+    added = Set(UInt64).new
+    settled = Set(UInt64).new
+    stack = [std_def] of Def
+    while stack.size > 0
+      current = stack.pop
+      next if settled.includes?(current.node_id)
+      settled.add(current.node_id)
+      facts = facts_of(current)
+      facts.calls.each do |target|
+        next if added.includes?(target.node_id)
+        added.add(target.node_id)
+        exits << target
+      end
+      index = facts.std_calls.size - 1
+      while index >= 0
+        stack << facts.std_calls[index]
+        index -= 1
+      end
+    end
+    @exits[std_def.node_id] = exits
+    exits
+  end
+
+  def facts_of(a_def : Def) : ReachFacts
+    if cached = @facts[a_def.node_id]?
+      return cached
+    end
+    facts = scan_body(a_def.body, @visitor.program.def_owner(a_def), walks?(a_def))
+    @facts[a_def.node_id] = facts
+    facts
+  end
+
+  def scan_body(body : ASTNode, owner : ModuleType?, names : Bool) : ReachFacts
+    scanner = ReachScanner.new(self, @visitor, owner, names)
+    body.accept(scanner)
+    ReachFacts.new(scanner.named, scanner.calls, scanner.std_calls)
+  end
+end
+
+# One body's facts (hosted ShareReach::Scanner): every constant and class variable it names, once each, the
+# program's defs it calls, and the std defs it calls. Expansions are read as the code they became, a proc's
+# body is read (the block may call it), and a nested def is not this body's code.
+class ReachScanner < Visitor
+  getter named : Array(ReachedState)
+  getter calls : Array(Def)
+  getter std_calls : Array(Def)
+
+  def initialize(@reach : ShareReach, @visitor : MainVisitor, @owner : ModuleType?, @names : Bool)
+    @named = [] of ReachedState
+    @calls = [] of Def
+    @std_calls = [] of Def
+    @keys = Set(UInt64).new
+    @defs = Set(UInt64).new
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    if expanded = @visitor.expansions[node]?
+      expanded.accept(self)
+      return false
+    end
+    if node.is_a?(Call)
+      if expanded = node.as(Call).expanded
+        expanded.accept(self)
+        return false
+      end
+    end
+    true
+  end
+
+  def visit(node : Call) : Bool
+    targets = [] of Def
+    if target = @visitor.target_def?(node)
+      targets << target
+    end
+    if dispatch = @visitor.dispatch_targets?(node)
+      dispatch.each { |item| targets << item.definition }
+    end
+    targets.each do |target|
+      next if @defs.includes?(target.node_id)
+      @defs.add(target.node_id)
+      if @reach.walks?(target)
+        @calls << target
+      else
+        @std_calls << target
+      end
+    end
+    if obj = node.obj
+      if obj.is_a?(Path)
+        path = obj.as(Path)
+        if const = @visitor.target_const?(path)
+          if type = @visitor.type_of?(path)
+            note_const(const, path.to_s, type, "#{path}.#{node.name}")
+          end
+        end
+      elsif obj.is_a?(ClassVar)
+        note_class_var(obj.as(ClassVar).name, "#{obj.as(ClassVar).name}.#{node.name}")
+      end
+    end
+    true
+  end
+
+  def visit(node : Path) : Bool
+    if const = @visitor.target_const?(node)
+      if type = @visitor.type_of?(node)
+        note_const(const, node.to_s, type, node.to_s)
+      end
+    end
+    false
+  end
+
+  def visit(node : ClassVar) : Bool
+    note_class_var(node.name, node.name)
+    false
+  end
+
+  def visit(node : ProcLiteral) : Bool
+    node.def.body.accept(self)
+    false
+  end
+
+  def visit(node : Def) : Bool
+    false
+  end
+
+  def visit(node : Macro) : Bool
+    false
+  end
+
+  def visit(node : LibDef) : Bool
+    false
+  end
+
+  # A constant std declares is std's to keep safe, as its defs are (hosted Scanner#note).
+  def note_const(const : Const, label : String, type : Type, use : String) : Nil
+    return unless @names
+    key = const.object_id
+    return if @keys.includes?(key)
+    @keys.add(key)
+    return if @reach.std_at?(const.value.location)
+    @named << ReachedState.new(key, label, type, use, const, nil)
+  end
+
+  # A class variable a body names is one cell every thread that reaches it shares. Thread-local ones are every
+  # thread's own, and a variable with no type is not yet typed.
+  def note_class_var(name : String, use : String) : Nil
+    return unless @names
+    owner = @owner
+    return if owner.nil?
+    if cvar = owner.lookup_class_var?(name)
+      return if cvar.thread_local
+      key = cvar.object_id
+      return if @keys.includes?(key)
+      @keys.add(key)
+      if type = cvar.var_type
+        @named << ReachedState.new(key, name, type, use, nil, cvar)
+      end
+    end
+  end
+end

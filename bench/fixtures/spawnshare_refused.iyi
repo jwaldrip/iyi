@@ -1,0 +1,9 @@
+module bench/spawnshare_refused
+
+# The planner's h4 shape: a `unit: :new` block captures a proc, which hosted refuses by name.
+handler = ->(x : Int32) { x + 1 }
+
+group do |g|
+  g.spawn(unit: :new) { handler.call(3) } # hosted: refused; site: handler
+  nil
+end

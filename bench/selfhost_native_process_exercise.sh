@@ -243,13 +243,13 @@ check_cast_mutation() {
   if ! run_monitored "$IYI" build -o "$WORK/mutant-typed$EXE" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mutant.build" 2>&1; then
     echo 'INVALID: mutant typed compiler did not build'; cat "$WORK/mutant.build"; return 2
   fi
-  local rc=0 site
+  local rc=0
   run_monitored "$WORK/mutant-typed$EXE" "$probe" -o "$WORK/mutant-probe.ir" --pipeline typed --prelude --emit ir \
     >"$WORK/mutant.out" 2>"$WORK/mutant.err" || rc=$?
-  site="$(grep -n 'g\.spawn.*\.as(String | Cancelled)' "$REPO/src/std/process.iyi" | cut -d: -f1)"
-  if [ -n "$site" ] &&
-     expected_refusal "$rc" "$WORK/mutant.err" src/compiler/lower/pending.iyi "^lower: visit\\(spawn classification of .*std/process\\.iyi:${site}:[0-9]+ is not ported \\(hosted cleanup_transformer\\.cr classify_spawn\\)\\) \\(hosted codegen\\.cr\\) is not ported yet$"; then
-    echo 'decisive: mutant compiler refused the exact cast spawn'
+  # Without the cast's operand the process spawn captures nothing it can see, so the port judges it parallel, and the
+  # pool that it reaches is refused by name. The unmutated compile keeps that spawn as written and builds.
+  if expected_refusal "$rc" "$WORK/mutant.err" src/compiler/lower/pending.iyi "^lower: visit\\(loop back-edge preemption checks are not ported \\(hosted iyi_preempt_on\\?\\)\\) \\(hosted codegen\\.cr\\) is not ported yet$"; then
+    echo 'decisive: mutant judged the process spawn parallel and refused the pool it reaches'
     return 1
   fi
   if [ "$rc" -eq 0 ] && [ -s "$WORK/mutant-probe.ir" ]; then return 0; fi
