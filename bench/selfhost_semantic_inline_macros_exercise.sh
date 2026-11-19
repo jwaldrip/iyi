@@ -593,6 +593,50 @@ prove_mutation "a refused has_constant? answers false, taking the else branch" "
   -- check_hc_import_after || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# A refused top-level loop or expression stops the compile at its position (the walk's splice in inline_macros.iyi).
+# Without that, the declarations pass drops the site and the program builds without its output. The check runs the
+# driver on each fixture and requires that refusal: it returns 0 while both are refused, 1 when one is dropped, and 2
+# when the driver cannot be built or run.
+check_top_drop_refused() {
+  local probe="$WORK/mut_drop$EXE" fixture rc refusal
+  if ! "$IYI" build -o "$WORK_NATIVE/mut_drop$EXE" "$REPO_NATIVE/bench/selfhost_semantic_inline_macros_exercise.iyi" > "$WORK/mut_drop.build" 2>&1; then
+    echo "INVALID MUTATION: inline driver build failed"
+    cat "$WORK/mut_drop.build"
+    return 2
+  fi
+  for fixture in for expression; do
+    rc=0
+    "$probe" "$REPO_NATIVE/bench/fixtures/refuse_top/$fixture.iyi" > "$WORK/mut_drop.txt" 2> "$WORK/mut_drop.err" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      echo "decisive: refuse_top/$fixture.iyi was built without its site (dropped without a message)"
+      return 1
+    fi
+    refusal=$(awk 'NR == 1 { print; exit }' "$WORK/mut_drop.err")
+    case "$refusal" in
+      "Error: port limitation: the port cannot expand the macro "*" at $fixture.iyi:"*) ;;
+      *)
+        echo "INVALID OBSERVATION: refuse_top/$fixture.iyi exited $rc with: $refusal"
+        return 2
+        ;;
+    esac
+  done
+  return 0
+}
+rc_drop=0
+check_top_drop_refused || rc_drop=$?
+if [ "$rc_drop" -eq 0 ]; then
+  echo "  a refused top-level loop or expression stops the compile at its position"
+else
+  echo "  FAIL: a refused top-level loop or expression is not refused by name (check exit $rc_drop)"
+  status=1
+fi
+
+prove_mutation "a refused top-level loop or expression is dropped without a message" "$MUT_INL" \
+  "refuse_port(macro_site_refusal(n, reason))" \
+  "nil" \
+  -- check_top_drop_refused || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo
 echo "== 8. Pipeline reach: each root through the pipeline tool with the prelude, against bench/selfhost_inline_reach.floor"
 REACH_FLOOR="$REPO/bench/selfhost_inline_reach.floor"

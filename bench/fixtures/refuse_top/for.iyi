@@ -1,0 +1,4 @@
+{% for n in @top_level.constants %}
+puts "x {{n}}"
+{% end %}
+puts "after"

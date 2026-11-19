@@ -8,6 +8,7 @@ import compiler/macros/engine::{MacroEngine}
 import compiler/macros/interpreter::{MacroFailure, MacroFreeBinding}
 import compiler/macros/type_facts::{MacroTypeFacts}
 import compiler/foundation/location::{Location}
+import compiler/foundation/errors::{refuse_port}
 
 # One inline macro site the declarations pass visited: the file it is written in,
 # its kind and place, and why the engine refused it (nil when it expanded, an empty
@@ -210,6 +211,14 @@ pub def splice_inline_sites(nodes : Array(ASTNode), scope_name : String, filenam
       if last.reason.nil?
         out << n if keep_empty
       else
+        # A walk-time loop or expression the port refuses is kept for the declarations pass, which drops those kinds
+        # without a message (compiler.iyi extract_declarations). The walk refuses it here, at the site's position. A
+        # walk-time `if` stays recorded: the declarations pass refuses it, and the gates count the refusals.
+        if !path_lookup.nil? && (n.is_a?(MacroFor) || n.is_a?(MacroExpression))
+          if reason = last.reason
+            refuse_port(macro_site_refusal(n, reason))
+          end
+        end
         out << n
       end
       next
