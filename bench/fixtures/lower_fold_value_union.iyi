@@ -1,0 +1,53 @@
+# Decided conditions whose if joins a value type. Int32 | Nil and a union of two structs are passed by value, so their join
+# is an address. A literal, an is_a? on a call result and an unless each take one branch and must hand the consumer that
+# address. Output: niniPTP.
+@[Unsafe("calls C putchar to report each value")]
+lib LibC
+  fun putchar(value : Int32) : Int32
+end
+
+struct Pair
+  @value : Int32
+
+  def initialize(value : Int32)
+    @value = value
+  end
+end
+
+struct Trio
+  @first : Int32
+  @second : Int32
+
+  def initialize(first : Int32, second : Int32)
+    @first = first
+    @second = second
+  end
+end
+
+def show(value : (Int32 | Nil)) : Nil
+  LibC.putchar(value.nil? ? 110 : 105)
+  nil
+end
+
+def show_pair(value : (Pair | Trio)) : Nil
+  LibC.putchar(value.is_a?(Pair) ? 80 : 84)
+  nil
+end
+
+def make_nil : Nil
+  nil
+end
+
+show(true ? nil : 1)
+show(false ? nil : 1)
+show(make_nil.is_a?(Nil) ? nil : 2)
+typed : (Int32 | Nil) = true ? 3 : nil
+show(typed)
+show_pair(true ? Pair.new(7) : Trio.new(8, 9))
+show_pair(false ? Pair.new(7) : Trio.new(8, 9))
+chosen = unless true
+  Trio.new(4, 5)
+else
+  Pair.new(6)
+end
+show_pair(chosen)

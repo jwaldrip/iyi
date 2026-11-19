@@ -482,6 +482,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # on the unmutated behaviour.
 CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_while_true lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union lower_trait lower_nilable_reference_union_assign lower_union_consumers lower_union_block_jumps"
 CORE_CHECK_FIXTURES="$CORE_CHECK_FIXTURES lower_trait_assoc lower_negated_is_a"
+CORE_CHECK_FIXTURES="$CORE_CHECK_FIXTURES lower_fold_nil_slot lower_fold_nil_arg lower_fold_literal_nil lower_fold_value_union lower_fold_nil_cond"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -1904,6 +1905,48 @@ if definition_probe_refusals "$WORK/compile_native$EXE"; then
 else
   echo "FAIL: uncalled invalid definitions did not reach their named refusals"
   status=1
+fi
+
+echo "== Folded branches leave the if's merged type"
+fold_ready=1
+for n in lower_fold_nil_slot lower_fold_nil_arg lower_fold_literal_nil lower_fold_value_union lower_fold_nil_cond; do
+  if ! awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); exit !(a[2] == b[2] && b[2] > 0) }' "$WORK/$n.port.out" 2>/dev/null; then
+    echo "  FAIL: $n is not identical to the hosted module, so the folded-branch proofs cannot run"
+    fold_ready=0
+    status=1
+  fi
+done
+if [ "$fold_ready" -eq 1 ]; then
+  prove_mutation "a folded branch leaves its own value, not the if's merged type" "$REPO/src/compiler/lower/lower.iyi" \
+    'low.last = branch_result(low, branch, merged_t, union_join)' 'low.last = low.last' -- lower_core_check || status=1
+  prove_mutation "a folded union join is not moved into a temporary of the if's type" "$REPO/src/compiler/lower/lower.iyi" \
+    '    return union_temp(low, m, bt.as(Type), value)' '    return value' -- lower_core_check || status=1
+  prove_mutation "a folded join by value is not upcast to the if's type" "$REPO/src/compiler/lower/lower.iyi" \
+    '      return upcast(low, low.last.as(Value), bt.as(Type), m)' '      return low.last.as(Value)' -- lower_core_check || status=1
+  prove_mutation "a literal condition's taken branch skips the join" "$REPO/src/compiler/lower/lower.iyi" \
+    '    if taken
+      codegen_folded_branch(low, node, then_node)' '    if taken
+      codegen_node(low, then_node)' -- lower_core_check || status=1
+  prove_mutation "a decided type test's taken branch skips the join" "$REPO/src/compiler/lower/lower.iyi" \
+    '      if taken
+        codegen_folded_branch(low, node, then_node)' '      if taken
+        codegen_node(low, then_node)' -- lower_core_check || status=1
+  prove_mutation "a settled condition's else branch skips the join" "$REPO/src/compiler/lower/lower.iyi" \
+    '    if settled.as(Bool)
+      codegen_folded_branch(low, node, then_node)
+    else
+      codegen_folded_branch(low, node, else_node)' '    if settled.as(Bool)
+      codegen_folded_branch(low, node, then_node)
+    else
+      codegen_node(low, else_node)' -- lower_core_check || status=1
+  prove_mutation "a Nil-typed condition's else branch skips the join" "$REPO/src/compiler/lower/lower.iyi" \
+    '    codegen_node(low, cond_node)
+    codegen_folded_branch(low, node, else_node)' '    codegen_node(low, cond_node)
+    codegen_node(low, else_node)' -- lower_core_check || status=1
+  prove_mutation "a responds_to? fold's taken branch skips the join" "$REPO/src/compiler/lower/lower.iyi" \
+    '    if responds_to_value(low, cond_node.as(RespondsTo))
+      codegen_folded_branch(low, node, then_node)' '    if responds_to_value(low, cond_node.as(RespondsTo))
+      codegen_node(low, then_node)' -- lower_core_check || status=1
 fi
 
 for invalid in "$WORK/m.invalid" "$WORK/nil-flow.invalid" "$WORK/union-read.invalid"; do

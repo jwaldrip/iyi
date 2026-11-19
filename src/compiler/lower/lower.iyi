@@ -1267,17 +1267,17 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     # taken is lowered, with its value as the value.
     taken = cond_node.is_a?(BoolLiteral) && cond_node.as(BoolLiteral).value
     if taken
-      codegen_node(low, then_node)
+      codegen_folded_branch(low, node, then_node)
     else
-      codegen_node(low, else_node)
+      codegen_folded_branch(low, node, else_node)
     end
     return
   end
   if cond_node.is_a?(RespondsTo)
     if responds_to_value(low, cond_node.as(RespondsTo))
-      codegen_node(low, then_node)
+      codegen_folded_branch(low, node, then_node)
     else
-      codegen_node(low, else_node)
+      codegen_folded_branch(low, node, else_node)
     end
     return
   end
@@ -1302,9 +1302,9 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
       end
       taken = negated ? !decided.as(Bool) : decided.as(Bool)
       if taken
-        codegen_node(low, then_node)
+        codegen_folded_branch(low, node, then_node)
       else
-        codegen_node(low, else_node)
+        codegen_folded_branch(low, node, else_node)
       end
       return
     end
@@ -1321,9 +1321,9 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     low.needs_value = wants
     return if block_ended?(low)
     if settled.as(Bool)
-      codegen_node(low, then_node)
+      codegen_folded_branch(low, node, then_node)
     else
-      codegen_node(low, else_node)
+      codegen_folded_branch(low, node, else_node)
     end
     return
   end
@@ -1331,7 +1331,7 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
   wants = low.needs_value
   if nil_condition?(low, cond_node)
     codegen_node(low, cond_node)
-    codegen_node(low, else_node)
+    codegen_folded_branch(low, node, else_node)
     return
   end
   blocks = low.new_blocks(["then", "else"])
@@ -1348,13 +1348,8 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
   merged_t : Type? = nil
   union_join = false
   if wants
-    merged = low.analysed.type_of?(node)
-    raise "BUG: the analysed program has no type for a branch (hosted codegen.cr: visit(If))" if merged.nil?
-    merged_t = merged.as(Type)
+    merged_t = if_join_type(low, node)
     union_join = joins_by_pointer?(merged_t.as(Type))
-    if union_join && low.typer.passed_indirectly?(merged_t.as(Type))
-      pending_visit_node("a join of an indirectly passed #{merged_t.as(Type).full_name} (hosted copy_value)")
-    end
     if union_join
       merge_type = low.module.types.ptr(0)
     else
@@ -1373,6 +1368,35 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
 
   # By-value joins stay address-valued until a consumer needs the aggregate.
   phi.close(low)
+end
+
+# A folded if, unless, && or || lowers only the branch taken (its condition emits no branch). The value it leaves is the if's
+# merged type, converted the way branch_value converts each branch of the general path. The hosted cleanup replaces the decided
+# if by its branch and the consumer converts that value (cleanup_transformer.cr:208-240,444-476); the port keeps the if, so the
+# conversion happens here. Without it a Nil branch of a Sub | Nil if reaches a nilable reference slot as a %Nil value.
+pub def codegen_folded_branch(low : Lowerer, node : ASTNode, branch : ASTNode) : Nil
+  wants = low.needs_value
+  merged_t : Type? = nil
+  union_join = false
+  if wants
+    merged_t = if_join_type(low, node)
+    union_join = joins_by_pointer?(merged_t.as(Type))
+  end
+  codegen_node(low, branch)
+  return unless wants
+  low.last = branch_result(low, branch, merged_t, union_join)
+end
+
+# The type an if's value merges into (hosted codegen.cr: visit(If)): the analysed type of the node. A by-value join of an
+# indirectly passed type is refused by name (hosted copy_value).
+pub def if_join_type(low : Lowerer, node : ASTNode) : Type
+  merged = low.analysed.type_of?(node)
+  raise "BUG: the analysed program has no type for a branch (hosted codegen.cr: visit(If))" if merged.nil?
+  merged_t = merged.as(Type)
+  if joins_by_pointer?(merged_t) && low.typer.passed_indirectly?(merged_t)
+    pending_visit_node("a join of an indirectly passed #{merged_t.full_name} (hosted copy_value)")
+  end
+  merged_t
 end
 
 # Whether the analysed types decide a type test: true when the object's type is what the test narrows it to,
@@ -1438,9 +1462,10 @@ pub def joins_by_pointer?(t : Type) : Bool
   passed_by_value?(t)
 end
 
-# One branch's value into the join. A union value already held by pointer passes through when
-# its type matches; a real upcast or an SSA aggregate needs a temporary before the pointer phi.
-pub def branch_value(low : Lowerer, phi : LowerPhi, branch : ASTNode, merged : Type?, union_join : Bool, last : Bool) : Nil
+# One branch's value as its join takes it (hosted phi.cr: add). A union join takes a pointer to the value: a pointer already
+# of the merged type passes through, and any other value goes into a temporary of the merged type. A join by value takes a
+# changed type through upcast. Otherwise the value is the branch's own. A branch that ended has nothing to convert.
+pub def branch_result(low : Lowerer, branch : ASTNode, merged : Type?, union_join : Bool) : Value?
   if union_join && !at_terminator?(low) && !low.last.nil?
     bt = low.analysed.type_of?(branch)
     if bt.nil?
@@ -1449,22 +1474,23 @@ pub def branch_value(low : Lowerer, phi : LowerPhi, branch : ASTNode, merged : T
     m = merged.as(Type)
     value = low.last.as(Value)
     if value.type.pointer? && TypeIndirection.remove_indirection(bt.as(Type)) == TypeIndirection.remove_indirection(m)
-      phi.add(low, value, last)
-      return
+      return value
     end
-    ptr = union_temp(low, m, bt.as(Type), value)
-    phi.add(low, ptr, last)
-    return
+    return union_temp(low, m, bt.as(Type), value)
   end
-  if phi.needs_value && !union_join && !merged.nil? && !at_terminator?(low) && !low.last.nil?
+  if !union_join && !merged.nil? && !at_terminator?(low) && !low.last.nil?
     bt = low.analysed.type_of?(branch)
     m = merged.as(Type)
     if !bt.nil? && bt.as(Type).full_name != m.full_name
-      phi.add(low, upcast(low, low.last.as(Value), bt.as(Type), m), last)
-      return
+      return upcast(low, low.last.as(Value), bt.as(Type), m)
     end
   end
-  phi.add(low, low.last, last)
+  low.last
+end
+
+# One branch's value into the join of a general if.
+pub def branch_value(low : Lowerer, phi : LowerPhi, branch : ASTNode, merged : Type?, union_join : Bool, last : Bool) : Nil
+  phi.add(low, branch_result(low, branch, merged, union_join), last)
 end
 
 # The hosted `visit(Not)`: the condition's value, inverted with an `xor` against true.

@@ -1,0 +1,28 @@
+# A nil? test on a Nil-typed parameter folds the if to its nil branch. The value is Sub | Nil, a nilable reference, so
+# the slot must hold a null pointer: the call reads nil back. The String instance folds to the site instead. Output: no.
+@[Unsafe("calls C putchar to report each value")]
+lib LibC
+  fun putchar(value : Int32) : Int32
+end
+
+class Node
+end
+
+class Sub < Node
+end
+
+class Ledger
+  def self.record(a : Int32, node : Node? = nil) : Nil
+    LibC.putchar(node.nil? ? 110 : 111)
+    nil
+  end
+end
+
+def expand(site : Node, lookup : String? = nil) : Nil
+  v = lookup.nil? ? nil : site
+  Ledger.record(1, v)
+  nil
+end
+
+expand(Sub.new)
+expand(Sub.new, "x")
