@@ -327,6 +327,10 @@ case_checks() {
   done
   case_refused_with "$driver" lowcallcase_refused_union 'case is not exhaustive.' 'Missing types:' || return 1
   case_refused_with "$driver" lowcallcase_refused_enum 'case is not exhaustive for enum Level.' 'Missing members:' || return 1
+  if grep -Fq -- ' - Debug' "$WORK/lowcallcase_refused_enum.refused.err"; then
+    echo "  lowcallcase_refused_enum: the refusal lists Debug as missing, but Debug has a branch"
+    return 1
+  fi
   case_refused_with "$driver" lowcallcase_refused_flags 'exhaustive case over a @[Flags] enum is not ported' || return 1
   case_refused_with "$driver" lowcallcase_refused_bool 'exhaustive case over Bool is not ported' || return 1
   case_refused_with "$driver" lowcallcase_refused_tuple 'exhaustive case over a tuple is not ported' || return 1
