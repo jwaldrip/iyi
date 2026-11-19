@@ -1,0 +1,5 @@
+# `doubled` is typed in `semdecl/macro_user`, where `double` is imported. This file does not import
+# `semdecl/macro_lib`, so the body must be typed against its own unit's imports. Hosted prints 8.
+import semdecl/macro_user::*
+
+puts doubled(4)

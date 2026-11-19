@@ -1,0 +1,6 @@
+module semdecl/macro_lib
+
+# A pub macro, called from a def body in another unit (`semdecl/macro_user`), which imports it.
+pub macro double(value)
+  ({{ value }}) * 2
+end

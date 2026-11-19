@@ -1,0 +1,7 @@
+# Two glob imports export the same def name (`tally`). The file never calls it, so nothing is refused: an
+# ambiguity is an error at the point of use, not at the import (SPEC II.3, hosted call.cr:546).
+import semdecl/tally_a::*
+import semdecl/tally_b::*
+
+class Sample
+end

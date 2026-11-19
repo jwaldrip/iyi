@@ -29,7 +29,7 @@ end
 #
 # Not ported, and refused by name where they can be written: `typeof` (it needs
 # typed bodies), `_`, a constant size of StaticArray, the import wall
-# (`iyi_check_import_reach`), `using` modules, private types, and a type
+# (`iyi_check_import_reach`), private types, and a type
 # parameter solved through an inherited generic. Walking the parents of a
 # generic instance is not ported either: the parents searched are the
 # parents of the scope's own type, as the simplified lookup does. The gate's
@@ -120,6 +120,7 @@ pub class TypeLookup
       if found = curr
         curr = program.imported_over_shell(found, name)
       else
+        program.check_import_ambiguity(name, "type", path.location)
         curr = program.current_imports[name]?
       end
       if curr.nil?

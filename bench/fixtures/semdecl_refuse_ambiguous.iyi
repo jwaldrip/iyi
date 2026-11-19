@@ -1,0 +1,7 @@
+# Both imports export a type named `Crate`, and this file uses it as a superclass: the use is refused, with the
+# hosted wording (SPEC II.3). The imports themselves are not an error.
+import semdecl/box::*
+import semdecl/other::*
+
+class Wrapper < Crate
+end

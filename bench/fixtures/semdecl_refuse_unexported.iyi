@@ -1,0 +1,7 @@
+# A name a module does not mark `pub` is not exported, so the glob does not bring it in, and a use of it is
+# refused by name. The use is a superclass, which the declaration pass resolves strictly. The refusal must
+# match the hosted build's (SPEC R-2, R-2b).
+import semdecl/box::*
+
+class Wrapper < Secret
+end

@@ -1,0 +1,5 @@
+# The selective form names a pub macro like a type or a def: `import a/b::{name}` brings the macro in. The macro
+# declares a def, so this fixture is checked for acceptance only, as `semdecl_glob_macro.iyi` is.
+import semdecl/shapes::{answer_def}
+
+answer_def

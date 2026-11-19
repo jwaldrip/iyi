@@ -1,0 +1,9 @@
+module semdecl/shapes
+
+# A pub macro reached through `::*` or through the selective form `::{answer_def}`. It declares a def
+# in the file that calls it, so the declarations of that file include it.
+pub macro answer_def
+  def answer : Int32
+    42
+  end
+end

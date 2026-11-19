@@ -1,0 +1,11 @@
+# Two glob imports export a type named `Crate` and the file never uses it. Hosted accepts this file when
+# its module header makes the imports module-level (checked with both compilers while this fixture was
+# written). The headerless form is refused by hosted at the declaration of `Crate` in `semdecl/box`; that
+# divergence is reported, not gated.
+module main
+
+import semdecl/box::*
+import semdecl/other::*
+
+class Sample
+end

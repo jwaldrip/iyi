@@ -1,0 +1,7 @@
+module semdecl/notes_a
+
+pub macro note
+  def note_a : Int32
+    1
+  end
+end

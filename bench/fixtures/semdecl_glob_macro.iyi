@@ -1,0 +1,7 @@
+# A pub macro reached through `::*` is called here. The macro declares a def, which the port attributes to
+# this file and hosted attributes to the macro's own file, so this fixture is checked for acceptance only
+# (bench/selfhost_semantic_declarations_exercise.sh), not for dump parity. The ambiguous-macro refusal
+# fixture is the one that proves the macro import is recorded and consulted.
+import semdecl/shapes::*
+
+answer_def

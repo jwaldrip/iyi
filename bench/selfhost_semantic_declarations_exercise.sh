@@ -18,7 +18,9 @@
 #
 # Verifies:
 #   1. The oracle and the port's driver build.
-#   2. Every bench/fixtures/semdecl_*.iyi is dumped byte-identical by both sides.
+#   2. Every bench/fixtures/semdecl_*.iyi is dumped byte-identical by both sides, except the refusal fixtures
+#      (semdecl_refuse_*) and the accept-only ones (semdecl_glob_macro, semdecl_selective_macro). Those must be
+#      refused, or accepted, by both sides as hosted does (6b). The glob fixtures are also measured in the floor.
 #   3-5. Corpora burn-down: the port's own source (src/compiler), the prelude
 #        (src/iyi), std (src/std) and the samples (samples/iyi). Each file's
 #        agreeing-record count is checked against the committed floor
@@ -98,6 +100,9 @@ fixture_count=0
 fixture_bad=0
 total_matched=0
 for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi "$REPO"/bench/fixtures/semdecl_*/*.iyi "$REPO"/bench/fixtures/semdecl_*/*/*.iyi; do
+  case "$(basename "$fixture")" in
+    semdecl_refuse_*|semdecl_glob_macro.iyi|semdecl_selective_macro.iyi) continue ;;
+  esac
   rel="${fixture#$REPO/}"
   fixture_count=$((fixture_count + 1))
   # The typed fixtures (semdecl_ivar_typed_*) are declared with the type system installed: the
@@ -331,6 +336,7 @@ else
   for f in "$REPO"/src/iyi/*.iyi; do measure prelude "${f#$REPO/}"; done
   for f in "$REPO"/src/std/*.iyi; do measure std "${f#$REPO/}"; done
   for f in "$REPO"/samples/iyi/*.iyi; do measure samples "${f#$REPO/}"; done
+  for name in semdecl_glob_import semdecl_glob_unused_ambiguous; do measure fixtures "bench/fixtures/$name.iyi"; done
 fi
 echo "  $(wc -l < "$RESULTS" | tr -d ' ') files measured"
 
@@ -521,6 +527,9 @@ check_decl_fixtures_diverge() {
   DECL_DIED=""
   "$IYI" build -o "$(native_path "$probe")" "$REPO_NATIVE/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || { echo "INVALID MUTANT: declaration driver did not build"; cat "$WORK/mut_build.log"; return 0; }
   for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi "$REPO"/bench/fixtures/semdecl_*/*.iyi "$REPO"/bench/fixtures/semdecl_*/*/*.iyi; do
+    case "$(basename "$fixture")" in
+      semdecl_refuse_*|semdecl_glob_macro.iyi|semdecl_selective_macro.iyi) continue ;;
+    esac
     rel="${fixture#$REPO/}"
     oracle_mode=""
     port_mode=""
@@ -537,6 +546,44 @@ check_decl_fixtures_diverge() {
   rc=$?
   _decl_outcome "the prelude chain" "$WORK/mut_co.txt" "$rc" "$WORK/mut_cp.txt" "$WORK/mut_cp.err" "$@" || return 1
   [ -z "$DECL_DIED" ] || echo "INVALID MUTANT: no input told the mutant apart, and it died on $DECL_DIED"
+  return 0
+}
+
+# The refusal fixtures (semdecl_refuse_*.iyi) and the accept-only fixtures named here are the cases a dump cannot
+# express. A refusal fixture must be refused by the oracle and by the port with the same error. Hosted prints `ERROR: `
+# where the port prints `Error: `, so the text after that prefix is what is compared. An accept-only fixture must be
+# accepted by both. It is not compared dump for dump: hosted attributes a def a macro declares to the file the macro is
+# written in, and the port to the file that calls it. A driver path given as the argument is used as it is (the normal
+# run); without one the check builds the driver from this tree, as a mutation proof needs. Returns 1 when a fixture is
+# not refused or accepted as hosted does, and 0 when all of them agree.
+check_fixture_outcomes() {
+  local probe="${1:-}" fixture rel name rc_o rc_p first_o first_p
+  if [ -z "$probe" ]; then
+    probe="$WORK/outcome_port$EXE"
+    "$IYI" build -o "$(native_path "$probe")" "$REPO_NATIVE/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/outcome_build.log" 2>&1 || { echo "INVALID MUTANT: declaration driver did not build"; cat "$WORK/outcome_build.log"; return 0; }
+  fi
+  for fixture in "$REPO"/bench/fixtures/semdecl_refuse_*.iyi; do
+    rel="${fixture#$REPO/}"
+    "$ORACLE" "$REPO_NATIVE/$rel" > "$WORK/outcome_o.txt" 2> "$WORK/outcome_oe.txt"; rc_o=$?
+    "$probe" "$REPO_NATIVE/$rel" > "$WORK/outcome_p.txt" 2> "$WORK/outcome_pe.txt"; rc_p=$?
+    first_o=$(sed -n 's/^ERROR: //p' "$WORK/outcome_oe.txt" | head -n 1)
+    first_p=$(sed -n 's/^Error: //p' "$WORK/outcome_pe.txt" | head -n 1)
+    if [ "$rc_o" = 0 ] || [ -z "$first_o" ]; then
+      echo "INVALID MUTANT: the oracle does not refuse $rel"; return 0
+    fi
+    if [ "$rc_p" = 0 ] || [ "$first_p" != "$first_o" ]; then
+      echo "  $rel: the port does not refuse it as hosted does (port status $rc_p: '$first_p'; hosted: '$first_o')"
+      return 1
+    fi
+  done
+  for name in semdecl_glob_macro.iyi semdecl_selective_macro.iyi; do
+    rel="bench/fixtures/$name"
+    "$ORACLE" "$REPO_NATIVE/$rel" > "$WORK/outcome_o.txt" 2>/dev/null || { echo "INVALID MUTANT: the oracle does not accept $rel"; return 0; }
+    if ! "$probe" "$REPO_NATIVE/$rel" > "$WORK/outcome_p.txt" 2> "$WORK/outcome_pe.txt"; then
+      echo "  $rel: the port refuses it: $(head -n 1 "$WORK/outcome_pe.txt")"
+      return 1
+    fi
+  done
   return 0
 }
 
@@ -685,6 +732,13 @@ check_reresolve_diverge() {
   cmp -s "$WORK/mut_rro.txt" "$WORK/mut_rrp.txt" || return 1
   return 0
 }
+
+echo "== 6b. Refusal and accept-only fixtures: the oracle and the port agree on each"
+if check_fixture_outcomes "$PORT"; then
+  echo "  each refusal fixture is refused as hosted refuses it, and each accept-only fixture is accepted"
+else
+  fixture_bad=$((fixture_bad + 1)); status=1
+fi
 
 echo
 echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
@@ -1077,6 +1131,43 @@ prove_mutation "a generic alias loses its instantiated arguments" "$MUT_SEM" \
   '      if @value.is_a?(Generic)' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a glob import brings in no names" "$MUT_SEM" \
+  '        import_glob(um)' \
+  '        nil' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a glob import brings in a type that is not exported" "$MUT_SEM" \
+  '      import_type(name, found, unit) unless found.private?' \
+  '      import_type(name, found, unit)' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a name two imports bring in as different types is never refused" "$MUT_SEM" \
+  'refuse_ambiguous_import(name, kind, found.unit, source.unit, location)' \
+  'found.unit' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a macro call no scope answers is never looked up in the file's imports" "$MUT_SEM" \
+  '    @program.lookup_import_macro?(call)' \
+  '    nil' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a macro two imports export is answered without a refusal" "$MUT_SEM" \
+  '              if other.object_id != mod.object_id' \
+  '              if false' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "the selective form refuses a macro name" "$MUT_SEM" \
+  '      import_macros(name, unit)
+      return nil' \
+  '    refuse_port("a macro name is refused")' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
 

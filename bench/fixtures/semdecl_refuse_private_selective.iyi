@@ -1,0 +1,6 @@
+# A selective import names a declared name the module does not mark `pub`: `Secret` is declared in
+# `semdecl/box` without `pub`, so the import refuses it with hosted's `does not export` wording (SPEC R-2b).
+import semdecl/box::{Secret}
+
+class Wrapper
+end

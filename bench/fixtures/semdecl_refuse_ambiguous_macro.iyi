@@ -1,0 +1,6 @@
+# Both imports export a macro called `note`, and this file calls it: the call is refused with the hosted
+# wording, naming both modules (SPEC II.3, call.cr:1209).
+import semdecl/notes_a::*
+import semdecl/notes_b::*
+
+note

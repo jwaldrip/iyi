@@ -1,0 +1,9 @@
+module semdecl/macro_user
+
+import semdecl/macro_lib::*
+
+# The body calls `double`, which only this unit imports. A file that imports `doubled` must still
+# type this body in this unit's scope (hosted call.cr lookup_using_macro).
+pub def doubled(n : Int32) : Int32
+  double(n)
+end
