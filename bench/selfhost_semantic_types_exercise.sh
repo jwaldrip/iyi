@@ -297,6 +297,7 @@ prove_mutation "private types reached by a later path item are found" "$REPO/src
   "        return nil if !include_private && item.private?" \
   "        return nil if false" \
   -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "unbound? true for any argument of a generic instance" "$REPO/src/compiler/types/types.iyi" \
   "      return true if unbound?(types[i])" \
@@ -320,7 +321,6 @@ prove_mutation "an alias is not followed by remove_indirection" "$REPO/src/compi
   "    return remove_indirection(type.as(AliasType).process_value)" \
   "    return type" \
   -- check_type_queries_diverge || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "generic instances do not take the modules of their generic type" "$REPO/src/compiler/types/instances.iyi" \
