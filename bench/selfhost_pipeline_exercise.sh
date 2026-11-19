@@ -1088,6 +1088,45 @@ else
   status=1
 fi
 
+# bare-name checks begin
+# A bare require resolves through IYI_PATH only, as hosted does. The refused fixture has a file beside it and none on the
+# path, so it is refused at its require. The both fixture has a file beside it and one on the path, so the path's file loads.
+loader_driver_run_with_path() {
+  local fixture="$1" tag="$2" path="$3"
+  LOADER_RC=0
+  build_tool "$REPO/bench/selfhost_loader_if_exercise.iyi" "$WORK/loader_if_drv" || return 2
+  IYI_PATH="$path" "$WORK/loader_if_drv$EXE" "$REPO_NATIVE/bench/fixtures/$fixture" > "$WORK/$tag.loader.out" 2> "$WORK/$tag.loader.err" || LOADER_RC=$?
+}
+loader_bare_refused_check() {
+  loader_driver_run_with_path bare_beside/main.iyi bare_refused "$REPO_NATIVE/bench/fixtures/bare_nolib" || return 2
+  if [ "$LOADER_RC" -eq 0 ]; then return 1; fi
+  if [ "$LOADER_RC" -ne 1 ]; then return 2; fi
+  if ! grep -q '^Error: port limitation' "$WORK/bare_refused.loader.err"; then return 1; fi
+  grep -Fxq "Error: port limitation: can't find file 'bare_beside_name' for the require at main.iyi:1 (a bare require resolves through IYI_PATH only, as hosted does)" "$WORK/bare_refused.loader.err"
+}
+loader_bare_both_check() {
+  loader_driver_run_with_path bare_both/main.iyi bare_both "$REPO_NATIVE/bench/fixtures/bare_lib" || return 2
+  if [ "$LOADER_RC" -ne 0 ]; then return 1; fi
+  awk '/bare_lib\/bare_both_name\.iyi$/ { lib = 1 } /bare_both\/bare_both_name\.iyi$/ { beside = 1 } END { exit !(lib && !beside) }' "$WORK/bare_both.loader.out"
+}
+loader_bare_checks() { loader_bare_refused_check && loader_bare_both_check; }
+echo "  a bare require resolves through IYI_PATH only, as hosted does:"
+if loader_bare_checks; then
+  echo "    unmutated: pass"
+  prove_mutation "a bare require also searches the requiring file's directory" "$LOADER_SRC" \
+    'resolved = bare ? @iyi_path.find(name, nil, nil)' \
+    'resolved = bare ? @iyi_path.find(name, relative_dir, nil)' \
+    -- loader_bare_checks || status=1
+  prove_mutation "a bare require that IYI_PATH does not hold is not refused" "$LOADER_SRC" \
+    'if bare && resolved.nil?' \
+    'if false && resolved.nil?' \
+    -- loader_bare_checks || status=1
+else
+  echo "    unmutated: FAIL (the bare-name checks cannot prove anything)"
+  status=1
+fi
+# bare-name checks end
+
 # The same entry must run the selected branch through declarations, lowering and the linker.
 pipeline_loader_if_check() {
   local rc=0

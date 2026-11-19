@@ -348,12 +348,12 @@ pub class Loader
       into << path
       user_imports << path
     elsif node.is_a?(Require)
-      into << node.as(Require).string
+      into << Loader.require_entry(node.as(Require).string)
     elsif node.is_a?(Call)
       call_node = node.as(Call)
       if call_node.name == "require" && call_node.args.size == 1
         if call_node.args[0].is_a?(StringLiteral)
-          into << call_node.args[0].as(StringLiteral).value
+          into << Loader.require_entry(call_node.args[0].as(StringLiteral).value)
         end
       end
     elsif node.is_a?(MacroIf) || node.is_a?(MacroFor) || node.is_a?(MacroExpression)
@@ -380,7 +380,7 @@ pub class Loader
         trimmed = line.strip
         if trimmed.starts_with?("require \"") && trimmed.ends_with?("\"") && trimmed.size > 10
           req_path = trimmed[9, trimmed.size - 10]
-          into << req_path
+          into << Loader.require_entry(req_path)
         end
       end
     elsif node.is_a?(Expressions)
@@ -456,7 +456,16 @@ pub class Loader
     relative_dir = Loader.dirname(clean_fn)
 
     import_paths.each do |mod_path|
-      resolved = @iyi_path.find(mod_path, relative_dir, @header_root)
+      # A bare require is found through IYI_PATH only, as hosted does (require_entry). Its mark is the `!`.
+      bare = mod_path.starts_with?("!")
+      name = mod_path
+      if bare
+        name = mod_path[1, mod_path.size - 1]
+      end
+      resolved = bare ? @iyi_path.find(name, nil, nil) : @iyi_path.find(mod_path, relative_dir, @header_root)
+      if bare && resolved.nil?
+        refuse_port("port limitation: can't find file '#{name}' for the require at #{Loader.basename(clean_fn)}:#{Loader.require_line(source, name)} (a bare require resolves through IYI_PATH only, as hosted does)")
+      end
       unless res_fn = resolved
         STDERR.puts "Error: can't find module '#{mod_path}'. A module's path is its file's path, so this one is `#{mod_path}.iyi`, resolved from the directory of the file being built and then from `IYI_PATH`"
         LibC.exit(1)
@@ -496,6 +505,30 @@ pub class Loader
     else
       "."
     end
+  end
+
+  # A bare require resolves through IYI_PATH only, as hosted does (crystal_path resolution), so it is marked with `!`. A
+  # dotted name stays as written, relative to the requiring file.
+  def self.require_entry(name : String) : String
+    if name.starts_with?(".")
+      name
+    else
+      "!#{name}"
+    end
+  end
+
+  # The 1-based line of the first `require "name"` in a source text, or 0. The port's Require node carries no location, so a
+  # refusal finds the line in the text.
+  def self.require_line(source : String, name : String) : Int32
+    lines = source.split('\n')
+    i = 0
+    while i < lines.size
+      if lines[i].strip.starts_with?("require \"#{name}\"")
+        return i + 1
+      end
+      i = i + 1
+    end
+    0
   end
 
   def self.basename(path : String) : String
