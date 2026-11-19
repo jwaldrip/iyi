@@ -1,0 +1,79 @@
+; iyi-ir 1
+source_filename = "recursive_outside"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i64 @shl(i64 %x, i64 %n) {
+entry:
+  %neg = icmp slt i64 %n, 0
+  br i1 %neg, label %down, label %up
+down:
+  %m = sub i64 0, %n
+  %r = call i64 (i64, i64) @shr(i64 %x, i64 %m)
+  ret i64 %r
+up:
+  %v = shl i64 %x, %n
+  ret i64 %v
+}
+define internal i64 @shr(i64 %x, i64 %n) {
+entry:
+  %neg = icmp slt i64 %n, 0
+  br i1 %neg, label %down, label %up
+down:
+  %m = sub i64 0, %n
+  %r = call i64 (i64, i64) @shl(i64 %x, i64 %m)
+  ret i64 %r
+up:
+  %v = ashr i64 %x, %n
+  ret i64 %v
+}
+define external i64 @outside(i64 %x) {
+entry:
+  %a = call i64 (i64, i64) @shl(i64 %x, i64 3)
+  %b = call i64 (i64, i64) @shr(i64 %x, i64 -2)
+  %c = add i64 %a, %b
+  ret i64 %c
+}
+define external i64 @pad(i64 %x) {
+entry:
+  %p0 = add i64 %x, 1
+  %p1 = add i64 %p0, 2
+  %p2 = add i64 %p1, 3
+  %p3 = add i64 %p2, 4
+  %p4 = add i64 %p3, 5
+  %p5 = add i64 %p4, 6
+  %p6 = add i64 %p5, 7
+  %p7 = add i64 %p6, 8
+  %p8 = add i64 %p7, 9
+  %p9 = add i64 %p8, 10
+  %p10 = add i64 %p9, 11
+  %p11 = add i64 %p10, 12
+  %p12 = add i64 %p11, 13
+  %p13 = add i64 %p12, 14
+  %p14 = add i64 %p13, 15
+  %p15 = add i64 %p14, 16
+  %p16 = add i64 %p15, 17
+  %p17 = add i64 %p16, 18
+  %p18 = add i64 %p17, 19
+  %p19 = add i64 %p18, 20
+  %p20 = add i64 %p19, 21
+  %p21 = add i64 %p20, 22
+  %p22 = add i64 %p21, 23
+  %p23 = add i64 %p22, 24
+  %p24 = add i64 %p23, 25
+  %p25 = add i64 %p24, 26
+  %p26 = add i64 %p25, 27
+  %p27 = add i64 %p26, 28
+  %p28 = add i64 %p27, 29
+  %p29 = add i64 %p28, 30
+  %p30 = add i64 %p29, 31
+  %p31 = add i64 %p30, 32
+  %p32 = add i64 %p31, 33
+  %p33 = add i64 %p32, 34
+  %p34 = add i64 %p33, 35
+  %p35 = add i64 %p34, 36
+  %p36 = add i64 %p35, 37
+  %p37 = add i64 %p36, 38
+  %p38 = add i64 %p37, 39
+  %p39 = add i64 %p38, 40
+  ret i64 %p39
+}

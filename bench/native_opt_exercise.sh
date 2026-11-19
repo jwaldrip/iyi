@@ -306,7 +306,38 @@ for name in keep_store keep_call keep_volatile_load keep_marking_load_used keep_
 for name in fields mixed_union single_union memset memcpy whole; do fixture_check sroa "$name" changed; done
 for name in escaping dynamic volatile volatile_memset; do fixture_check sroa "$name" keep; done
 for name in leaf_two returns bottom_up top_level runtime_marking; do fixture_check inline "$name" changed; done
-for name in guards tls_keep always_runtime_keep; do fixture_check inline "$name" keep; done
+for name in tls_keep always_runtime_keep; do fixture_check inline "$name" keep; done
+fixture_check release budget_cold_init changed inline
+fixture_check inline cold_edge_scc changed
+fixture_check inline cold_site changed
+# A recursive callee is copied once per run, so a second run may copy it again: these check the golden and
+# determinism, not idempotence. guards keeps its other refusals; only its recursive callee is copied now (R1 part 3).
+unroll_fixture_check() {
+  local pass="$1" name="$2" folder="$3" file expected
+  file="$FIXTURES/$folder/$name.ir"
+  expected="$FIXTURES/$folder/$name.out.ir"
+  if [ ! -f "$file" ] || [ ! -f "$expected" ]; then fail "missing unrolled fixture $folder/$name"; return; fi
+  if ! "$DRV" print "$(native_path "$expected")" >"$WORK/unroll-expected.ir" 2>"$WORK/unroll.err"; then
+    fail "cannot parse golden $folder/$name"; cat "$WORK/unroll.err" >&2; return
+  fi
+  if ! "$DRV" run --verify-each "$pass" "$(native_path "$file")" >"$WORK/unroll-actual.ir" 2>"$WORK/unroll.err"; then
+    fail "$pass/$name failed to run or verify"; cat "$WORK/unroll.err" >&2; return
+  fi
+  if ! cmp -s "$WORK/unroll-expected.ir" "$WORK/unroll-actual.ir"; then
+    fail "$pass/$name differs from its golden"
+    diff -u "$WORK/unroll-expected.ir" "$WORK/unroll-actual.ir" >&2 || true
+    return
+  fi
+  if ! "$DRV" run --verify-each "$pass" "$(native_path "$file")" >"$WORK/unroll-again.ir" 2>"$WORK/unroll.err"; then
+    fail "$pass/$name determinism run failed"; cat "$WORK/unroll.err" >&2; return
+  fi
+  if ! cmp -s "$WORK/unroll-actual.ir" "$WORK/unroll-again.ir"; then
+    fail "$pass/$name is nondeterministic"; return
+  fi
+  echo "  ok: $pass/$name"
+}
+unroll_fixture_check inline recursive_outside inline
+unroll_fixture_check inline guards inline
 fixture_check deadfn roots changed
 fixture_check deadfn global_keep keep
 fixture_check deadfn asm_keep keep
@@ -1090,6 +1121,31 @@ prove_mutation 'S6P3: count earlier dispatch starts' src/compiler/ir/opt/inline.
   '        return true if length + 1 > 5 # mutation S6P3: earlier chain starts also count' \
   -- generated_mutation_check S6P3 inline dispatch5 || fail 'S6P3 was not caught'
 mutation_result S6P3
+prove_mutation 'R1S: a function is charged its net size change' src/compiler/ir/opt/pipeline.iyi \
+  '            inline_budget.settle(start_used, start_size, fn)' \
+  '            nil' \
+  -- mutation_check R1S release budget_cold_init inline || fail 'R1S was not caught'
+mutation_result R1S
+prove_mutation 'R1A: no inlining between members of one group' src/compiler/ir/opt/inline.iyi \
+  '  return false if callee == fn || graph.same_component?(fn, callee)' \
+  '  return false if callee == fn # mutation R1A: members of one group inline each other' \
+  -- mutation_check R1A inline recursive_outside || fail 'R1A was not caught'
+mutation_result R1A
+prove_mutation 'R1C: a raise-path call adds no call-graph edge' src/compiler/ir/opt/callgraph.iyi \
+  '              @edges[k] << to unless is_cold' \
+  '              @edges[k] << to # mutation R1C: raise-path calls form groups' \
+  -- mutation_check R1C inline cold_edge_scc || fail 'R1C was not caught'
+mutation_result R1C
+prove_mutation 'R1K: no inlining into a raise path' src/compiler/ir/opt/inline.iyi \
+  '        next if owner_index < cold.size && cold[owner_index] && !source_mandated?(callee, site)' \
+  '        next if false # mutation R1K: raise paths take inlined copies' \
+  -- mutation_check R1K inline cold_site || fail 'R1K was not caught'
+mutation_result R1K
+prove_mutation 'R1R: a recursive callee is copied in round 0 only' src/compiler/ir/opt/inline.iyi \
+  '  return false if budget.round > 0 && graph.recursive?(callee)' \
+  '  return false if false # mutation R1R: recursive callees are copied in round 1 too' \
+  -- mutation_check R1R inline recursive_outside || fail 'R1R was not caught'
+mutation_result R1R
 prove_mutation 'S9B2: early barrier never removes a heap destination' src/compiler/ir/opt/barrier.iyi \
   '    return stack if stack_only # mutation S9B2: early pass must not remove a heap barrier' \
   '    return true if stack_only # mutation S9B2: early pass must not remove a heap barrier' \
