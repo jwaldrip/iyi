@@ -18,6 +18,14 @@ pub class MacroMethods
     nil
   end
 
+  # Refuses `has_constant?` on a type whose names the port does not know. The
+  # message names the type. Answering false for a name it does not know would
+  # be a guess.
+  def self.refuse_has_constant(tn : TypeNode) : ASTNode?
+    refuse("macro method 'TypeNode#has_constant?' is refused: the names of #{tn.name} are not known to the macro engine")
+    nil
+  end
+
   def self.take_error : String?
     err = @@method_error
     @@method_error = nil
@@ -420,6 +428,12 @@ pub class MacroMethods
           facts.constants.each_key { |name| names << MacroId.new(name) }
           return ArrayLiteral.new(names)
         end
+        # Hosted methods.cr:2238-2241 and 2557-2559: `type.types.has_key?(name)`.
+        # The program's names answer it when they are known (names_known). A class
+        # answers it from its constants, as before.
+        if facts.names_known && method == "has_constant?" && args.size == 1
+          return BoolLiteral.new(facts.names.includes?(to_macro_id(args[0])))
+        end
         if facts.constants_known && method == "has_constant?" && args.size == 1
           return BoolLiteral.new(facts.constants.has_key?(to_macro_id(args[0])))
         end
@@ -436,6 +450,12 @@ pub class MacroMethods
           end
           return ArrayLiteral.new(variables)
         end
+      end
+
+      # A `has_constant?` that no fact above answers is refused by name: the port
+      # does not know these names, and answering false would be a guess.
+      if method == "has_constant?" && args.size == 1
+        return refuse_has_constant(tn)
       end
       # `name(generic_args:)` changes only a generic type's name. The scan never
       # answers a generic type from its name (MacroSiteRef.generic), so the name

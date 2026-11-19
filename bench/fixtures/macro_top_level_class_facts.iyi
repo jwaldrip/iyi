@@ -1,0 +1,7 @@
+# fact: Red 3
+# top-level: GateTopLevelName
+macro class_names
+  {{ @type.has_constant?("Red") }}|{{ @top_level.has_constant?("GateTopLevelName") }}|{{ @top_level.has_constant?("Red") }}
+end
+
+class_names

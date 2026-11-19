@@ -52,6 +52,10 @@ pub class MacroInterpreter
   property skipped : Bool
   property free_bindings : Hash(String, MacroFreeBinding)
   property type_facts : MacroTypeFacts? = nil
+  # The program's facts, which `@top_level` carries: its names, when a caller
+  # supplied them. Nil when none did, and then `has_constant?` on `@top_level`
+  # is refused by name.
+  property program_facts : MacroTypeFacts? = nil
   @path_lookup : Proc(Path, ASTNode?)?
   property host_flags : Array(String)? = nil
 
@@ -517,6 +521,15 @@ pub class MacroInterpreter
     nil
   end
 
+  # The hosted `@top_level` (interpreter.cr:739-740): the program's TypeNode,
+  # carrying the program's facts. Its names answer `has_constant?` only when a
+  # caller supplied them.
+  def program_top_level_node : ASTNode
+    node = TypeNode.new("<Program>")
+    node.facts = @program_facts
+    node
+  end
+
   def evaluate(node : ASTNode) : ASTNode
     return @last if halted?
 
@@ -590,7 +603,7 @@ pub class MacroInterpreter
         return type_node
       end
       if iv.name == "@top_level"
-        return MacroId.new("<Program>")
+        return program_top_level_node
       end
       if iv.name == "@def"
         return NilLiteral.new

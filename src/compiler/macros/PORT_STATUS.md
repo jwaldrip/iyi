@@ -247,9 +247,16 @@ Annotation and Macro accessors (`args`, `name`, `type`, `var`, `exp`,
 
 ## Divergences the port keeps
 
-- A method the port does not define returns its receiver without an error. The
-  hosted compiler raises `undefined macro method 'Class#name'`. No fixture reaches
-  this path.
+- A method the port does not define is refused, never answered with its receiver.
+  The port says `undefined macro method 'Class#name'` when the hosted compiler does
+  not answer that name on that receiver, and `macro method 'Class#name' is not
+  ported` when it does (`interpreter.iyi:664, 693`). No fixture reaches the second
+  message. The `has_constant?` refusal of an unknown name is reached by
+  `macro_top_level_names_unknown.iyi`.
+- `has_constant?` on `@top_level` answers only from the program's names that a caller
+  supplied: the `program` argument of the engine's entry points, with `names_known`.
+  Without them it is refused by name, with `is refused`, and nothing answers false
+  for a name it does not know.
 - `verbatim` keeps the body's raw text. The hosted compiler re-prints the body from
   its parse, so `{{i}}` comes out as `{{ i }}`. Fixtures use the spelling that
   re-prints unchanged.

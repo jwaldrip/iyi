@@ -90,8 +90,11 @@ pub class MacroEngine
   # Expands one call of a macro and reports each top-level site with the text
   # it expanded to. The sites share one interpreter, so variables and fresh
   # names carry from one site to the next, as they do within one expansion.
-  def report(a_macro : Macro, call : Call) : MacroReport
+  # `program` is the program's names, which `@top_level` answers `has_constant?`
+  # from. Nil when no caller supplies them.
+  def report(a_macro : Macro, call : Call, program : MacroTypeFacts? = nil) : MacroReport
     interp = MacroInterpreter.new(call.block, flags, "<Program>", host_flags_now)
+    interp.program_facts = program
     interp.bind_args(a_macro, call)
 
     body = a_macro.body
@@ -132,9 +135,12 @@ pub class MacroEngine
   # variables of the def the site is written in (hosted macros.cr 143-147:
   # expand_macro(node, scope, path_lookup, free_vars, a_def)). None at the top
   # level and in a type body.
-  def site_report(site : ASTNode, scope_name : String = "<Program>", bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil, path_lookup : Proc(Path, ASTNode?)? = nil) : MacroReport
+  # `program` is the program's names, which `@top_level` answers `has_constant?`
+  # from; nil when no caller supplies them.
+  def site_report(site : ASTNode, scope_name : String = "<Program>", bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil, path_lookup : Proc(Path, ASTNode?)? = nil, program : MacroTypeFacts? = nil) : MacroReport
     interp = MacroInterpreter.new(nil, flags, scope_name, host_flags_now, path_lookup)
     interp.type_facts = facts
+    interp.program_facts = program
     if bound = bindings
       interp.bind_free_vars(bound)
     end
@@ -163,8 +169,8 @@ pub class MacroEngine
   # are in scope for what the macro writes there (a `getter table : TypeTable` in a file that imports
   # TypeTable). Parsed with no file name, they were in no file, and a def among them was typed with no
   # imports at all.
-  def expand(a_macro : Macro, call : Call, normalizer : NormalizerProgram) : ASTNode
-    expanded = expand_or_failure(a_macro, call, normalizer)
+  def expand(a_macro : Macro, call : Call, normalizer : NormalizerProgram, program : MacroTypeFacts? = nil) : ASTNode
+    expanded = expand_or_failure(a_macro, call, normalizer, program)
     if expanded.is_a?(MacroFailure)
       raise expanded.message
     end
@@ -173,9 +179,9 @@ pub class MacroEngine
 
   # The expansion, or the failure that stopped it: a macro that raises, or one that calls a macro method this
   # engine does not port. A caller that can refuse the call where it is written answers with this.
-  def expand_or_failure(a_macro : Macro, call : Call, normalizer : NormalizerProgram) : ASTNode | MacroFailure
+  def expand_or_failure(a_macro : Macro, call : Call, normalizer : NormalizerProgram, program : MacroTypeFacts? = nil) : ASTNode | MacroFailure
     use_host_flags(normalizer.host_flags)
-    rep = report(a_macro, call)
+    rep = report(a_macro, call, program)
     if f = rep.failure
       return f
     end

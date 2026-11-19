@@ -1,0 +1,7 @@
+# free: T type Int32
+# top-level: GateTopLevelName
+macro def_names
+  {{T}}|{{ @top_level.has_constant?("GateTopLevelName") }}|{{ @top_level.has_constant?("GateMissingName") }}
+end
+
+def_names
