@@ -1,0 +1,15 @@
+; iyi-ir 1
+source_filename = "nsw_keep"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i32 @nsw_keep(i32 %x, i32 %y) {
+entry:
+  %pair = intrinsic llvm.sadd.with.overflow.i32(i32 %x, i32 %y)
+  %v = extractvalue { i32, i1 } %pair, 0
+  %f = extractvalue { i32, i1 } %pair, 1
+  br i1 %f, label %bad, label %ok
+ok:
+  ret i32 %v
+bad:
+  ret i32 0
+}

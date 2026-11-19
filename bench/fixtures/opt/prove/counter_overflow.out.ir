@@ -6,13 +6,13 @@ define internal void @counter_overflow(i32 %n, ptr %negative_out) {
 entry:
   br label %head
 head:
-  %i = phi i32 [ 0, label %entry ], [ %next, label %latch ]
+  %i = phi i32 [ 0, label %entry ], [ %0, label %latch ]
   %more = icmp slt i32 %i, %n
   br i1 %more, label %body, label %done
 body:
   store i1 false, ptr %negative_out, align 1
   %pair = intrinsic llvm.sadd.with.overflow.i32(i32 %i, i32 1)
-  %next = extractvalue { i32, i1 } %pair, 0
+  %0 = add nsw i32 %i, 1
   %expected = intrinsic llvm.expect.i1(i1 false, i1 false)
   br i1 %expected, label %failed, label %latch
 failed:
@@ -22,3 +22,4 @@ latch:
 done:
   ret void
 }
+

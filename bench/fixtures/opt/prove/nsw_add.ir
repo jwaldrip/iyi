@@ -1,0 +1,36 @@
+; iyi-ir 1
+source_filename = "nsw_add"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i32 @nsw_add(i32 %x) {
+entry:
+  %s = and i32 %x, 7
+  br label %head
+head:
+  %i = phi i32 [ %s, label %entry ], [ %next, label %ok ]
+  %more = icmp slt i32 %i, 10
+  br i1 %more, label %body, label %done
+body:
+  %pair = intrinsic llvm.sadd.with.overflow.i32(i32 %i, i32 1)
+  %f = extractvalue { i32, i1 } %pair, 1
+  br i1 %f, label %bad, label %ok
+ok:
+  %next = extractvalue { i32, i1 } %pair, 0
+  br label %head
+bad:
+  ret i32 -1
+done:
+  ret i32 %i
+}
+define internal i32 @nuw_add(i32 %x) {
+entry:
+  %s = and i32 %x, 7
+  %pair = intrinsic llvm.uadd.with.overflow.i32(i32 %s, i32 1)
+  %f = extractvalue { i32, i1 } %pair, 1
+  br i1 %f, label %bad, label %ok
+ok:
+  %v = extractvalue { i32, i1 } %pair, 0
+  ret i32 %v
+bad:
+  ret i32 0
+}
