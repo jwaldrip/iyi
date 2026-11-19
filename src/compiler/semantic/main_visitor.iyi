@@ -1528,8 +1528,12 @@ pub class MainVisitor < TypeNodeHost
     zero_arg = all_defs.find { |d| d.args.empty? || (d.args.first.default_value != nil) }
     if zero_arg
       call = Call.new(nil, node.name).at(node)
-      @call_target_defs[call] = zero_arg
-      if ret_type = type_method_body(zero_arg, rec_type, [] of ASTNode, nil, node)
+      instantiated_def : Def
+      # A copy is instantiated, as the call paths below do, so the declaration keeps its own type.
+      instantiated_def = zero_arg.clone
+      @program.copy_def_owner(zero_arg, instantiated_def)
+      @call_target_defs[call] = instantiated_def
+      if ret_type = type_method_body(instantiated_def, rec_type, [] of ASTNode, nil, node)
         set_type(node, ret_type)
       end
       return false

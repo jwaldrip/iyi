@@ -1,0 +1,25 @@
+# Typed parity fixture, the prelude-dependent proof in bench/selfhost_typed_parity_exercise.sh
+# (section 8b). The oracle loads the prelude and the port analyses this file alone, so the
+# argument `@fd.to_u64` (a prelude method) is untyped for the port. The local `handle` then stays
+# untyped across the `if`, and its later read must instantiate a copy of the zero-argument def
+# `handle`. The declaration keeps its own type: hosted types it Nil.
+@[Unsafe("the probe keeps a raw pointer that the compiler does not check")]
+class StreamProbe
+  def initialize(@fd : Int64, flag : Bool)
+    handle = Pointer(Void).new(@fd.to_u64)
+    if flag
+      other = 1_i64
+    end
+    value = handle
+  end
+
+  def self.new(fd : Int64) : StreamProbe
+    new(fd, true)
+  end
+
+  def handle : Int64
+    @fd
+  end
+end
+
+probe = StreamProbe.new(1_i64)

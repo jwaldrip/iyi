@@ -20,13 +20,15 @@
 #        with BELOW FLOOR; a file above it fails with RAISE THE FLOOR, so a
 #        gain is locked in by raising the floor, never left silent. A file the
 #        oracle cannot analyse is reported as ORACLE and is not measured.
-#   6. Guarded mutation proofs on the sem_expr fixtures, analysed bare.
+#   6. Guarded mutation proofs on the sem_expr fixtures, analysed bare, and one
+#      prelude-dependent proof (section 8b): the oracle loads the prelude, the port does not.
 #
 # Environment:
 #   TYPED_PARITY_RAISE=1    write the floor up to the measured counts (never lower)
 #   TYPED_PARITY_FILES=<f>  measure only the repo-relative paths listed in <f>
 #   TYPED_PARITY_FLOOR=<f>  read and write this floor file instead of the default
 #   TYPED_PARITY_BARE=1     analyse each file alone, without the prelude
+#   TYPED_PARITY_PORT_PRELUDE=0  the port analyses each file alone, as the prelude corpus is measured
 #
 # Exit status 0 when every check passes, 1 otherwise.
 set -u
@@ -43,6 +45,7 @@ CHILD="${TYPED_PARITY_CHILD:-0}"
 BARE="${TYPED_PARITY_BARE:-0}"
 RAISE="${TYPED_PARITY_RAISE:-0}"
 FILES_LIST="${TYPED_PARITY_FILES:-}"
+PORT_PRELUDE="${TYPED_PARITY_PORT_PRELUDE:-1}"
 WORK="$(mktemp -d)"
 REPO_NATIVE="$(native_path "$REPO")"
 WORK_NATIVE="$(native_path "$WORK")"
@@ -131,7 +134,7 @@ measure() {
       set -- "$REPO_NATIVE/src"
     fi
     port_flag=""
-    if [ "$BARE" != 1 ] && [ "$corpus" != prelude ]; then
+    if [ "$BARE" != 1 ] && [ "$corpus" != prelude ] && [ "$PORT_PRELUDE" = 1 ]; then
       port_flag="--with-prelude"
     fi
     if "$TYPED" $port_flag "$REPO_NATIVE/$rel" "$@" > "$WORK/p.txt" 2> "$WORK/p.err"; then
@@ -372,6 +375,15 @@ PY
       TYPED_PARITY_FLOOR="$floor" "$@" bash "$REPO/bench/selfhost_typed_parity_exercise.sh"
   }
 
+  # The prelude-dependent proof: the oracle loads the prelude and the port analyses the file alone,
+  # the configuration the prelude corpus is measured in.
+  child_gate_port_alone() {
+    floor="$1"
+    shift
+    env TYPED_PARITY_CHILD=1 TYPED_PARITY_BARE=0 TYPED_PARITY_PORT_PRELUDE=0 TYPED_PARITY_RAISE=0 \
+      TYPED_PARITY_FILES="$PRELUDE_PROOF_LIST" TYPED_PARITY_FLOOR="$floor" "$@" bash "$REPO/bench/selfhost_typed_parity_exercise.sh"
+  }
+
   echo
   echo "== 8. Guarded mutation proofs (the sem_expr fixtures, analysed bare)"
   PROOF_LIST="$WORK/proof_files.txt"
@@ -452,6 +464,27 @@ PY
     expanded.accept(self)
     child_type(expanded)' \
     "BELOW FLOOR" -- child_gate "$PROOF_FLOOR" || status=1
+
+  # Section 8b. A fixture whose argument `@fd.to_u64` is a prelude method: the oracle types it and
+  # the port, analysing the file alone, cannot. The local `handle` then stays untyped across the
+  # `if`, and its later read must instantiate a copy of the zero-argument def, not the declaration:
+  # hosted types the declaration Nil.
+  PRELUDE_PROOF_LIST="$WORK/prelude_proof_files.txt"
+  printf '%s\n' bench/fixtures/sem_parity_untyped_local_declaration.iyi > "$PRELUDE_PROOF_LIST"
+  PRELUDE_PROOF_FLOOR="$WORK/prelude_proof.floor"
+  child_gate_port_alone "$PRELUDE_PROOF_FLOOR" TYPED_PARITY_RAISE=1 > "$WORK/prelude_proof_raise.log" 2>&1
+  if child_gate_port_alone "$PRELUDE_PROOF_FLOOR" > "$WORK/prelude_proof_base.log" 2>&1; then
+    echo "  the prelude-dependent proof passes at its own floor (oracle with prelude, port alone)"
+  else
+    echo "  the prelude-dependent proof FAILED at its own floor:"
+    cat "$WORK/prelude_proof_base.log"
+    status=1
+  fi
+  prove_mutation "a bare name instantiates the declaration of a zero-argument def, not a copy (main_visitor.iyi visit(Var))" \
+    "$REPO/src/compiler/semantic/main_visitor.iyi" \
+    '      instantiated_def = zero_arg.clone' \
+    '      instantiated_def = zero_arg' \
+    "BELOW FLOOR" -- child_gate_port_alone "$PRELUDE_PROOF_FLOOR" || status=1
 
   LOWERED="$WORK/lowered.floor"
   "$PY" - "$(native_path "$PROOF_FLOOR")" "$(native_path "$LOWERED")" <<'PY'
