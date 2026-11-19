@@ -1,0 +1,39 @@
+module copy_rename
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/regalloc_linear::{coalesce_copies}
+import compiler/native/driver::{dump_mfunction}
+
+# Two copies. The first merges: its source dies at the copy and nothing redefines the destination while the source
+# lives. The second does not merge: a dead definition of its source (sb = 4) sits while the destination (da) is still
+# read, so renaming sb to da would overwrite the value that the read at a2 needs.
+def inst_of(op : MOp, def_reg : Int32, use_reg : Int32, imm : Int64) : MInst
+  m = MInst.new(op.value.to_i32)
+  m.imm = imm
+  m.defs << Operand.new(OperandKind::Virtual, def_reg) if def_reg >= 0
+  m.uses << Operand.new(OperandKind::Virtual, use_reg) if use_reg >= 0
+  m
+end
+
+fn = MFunction.new("rename")
+b = MBlock.new(0, "entry")
+fn.blocks << b
+src = fn.new_vreg(RegClass::Gpr)
+dst = fn.new_vreg(RegClass::Gpr)
+out = fn.new_vreg(RegClass::Gpr)
+da = fn.new_vreg(RegClass::Gpr)
+sb = fn.new_vreg(RegClass::Gpr)
+a2 = fn.new_vreg(RegClass::Gpr)
+out2 = fn.new_vreg(RegClass::Gpr)
+b.insts << inst_of(MOp::MovImm, src, -1, 5_i64)
+b.insts << inst_of(MOp::Mov, dst, src, 0_i64)
+b.insts << inst_of(MOp::AddImm, out, dst, 1_i64)
+b.insts << inst_of(MOp::MovImm, da, -1, 3_i64)
+b.insts << inst_of(MOp::MovImm, sb, -1, 4_i64)
+b.insts << inst_of(MOp::AddImm, a2, da, 2_i64)
+b.insts << inst_of(MOp::MovImm, da, -1, 6_i64)
+b.insts << inst_of(MOp::MovImm, sb, -1, 5_i64)
+b.insts << inst_of(MOp::Mov, da, sb, 0_i64)
+b.insts << inst_of(MOp::AddImm, out2, da, 3_i64)
+merged = coalesce_copies(fn)
+puts "merged #{merged}"
+print dump_mfunction(fn)
