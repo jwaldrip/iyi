@@ -1,0 +1,50 @@
+# An impl's own `forall` names are bound to the parameters its target declared (`Pair(A, B)`: X is A, Y is B). The
+# renamed names show in the declaration dump wherever they are written: an argument type, a return type, a `T.class`,
+# a union, a generic argument, a proc type and a hash literal's type. Both sides must print them as the target's names.
+module samples/semdecl_impl_rename
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Pair(A, B)
+  getter first : A
+  getter second : B
+
+  def initialize(@first : A, @second : B)
+  end
+end
+
+impl Show for Pair(X, Y) forall X, Y
+  def show : String
+    "pair"
+  end
+
+  def label(v : X) : String
+    "first"
+  end
+
+  def label(v : Y) : String
+    "second"
+  end
+
+  def first_kind : X.class
+    X
+  end
+
+  def maybe(v : Y) : Y | Nil
+    v
+  end
+
+  def make : Array(X)
+    [] of X
+  end
+
+  def run(f : Y -> X) : X
+    f.call(second)
+  end
+
+  def hash_of : Hash(X, Y)
+    {} of X => Y
+  end
+end

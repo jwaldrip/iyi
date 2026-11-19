@@ -3,6 +3,9 @@
 <initial> 75
 bench/fixtures/semdecl_glob_import.iyi 7
 bench/fixtures/semdecl_glob_unused_ambiguous.iyi 1
+bench/fixtures/semdecl_impl_rename.iyi 18
+bench/fixtures/semdecl_impl_rename_one.iyi 11
+bench/fixtures/semdecl_impl_rename_splat.iyi 11
 samples/iyi/basics.iyi 2
 samples/iyi/calc.iyi 4
 samples/iyi/collections.iyi 0
@@ -14,7 +17,7 @@ samples/iyi/errors.iyi 18
 samples/iyi/files.iyi 2
 samples/iyi/format.iyi 2
 samples/iyi/formatting.iyi 2
-samples/iyi/generics.iyi 47
+samples/iyi/generics.iyi 49
 samples/iyi/grid.iyi 2
 samples/iyi/hello.iyi 21
 samples/iyi/immutable.iyi 0
@@ -172,6 +175,7 @@ src/compiler/semantic/spawn_placement.iyi 0
 src/compiler/semantic/top_level.iyi 0
 src/compiler/semantic/type_node_host.iyi 0
 src/compiler/semantic/type_nodes.iyi 0
+src/compiler/semantic/type_param_renamer.iyi 20
 src/compiler/semantic/typed.iyi 197
 src/compiler/stage1.iyi 4
 src/compiler/syntax/ast.iyi 1293

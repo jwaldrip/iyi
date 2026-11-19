@@ -1,0 +1,24 @@
+# A splat parameter of the target is bound with its `*`: `Tup(A, *B)` takes `Tup(X, *Y)` for `forall X, Y`, and the
+# renamed argument type shows in the declaration dump as the target's name.
+module samples/semdecl_impl_rename_splat
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Tup(A, *B)
+  getter first : A
+
+  def initialize(@first : A)
+  end
+end
+
+impl Show for Tup(X, *Y) forall X, Y
+  def show : String
+    "tup"
+  end
+
+  def head(v : X) : X
+    v
+  end
+end

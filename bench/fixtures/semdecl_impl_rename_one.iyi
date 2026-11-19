@@ -1,0 +1,24 @@
+# A single `forall` name is bound to the one parameter of its target: `Box(T)` takes `Box(U) forall U`, so the method
+# written with U shows in the declaration dump with the target's T.
+module samples/semdecl_impl_rename_one
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Box(T)
+  getter value : T
+
+  def initialize(@value : T)
+  end
+end
+
+impl Show for Box(U) forall U
+  def show : String
+    "box"
+  end
+
+  def set(v : U) : U
+    v
+  end
+end

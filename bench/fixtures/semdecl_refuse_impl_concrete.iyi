@@ -1,0 +1,20 @@
+# `impl Show for Box(Int32) forall X` names a concrete type where a `forall` name belongs: refused, since iyi has no
+# specialised impls.
+module samples/semdecl_refuse_impl_concrete
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Box(T)
+  getter value : T
+
+  def initialize(@value : T)
+  end
+end
+
+impl Show for Box(Int32) forall X
+  def show : String
+    "x"
+  end
+end

@@ -1,0 +1,26 @@
+# A hash literal's own key type, `{} of A => Int32` in the body, names `A`: refused (the literal's `of` type is walked,
+# as hosted's base walk does).
+module samples/semdecl_refuse_impl_capture_hashof
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Pair(A, B)
+  getter first : A
+  getter second : B
+
+  def initialize(@first : A, @second : B)
+  end
+end
+
+impl Show for Pair(X, Y) forall X, Y
+  def show : String
+    "pair"
+  end
+
+  def table : Int32
+    counts = {} of A => Int32
+    counts.size
+  end
+end

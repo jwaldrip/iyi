@@ -336,7 +336,7 @@ else
   for f in "$REPO"/src/iyi/*.iyi; do measure prelude "${f#$REPO/}"; done
   for f in "$REPO"/src/std/*.iyi; do measure std "${f#$REPO/}"; done
   for f in "$REPO"/samples/iyi/*.iyi; do measure samples "${f#$REPO/}"; done
-  for name in semdecl_glob_import semdecl_glob_unused_ambiguous; do measure fixtures "bench/fixtures/$name.iyi"; done
+  for name in semdecl_glob_import semdecl_glob_unused_ambiguous semdecl_impl_rename semdecl_impl_rename_splat semdecl_impl_rename_one; do measure fixtures "bench/fixtures/$name.iyi"; done
 fi
 echo "  $(wc -l < "$RESULTS" | tr -d ' ') files measured"
 
@@ -744,6 +744,7 @@ echo
 echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
 MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
 MUT_IVARS="$REPO/src/compiler/semantic/instance_vars.iyi"
+MUT_RENAMER="$REPO/src/compiler/semantic/type_param_renamer.iyi"
 MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
@@ -1165,6 +1166,154 @@ prove_mutation "the selective form refuses a macro name" "$MUT_SEM" \
   '      import_macros(name, unit)
       return nil' \
   '    refuse_port("a macro name is refused")' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "an impl's body keeps the names it was written with" "$MUT_SEM" \
+  '      node.body = node.body.transform(renamer)' \
+  '      node.body = node.body' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "an impl's target arguments are dropped, so the impl reopens the bare declaration" "$MUT_SEM" \
+  '      resolved = resolve_generic_impl_target(node, type_vars)' \
+  '      resolved = @program.lookup_type_node(node.target, @current_type)' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "an arity mismatch between the target and the impl is accepted" "$MUT_SEM" \
+  '    if written_args.size != declared.size' \
+  '    if false' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a splat parameter bound without its star is accepted" "$MUT_SEM" \
+  '        unless splat_index_is?(splat, index)' \
+  '        unless true' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a concrete type in place of a forall name is accepted" "$MUT_SEM" \
+  '      if name.empty?' \
+  '      if false' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a forall name bound to two parameters is accepted" "$MUT_SEM" \
+  '      if renames.has_key?(name)' \
+  '      if false' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a forall name no parameter uses is accepted" "$MUT_SEM" \
+  '    unless unused.empty?' \
+  '    if false' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic impl on a target that is not generic is not refused as such" "$MUT_SEM" \
+  '    unless generic_base?(base)' \
+  '    unless true' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a blanket impl over a bare forall name is not refused" "$MUT_SEM" \
+  '      if !written.global && written.names.size == 1 && type_vars.includes?(written.names[0])' \
+  '      if false' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "an impl on a generic target without forall is not refused" "$MUT_SEM" \
+  '    if unbound.empty?' \
+  '    if true' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "an impl on a module is accepted as an impl on a type" "$MUT_SEM" \
+  '    if target_type.is_a?(NonGenericModuleType) || target_type.is_a?(GenericModuleType)' \
+  '    if false' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a capture in the body of a renamed impl is not refused" "$MUT_RENAMER" \
+  '    if @targets.includes?(name)' \
+  '    if false' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "the first capture of a renamed impl is not recorded" "$MUT_RENAMER" \
+  '    @refusal = message if @refusal.nil?' \
+  '    @refusal = nil' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a path naming a declared parameter is not renamed" "$MUT_RENAMER" \
+  '      return Path.new([renamed]).at(node)' \
+  '      return node' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a def's return type is not renamed" "$MUT_RENAMER" \
+  '      node.return_type = return_type.transform(self)' \
+  '      node.return_type = return_type' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a def's arguments are not walked" "$MUT_RENAMER" \
+  '      arg.transform(self)' \
+  '      arg' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "an argument's restriction is not renamed" "$MUT_RENAMER" \
+  '      node.restriction = restriction.transform(self)' \
+  '      node.restriction = restriction' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic's type arguments are not renamed" "$MUT_RENAMER" \
+  '    transform_many(node.type_vars)' \
+  '    node.type_vars.size' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a union's members are not renamed" "$MUT_RENAMER" \
+  '    transform_many(node.types)' \
+  '    node.types.size' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a metaclass's name is not renamed" "$MUT_RENAMER" \
+  '  def transform(node : Metaclass) : ASTNode
+    node.name = node.name.transform(self)' \
+  '  def transform(node : Metaclass) : ASTNode
+    node.name' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a proc type's inputs are not renamed" "$MUT_RENAMER" \
+  '      transform_many(inputs)' \
+  '      inputs.size' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a rescue clause's exception type is not renamed" "$MUT_RENAMER" \
+  '      transform_many(types)' \
+  '      types.size' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a proc literal's body is not renamed" "$MUT_RENAMER" \
+  '    literal_def.body = literal_def.body.transform(self)' \
+  '    literal_def.body = literal_def.body' \
+  -- check_fixture_outcomes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a hash literal's own type is not renamed" "$MUT_RENAMER" \
+  '    if of_entry = node.of
+      node.of = HashLiteral::Entry.new(of_entry.key.transform(self), of_entry.value.transform(self))
+    end' \
+  '    node.of' \
   -- check_fixture_outcomes || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

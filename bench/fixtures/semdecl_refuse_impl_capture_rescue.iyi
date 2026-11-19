@@ -1,0 +1,28 @@
+# A rescue clause's exception type names `A`: refused (the rescue types are walked, as hosted's base walk does).
+module samples/semdecl_refuse_impl_capture_rescue
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Pair(A, B)
+  getter first : A
+  getter second : B
+
+  def initialize(@first : A, @second : B)
+  end
+end
+
+impl Show for Pair(X, Y) forall X, Y
+  def show : String
+    "pair"
+  end
+
+  def guarded : Int32
+    begin
+      1
+    rescue e : A
+      2
+    end
+  end
+end

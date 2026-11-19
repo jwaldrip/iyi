@@ -1,0 +1,19 @@
+# `impl Show for Point(T) forall T` where Point is a plain struct: refused, since it is not a generic type.
+module samples/semdecl_refuse_impl_notgeneric
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Point
+  getter x : Int32
+
+  def initialize(@x : Int32)
+  end
+end
+
+impl Show for Point(T) forall T
+  def show : String
+    "p"
+  end
+end

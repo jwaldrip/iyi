@@ -1,0 +1,19 @@
+# `impl Show for Point forall T` binds parameters to a target that takes none: refused.
+module samples/semdecl_refuse_impl_nongeneric
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Point
+  getter x : Int32
+
+  def initialize(@x : Int32)
+  end
+end
+
+impl Show for Point forall T
+  def show : String
+    "p"
+  end
+end

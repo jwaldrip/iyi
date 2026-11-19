@@ -1,0 +1,20 @@
+# `forall Z` introduces a name the impl's target never takes: refused, with hosted's text.
+module samples/semdecl_refuse_impl_unused
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Pair(A, B)
+  getter first : A
+  getter second : B
+
+  def initialize(@first : A, @second : B)
+  end
+end
+
+impl Show for Pair(X, Y) forall X, Y, Z
+  def show : String
+    "x"
+  end
+end

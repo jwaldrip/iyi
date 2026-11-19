@@ -1,0 +1,19 @@
+# `impl Show for Box(T)` without `forall`: refused, and the text says which binder to add.
+module samples/semdecl_refuse_impl_noforall
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Box(T)
+  getter value : T
+
+  def initialize(@value : T)
+  end
+end
+
+impl Show for Box(T)
+  def show : String
+    "box"
+  end
+end
