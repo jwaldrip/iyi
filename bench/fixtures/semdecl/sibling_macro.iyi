@@ -1,0 +1,8 @@
+module semdecl/sibling_macro
+
+# The sibling behind bench/fixtures/semdecl_refuse_macro_not_imported.iyi. It imports the pub macro `answer_def`
+# and nothing else, so the macro import is this file's alone.
+import semdecl/shapes::*
+
+pub class SiblingMacro
+end

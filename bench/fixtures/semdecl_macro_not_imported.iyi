@@ -1,0 +1,6 @@
+# A sibling file imports the pub macro `answer_def` from `semdecl/shapes`. This file imports only the sibling and calls the
+# macro without importing it. A file expands the pub macros it imports (SPEC II.3), so hosted declares nothing from the call
+# here. A port that keeps one table of imported macros for every file expands the sibling's macro, and declares `answer`.
+import semdecl/sibling_macro
+
+answer_def
