@@ -32,6 +32,28 @@ import sys
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 FLOOR = os.path.join(REPO, "bench/macro_sites.floor")
+
+# Files the hosted parser rejects when read on its own, which is how the sites oracle reads
+# every file. A program that imports each of them builds with the hosted compiler, so this is
+# a limit of reading a file standalone, not of the module (measured: a probe importing all
+# thirteen builds; removing json's `serializable` macro lets the oracle read json). The set
+# may only shrink: a listed file that reads again fails the check until it is removed here, and
+# an unreadable file not listed here counts against the floor.
+STANDALONE_UNREADABLE = frozenset([
+    "src/std/acme.iyi",
+    "src/std/asn1.iyi",
+    "src/std/ecdsa.iyi",
+    "src/std/http.iyi",
+    "src/std/json.iyi",
+    "src/std/ocsp.iyi",
+    "src/std/rsa.iyi",
+    "src/std/tar.iyi",
+    "src/std/toml.iyi",
+    "src/std/websocket.iyi",
+    "src/std/x509.iyi",
+    "src/std/yaml.iyi",
+    "src/std/zip.iyi",
+])
 SITE_LINE = re.compile(r"^site (\d+) (\S+) (\d+:\d+) (\S+) (.*)$")
 MESSAGE = re.compile(r" message=(.*)$")
 CATEGORIES = ["identical", "refused", "differing", "needs-context", "macro-body", "unpaired"]
@@ -277,11 +299,17 @@ def main(argv):
             status = 1
         else:
             print(f"  identical {counts['identical']} meets the floor {least_identical}")
-        if len(unreadable) > most_unreadable:
-            print(f"  {len(unreadable)} files unreadable by the hosted compiler, above the allowed {most_unreadable}")
+        unlisted = [rel for rel, _ in unreadable if rel not in STANDALONE_UNREADABLE]
+        if len(unlisted) > most_unreadable:
+            print(f"  {len(unlisted)} files unreadable by the hosted compiler, above the allowed {most_unreadable}: {', '.join(unlisted)}")
             status = 1
         else:
-            print(f"  unreadable files {len(unreadable)} within the allowed {most_unreadable}")
+            print(f"  unreadable files {len(unlisted)} within the allowed {most_unreadable}")
+        print(f"  listed as unreadable standalone, not counted: {len(unreadable) - len(unlisted)} of {len(STANDALONE_UNREADABLE)}")
+        read_now = sorted(STANDALONE_UNREADABLE - {rel for rel, _ in unreadable})
+        if read_now:
+            print(f"  listed files that now read; remove them from STANDALONE_UNREADABLE: {', '.join(read_now)}")
+            status = 1
         return status
     return 0
 
