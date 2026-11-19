@@ -57,6 +57,9 @@ cat "$WORK/plain.out"
 
 echo
 echo "== Checking reported verification counts in plain mode"
+# The real-syntax-fixtures count is the exercise's node count over its 38 fixtures. It was 2549 before the port gave %w and %i
+# arrays their element type, which hosted also builds (parser.cr 3906 and 3915). syntax_macro_control_grammar.iyi line 27 is
+# the only %w or %i array in the fixtures, so the count rose by one.
 for phrase in \
   "testing literal parsing... ok (literals verified)" \
   "testing variable and path parsing... ok (variables and paths verified)" \
@@ -64,7 +67,7 @@ for phrase in \
   "testing call and block parsing... ok (calls and blocks verified)" \
   "testing control expressions (if, unless, while, until, case, modifiers)... ok (control expressions verified)" \
   "testing declaration parsing... ok (declarations verified)" \
-  "testing real syntax fixtures parsing... ok (2549 nodes across 38 fixtures)" \
+  "testing real syntax fixtures parsing... ok (2550 nodes across 38 fixtures)" \
   "ALL SELFHOST PARSER CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"
