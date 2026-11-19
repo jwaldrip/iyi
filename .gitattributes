@@ -37,6 +37,9 @@
 # Compiler parity fixtures are compared byte for byte on every host.
 *.ir text eol=lf
 *.ll text eol=lf
+# The wasm gate reads an expected exit status with `$(cat ...)`; a carriage
+# return in it would fail the comparison on a Windows checkout.
+bench/fixtures/**/*.exit text eol=lf
 bench/fixtures/**/*.in text eol=lf
 bench/fixtures/**/*.expected text eol=lf
 bench/fixtures/**/*.txt text eol=lf
