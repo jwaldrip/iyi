@@ -5,6 +5,7 @@ import compiler/syntax/visitor::{Visitor}
 import compiler/foundation/location::{Location}
 import compiler/semantic/top_level::{Const, MetaTypeVar, ModuleType, SemanticProgram, Type}
 import compiler/semantic/main_visitor::{MainVisitor}
+import std/file
 
 # A constant or a class variable a body names, once per state (hosted ShareReach::Named). The key is the
 # state's object identity; the label is how the source spells it, and the use is the expression naming it.
