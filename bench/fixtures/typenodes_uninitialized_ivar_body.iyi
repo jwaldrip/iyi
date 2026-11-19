@@ -1,0 +1,12 @@
+@[Unsafe("a class body's uninitialized declaration is raw memory until it is written")]
+class Slot
+  @x : Int32
+  @x = uninitialized Int32
+
+  def read
+    @x
+  end
+end
+
+s = Slot.new
+v = s.read

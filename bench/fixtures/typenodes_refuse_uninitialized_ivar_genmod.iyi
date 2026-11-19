@@ -1,0 +1,11 @@
+@[Unsafe("a generic module names no type to hold")]
+module Mod(T)
+end
+
+class Slot
+  def initialize
+    @x = uninitialized Mod
+  end
+end
+
+Slot.new

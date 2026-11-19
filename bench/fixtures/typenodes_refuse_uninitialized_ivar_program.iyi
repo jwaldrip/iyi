@@ -1,0 +1,2 @@
+@[Unsafe("a program has no instance to hold the variable")]
+@x = uninitialized Int32

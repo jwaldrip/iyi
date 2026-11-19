@@ -1,0 +1,8 @@
+@[Unsafe("an undeclared slot is raw memory until it is written")]
+class Slot
+  def initialize
+    @x = uninitialized Int32
+  end
+end
+
+Slot.new

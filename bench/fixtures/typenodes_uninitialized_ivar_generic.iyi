@@ -1,0 +1,15 @@
+@[Unsafe("a generic's uninitialized slot is raw memory until it is written")]
+class Slot(T)
+  @got : T
+
+  def initialize
+    @got = uninitialized T
+  end
+
+  def address
+    pointerof(@got)
+  end
+end
+
+s = Slot(Int32).new
+p = s.address
