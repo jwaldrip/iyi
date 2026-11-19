@@ -1,0 +1,6 @@
+# top-level: GateTopLevelName
+macro top_names
+  {{ @top_level.has_constant?("GateTopLevelName") }}|{{ @top_level.has_constant?("GateMissingName") }}
+end
+
+top_names

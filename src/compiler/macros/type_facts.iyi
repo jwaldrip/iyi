@@ -17,12 +17,19 @@ pub class MacroTypeFacts
   getter annotation_types : Hash(String, String)
   property annotations_known : Bool = false
   property constants_known : Bool = false
+  # The program's names: every top-level type, constant and macro name, when a
+  # caller supplied all of them (names_known). `has_constant?` on `@top_level`
+  # reads them, and no other answer does: `constants` and `constant` still need
+  # constants_known.
+  property names_known : Bool = false
   property instance_vars_known : Bool = false
   getter instance_vars : Array(MacroInstanceVarFact)
   property ancestors_known : Bool = false
   property methods_known : Bool = false
   getter ancestors : Array(MacroAncestorFact)
   getter methods : Array(Def)
+  # The names `has_constant?` answers from when names_known is set.
+  getter names : Array(String)
 
   def initialize
     @constants = Hash(String, String).new
@@ -31,6 +38,7 @@ pub class MacroTypeFacts
     @instance_vars = [] of MacroInstanceVarFact
     @ancestors = [] of MacroAncestorFact
     @methods = [] of Def
+    @names = [] of String
   end
 end
 

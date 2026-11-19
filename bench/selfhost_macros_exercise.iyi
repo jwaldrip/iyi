@@ -205,6 +205,21 @@ module BenchSelfhostMacrosExercise
     facts
   end
 
+  # A fixture gives the program's names with `# top-level: NAME` lines. They are the
+  # names the caller passes to the engine as the program's facts, complete for this
+  # fixture. A fixture with none passes none, so `@top_level.has_constant?` is refused.
+  def self.parse_top_level_names(source : String) : MacroTypeFacts?
+    names : MacroTypeFacts? = nil
+    source.split("\n").each do |line|
+      if line.starts_with?("# top-level: ")
+        names ||= MacroTypeFacts.new
+        names.as(MacroTypeFacts).names << line[13, line.bytesize - 13]
+        names.as(MacroTypeFacts).names_known = true
+      end
+    end
+    names
+  end
+
   def self.printed_free(kind : String, members : Array(String)) : String
     if kind == "type"
       return members[0]
@@ -250,9 +265,10 @@ module BenchSelfhostMacrosExercise
 
   # The engine's report, with the instantiated owner's type parameters bound
   # before the body runs.
-  def self.report_bound(a_macro : Macro, call : Call, flags : Array(String), bindings : Array(MacroFreeBinding), facts : MacroTypeFacts?) : MacroReport
+  def self.report_bound(a_macro : Macro, call : Call, flags : Array(String), bindings : Array(MacroFreeBinding), facts : MacroTypeFacts?, names : MacroTypeFacts? = nil) : MacroReport
     interp = MacroInterpreter.new(call.block, flags, facts.nil? ? "<Program>" : "MacroFactScope")
     interp.type_facts = facts
+    interp.program_facts = names
     interp.bind_args(a_macro, call)
     interp.bind_free_vars(bindings)
     body = a_macro.body
@@ -459,6 +475,29 @@ end
     puts "ok"
   end
 
+  # `@top_level` answers `has_constant?` from the program's names that the caller passes to
+  # the site entry point: a listed name is true, and without names the answer is a refusal,
+  # never false.
+  def self.test_top_level_names
+    print "testing @top_level.has_constant? answers only from the names a caller supplies... "
+    src = %({% if @top_level.has_constant?("Widget") %}yes{% else %}no{% end %})
+    refs = MacroSiteScan.scan(Parser.new(src).parse)
+    assert(refs.size == 1, "one site at the top of the file")
+    names = MacroTypeFacts.new
+    names.names_known = true
+    names.names << "Widget"
+    known = MacroEngine.new.site_report(refs[0].node, "<Program>", nil, nil, nil, names)
+    assert(known.failure.nil?, "the supplied names answer has_constant?")
+    assert(known.output == "yes", "a name the caller lists answers true")
+    unknown = MacroEngine.new.site_report(refs[0].node, "<Program>")
+    refused = false
+    if f = unknown.failure
+      refused = f.message.includes?("is refused")
+    end
+    assert(refused, "without names the answer is a refusal by name, never false")
+    puts "ok"
+  end
+
   # A macro call's expansion is in the file of the call: a def the macro writes is typed with the names
   # that file imports. The fixture is the shape of `getter table : TypeTable`.
   def self.test_expansion_file
@@ -565,6 +604,7 @@ host_context_probe
     test_fresh_vars
     test_code_generation
     test_type_node
+    test_top_level_names
     test_expansion_file
     test_shared_normalizer
     test_host_flag_context
@@ -612,11 +652,12 @@ elsif Program.args.size > 0
     the_macro, the_call = MacroParser.parse_fixture(source)
     bindings = BenchSelfhostMacrosExercise.parse_free_bindings(source)
     facts = BenchSelfhostMacrosExercise.parse_type_facts(source)
+    names = BenchSelfhostMacrosExercise.parse_top_level_names(source)
     if bindings.size > 0 || !facts.nil?
-      rep = BenchSelfhostMacrosExercise.report_bound(the_macro, the_call, flags, bindings, facts)
+      rep = BenchSelfhostMacrosExercise.report_bound(the_macro, the_call, flags, bindings, facts, names)
     else
       engine = MacroEngine.new(flags)
-      rep = engine.report(the_macro, the_call)
+      rep = engine.report(the_macro, the_call, names)
     end
     if count
       puts rep.sites.size

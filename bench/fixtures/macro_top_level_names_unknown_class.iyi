@@ -1,0 +1,7 @@
+# refuse: has_constant?
+# fact: Red 3
+macro class_names
+  {{ @top_level.has_constant?("Red") }}
+end
+
+class_names

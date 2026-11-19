@@ -11,6 +11,10 @@
 # refuses by name. The oracle is not run on it (it would run the command); the
 # port must report the refusal.
 #
+# A fixture's `# top-level: NAME` lines name the program's top-level names. The
+# oracle registers each as a type of its program, and the port passes the same
+# names to the engine as the program's facts (`names_known`).
+#
 # The mutation proofs follow the rule the other selfhost gates use: the patched
 # file is compared against the original, and a patch that matched nothing is
 # reported as proving nothing rather than passing quietly.
@@ -85,6 +89,7 @@ for phrase in \
   "testing macro fresh variable generation... ok" \
   "testing macro code and definition generation... ok" \
   "testing @type as the enclosing class's TypeNode... ok" \
+  "testing @top_level.has_constant? answers only from the names a caller supplies... ok" \
   "testing that an expansion's nodes are in the calling file... ok" \
   "testing macro expansion shares normalizer counters and prelude flag... ok" \
   "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!"; do
@@ -374,6 +379,15 @@ unless target.empty?
   program.codegen_target = Iyi::Codegen::Target.new(target)
 end
 defines.each { |d| program.flags << d }
+
+# A fixture names the program's top-level names with `# top-level: NAME` lines. Each
+# is registered as a type of the program, as a top-level declaration is, so
+# `@top_level.has_constant?` answers it the same way.
+src.each_line do |line|
+  next unless line.starts_with?("# top-level: ")
+  name = line[13..].strip
+  program.types[name] = Iyi::NonGenericClassType.new(program, program, name, nil)
+end
 
 # A fixture may bind type parameters with `# free: NAME KIND MEMBERS [splat]`
 # lines (KIND is type or tuple; MEMBERS is comma-separated, no spaces). A
@@ -684,7 +698,7 @@ echo "  Parity summary: $((fixture_count - diverged - refusal_count))/$((fixture
 echo "== 2a. The table of macro methods the hosted compiler answers is the one generated from its source"
 "$PY" "$REPO_NATIVE/bench/macro_method_table.py" --check || status=1
 
-echo "== 2b. Macro sites in the prelude and the port's source: the oracle and the port must agree site by site"
+echo "== 2b. Macro sites in the prelude, std and the port's source: the oracle and the port must agree site by site"
 SITES_DIR="$WORK/sites"
 mkdir -p "$SITES_DIR"
 SITES_NATIVE="$(native_path "$SITES_DIR")"
@@ -918,6 +932,30 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a free type parameter is not bound" "$INTERP" \
   "return resolve_free_binding(bound)" \
   "return TypeNode.new(\"unbound\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# `@top_level` is the program's TypeNode (interpreter.cr:739-740). Answering it
+# with the plain identifier it was refuses every `@top_level.has_constant?` that
+# the fixtures ask.
+prove_mutation "@top_level answers the plain program identifier" "$INTERP" \
+  "return program_top_level_node" \
+  "return MacroId.new(\"<Program>\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# has_constant? answers a program from names_known (methods.cr:2238-2241). Reading
+# constants_known instead refuses the program's names, which only names_known supplies.
+prove_mutation "@top_level has_constant? reads constants_known, not the names" "$METHODS" \
+  "if facts.names_known && method == \"has_constant?\" && args.size == 1" \
+  "if facts.constants_known && method == \"has_constant?\" && args.size == 1" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# A name the program's names do not supply is refused by name, never answered false.
+prove_mutation "an unknown program name answers false instead of being refused" "$METHODS" \
+  "return refuse_has_constant(tn)" \
+  "return BoolLiteral.new(false)" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

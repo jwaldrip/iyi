@@ -1,0 +1,6 @@
+# refuse: has_constant?
+macro top_names
+  {{ @top_level.has_constant?("GateTopLevelName") }}
+end
+
+top_names
