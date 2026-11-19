@@ -78,6 +78,7 @@ FIXTURES=(
   "bench/fixtures/compile_resolve_order.iyi"
   "bench/fixtures/compile_ivar_infer.iyi"
   "bench/fixtures/compile_stdout.iyi"
+  "bench/fixtures/compile_macro_if_control.iyi"
 )
 
 matched=0
@@ -596,6 +597,10 @@ check_refusal() {
       site='compile_ivar_untyped_refused\.iyi:3:'
       expected='instance variable @v has no type the port can read: declare it in the class body (`@v : Type`)'
       ;;
+    compile_macro_if_refused.iyi)
+      site='compile_macro_if_refused\.iyi:7:7'
+      expected="port limitation: the port cannot evaluate the macro if condition at compile_macro_if_refused.iyi:7:7 (undefined macro method 'MacroId#has_constant?'), so it refuses instead of taking either branch"
+      ;;
     *) echo "INVALID PROOF: unknown refusal fixture" >&2; return 2 ;;
   esac
   grep '^Error: ' "$WORK/mut_refusal.log" | tail -n 1 > "$WORK/mut_refusal.message"
@@ -623,6 +628,38 @@ check_refusal_rebuilt() {
     return 2
   fi
   check_refusal "$fixture" "$phrase"
+}
+
+# Compiles the evaluable control with the compiler rebuilt from the mutated source, and requires its exit code to equal
+# the expected one. A refusal of a condition that evaluates is a caught difference; any other build failure is invalid.
+check_macro_if_control() {
+  local fixture="$1" expected="$2" mut_rc=0 build_rc=0
+  rm -f "$WORK/mut_bin_ctl$EXE"
+  if ! rebuild_mutated_compile; then
+    set_why "the mutated compiler did not build"
+    return 2
+  fi
+  "$COMPILE" -o "$WORK_NATIVE/mut_bin_ctl$EXE" "$(native_path "$fixture")" > "$WORK/mut_ctl_compile.log" 2>&1 || build_rc=$?
+  if [ "$build_rc" -ne 0 ]; then
+    if grep -q "port limitation: the port cannot evaluate the macro if condition" "$WORK/mut_ctl_compile.log"; then
+      set_why "the evaluable macro if condition is refused"
+      return 1
+    fi
+    echo "INVALID MUTANT: control fixture compilation exited $build_rc" >&2
+    cat "$WORK/mut_ctl_compile.log" >&2
+    return 2
+  fi
+  if [ ! -x "$WORK/mut_bin_ctl$EXE" ]; then
+    echo "INVALID MUTANT: compiler wrote no executable" >&2
+    return 2
+  fi
+  "$WORK/mut_bin_ctl$EXE" > "$WORK/mut_bin_ctl.run.log" 2>&1 || mut_rc=$?
+  if [ "$mut_rc" -ge 128 ]; then cat "$WORK/mut_bin_ctl.run.log" >&2; return 2; fi
+  if [ "$mut_rc" -eq "$expected" ]; then
+    return 0
+  fi
+  set_why "the mutated $(basename "$fixture") exits $mut_rc, not $expected"
+  return 1
 }
 
 # A mutation of a compiler source leaves .build/iyi-compile built from the mutated
@@ -683,6 +720,8 @@ clean_must_pass "object emission honors its path" check_object_path
 clean_must_pass "rescue refusal" check_refusal "$REPO/bench/fixtures/compile_rescue_refused.iyi" "iyi has no exceptions to rescue"
 clean_must_pass "raise refusal" check_refusal "$REPO/bench/fixtures/compile_raise_norescue.iyi" "undefined method 'raise' for top-level"
 clean_must_pass "untyped ivar refusal" check_refusal_rebuilt "$REPO/bench/fixtures/compile_ivar_untyped_refused.iyi" "instance variable @v has no type the port can read"
+clean_must_pass "macro if refusal names the unevaluable condition" check_refusal "$REPO/bench/fixtures/compile_macro_if_refused.iyi" "port limitation: the port cannot evaluate the macro if condition"
+clean_must_pass "macro if control with an evaluable condition is not refused and exits 9" check_macro_if_control "$REPO/bench/fixtures/compile_macro_if_control.iyi" 9
 
 if [ "$baseline_ok" -eq 1 ]; then
 
@@ -809,6 +848,23 @@ prove_mutation "a stdout difference fails the stdout parity check" \
   'LibC.putchar(107)' \
   'LibC.putchar(108)' \
   -- check_stdout_parity "$REPO/bench/fixtures/compile_stdout.iyi" "$WORK/oracle_stdout.txt" || status=1
+
+# A macro if whose condition does not evaluate is refused by name. Removing the refusal restores the fall-through: the
+# fixture then builds and exits 9 (the trailing statement, the then branch's 42 silently gone) where hosted exits 42, and
+# the refusal check must catch it.
+mutate_compiler_source "unevaluable macro if takes a branch with no message" \
+  "$COMPILER_SRC" \
+  '        Compiler.refuse_macro_if(mif, interp)' \
+  '        nil' \
+  -- check_refusal_rebuilt "$REPO/bench/fixtures/compile_macro_if_refused.iyi" "port limitation: the port cannot evaluate the macro if condition" || status=1
+
+# A condition that evaluates is not refused. Refusing every macro if makes the evaluable control fail to build with the
+# refusal, which the control check reports as a caught difference.
+mutate_compiler_source "a macro if whose condition evaluates is refused" \
+  "$COMPILER_SRC" \
+  '      if interp.halted?' \
+  '      if true' \
+  -- check_macro_if_control "$REPO/bench/fixtures/compile_macro_if_control.iyi" 9 || status=1
 else
   echo "  FAIL: mutation proofs require their clean baselines"
   status=1

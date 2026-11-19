@@ -1,0 +1,12 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+FOO = 1
+
+{% if @top_level.has_constant?("FOO") %}
+  LibC.exit(42)
+{% else %}
+  LibC.exit(7)
+{% end %}
+LibC.exit(9)
