@@ -23,7 +23,7 @@ import compiler/syntax/ast::{ASTNode, AlignOf, Cast, ClassVar, EnumDef, FunDef, 
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, LibFun, MetaclassType, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeHook, TypeParameterType}
 import compiler/types/type_system::{TypeSystem}
-import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, NamedArgumentType, TupleInstanceType, TypeQueries, TypeSplat, VirtualType}
+import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, NamedArgumentType, TupleInstanceType, TypeQueries, TypeSplat}
 import compiler/types/unification::{TypeUnification}
 import compiler/types/lookup::{LookupError, TypeLookup}
 
@@ -675,10 +675,11 @@ end
 #
 # Not ported: the initialize-only `@vars` entry (main_visitor.cr 546-548). The port
 # does not know the def it types, and its instance-variable reads do not read `vars`.
+# A virtual owner is not unwrapped: hosted's case type refuses it (main_visitor.cr 555-567), and
+# the lookup below refuses it here by name.
 pub def visit_uninitialized_instance_var(visitor : TypeNodeHost, node : UninitializedVar, var : InstanceVar) : Bool
   scope : Type? = visitor.scope_type
   owner : Type = scope || visitor.current_type
-  owner = owner.as(VirtualType).base_type if owner.is_a?(VirtualType)
   if owner.is_a?(MetaclassType)
     return visitor.refuse(node, "@instance_vars are not yet allowed in metaclasses: use @@class_vars instead")
   end

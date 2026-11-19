@@ -453,12 +453,6 @@ prove_mutation "an uninitialized type that differs from the variable's type is j
   -- check_port_strict || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a virtual receiver's owner is not unwrapped to its base before the lookup" "$TYPE_NODES" \
-  "  owner = owner.as(VirtualType).base_type if owner.is_a?(VirtualType)" \
-  "  owner = owner" \
-  -- check_port_strict || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-
 prove_mutation "an instance variable's declared type is not bracketed as a type argument" "$TYPE_NODES" \
   $'  lookup = type_node_lookup(visitor)\n  visitor.bracket_type_args(1)' \
   $'  lookup = type_node_lookup(visitor)\n  visitor.bracket_type_args(0)' \
