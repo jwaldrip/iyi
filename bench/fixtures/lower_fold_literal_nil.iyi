@@ -1,0 +1,35 @@
+# Literal conditions (true, false and nil) fold an if with a nil branch to the branch taken, as a call argument. An unless
+# folds the same way as an assignment. Each value is Sub | Nil, so the callee reads nil or the node. Output: nnonn.
+@[Unsafe("calls C putchar to report each value")]
+lib LibC
+  fun putchar(value : Int32) : Int32
+end
+
+class Node
+end
+
+class Sub < Node
+end
+
+class Ledger
+  def self.record(a : Int32, node : Node? = nil) : Nil
+    LibC.putchar(node.nil? ? 110 : 111)
+    nil
+  end
+end
+
+def literal(site : Node) : Nil
+  Ledger.record(1, true ? nil : site)
+  Ledger.record(2, false ? site : nil)
+  Ledger.record(3, true ? site : nil)
+  Ledger.record(4, nil ? site : nil)
+  value = unless true
+    site
+  else
+    nil
+  end
+  Ledger.record(5, value)
+  nil
+end
+
+literal(Sub.new)

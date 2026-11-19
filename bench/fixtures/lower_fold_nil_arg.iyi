@@ -1,0 +1,27 @@
+# The refused case: a folded nil? on a Nil-typed parameter is the argument of a call, with no slot in between.
+# The value of the if is Sub | Nil, so the argument must be a null pointer. Output: no.
+@[Unsafe("calls C putchar to report each value")]
+lib LibC
+  fun putchar(value : Int32) : Int32
+end
+
+class Node
+end
+
+class Sub < Node
+end
+
+class Ledger
+  def self.record(a : Int32, node : Node? = nil) : Nil
+    LibC.putchar(node.nil? ? 110 : 111)
+    nil
+  end
+end
+
+def expand(site : Node, lookup : String? = nil) : Nil
+  Ledger.record(1, lookup.nil? ? nil : site)
+  nil
+end
+
+expand(Sub.new)
+expand(Sub.new, "x")

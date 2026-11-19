@@ -1,0 +1,41 @@
+# A Nil-typed condition folds an if to its else branch. && and || expand to ifs on a Nil-typed parameter, and a literal
+# nil on the left folds them statically. The joins are Sub | Nil references, read back as nil or the node, and
+# Int32 | Nil by value. Output: nnononn.
+@[Unsafe("calls C putchar to report each value")]
+lib LibC
+  fun putchar(value : Int32) : Int32
+end
+
+class Node
+end
+
+class Sub < Node
+end
+
+class Ledger
+  def self.record(a : Int32, node : Node? = nil) : Nil
+    LibC.putchar(node.nil? ? 110 : 111)
+    nil
+  end
+end
+
+def chosen(site : Node, lookup : Nil) : Node?
+  lookup ? site : nil
+end
+
+def guarded(site : Node, lookup : Nil) : Nil
+  Ledger.record(1, lookup ? site : nil)
+  Ledger.record(2, lookup && site)
+  Ledger.record(3, lookup || site)
+  Ledger.record(4, nil && site)
+  Ledger.record(5, nil || site)
+  nil
+end
+
+def counted(lookup : Nil) : (Int32 | Nil)
+  lookup && 4
+end
+
+guarded(Sub.new, nil)
+Ledger.record(6, chosen(Sub.new, nil))
+LibC.putchar(counted(nil).nil? ? 110 : 105)
