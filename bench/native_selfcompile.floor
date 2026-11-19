@@ -121,6 +121,7 @@ src/compiler/native/link/macho_exe.iyi parse
 src/compiler/native/lower.iyi parse
 src/compiler/native/mir.iyi parse
 src/compiler/native/mir_clean.iyi parse
+src/compiler/native/mir_const.iyi parse
 src/compiler/native/obj/elf.iyi parse
 src/compiler/native/obj/macho.iyi parse
 src/compiler/native/obj/object.iyi parse
