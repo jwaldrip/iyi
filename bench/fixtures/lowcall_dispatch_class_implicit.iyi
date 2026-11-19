@@ -1,0 +1,25 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def pick(x : Int32) : Int32 | Nil
+  x > 3 ? 42 : nil
+end
+
+# The crash shape: an implicit receiver inside a class method dispatches over a union
+# argument. Every arm's receiver is K's metaclass, so the frame must dispatch on it.
+class K
+  def self.one(value : Int32) : Int32
+    value
+  end
+
+  def self.one(value : Nil) : Int32
+    7
+  end
+
+  def self.g(b : Int32 | Nil) : Int32
+    one(b)
+  end
+end
+
+LibC.exit(K.g(pick(4)) &+ K.g(pick(0)))

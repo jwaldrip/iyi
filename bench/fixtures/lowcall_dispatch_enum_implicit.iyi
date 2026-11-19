@@ -1,0 +1,32 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def pick(x : Int32) : Int32 | Nil
+  x > 3 ? 42 : nil
+end
+
+# The same rule for an enum's class method reached with an implicit receiver.
+struct Choice
+  enum Kind : Int32
+    First = 1
+
+    def ==(other : Kind) : Bool
+      value == other.value
+    end
+
+    def self.one(value : Int32) : Int32
+      value
+    end
+
+    def self.one(value : Nil) : Int32
+      7
+    end
+
+    def self.g(b : Int32 | Nil) : Int32
+      one(b)
+    end
+  end
+end
+
+LibC.exit(Choice::Kind.g(pick(4)) &+ Choice::Kind.g(pick(0)))

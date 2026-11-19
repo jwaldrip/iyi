@@ -494,7 +494,15 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
       runtime_type = class_meta
       receiver = type_id_value(low, class_meta)
     else
-      class_owner = context_type
+      # Hosted codegen/call.cr:419-435 and llvm_self (codegen.cr:2526-2531): with no
+      # self, a class, module or enum frame dispatches over its own metaclass, since
+      # every arm's receiver is that metaclass. The instance id never equals a
+      # metaclass id, so no arm matched and the call reached `unreachable` (SIGTRAP).
+      frame_type = context_type.as(Type)
+      class_owner = frame_type
+      if (frame_type.is_a?(NonGenericClassType) || frame_type.is_a?(NonGenericModuleType) || frame_type.is_a?(EnumType)) && !frame_type.is_a?(NilType)
+        runtime_type = frame_type.as(ModuleType).metaclass
+      end
     end
   end
   tid : Value
@@ -590,7 +598,7 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
     end
     low.needs_value = phi_wants
     if prim = primitive_name(arm.definition.body)
-      raise "BUG: dispatched primitive has no self" if self_value.nil?
+      pending_visit_node("a dispatched primitive #{arm.definition.name} with no self (hosted call.cr: codegen_dispatch, llvm_self)") if self_value.nil?
       prim_values = [self_value.as(Value)] of Value
       arm_values.each do |value|
         prim_values << value

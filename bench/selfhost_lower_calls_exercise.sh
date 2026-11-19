@@ -20,6 +20,9 @@
 # Mutation proofs patch the ported code, rebuild the driver, and require the check to
 # fail. A patch that changes nothing is refused by prove_mutation.
 #
+# Two S8 fixtures are checked outside the lowcall loop, at the end of this file: lowcallwait_dispatch_module_native
+# by what it runs (its status and stdout against hosted's), and lowcallwait_dispatch_primitive_arm by its named refusal.
+#
 #   bash bench/selfhost_lower_calls_exercise.sh
 set -u
 status=0
@@ -1925,6 +1928,96 @@ prove_mutation "a receiverless call in a generic class method is treated as buil
   '      elsif class_meta = receiverless_class_metaclass(ct)' \
   '      elsif class_meta = nil' -- generic_frame_check || status=1
 
+
+# S8, the union-dispatch crash: an implicit receiver inside a class or enum class method dispatches over its own
+# metaclass (hosted call.cr:419-435, llvm_self). The class and enum fixtures must lower identically to hosted.
+dispatch_metaclass_check() {
+  if ! "$IYI" build -o "$WORK_NATIVE/dispatch_mut$EXE" "$REPO_NATIVE/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/dispatch_mut.build.log" 2>&1; then
+    invalid_mutation "$WORK/dispatch_mut.build.log"
+    return $?
+  fi
+  local name
+  for name in lowcall_dispatch_class_implicit lowcall_dispatch_enum_implicit; do
+    if ! "$WORK/dispatch_mut$EXE" lower "$(native_path "$REPO/bench/fixtures/$name.iyi")" "$WORK_NATIVE/$name.oracle.ll" > "$WORK/dispatch_mut.out" 2> "$WORK/dispatch_mut.err"; then
+      echo "INVALID: $name failed outside its comparison"
+      cat "$WORK/dispatch_mut.err"
+      return 2
+    fi
+    summary_check "$WORK/dispatch_mut.out" || return $?
+  done
+  return 0
+}
+if dispatch_metaclass_check; then
+  prove_mutation "an implicit class or enum method dispatches on the instance, not its metaclass" "$REPO/src/compiler/lower/call.iyi" \
+    '        runtime_type = frame_type.as(ModuleType).metaclass' \
+    '        runtime_type = frame_type' -- dispatch_metaclass_check || status=1
+else
+  echo 'FAIL: the class and enum dispatch fixtures do not lower identically to hosted'
+  status=1
+fi
+
+# The module fixture runs natively and must exit as hosted does. Its IR is not compared: the port types a module's
+# arms on its metaclass where hosted names the module type, so the type-id names differ while the program is the same.
+module_dispatch_native_check() {
+  local fixture="$REPO/bench/fixtures/lowcallwait_dispatch_module_native.iyi" rc=0 hrc=0
+  if ! "$IYI" build -o "$WORK_NATIVE/module_mut$EXE" "$REPO_NATIVE/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/module_mut.build.log" 2>&1; then
+    invalid_mutation "$WORK/module_mut.build.log"
+    return $?
+  fi
+  if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK_NATIVE/module_dispatch$EXE" "$(native_path "$fixture")" > "$WORK/module_dispatch.oracle.log" 2>&1 || [ ! -s "$WORK/module_dispatch.ll" ]; then
+    echo "INVALID: the hosted compiler did not build the module fixture"
+    cat "$WORK/module_dispatch.oracle.log"
+    return 2
+  fi
+  awk "$CALL_TYPES" "$WORK/module_dispatch.ll" | normalize_switches > "$WORK/module_dispatch.pre-splat.ll" || return 2
+  normalize_splat_formals < "$WORK/module_dispatch.pre-splat.ll" > "$WORK/module_dispatch.oracle.ll" || return 2
+  if ! "$WORK/module_mut$EXE" emit "$(native_path "$fixture")" "$WORK/module_dispatch.oracle.ll" > "$WORK/module_dispatch.port.ir" 2> "$WORK/module_dispatch.emit.err"; then
+    echo "INVALID: the port refuses the module fixture"
+    cat "$WORK/module_dispatch.emit.err"
+    return 2
+  fi
+  if [ ! -x "$WORK/compile_native$EXE" ]; then
+    echo "INVALID: the native tool is not built"
+    return 2
+  fi
+  if ! "$WORK/compile_native$EXE" "$WORK/module_dispatch.port.ir" -o "$WORK/module_dispatch.native" > "$WORK/module_dispatch.native.log" 2>&1; then
+    echo "the native tool refuses the port's module of the module fixture"
+    return 1
+  fi
+  timeout 30 "$WORK/module_dispatch.native" > "$WORK/module_dispatch.native.out" 2>&1 || rc=$?
+  timeout 30 "$WORK/module_dispatch$EXE" > "$WORK/module_dispatch.hosted.out" 2>&1 || hrc=$?
+  [ "$rc" = "$hrc" ] && cmp -s "$WORK/module_dispatch.native.out" "$WORK/module_dispatch.hosted.out"
+}
+if module_dispatch_native_check; then
+  prove_mutation "an implicit module function dispatches on the instance, not its metaclass" "$REPO/src/compiler/lower/call.iyi" \
+    '        runtime_type = frame_type.as(ModuleType).metaclass' \
+    '        runtime_type = frame_type' -- module_dispatch_native_check || status=1
+else
+  echo 'FAIL: the module dispatch fixture does not run to the hosted status'
+  status=1
+fi
+
+# A primitive arm reached by an implicit class-method dispatch has no self to pass. The port refuses it by name.
+dispatch_primitive_refusal_check() {
+  local fixture="$REPO/bench/fixtures/lowcallwait_dispatch_primitive_arm.iyi"
+  if ! "$IYI" build -o "$WORK_NATIVE/primarm_mut$EXE" "$REPO_NATIVE/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/primarm_mut.build.log" 2>&1; then
+    invalid_mutation "$WORK/primarm_mut.build.log"
+    return $?
+  fi
+  if "$WORK/primarm_mut$EXE" emit "$(native_path "$fixture")" "$WORK_NATIVE/lowcall_dispatch_class_implicit.oracle.ll" > "$WORK/primarm.out" 2> "$WORK/primarm.err"; then
+    echo "INVALID: the port lowered a primitive arm with no self"
+    return 2
+  fi
+  grep -Fq -- "lower: visit(a dispatched primitive one with no self (hosted call.cr: codegen_dispatch, llvm_self)) (hosted codegen.cr) is not ported yet" "$WORK/primarm.err"
+}
+if dispatch_primitive_refusal_check; then
+  prove_mutation "a primitive arm with no self reaches the BUG raise, not a named refusal" "$REPO/src/compiler/lower/call.iyi" \
+    '      pending_visit_node("a dispatched primitive #{arm.definition.name} with no self (hosted call.cr: codegen_dispatch, llvm_self)") if self_value.nil?' \
+    '      raise "BUG: dispatched primitive has no self" if self_value.nil?' -- dispatch_primitive_refusal_check || status=1
+else
+  echo 'FAIL: a primitive arm with no self is not refused by name'
+  status=1
+fi
 
 if [ -e "$WORK/general-mutation.invalid" ]; then
   echo "  FAIL: a mutation driver could not be built or verified; behavioral detection is unproven"

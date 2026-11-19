@@ -1,0 +1,26 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def pick(x : Int32) : Int32 | Nil
+  x > 3 ? 42 : nil
+end
+
+# The same rule for a module's function reached with an implicit receiver. The port types
+# a module's arms on its metaclass where hosted names the module type, so this fixture is
+# compared by what it runs (the calls gate's native check), not by its IR text.
+module M
+  def self.one(value : Int32) : Int32
+    value
+  end
+
+  def self.one(value : Nil) : Int32
+    7
+  end
+
+  def self.g(b : Int32 | Nil) : Int32
+    one(b)
+  end
+end
+
+LibC.exit(M.g(pick(4)) &+ M.g(pick(0)))
