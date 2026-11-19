@@ -2044,8 +2044,8 @@ run_proof_in "mutation 22: a literal interpolation is not folded into the string
 run_proof_in "mutation 23: a command literal is not a backtick call" "$PARSER" \
   "    return node unless kind == DelimiterKind::COMMAND" "    return node"
 run_proof_in "mutation 24: a heredoc is not read with its indent removed" "$PARSER" \
-  $'if delimiter_state.kind == DelimiterKind::HEREDOC\n      return StringInterpolation' \
-  $'if false && delimiter_state.kind == DelimiterKind::HEREDOC\n      return StringInterpolation'
+  $'if delimiter_state.kind == DelimiterKind::HEREDOC\n      heredoc_nodes = remove_heredoc_indent' \
+  $'if false && delimiter_state.kind == DelimiterKind::HEREDOC\n      heredoc_nodes = remove_heredoc_indent'
 run_proof_in "mutation 25: a begin block gets the paren keyword" "$PARSER" \
   "      node.keyword = Expressions::Keyword::Begin" "      node.keyword = Expressions::Keyword::Paren"
 run_proof_in "mutation 26: &.name with a local of that name reads the local" "$PARSER" \
@@ -2074,7 +2074,7 @@ run_proof_in "mutation 32: a global path after a type list starts a type whateve
 # Mutation 33: an arrow followed by an identifier goes back to the proc-literal path,
 # which refuses it for want of `do` or `{`.
 run_proof_in "mutation 33: an arrow followed by an identifier goes back to the proc-literal path" "$PARSER" \
-  "      return parse_fun_pointer unless @token.keyword == Keyword::DO" \
+  "      return parse_fun_pointer.at(location) unless @token.keyword == Keyword::DO" \
   "      nil"
 # Mutation 34: a proc pointer drops its argument type list, so the typed pointers lose their args.
 run_proof_in "mutation 34: a proc pointer drops its argument type list" "$PARSER" \
@@ -2323,8 +2323,8 @@ prove_mutation "mutation 64: a string glued to its colon is not a named tuple's 
   '        syntax_error("a named tuple has no string name", @token.location)' -- strkey_hold || status=1
 # Mutation 65: a string literal a colon follows is not a named argument in a call (parser.cr 6819-6820).
 prove_mutation "mutation 65: a call's string name is not a named argument" "$PARSER" \
-  $'        if @token.type == TokenKind::OP_COLON && arg.is_a?(StringLiteral)\n          named_args = parse_named_args(allow_newline: true, first_name: arg.value)' \
-  $'        if false && @token.type == TokenKind::OP_COLON && arg.is_a?(StringLiteral)\n          named_args = parse_named_args(allow_newline: true, first_name: arg.value)' -- strkey_hold || status=1
+  $'        if @token.type == TokenKind::OP_COLON && arg.is_a?(StringLiteral)\n          named_args = parse_named_args(allow_newline: true, first_name: arg.value, first_location: arg.location)' \
+  $'        if false && @token.type == TokenKind::OP_COLON && arg.is_a?(StringLiteral)\n          named_args = parse_named_args(allow_newline: true, first_name: arg.value, first_location: arg.location)' -- strkey_hold || status=1
 # corpus_hold: a mutant's verdicts over the whole corpus. Caught when it refuses a corpus file hosted accepts.
 corpus_hold() {
   if ! build_mutant_exercise; then
