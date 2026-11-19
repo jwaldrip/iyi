@@ -240,6 +240,21 @@ prove_mutation "a type path as receiver resolves to its instance, not its metacl
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# TypeLookup.expand answers an alias with the type it names (hosted remove_alias_if_simple, main_visitor.cr 194 and
+# 259), so a receiver written as an alias is looked up on that type. A receiver expanded to the wrong type, or a
+# non-generic alias left unexpanded, changes what the lookup finds on the receiver's metaclass.
+prove_mutation "an alias receiver is looked up on Int32, not on the type it names" "$REPO/src/compiler/types/lookup.iyi" \
+  '      return expand(target.as(Type))' \
+  '      return expand(program.types["Int32"])' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a non-generic alias is not expanded to the class it names" "$REPO/src/compiler/types/lookup.iyi" \
+  '    if type.is_a?(AliasType)' \
+  '    if type.is_a?(AliasType) && !type.as(AliasType).value.is_a?(Path)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "undefined method names a program's calls by the program, not top-level" "$ERROR_FILE" \
   "? \"top-level\" : owner.to_s" \
   "? \"program\" : owner.to_s" \

@@ -1,0 +1,23 @@
+# An alias of a generic instance names a type, so a lookup through it is a lookup on that
+# instance's metaclass, as the written-out instance is. IntBox.new with no argument answers
+# none, since the instance's initialize takes one; a receiver the driver cannot type would
+# answer "receiver is not resolvable", so the line tells the two apart. The driver does not
+# answer a lookup with arguments on a generic instance's metaclass (the written-out
+# Box(Int32).new(4) is not answered either), so those are checked by
+# bench/fixtures/semnew_alias_generic.iyi, which takes the alias through the main pass.
+# Read by bench/selfhost_semantic_calls_exercise.sh.
+
+struct Box(T)
+  getter value : T
+
+  def initialize(@value : T)
+  end
+end
+
+alias IntBox = Box(Int32)
+alias IntBoxAgain = IntBox
+
+# call IntBox.new
+# call IntBoxAgain.new
+# error IntBox.new
+# error IntBoxAgain.new

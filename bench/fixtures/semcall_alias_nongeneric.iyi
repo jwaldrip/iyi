@@ -1,0 +1,26 @@
+# A call through an alias of a class is a call on that class's metaclass, as a call through
+# the class itself is, and so is a call through an alias of that alias. Read by
+# bench/selfhost_semantic_calls_exercise.sh.
+
+class Point
+  getter x : Int32
+
+  def initialize(@x : Int32)
+  end
+
+  def self.origin : Point
+    Point.new(0)
+  end
+end
+
+alias P = Point
+alias Q = P
+
+# call P.new(3)
+# call P.origin
+# call Q.new(3)
+# call Q.origin
+# call Point.new(3)
+# error P.new(3)
+# error Q.origin
+# error P.new
