@@ -1,0 +1,10 @@
+# Two sibling files each import a `Crate` from a different module. This file imports `Crate` from one of them and
+# uses it as a superclass. Hosted accepts: each file's imports are its own (SPEC II.3), and this file's `Crate` is
+# `semdecl/crate_main`'s. A port that keeps one table of import sources for every file counts the siblings' two
+# imports as two sources of this file's `Crate`, and refuses this use.
+import semdecl/sibling_main
+import semdecl/sibling_alt
+import semdecl/crate_main::{Crate}
+
+class Holder < Crate
+end

@@ -1,0 +1,8 @@
+module semdecl/sibling_main
+
+# One of two sibling files that import a `Crate` from different modules (see
+# bench/fixtures/semdecl_import_sources_isolated.iyi). Its import is this file's alone.
+import semdecl/crate_main::{Crate}
+
+pub class SiblingMain
+end

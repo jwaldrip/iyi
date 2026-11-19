@@ -1,0 +1,6 @@
+module semdecl/crate_alt
+
+# A second module exporting a type named `Crate`, a different type from `semdecl/other`'s. It has no string
+# interpolation, so hosted builds a fixture that imports it with --prelude empty.
+pub class Crate
+end

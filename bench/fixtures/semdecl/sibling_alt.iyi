@@ -1,0 +1,8 @@
+module semdecl/sibling_alt
+
+# One of two sibling files that import a `Crate` from different modules (see
+# bench/fixtures/semdecl_import_sources_isolated.iyi). Its import is this file's alone.
+import semdecl/crate_alt::{Crate}
+
+pub class SiblingAlt
+end

@@ -1690,12 +1690,12 @@ pub class SemanticProgram < NonGenericModuleType
   # looked up in these modules, after the file's own scope (hosted call.cr lookup_using_macro).
   property current_import_macros : Hash(String, Array(ModuleType))
   getter file_import_macros : Hash(String, Hash(String, Array(ModuleType))) = Hash(String, Hash(String, Array(ModuleType))).new
-  # For each name this file imports, where each import of it came from: its kind ("type" or "def"), the
-  # module that exports it, and for a type the type it names. A name two modules export, or one type
-  # reached as two different types, is ambiguous and refused only where the name is used (SPEC II.3,
-  # hosted path_lookup.cr:195-224). One module imported twice is one source.
-  property current_import_sources : Hash(String, Array(ImportSource))
-  getter file_import_sources : Hash(String, Hash(String, Array(ImportSource))) = Hash(String, Hash(String, Array(ImportSource))).new
+  # Where each import of a name this file's imports bring in came from: its kind ("type" or "def"), the module
+  # that exports it, and for a type the type it names. A name two modules export, or one type reached as two
+  # different types, is ambiguous and refused only where the name is used (SPEC II.3, hosted path_lookup.cr:195-224).
+  # One module imported twice is one source. The sources are kept with the imports table that resolves the name
+  # (`current_imports`), so each phase reads the sources of the file it reads names from (see import_sources_of).
+  getter import_source_tables : Hash(UInt64, ImportSourceTable) = Hash(UInt64, ImportSourceTable).new
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
   # iyi: the directory of the entry file: the first root an import is resolved from, as
@@ -2164,7 +2164,6 @@ pub class SemanticProgram < NonGenericModuleType
     @current_imports = Hash(String, Type).new
     @current_import_defs = Hash(String, Array(Def)).new
     @current_import_macros = Hash(String, Array(ModuleType)).new
-    @current_import_sources = Hash(String, Array(ImportSource)).new
     @project_root = nil
     @entry_dir = nil
     @total_mode = false
@@ -2616,19 +2615,44 @@ pub class SemanticProgram < NonGenericModuleType
   # Records where an import of *name* came from, for the ambiguity check at its use. *kind* is "type" or
   # "def"; *item* is the type a type import names, and nil for a def group. One module imported twice is one source.
   def record_import_source(name : String, kind : String, unit : ModuleType, item : Type?) : Nil
-    sources = @current_import_sources[name]? || ([] of ImportSource)
+    by_name = import_sources_of(@current_imports)
+    sources = by_name[name]? || ([] of ImportSource)
     unless sources.any? { |s| s.same?(kind, unit, item) }
       sources << ImportSource.new(kind, unit, item)
     end
-    @current_import_sources[name] = sources
+    by_name[name] = sources
     nil
+  end
+
+  # The sources of the names an imports table brings in, created with the table on first use.
+  def import_sources_of(imports : Hash(String, Type)) : Hash(String, Array(ImportSource))
+    key = import_table_key(imports)
+    if table = @import_source_tables[key]?
+      return table.by_name
+    end
+    created = ImportSourceTable.new(imports)
+    @import_source_tables[key] = created
+    created.by_name
+  end
+
+  # The sources the current imports table records for *name*, or nil when it records none. A read creates no table.
+  def current_import_sources_of(name : String) : Array(ImportSource)?
+    if table = @import_source_tables[import_table_key(@current_imports)]?
+      return table.by_name[name]?
+    end
+    nil
+  end
+
+  # An imports table is keyed in import_source_tables by its object id.
+  def import_table_key(imports : Hash(String, Type)) : UInt64
+    imports.object_id
   end
 
   # Refuses a use of *name* that the file's imports bring in as two different things: a def that two modules
   # export, or a type reached as two different types. Only the use is refused, never the import (SPEC II.3,
   # hosted path_lookup.cr:195-224 and call.cr:546). A name nothing makes ambiguous passes without a word.
   def check_import_ambiguity(name : String, kind : String, location : Location?) : Nil
-    sources = @current_import_sources[name]?
+    sources = current_import_sources_of(name)
     return nil unless sources
     first : ImportSource? = nil
     i = 0
@@ -2795,7 +2819,7 @@ pub class SemanticProgram < NonGenericModuleType
   end
 end
 
-# One import of a name into a file (SemanticProgram#current_import_sources): the kind of name it brings in
+# One import of a name into a file (SemanticProgram#import_sources_of): the kind of name it brings in
 # ("type" or "def"), the module that exports it, and for a type the type it names.
 pub class ImportSource
   getter kind : String
@@ -2825,6 +2849,18 @@ pub class ImportSource
       return mine.object_id
     end
     @unit.object_id
+  end
+end
+
+# The import sources of one imports table (SemanticProgram#import_sources_of): each name the table imports, with the
+# sources it came from. The table holds the imports it belongs to, so the object id that keys it is never reused by
+# another table while this one exists.
+pub class ImportSourceTable
+  getter imports : Hash(String, Type)
+  getter by_name : Hash(String, Array(ImportSource))
+
+  def initialize(@imports : Hash(String, Type))
+    @by_name = Hash(String, Array(ImportSource)).new
   end
 end
 
@@ -3004,7 +3040,6 @@ pub class TopLevelVisitor < Visitor
       @program.file_imports[file] = @program.current_imports
       @program.file_import_defs[file] = @program.current_import_defs
       @program.file_import_macros[file] = @program.current_import_macros
-      @program.file_import_sources[file] = @program.current_import_sources
     end
   end
 
@@ -3171,7 +3206,7 @@ pub class TopLevelVisitor < Visitor
   # Whether two different modules export a def under *name*: a call both of them answer is ambiguous (hosted
   # call.cr:546). The records are the file's own, so only the file's imports are read.
   def def_sources_differ?(name : String) : Bool
-    sources = @program.current_import_sources[name]?
+    sources = @program.current_import_sources_of(name)
     return false unless sources
     first : ModuleType? = nil
     i = 0
@@ -3263,7 +3298,6 @@ pub class TopLevelVisitor < Visitor
     saved = @program.current_imports
     saved_defs = @program.current_import_defs
     saved_macros = @program.current_import_macros
-    saved_sources = @program.current_import_sources
     @program.current_imports = Hash(String, Type).new
     # A required file never finishes its own pending instance variables. It hands them to
     # the file that reads it, and the root that read them finishes once, after every file
@@ -3271,17 +3305,14 @@ pub class TopLevelVisitor < Visitor
     inner.exp_nest = 1
     @program.current_import_defs = Hash(String, Array(Def)).new
     @program.current_import_macros = Hash(String, Array(ModuleType)).new
-    @program.current_import_sources = Hash(String, Array(ImportSource)).new
     @program.file_imports[file] = @program.current_imports
     @program.file_import_defs[file] = @program.current_import_defs
     @program.file_import_macros[file] = @program.current_import_macros
-    @program.file_import_sources[file] = @program.current_import_sources
     nodes.accept(inner)
     inner.take_pending_ivars.each { |pi| @pending_ivars << pi }
     @program.current_imports = saved
     @program.current_import_defs = saved_defs
     @program.current_import_macros = saved_macros
-    @program.current_import_sources = saved_sources
     if unit = inner.unit
       @program.loaded_units[file] = unit
     end

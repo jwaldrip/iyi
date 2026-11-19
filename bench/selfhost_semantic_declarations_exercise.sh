@@ -772,6 +772,12 @@ prove_mutation "method visibility defaults to private instead of public" "$MUT_S
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "every file's import sources share one table, as declare_unit once made them" "$MUT_SEM" \
+  $'def import_table_key(imports : Hash(String, Type)) : UInt64\n    imports.object_id' \
+  $'def import_table_key(imports : Hash(String, Type)) : UInt64\n    0_u64' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "module path segments keep their written case" "$MUT_SEM" \
   "mod = NonGenericModuleType.new(@program, base, pname)" \
   "mod = NonGenericModuleType.new(@program, base, pname.downcase)" \

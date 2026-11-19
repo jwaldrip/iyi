@@ -1,0 +1,6 @@
+module semdecl/crate_main
+
+# A module exporting a type named `Crate`. No prelude macro is used, so hosted builds a fixture that imports it with
+# --prelude empty. It is a different type from `semdecl/crate_alt`'s `Crate`.
+pub class Crate
+end
