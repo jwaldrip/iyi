@@ -1,0 +1,11 @@
+# A double splat of a union is refused by name, with hosted's wording (call.cr:200-201): the
+# union's members are not one named tuple to expand.
+def pick(flag : Bool) : NamedTuple(a: Int32, b: Int32) | Int32
+  flag ? {a: 1, b: 2} : 3
+end
+
+def sum(a : Int32, b : Int32) : Int32
+  a &+ b
+end
+
+sum(**pick(true))

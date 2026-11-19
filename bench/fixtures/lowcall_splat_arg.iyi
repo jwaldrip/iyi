@@ -1,0 +1,44 @@
+# A splat argument is typed as the call it expands into. A splat whose operand is not a
+# variable is evaluated once, into a temporary, before the call (hosted replace_call_splats),
+# and a splatted tuple becomes one argument per element (hosted replace_splats). The tally
+# counts the calls it receives, so a splat that evaluates its operand twice, or after a later
+# argument, changes the exit status: 212 is 5 + 11 + 94 + 102.
+
+class Tally
+  def initialize
+    @calls = 0
+  end
+
+  def next_pair : Tuple(Int32, Int32)
+    @calls = @calls &+ 1
+    {10, @calls}
+  end
+
+  def bump : Int32
+    @calls = @calls &+ 100
+    @calls
+  end
+
+  def calls : Int32
+    @calls
+  end
+end
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def sum(a : Int32, b : Int32) : Int32
+  a &+ b
+end
+
+def spread(a : Int32, b : Int32, c : Int32) : Int32
+  a &- b &+ c
+end
+
+tally = Tally.new
+pair = {2, 3}
+first = sum(*pair)
+second = sum(*tally.next_pair)
+third = spread(tally.bump, *tally.next_pair)
+LibC.exit(first &+ second &+ third &+ tally.calls)
