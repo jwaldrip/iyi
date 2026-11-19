@@ -1162,8 +1162,8 @@ prove_mutation "a macro two imports export is answered without a refusal" "$MUT_
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "the selective form refuses a macro name" "$MUT_SEM" \
-  '    import_macros(name, unit)
-    nil' \
+  '      import_macros(name, unit)
+      return nil' \
   '    refuse_port("a macro name is refused")' \
   -- check_fixture_outcomes || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))

@@ -3102,30 +3102,36 @@ pub class TopLevelVisitor < Visitor
     false
   end
 
-  # One name of the selective form (`import a/b::{name}`): a type, a def group or a pub macro. A name the
-  # unit does not export is refused as it always was.
+  # One name of the selective form (`import a/b::{name}`): a type, a def group or a pub macro. A name the unit
+  # declares without `pub` is refused with hosted's `does not export` (top_level_visitor.cr:452, SPEC R-2b). A
+  # name the unit does not declare at all is refused as it always was.
   def import_name(name : String, unit : ModuleType, written : String) : Nil
     found = unit.types[name]?
     if found
-      if found.private?
-        refuse_port("undefined constant #{name} in '#{written}'")
-      end
+      refuse_unexported(name, unit) if found.private?
       import_type(name, found, unit)
       return nil
     end
     # A lowercase name is a def the file declares (`import a/b::{refuse_port}`): the calls slice
     # resolves calls to it, so the pass records it here.
     if defs = unit.defs[name]?
+      refuse_unexported(name, unit) unless defs.any? { |d| d.visibility == Visibility::Public }
       import_def(name, defs, unit)
       return nil
     end
-    # A macro is named the same way (`import a/b::{shout}`). Only a `pub` one is exported, so a private
-    # macro is refused like any other name the module lacks.
-    unless exports_macro?(unit, name)
-      refuse_port("undefined constant #{name} in '#{written}'")
+    # A macro is named the same way (`import a/b::{shout}`); only a `pub` one is exported.
+    if unit.macros[name]?
+      refuse_unexported(name, unit) unless exports_macro?(unit, name)
+      import_macros(name, unit)
+      return nil
     end
-    import_macros(name, unit)
-    nil
+    refuse_port("undefined constant #{name} in '#{written}'")
+  end
+
+  # The hosted refusal for a name a module declares without `pub` (top_level_visitor.cr:452). The text is the
+  # hosted compiler's own line, so the two compilers print the same error.
+  def refuse_unexported(name : String, unit : ModuleType) : NoReturn
+    refuse_port("#{unit.full_name} does not export `#{name}`. an import brings in only what a module marks `pub` — add `pub` to the declaration if it is meant to be part of the module's surface (SPEC.md R-2b)")
   end
 
   # Whether *unit* exports a macro called *name*: one of its macros with that name is `pub`.
@@ -3161,9 +3167,36 @@ pub class TopLevelVisitor < Visitor
     nil
   end
 
-  # Brings the def group *defs* of *unit* into the file's names under *name*. A def that two modules export
-  # under one name stays recorded from both, and a call that reaches both is refused where it is made.
+  # Whether two different modules export a def under *name*: a call both of them answer is ambiguous (hosted
+  # call.cr:546). The records are the file's own, so only the file's imports are read.
+  def def_sources_differ?(name : String) : Bool
+    sources = @program.current_import_sources[name]?
+    return false unless sources
+    first : ModuleType? = nil
+    i = 0
+    while i < sources.size
+      source = sources[i]
+      if source.kind == "def"
+        if found = first
+          return true if found.object_id != source.unit.object_id
+        else
+          first = source.unit
+        end
+      end
+      i = i + 1
+    end
+    false
+  end
+
+  # Brings the def group *defs* of *unit* into the file's names under *name*. When two modules export a def under
+  # this name the group is dropped: hosted refuses only the call that both answer, and the port does not yet pick
+  # an overload by signature, so the call is refused by name rather than answered by one of the two.
   def import_def(name : String, defs : Array(Def), unit : ModuleType) : Nil
+    @program.record_import_source(name, "def", unit, nil)
+    if def_sources_differ?(name)
+      @program.current_import_defs[name] = [] of Def
+      return nil
+    end
     merged = [] of Def
     if existing = @program.current_import_defs[name]?
       existing.each { |d| merged << d }
@@ -3172,7 +3205,6 @@ pub class TopLevelVisitor < Visitor
       merged << d unless merged.any? { |e| e.object_id == d.object_id }
     end
     @program.current_import_defs[name] = merged
-    @program.record_import_source(name, "def", unit, nil)
     nil
   end
 
