@@ -1,0 +1,15 @@
+; iyi-ir 1
+source_filename = "thread_back_edge"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i32 @thread_back_edge(i1 %c) {
+entry:
+  br label %join
+join:
+  %p = phi i1 [ %c, label %entry ], [ true, label %spin ]
+  br i1 %p, label %spin, label %done
+spin:
+  br label %join
+done:
+  ret i32 0
+}
