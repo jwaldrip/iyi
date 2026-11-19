@@ -350,10 +350,43 @@ class BlockLayout
           end
         end
       end
-      orders << post.reversed
+      orders << rotated_order(post.reversed, region - 1) # mutation R7-rotate: the header stays first
       region = region + 1
     end
     orders
+  end
+
+  # A loop whose header ends in a two-way branch with exactly one successor inside
+  # the loop has its region emitted with the header last: the latch falls into the
+  # test, and the test's edge back to the body is the one branch taken per iteration.
+  def loop_test?(loop_id : Int32) : Bool
+    header = @headers[loop_id]
+    term = @cfg.block(header).terminator
+    return false unless term.op == Op::CondBr && term.targets[0] != term.targets[1]
+    succs = @cfg.succs(header)
+    inside = 0
+    i = 0
+    while i < succs.size
+      inside = inside + 1 if loop_contains?(loop_id, succs[i])
+      i = i + 1
+    end
+    inside == 1
+  end
+
+  def loop_contains?(loop_id : Int32, block : Int32) : Bool
+    inner = @inner[block]
+    return false if inner < 0 || @depths[inner] < @depths[loop_id]
+    lift_loop(inner, @depths[inner] - @depths[loop_id]) == loop_id
+  end
+
+  # A loop region starts at its header, so the header is its first node in the
+  # depth-first order. The root region (loop_id -1) keeps its order.
+  def rotated_order(order : Array(Int32), loop_id : Int32) : Array(Int32)
+    return order if loop_id < 0 || order.size < 2 || !loop_test?(loop_id)
+    raise "BUG: loop region does not start at its header" unless order[0] == @headers[loop_id]
+    rotated = order[1, order.size - 1]
+    rotated << order[0]
+    rotated
   end
 
   def run : Bool
