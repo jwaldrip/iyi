@@ -1,0 +1,36 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+trait Show
+  abstract def show : Int32
+end
+
+struct Box(T)
+  def initialize(@value : T)
+  end
+end
+
+impl Show for Box(T) forall T
+  def show : Int32
+    7
+  end
+end
+
+struct Slots
+  @count : Int32
+  @first : Show
+  @second : Show
+
+  def initialize
+    @count = 2
+    @first = Box.new(1)
+    @second = Box.new("two")
+  end
+
+  def count : Int32
+    @count
+  end
+end
+
+LibC.exit(Slots.new.count)
