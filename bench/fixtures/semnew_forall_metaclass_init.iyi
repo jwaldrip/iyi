@@ -1,0 +1,17 @@
+# A constructor whose initialize takes a metaclass restriction on a forall name. The
+# generated `new` must keep the forall name, or `Foo.new(Bar)` cannot bind T and the
+# argument is refused. The body builds its ivar through the class, as HMAC does.
+# Read by bench/selfhost_semantic_new_exercise.sh.
+
+class Bar
+end
+
+class Foo
+  @x : Bar
+
+  def initialize(t : T.class) forall T
+    @x = t.new
+  end
+end
+
+Foo.new(Bar)

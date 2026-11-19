@@ -1,0 +1,19 @@
+# A generic class with no initialize of its own inherits a generic parent's initialize. That
+# initialize takes a metaclass restriction on a forall name and a type variable of the parent,
+# which the call infers from its second argument. The default generic new of the child copies
+# the initialize, and the copy must keep its forall names, or Child.new(Bar, 1) cannot bind T.
+# Read by bench/selfhost_semantic_new_exercise.sh.
+
+class Bar
+end
+
+class Base(X)
+  def initialize(t : T.class, v : X) forall T
+    @x = 1
+  end
+end
+
+class Child(X) < Base(X)
+end
+
+Child.new(Bar, 1)

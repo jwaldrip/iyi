@@ -1,0 +1,13 @@
+# Control: a metaclass parameter with no forall names still takes its class, and the
+# constructor it generates is unchanged. Read by bench/selfhost_semantic_new_exercise.sh.
+
+class Bar
+end
+
+class Foo
+  def initialize(t : Bar.class)
+    @x = 1
+  end
+end
+
+Foo.new(Bar)

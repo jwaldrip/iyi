@@ -1,0 +1,12 @@
+# A method whose parameter is a metaclass restriction on a forall name (`t : T.class`)
+# and whose return is that name. The call passes a class, so T binds to Bar through the
+# metaclass, and `t.new` builds a Bar. Read by bench/selfhost_semantic_new_exercise.sh.
+
+class Bar
+end
+
+def make(t : T.class) : T forall T
+  t.new
+end
+
+make(Bar)
