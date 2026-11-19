@@ -1,0 +1,14 @@
+{% if `echo 1`.strip == "1" %}
+  {% for n in [1] %}
+    HAS_Y = {{ `echo 2`.strip }}
+  {% end %}
+  lib LibSkipped
+    fun exit(status : Int32) : NoReturn
+  end
+{% end %}
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(0)

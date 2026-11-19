@@ -1,0 +1,9 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+{% if flag?(:unix) %}
+  LibC.exit(42)
+{% else %}
+  LibC.exit(7)
+{% end %}

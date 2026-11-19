@@ -1,0 +1,9 @@
+{% if `echo 1`.strip == "1" %}
+  {{ `echo 'require "./loader_if_b"'`.strip }}
+{% end %}
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(0)

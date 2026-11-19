@@ -1,0 +1,9 @@
+{% if `echo yes`.strip == "yes" %}
+  HAS_X = {{ `echo 1`.strip }}
+{% end %}
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(0)

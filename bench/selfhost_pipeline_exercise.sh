@@ -1035,29 +1035,136 @@ else
   status=1
 fi
 
-# A top-level `{% if flag?(:no_such_flag) %}` require takes the else branch. The driver's
-# output names loader_if_b and not loader_if_a. The mutation makes the loader read every
-# `{% if %}`'s first branch, so the same output names a and the check fails.
-loader_if_check() {
-  local rc=0
+# The loader's import walk, judged on the fixtures in bench/fixtures. The driver prints the file of each module it loads,
+# the entry last. Each check builds the driver from the tree as it is, then runs one fixture through it: 0 when the port
+# does what the fixture asks, 1 when it does not (a mutation must cause this), 2 when the driver fails for another reason.
+loader_driver_run() {
+  local name="$1"
+  LOADER_RC=0
   build_tool "$REPO/bench/selfhost_loader_if_exercise.iyi" "$WORK/loader_if_drv" || return 2
-  "$WORK/loader_if_drv$EXE" "$REPO_NATIVE/bench/fixtures/loader_if_entry.iyi" > "$WORK/loader_if.out" 2> "$WORK/loader_if.err" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    echo "  INVALID: loader driver exited $rc" >&2
-    cat "$WORK/loader_if.out" "$WORK/loader_if.err" >&2
-    return 2
-  fi
-  awk '/loader_if_b/ { b = 1 } /loader_if_a/ { a = 1 } END { exit !(b && !a) }' "$WORK/loader_if.out"
+  "$WORK/loader_if_drv$EXE" "$REPO_NATIVE/bench/fixtures/$name.iyi" > "$WORK/$name.loader.out" 2> "$WORK/$name.loader.err" || LOADER_RC=$?
 }
-echo "  the loader if-require check passes on the unmutated code:"
-if loader_if_check; then
+
+# The entry alone is loaded: the port neither refuses nor loads another module.
+loader_loads_only_entry() {
+  local name="$1" n
+  loader_driver_run "$name" || return 2
+  if [ "$LOADER_RC" -eq 1 ] && grep -q '^Error: port limitation' "$WORK/$name.loader.err"; then return 1; fi
+  [ "$LOADER_RC" -eq 0 ] || return 2
+  n="$(awk 'NF' "$WORK/$name.loader.out" | wc -l | tr -d ' ')"
+  [ "$n" -eq 1 ] || return 1
+  awk -v e="$name.iyi" 'NF { ok = (substr($0, length($0) - length(e) + 1) == e) } END { exit !ok }' "$WORK/$name.loader.out"
+}
+
+# The port refuses the fixture by name at the site given, and loads nothing. A silent load, or a refusal elsewhere, is a difference.
+loader_refuses_at() {
+  local name="$1" site="$2"
+  loader_driver_run "$name" || return 2
+  if [ "$LOADER_RC" -eq 0 ]; then return 1; fi
+  if [ "$LOADER_RC" -ne 1 ] || ! grep -q '^Error: port limitation' "$WORK/$name.loader.err"; then return 2; fi
+  grep -Eq "^Error: port limitation: .* at $site " "$WORK/$name.loader.err" && return 0
+  return 1
+}
+
+# Each module the driver lists is listed once. A file reached through two spellings is one module, so the entry and the
+# module it requires are two lines in all.
+loader_lists_each_once() {
+  local name="$1" dup n
+  loader_driver_run "$name" || return 2
+  if [ "$LOADER_RC" -eq 1 ] && grep -q '^Error: port limitation' "$WORK/$name.loader.err"; then return 1; fi
+  [ "$LOADER_RC" -eq 0 ] || return 2
+  dup="$(awk -F/ 'NF { print $NF }' "$WORK/$name.loader.out" | sort | uniq -d | wc -l | tr -d ' ')"
+  [ "$dup" -eq 0 ] || return 1
+  n="$(awk 'NF' "$WORK/$name.loader.out" | wc -l | tr -d ' ')"
+  [ "$n" -eq 2 ]
+}
+
+# A top-level `{% if flag?(:no_such_flag) %}` require takes the else branch. The driver's output names loader_if_b and not
+# loader_if_a. A driver that reads the first branch of every `{% if %}` names a, or refuses, and the check fails.
+loader_if_check() {
+  loader_driver_run loader_if_entry || return $?
+  if [ "$LOADER_RC" -eq 1 ] && grep -q '^Error: port limitation' "$WORK/loader_if_entry.loader.err"; then return 1; fi
+  [ "$LOADER_RC" -eq 0 ] || return 2
+  awk '/loader_if_b/ { b = 1 } /loader_if_a/ { a = 1 } END { exit !(b && !a) }' "$WORK/loader_if_entry.loader.out"
+}
+echo "  the loader's import walk passes its fixtures on the unmutated code:"
+if loader_if_check &&
+   loader_loads_only_entry loader_expr_position_entry &&
+   loader_refuses_at loader_expr_position_stmt_refused_entry 'loader_expr_position_stmt_refused_entry\.iyi:1:1' &&
+   loader_refuses_at loader_if_body_nested_refused_entry 'loader_if_body_nested_refused_entry\.iyi:1:7' &&
+   loader_refuses_at loader_if_body_stmt_refused_entry 'loader_if_body_stmt_refused_entry\.iyi:1:7' &&
+   loader_loads_only_entry loader_if_body_noimport_entry &&
+   loader_loads_only_entry loader_assign_entry &&
+   loader_lists_each_once loader_dot_spelling_entry; then
   echo "    unmutated: pass"
+  prove_mutation "the loader takes a {{ }} in expression position for a statement" "$LOADER_SRC" \
+    '    !["=", "(", "[", "{", ",", ":", "+", "-", "*", "/", "%", "&", "|", "^", "<", ">", "!", "?", "."].includes?(tail[tail.size - 1, 1])' \
+    '    true' -- loader_loads_only_entry loader_expr_position_entry || status=1
+  prove_mutation "the loader does not search nested control for an import" "$LOADER_SRC" \
+    '        found = Loader.may_import?(piece, statement)' \
+    '        found = Loader.may_import?(piece, statement) && piece.is_a?(MacroExpression)' \
+    -- loader_refuses_at loader_if_body_nested_refused_entry 'loader_if_body_nested_refused_entry\.iyi:1:7' || status=1
+  prove_mutation "the loader does not refuse a statement {{ }} whose expansion is unknown" "$LOADER_SRC" \
+    $'      Loader.body_may_import?(node.as(MacroFor).body)\n    else\n      true' \
+    $'      Loader.body_may_import?(node.as(MacroFor).body)\n    else\n      false' \
+    -- loader_refuses_at loader_expr_position_stmt_refused_entry 'loader_expr_position_stmt_refused_entry\.iyi:1:1' || status=1
+  prove_mutation "the loader refuses an output-free macro assignment" "$LOADER_SRC" \
+    '    if node.is_a?(MacroExpression) && !node.as(MacroExpression).output' \
+    '    if false' \
+    -- loader_loads_only_entry loader_assign_entry || status=1
+  prove_mutation "the loader keeps a . segment as a second module" "$LOADER_SRC" \
+    '      if seg == "."' \
+    '      if false' \
+    -- loader_lists_each_once loader_dot_spelling_entry || status=1
+  prove_mutation "the loader keeps a dir/.. pair as a second module" "$LOADER_SRC" \
+    '      elsif seg == ".." && !kept.empty?' \
+    '      elsif false' \
+    -- loader_lists_each_once loader_dot_spelling_entry || status=1
   prove_mutation "the loader reads the first branch of every {% if %}" "$LOADER_SRC" \
     'if report.failure.nil? && !report.skipped' 'if false' -- loader_if_check || status=1
 else
-  echo "    unmutated: FAIL (the loader if-require check cannot prove anything)"
+  echo "    unmutated: FAIL (the loader import checks cannot prove anything)"
   status=1
 fi
+
+# bare-name checks begin
+# A bare require resolves through IYI_PATH only, as hosted does. The refused fixture has a file beside it and none on the
+# path, so it is refused at its require. The both fixture has a file beside it and one on the path, so the path's file loads.
+loader_driver_run_with_path() {
+  local fixture="$1" tag="$2" path="$3"
+  LOADER_RC=0
+  build_tool "$REPO/bench/selfhost_loader_if_exercise.iyi" "$WORK/loader_if_drv" || return 2
+  IYI_PATH="$path" "$WORK/loader_if_drv$EXE" "$REPO_NATIVE/bench/fixtures/$fixture" > "$WORK/$tag.loader.out" 2> "$WORK/$tag.loader.err" || LOADER_RC=$?
+}
+loader_bare_refused_check() {
+  loader_driver_run_with_path bare_beside/main.iyi bare_refused "$REPO_NATIVE/bench/fixtures/bare_nolib" || return 2
+  if [ "$LOADER_RC" -eq 0 ]; then return 1; fi
+  if [ "$LOADER_RC" -ne 1 ]; then return 2; fi
+  if ! grep -q '^Error: port limitation' "$WORK/bare_refused.loader.err"; then return 1; fi
+  grep -Fxq "Error: port limitation: can't find file 'bare_beside_name' for the require at main.iyi:1 (a bare require resolves through IYI_PATH only, as hosted does)" "$WORK/bare_refused.loader.err"
+}
+loader_bare_both_check() {
+  loader_driver_run_with_path bare_both/main.iyi bare_both "$REPO_NATIVE/bench/fixtures/bare_lib" || return 2
+  if [ "$LOADER_RC" -ne 0 ]; then return 1; fi
+  awk '/bare_lib\/bare_both_name\.iyi$/ { lib = 1 } /bare_both\/bare_both_name\.iyi$/ { beside = 1 } END { exit !(lib && !beside) }' "$WORK/bare_both.loader.out"
+}
+loader_bare_checks() { loader_bare_refused_check && loader_bare_both_check; }
+echo "  a bare require resolves through IYI_PATH only, as hosted does:"
+if loader_bare_checks; then
+  echo "    unmutated: pass"
+  prove_mutation "a bare require also searches the requiring file's directory" "$LOADER_SRC" \
+    'resolved = bare ? @iyi_path.find(name, nil, nil)' \
+    'resolved = bare ? @iyi_path.find(name, relative_dir, nil)' \
+    -- loader_bare_checks || status=1
+  prove_mutation "a bare require that IYI_PATH does not hold is not refused" "$LOADER_SRC" \
+    'if bare && resolved.nil?' \
+    'if false && resolved.nil?' \
+    -- loader_bare_checks || status=1
+else
+  echo "    unmutated: FAIL (the bare-name checks cannot prove anything)"
+  status=1
+fi
+# bare-name checks end
 
 # The same entry must run the selected branch through declarations, lowering and the linker.
 pipeline_loader_if_check() {

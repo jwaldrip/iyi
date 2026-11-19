@@ -1,0 +1,8 @@
+require "./loader_if_a"
+require "../fixtures/loader_if_a"
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(0)

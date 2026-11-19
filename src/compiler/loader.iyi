@@ -10,7 +10,8 @@
 module compiler/loader
 
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Expressions, ImportDecl, Require, Call, StringLiteral, MacroIf, MacroFor, MacroLiteral, ClassDef, ModuleDef, TraitDef, ImplDef, VisibilityModifier}
+import compiler/foundation/errors::{refuse_port}
+import compiler/syntax/ast::{ASTNode, Expressions, ImportDecl, Require, Call, StringLiteral, MacroIf, MacroFor, MacroExpression, MacroLiteral, ClassDef, ModuleDef, TraitDef, ImplDef, VisibilityModifier, Nop}
 import compiler/macros/engine::{MacroEngine}
 
 lib LibC
@@ -230,6 +231,109 @@ pub class Loader
     end
   end
 
+  # Whether an engine-refused macro site may add an import, at `statement`: true where a statement may stand. Where an
+  # expression stands, as in `X = {{ ... }}`, the site adds none: its text is part of an expression, and a `require` is not
+  # one. Where a statement stands, a `{{ }}` has an expansion the walk cannot know, so it may name anything, and a control
+  # is searched through its bodies.
+  def self.may_import?(node : ASTNode, statement : Bool) : Bool
+    if !statement
+      return false
+    end
+    if node.is_a?(MacroExpression) && !node.as(MacroExpression).output
+      # An assignment writes no text, so it names no import. A later site that reads its value is judged on its own.
+      return false
+    end
+    if node.is_a?(MacroIf)
+      mi = node.as(MacroIf)
+      Loader.body_may_import?(mi.then) || Loader.body_may_import?(mi.else)
+    elsif node.is_a?(MacroFor)
+      Loader.body_may_import?(node.as(MacroFor).body)
+    else
+      true
+    end
+  end
+
+  # Whether a macro body may add an import, searched through its nested macro control. Its pieces are literal text, `{{ }}`
+  # and control, in order. Literal text names an import on a line that starts with `require` or `import`. Each `{{ }}` or
+  # control is asked by may_import? at the position the text before it leaves it in.
+  def self.body_may_import?(body : ASTNode) : Bool
+    pieces = [body]
+    if body.is_a?(Expressions)
+      pieces = body.as(Expressions).expressions
+    end
+    statement = true
+    found = false
+    i = 0
+    while !found && i < pieces.size
+      piece = pieces[i]
+      if piece.is_a?(MacroLiteral)
+        text = piece.as(MacroLiteral).value
+        found = Loader.import_text?(text)
+        statement = Loader.statement_after?(text, statement)
+      elsif piece.is_a?(MacroExpression) || piece.is_a?(MacroIf) || piece.is_a?(MacroFor)
+        found = Loader.may_import?(piece, statement)
+        statement = true
+      elsif !piece.is_a?(Nop)
+        found = true
+      end
+      i = i + 1
+    end
+    found
+  end
+
+  # Whether the next macro site in a body stands at the start of a statement, given the literal text before it. This reads
+  # the text, not the parse: the port does not know the syntax of the code the macros will generate, so the position is
+  # read from the text after the last newline. Blank after a newline starts a statement. A line that ends in an operator,
+  # `=`, `(`, `:` and the like continues an expression. Otherwise the site counts as a statement, since calling an expression
+  # wrongly would hide an import, and a site after a control or another site counts as one too.
+  def self.statement_after?(text : String, statement : Bool) : Bool
+    if text.ends_with?("\n")
+      return true
+    end
+    lines = text.split('\n')
+    if lines.empty?
+      return statement
+    end
+    tail = lines[lines.size - 1].rstrip
+    if tail.empty?
+      if lines.size > 1
+        return true
+      end
+      return statement
+    end
+    !["=", "(", "[", "{", ",", ":", "+", "-", "*", "/", "%", "&", "|", "^", "<", ">", "!", "?", "."].includes?(tail[tail.size - 1, 1])
+  end
+
+  def self.import_text?(text : String) : Bool
+    text.split('\n').any? { |line| Loader.import_line?(line.strip) }
+  end
+
+  def self.import_line?(trimmed : String) : Bool
+    trimmed.starts_with?("require ") || trimmed.starts_with?("import ")
+  end
+
+  # The by-name refusal of a macro site the engine refused, where a branch may name an import (see may_import?).
+  def self.refuse_import_site(node : ASTNode, reason : String) : NoReturn
+    place = node.location
+    if node.is_a?(MacroIf)
+      place = node.as(MacroIf).cond.location || node.location
+    end
+    where = "an unlocated site"
+    if here = place
+      where = "line #{here.line_number}, column #{here.column_number}"
+      unless here.filename.empty?
+        parts = here.filename.split('/')
+        where = "#{parts[parts.size - 1]}:#{here.line_number}:#{here.column_number}"
+      end
+    end
+    if node.is_a?(MacroIf)
+      refuse_port("port limitation: the port cannot evaluate the macro if condition at #{where} (#{reason}), so it refuses instead of loading the imports of either branch")
+    elsif node.is_a?(MacroFor)
+      refuse_port("port limitation: the port cannot expand the macro for at #{where} (#{reason}), so it refuses instead of loading its imports")
+    end
+    refuse_port("port limitation: the port cannot expand the macro expression at #{where} (#{reason}), so it refuses instead of loading its imports")
+  end
+
   # Collects all import and require dependency paths from an AST.
   #
   # A top-level `{% if %}` or `{% for %}` is expanded first, as the hosted compiler expands it before it reads
@@ -244,26 +348,31 @@ pub class Loader
       into << path
       user_imports << path
     elsif node.is_a?(Require)
-      into << node.as(Require).string
+      into << Loader.require_entry(node.as(Require).string)
     elsif node.is_a?(Call)
       call_node = node.as(Call)
       if call_node.name == "require" && call_node.args.size == 1
         if call_node.args[0].is_a?(StringLiteral)
-          into << call_node.args[0].as(StringLiteral).value
+          into << Loader.require_entry(call_node.args[0].as(StringLiteral).value)
         end
       end
-    elsif node.is_a?(MacroIf) || node.is_a?(MacroFor)
+    elsif node.is_a?(MacroIf) || node.is_a?(MacroFor) || node.is_a?(MacroExpression)
       report = engine.site_report(node)
       if report.failure.nil? && !report.skipped
         text = report.output
         if text.bytesize > 0
           collect_import_paths(Parser.new(text, filename).parse, into, engine, filename, user_imports)
         end
-      elsif node.is_a?(MacroIf)
-        # The engine refused the site (a macro method it has not ported): what the loader did before, the
-        # first branch's text, so a file loaded until now is not dropped.
-        collect_import_paths(node.as(MacroIf).then, into, engine, filename, user_imports)
+      elsif Loader.may_import?(node, true)
+        # The engine refused the site, or skip_file ends the file, and a branch may name an import. Which import loads is
+        # then unknown, and a wrong import set is silent wrong output, so the port refuses by name, at the site.
+        reason = "skip_file ends the file's expansion early, which the port does not expand"
+        if rf = report.failure
+          reason = rf.message
+        end
+        Loader.refuse_import_site(node, reason)
       end
+      # Otherwise no branch names an import, so the site adds nothing to the import set whichever branch is taken.
     elsif node.is_a?(MacroLiteral)
       ml = node.as(MacroLiteral)
       lines = ml.value.split('\n')
@@ -271,7 +380,7 @@ pub class Loader
         trimmed = line.strip
         if trimmed.starts_with?("require \"") && trimmed.ends_with?("\"") && trimmed.size > 10
           req_path = trimmed[9, trimmed.size - 10]
-          into << req_path
+          into << Loader.require_entry(req_path)
         end
       end
     elsif node.is_a?(Expressions)
@@ -347,7 +456,16 @@ pub class Loader
     relative_dir = Loader.dirname(clean_fn)
 
     import_paths.each do |mod_path|
-      resolved = @iyi_path.find(mod_path, relative_dir, @header_root)
+      # A bare require is found through IYI_PATH only, as hosted does (require_entry). Its mark is the `!`.
+      bare = mod_path.starts_with?("!")
+      name = mod_path
+      if bare
+        name = mod_path[1, mod_path.size - 1]
+      end
+      resolved = bare ? @iyi_path.find(name, nil, nil) : @iyi_path.find(mod_path, relative_dir, @header_root)
+      if bare && resolved.nil?
+        refuse_port("port limitation: can't find file '#{name}' for the require at #{Loader.basename(clean_fn)}:#{Loader.require_line(source, name)} (a bare require resolves through IYI_PATH only, as hosted does)")
+      end
       unless res_fn = resolved
         STDERR.puts "Error: can't find module '#{mod_path}'. A module's path is its file's path, so this one is `#{mod_path}.iyi`, resolved from the directory of the file being built and then from `IYI_PATH`"
         LibC.exit(1)
@@ -387,6 +505,30 @@ pub class Loader
     else
       "."
     end
+  end
+
+  # A bare require resolves through IYI_PATH only, as hosted does (crystal_path resolution), so it is marked with `!`. A
+  # dotted name stays as written, relative to the requiring file.
+  def self.require_entry(name : String) : String
+    if name.starts_with?(".")
+      name
+    else
+      "!#{name}"
+    end
+  end
+
+  # The 1-based line of the first `require "name"` in a source text, or 0. The port's Require node carries no location, so a
+  # refusal finds the line in the text.
+  def self.require_line(source : String, name : String) : Int32
+    lines = source.split('\n')
+    i = 0
+    while i < lines.size
+      if lines[i].strip.starts_with?("require \"#{name}\"")
+        return i + 1
+      end
+      i = i + 1
+    end
+    0
   end
 
   def self.basename(path : String) : String
@@ -435,7 +577,23 @@ pub class Loader
     while s.starts_with?("./")
       s = s[2, s.size - 2]
     end
-    s
+    # `.` and `dir/..` segments name the directory they stay in or leave, so `src/iyi/./x.iyi`, `src/iyi/../iyi/x.iyi` and
+    # `src/iyi/x.iyi` are one file under one key. Hosted expands each spelling to the same file.
+    kept = [] of String
+    segments = s.split('/')
+    i = 0
+    while i < segments.size
+      seg = segments[i]
+      if seg == "."
+        # the same directory: nothing to keep
+      elsif seg == ".." && !kept.empty? && kept[kept.size - 1] != "" && kept[kept.size - 1] != ".."
+        kept.pop
+      else
+        kept << seg
+      end
+      i = i + 1
+    end
+    kept.join("/")
   end
 
   # The order the modules' own top-level code runs in: the oracle's debug

@@ -1,0 +1,5 @@
+require "bare_beside_name"
+
+def bare_beside_main : Int32
+  0
+end

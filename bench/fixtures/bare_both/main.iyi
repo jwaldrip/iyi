@@ -1,0 +1,5 @@
+require "bare_both_name"
+
+def bare_both_main : Int32
+  0
+end

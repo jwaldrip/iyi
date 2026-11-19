@@ -1,0 +1,3 @@
+def bare_beside_value : Int32
+  1
+end

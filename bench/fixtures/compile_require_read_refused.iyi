@@ -1,0 +1,7 @@
+X = {{ "1\nrequire \"./loader_if_b\"".id }}
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(X)
