@@ -263,9 +263,9 @@ pub class Encoder
     elsif op == MOp::Sub
       arith(0xCB000000_i64, inst)
     elsif op == MOp::Adds
-      arith(0xAB000000_i64, inst)
+      arith(inst.size == 32 ? 0x2B000000_i64 : 0xAB000000_i64, inst)
     elsif op == MOp::Subs
-      arith(0xEB000000_i64, inst)
+      arith(inst.size == 32 ? 0x6B000000_i64 : 0xEB000000_i64, inst)
     elsif op == MOp::Adc
       arith(0x9A000000_i64, inst)
     elsif op == MOp::Sbc

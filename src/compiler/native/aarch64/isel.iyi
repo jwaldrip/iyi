@@ -27,7 +27,7 @@ import compiler/ir/intrinsics::{IntrinsicId, intrinsic_stem}
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, JumpTable, AsmBody}
 import compiler/native/obj/object::{RelocKind}
 import compiler/native/jump_table::{SwitchTable, switch_table_plan}
-import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le, reg_name, callee_saved_gprs}
+import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le, reg_name, callee_saved_gprs, xzr_reg}
 import compiler/native/target::{TargetDesc, TlsForm}
 import compiler/native/aarch64/abi::{aarch64_target}
 import compiler/native/lower::{LeafLoc, CallAssignment, flatten_leaves, assign_call, assign_return, assign_iyi_call, assign_iyi_return, iyi_result_indirect?, reachable_blocks, plan_gep, GepPlan, overflow_form, acquire_on_load?, release_on_store?, icmp_unsigned?}
@@ -551,6 +551,19 @@ class Isel
   def binop(op : MOp, a : Int32, b : Int32) : Int32
     d = gpr
     m = mop(op)
+    m.defs << vop(d)
+    m.uses << vop(a)
+    m.uses << vop(b)
+    emit(m)
+    d
+  end
+
+  # A 32-bit binary operation: the result is the low 32 bits, zero-extended into the register. The flag-setting
+  # narrow forms use it, so V is the signed 32-bit overflow.
+  def binop32(op : MOp, a : Int32, b : Int32) : Int32
+    d = gpr
+    m = mop(op)
+    m.size = 32
     m.defs << vop(d)
     m.uses << vop(a)
     m.uses << vop(b)
@@ -1535,7 +1548,15 @@ class Isel
       emit(m)
       quotient = result
     end
-    bind_result(i, [canon(quotient, i.type)])
+    # An unsigned quotient by a divisor of at least 2, or remainder by a positive constant below 2^(bits-1), is below
+    # 2^(bits-1), so its canonical form is its own value and the extension is skipped.
+    small = false
+    if !signed && op == Op::UDiv
+      small = divisor >= 2_u64
+    elsif !signed && op == Op::URem
+      small = raw > 0_i64 && raw < (1_i64 << (bits - 1))
+    end
+    bind_result(i, [small ? quotient : canon(quotient, i.type)])
     true
   end
 
@@ -1622,6 +1643,12 @@ class Isel
       kind = MOp::Sdiv
     elsif op == Op::UDiv
       kind = MOp::Udiv
+    end
+    # A narrow add, subtract or multiply that carries nsw cannot overflow. Its 64-bit result, computed from canonical
+    # operands, already is the sign-extended narrow value.
+    if (op == Op::Add || op == Op::Sub || op == Op::Mul) && i.aux_int & 2_i64 != 0_i64 && t.int? && (t.bits == 8 || t.bits == 16 || t.bits == 32) # nsw-skip-canon
+      bind_result(i, [binop(kind, a, b)])
+      return
     end
     bind_result(i, [canon(binop(kind, a, b), t)])
   end
@@ -2344,6 +2371,7 @@ class Isel
     end
     cond = cond_ne
     value = 0
+    flags32 = false
     if t.bits == 64 && !form.mul
       value = binop(form.sub ? MOp::Subs : MOp::Adds, a, b)
       cond = form.signed ? cond_vs : (form.sub ? cond_cc : cond_cs)
@@ -2356,14 +2384,20 @@ class Isel
       else
         compare_zero(hi)
       end
+    elsif t.bits == 32 && form.signed && !form.mul
+      # A signed i32 add or subtract: the 32-bit flag-setting op sets V on 32-bit overflow, so no 64-bit compare is
+      # needed. The value is canonicalised only where a leaf binds it.
+      value = binop32(form.sub ? MOp::Subs : MOp::Adds, a, b)
+      flags32 = true
+      cond = cond_vs # narrow-overflow-cond
     else
       raw = binop(form.mul ? MOp::Mul : (form.sub ? MOp::Sub : MOp::Add), a, b)
       norm = form.signed ? canon(raw, t) : zext(raw, t)
-      value = canon(raw, t)
+      value = form.signed ? norm : canon(raw, t) # narrow-overflow-value
       compare(raw, norm)
     end
     if leaf = @overflow_value[i]?
-      bind_result(leaf, [value])
+      bind_result(leaf, [flags32 ? canon(value, t) : value])
     end
     cond
   end
@@ -3048,10 +3082,18 @@ class Isel
 
   # ---- intrinsics --------------------------------------------------------------------------------
 
-  # The byte length of a memory intrinsic when it is a constant, or -1 when it is not.
+  # The byte length of a memory intrinsic when it is a constant, or -1 when it is not. A constant expression, such as
+  # the size of a type, counts when it reduces to a plain integer.
   def const_len(v : Value) : Int64
-    return -1_i64 unless v.is_a?(Inst) && v.as(Inst).op == Op::ConstInt
-    v.as(Inst).aux_int
+    return -1_i64 unless v.is_a?(Inst)
+    inst = v.as(Inst)
+    return inst.aux_int if inst.op == Op::ConstInt
+    return -1_i64 unless inst.op == Op::ConstExpr # const-expr-length
+    reduced = reduce_const(@layout, v)
+    return -1_i64 if reduced.is_a?(String)
+    address = reduced.as(ConstAddress)
+    return -1_i64 unless address.base.nil?
+    address.offset
   end
 
   # Moves n bytes from the address in src to the address in dst. Every chunk is loaded before any is stored, so the
@@ -3088,17 +3130,25 @@ class Isel
     end
   end
 
-  # Stores the low byte of `value` into each of the n bytes at dst.
-  def set_bytes(dst : Int32, value : Int32, n : Int64) : Nil
-    k = 0_i64
-    while k < n
+  # Stores the n bytes at dst. `value` is the zero-extended byte to store; `zero` stores the zero register instead.
+  # Chunks are 8, 4, 2 or 1 bytes wide. A nonzero byte of two or more is replicated once into all eight bytes of a
+  # register, and every chunk stores the low bits of that register.
+  def set_bytes(dst : Int32, value : Int32, n : Int64, zero : Bool) : Nil
+    word = value
+    if !zero && n >= 2_i64
+      word = binop(MOp::Mul, value, const_gpr(0x0101010101010101_i64))
+    end
+    off = 0_i64
+    while off < n
+      left = n - off
+      size = left >= 8_i64 ? 8 : (left >= 4_i64 ? 4 : (left >= 2_i64 ? 2 : 1))
       m = mop(MOp::Str)
-      m.size = 8
-      m.imm = k
-      m.uses << vop(value)
+      m.size = size * 8
+      m.imm = off
+      m.uses << (zero ? pop(xzr_reg) : vop(word))
       m.uses << vop(dst)
       emit(m)
-      k = k + 1_i64
+      off = off + size.to_i64
     end
   end
 
@@ -3145,15 +3195,18 @@ class Isel
     call_helper(name, dst, src, len)
   end
 
-  # memset: inline for a constant length up to 64 bytes, otherwise call the selected routine.
+  # memset: inline for a constant length up to 64 bytes, otherwise call the selected routine. A zero byte stores the
+  # zero register, so its value is not materialised.
   def lower_memset(i : Inst) : Nil
     dst = first_leaf(i.args[0])
-    value = zext(first_leaf(i.args[1]), i.args[1].type)
     n = const_len(i.args[2])
     if n >= 0_i64 && n <= 64_i64
-      set_bytes(dst, value, n)
+      zero = integer_constant(i.args[1]) == 0_i64
+      value = zero ? 0 : zext(first_leaf(i.args[1]), i.args[1].type)
+      set_bytes(dst, value, n, zero)
       return
     end
+    value = zext(first_leaf(i.args[1]), i.args[1].type)
     len = zext(first_leaf(i.args[2]), i.args[2].type)
     name = memory_target("memset", "__iyi_native_memset")
     call_helper(name, dst, value, len) # copy-fill-argument-order
@@ -3345,7 +3398,7 @@ class Isel
       prod = binop(MOp::Mul, a, b)
       norm = signed ? canon(prod, t) : zext(prod, t)
       compare(prod, norm)
-      bind_result(i, [canon(prod, t), set_flag(cond_ne)])
+      bind_result(i, [signed ? norm : canon(prod, t), set_flag(cond_ne)])
       return
     end
     if wide
@@ -3360,10 +3413,16 @@ class Isel
       bind_result(i, [value, set_flag(cond)])
       return
     end
+    if signed && bits == 32
+      # A signed i32 add or subtract: the 32-bit flag-setting op sets V on 32-bit overflow.
+      flags = binop32(sub ? MOp::Subs : MOp::Adds, a, b)
+      bind_result(i, [canon(flags, t), set_flag(cond_vs)])
+      return
+    end
     raw = binop(sub ? MOp::Sub : MOp::Add, a, b)
     norm = signed ? canon(raw, t) : zext(raw, t)
     compare(raw, norm)
-    bind_result(i, [canon(raw, t), set_flag(cond_ne)])
+    bind_result(i, [signed ? norm : canon(raw, t), set_flag(cond_ne)])
   end
 end
 

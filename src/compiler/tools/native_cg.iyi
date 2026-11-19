@@ -225,6 +225,8 @@ def forms : Array(Form)
   acc << Form.new("umulh x0, x1, x2", arith(MOp::Umulh, 0, 1, 2))
   acc << Form.new("adds x0, x1, x2", arith(MOp::Adds, 0, 1, 2))
   acc << Form.new("subs x0, x1, x2", arith(MOp::Subs, 0, 1, 2))
+  acc << Form.new("adds w0, w1, w2", arith_w(MOp::Adds, 0, 1, 2))
+  acc << Form.new("subs w0, w1, w2", arith_w(MOp::Subs, 0, 1, 2))
   acc << Form.new("adc x0, x1, x2", arith(MOp::Adc, 0, 1, 2))
   acc << Form.new("sbc x0, x1, x2", arith(MOp::Sbc, 0, 1, 2))
   acc << Form.new("adcs x0, x1, x2", arith(MOp::Adcs, 0, 1, 2))
@@ -572,6 +574,12 @@ def arith(op : MOp, d : Int32, a : Int32, b : Int32) : MInst
   m.defs << reg(d)
   m.uses << reg(a)
   m.uses << reg(b)
+  m
+end
+
+def arith_w(op : MOp, d : Int32, a : Int32, b : Int32) : MInst
+  m = arith(op, d, a, b)
+  m.size = 32
   m
 end
 
