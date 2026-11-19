@@ -1,0 +1,19 @@
+; iyi-ir 1
+source_filename = "two_inside"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i32 @two_inside(i1 %pick, i1 %again) {
+entry:
+  br label %header
+header:
+  %value = phi i32 [ 0, label %entry ], [ %next, label %left ], [ %next2, label %right ]
+  br i1 %pick, label %left, label %right
+right:
+  %next2 = add i32 %value, 2
+  br i1 %again, label %header, label %done
+left:
+  %next = add i32 %value, 1
+  br label %header
+done:
+  ret i32 %value
+}
