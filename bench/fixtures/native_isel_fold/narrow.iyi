@@ -1,0 +1,66 @@
+module narrow
+
+import std/int
+
+def sadd32(a : Int32, b : Int32) : Int64
+  value = a.to_i64 + b.to_i64
+  value > 2147483647_i64 || value < -2147483648_i64 ? -131_i64 : value
+end
+
+def ssub32(a : Int32, b : Int32) : Int64
+  value = a.to_i64 - b.to_i64
+  value > 2147483647_i64 || value < -2147483648_i64 ? -132_i64 : value
+end
+
+def wrap_add32(a : Int32, b : Int32) : Int64
+  (a &+ b).to_i64
+end
+
+def wrap_sub32(a : Int32, b : Int32) : Int64
+  (a &- b).to_i64
+end
+
+def nsw_add32(a : Int32, b : Int32) : Int64
+  (a &+ b).to_i64
+end
+
+def nsw_mul16(a : Int16, b : Int16) : Int64
+  (a &* b).to_i64
+end
+
+def nsw_sub8(a : Int8, b : Int8) : Int64
+  (a &- b).to_i64
+end
+
+def udiv3(a : UInt32) : Int64
+  (a // 3_u32).to_i64
+end
+
+def udiv1(a : UInt32) : Int64
+  q = a // 1_u32
+  q > 2147483647_u32 ? q.to_i64 - 4294967296_i64 : q.to_i64
+end
+
+def urem7(a : UInt32) : Int64
+  (a % 7_u32).to_i64
+end
+
+puts "#{sadd32(2147483647_i32, 1_i32)}"
+puts "#{ssub32(-2147483648_i32, 1_i32)}"
+puts "#{sadd32(-5_i32, 3_i32)}"
+puts "#{sadd32(2147483646_i32, 1_i32)}"
+puts "#{ssub32(-2147483647_i32, 1_i32)}"
+puts "#{ssub32(0_i32, -2147483648_i32)}"
+puts "#{wrap_add32(2147483647_i32, 1_i32)}"
+puts "#{wrap_sub32(-2147483648_i32, 1_i32)}"
+puts "#{wrap_add32(-1_i32, 1_i32)}"
+puts "#{nsw_add32(-5_i32, 3_i32)}"
+puts "#{nsw_add32(1000_i32, 2000_i32)}"
+puts "#{nsw_mul16(300_i16, 100_i16)}"
+puts "#{nsw_mul16(-200_i16, 150_i16)}"
+puts "#{nsw_sub8(-100_i8, 27_i8)}"
+puts "#{nsw_sub8(100_i8, -27_i8)}"
+puts "#{udiv3(4294967295_u32)}"
+puts "#{udiv1(4294967295_u32)}"
+puts "#{urem7(4294967295_u32)}"
+puts "#{urem7(10_u32)}"
