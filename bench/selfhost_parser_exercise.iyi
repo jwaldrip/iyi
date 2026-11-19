@@ -886,8 +886,133 @@ module BenchSelfhostParserExercise
   end
 end
 
+# The location walk, for the gate. A node with no location is named by its dump label and its ordinal among the location-less
+# nodes of that label, and each proc pointer by its ordinal among the proc pointers. Two constructs are named apart, so the
+# gate's rule can apply to them alone: a Nop that fills a range endpoint (the start of `..x`, the end of `x..`) is a range
+# placeholder, and a MacroFor reached from a macro body is a macro-body for. Both are recognized by object identity, taken from
+# their parent before they are visited, and each is named by its ordinal among all instances of its construct, located or not,
+# so the two walks name the same instance the same way whatever each one locates. An ordinary node is named among the
+# location-less nodes of its label; a located node on one side only shifts such names, which is already a failure in the gate.
+class MacroForCollector < Visitor
+  getter ids : Array(UInt64)
+
+  def initialize
+    @ids = [] of UInt64
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    if node.is_a?(MacroFor)
+      @ids << node.object_id
+    end
+    true
+  end
+end
+
+class LocationWalk < Visitor
+  getter nodes : Int32
+  getter lines : Array(String)
+  getter kinds : Array(String)
+  getter ordinals : Array(Int32)
+  getter pointers : Int32
+  getter placeholder_ids : Array(UInt64)
+  getter macro_for_ids : Array(UInt64)
+  getter placeholders : Int32
+  getter macro_fors : Int32
+
+  def initialize
+    @nodes = 0
+    @lines = [] of String
+    @kinds = [] of String
+    @ordinals = [] of Int32
+    @pointers = 0
+    @placeholder_ids = [] of UInt64
+    @macro_for_ids = [] of UInt64
+    @placeholders = 0
+    @macro_fors = 0
+  end
+
+  # The count of location-less nodes of this kind so far, this one included.
+  def ordinal_of(kind : String) : Int32
+    i = 0
+    while i < @kinds.size
+      if @kinds[i] == kind
+        @ordinals[i] = @ordinals[i] + 1
+        return @ordinals[i]
+      end
+      i = i + 1
+    end
+    @kinds << kind
+    @ordinals << 1
+    1
+  end
+
+  # A range endpoint that is a Nop is a placeholder. Called on the range before its endpoints are visited.
+  def mark_placeholder(node : ASTNode) : Nil
+    if node.is_a?(Nop)
+      @placeholder_ids << node.object_id
+    end
+  end
+
+  def name_unlocated(node : ASTNode) : Nil
+    return unless node.location.nil?
+    kind = BenchSelfhostParserExercise.dump_ast(node).split('\n')[0].split(' ')[0]
+    @lines << "#{kind} #{ordinal_of(kind)} without a location"
+  end
+
+  def name_construct(node : ASTNode, label : String, ordinal : Int32) : Nil
+    if node.location.nil?
+      @lines << "#{label} #{ordinal} without a location"
+    end
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    @nodes = @nodes + 1
+    if node.is_a?(RangeLiteral)
+      mark_placeholder(node.from)
+      mark_placeholder(node.to)
+    end
+    if node.is_a?(Macro)
+      collector = MacroForCollector.new
+      node.body.accept(collector)
+      collector.ids.each { |id| @macro_for_ids << id }
+    end
+    if node.is_a?(Nop) && @placeholder_ids.includes?(node.object_id)
+      @placeholders = @placeholders + 1
+      name_construct(node, "RangePlaceholder", @placeholders)
+    elsif node.is_a?(MacroFor) && @macro_for_ids.includes?(node.object_id)
+      @macro_fors = @macro_fors + 1
+      name_construct(node, "MacroForInMacro", @macro_fors)
+    else
+      name_unlocated(node)
+    end
+    if node.is_a?(ProcPointer)
+      @pointers = @pointers + 1
+      @lines << "ProcPointer #{@pointers} start #{where(node.location)} end #{where(node.end_location)}"
+    end
+    true
+  end
+
+  def where(loc : Location?) : String
+    if l = loc
+      "#{l.line_number}:#{l.column_number}"
+    else
+      "none"
+    end
+  end
+end
+
 if Program.args.size == 2 && Program.args[0] == "--verdicts"
   BenchSelfhostParserExercise.verdicts(Program.args[1])
+elsif Program.args.size == 2 && Program.args[0] == "--locations"
+  source = File.read(Program.args[1])
+  parser = Parser.new(source, Program.args[1])
+  node = parser.parse
+  walk = LocationWalk.new
+  node.accept(walk)
+  puts "nodes #{walk.nodes}"
+  walk.lines.each { |line| puts line }
+  puts "construct RangePlaceholder instances #{walk.placeholders}"
+  puts "construct MacroForInMacro instances #{walk.macro_fors}"
 elsif Program.args.size > 0
   if Program.args[0] == "-e" && Program.args.size > 1
     source = Program.args[1]

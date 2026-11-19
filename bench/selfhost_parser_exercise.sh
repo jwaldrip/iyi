@@ -57,6 +57,9 @@ cat "$WORK/plain.out"
 
 echo
 echo "== Checking reported verification counts in plain mode"
+# The real-syntax-fixtures count is the exercise's node count over its 38 fixtures. It was 2549 before the port gave %w and %i
+# arrays their element type, which hosted also builds (parser.cr 3906 and 3915). syntax_macro_control_grammar.iyi line 27 is
+# the only %w or %i array in the fixtures, so the count rose by one.
 for phrase in \
   "testing literal parsing... ok (literals verified)" \
   "testing variable and path parsing... ok (variables and paths verified)" \
@@ -64,7 +67,7 @@ for phrase in \
   "testing call and block parsing... ok (calls and blocks verified)" \
   "testing control expressions (if, unless, while, until, case, modifiers)... ok (control expressions verified)" \
   "testing declaration parsing... ok (declarations verified)" \
-  "testing real syntax fixtures parsing... ok (2549 nodes across 38 fixtures)" \
+  "testing real syntax fixtures parsing... ok (2550 nodes across 38 fixtures)" \
   "ALL SELFHOST PARSER CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"
@@ -727,6 +730,85 @@ class Counter < Iyi::Visitor
   end
 end
 
+# The location walk, for the gate. The same names as the port's walk (bench/selfhost_parser_exercise.iyi): a node with no
+# location is named by its dump label and its ordinal among the location-less nodes of that label, and each proc pointer by
+# its ordinal. A Nop that fills a range endpoint is a range placeholder, and a MacroFor reached from a macro body is a
+# macro-body for. Both are recognized by object identity, taken from their parent first, and each is named by its ordinal
+# among all instances of its construct, located or not, as in the port's walk.
+class MacroForCollector < Iyi::Visitor
+  getter ids = [] of UInt64
+
+  def visit_any(node) : Bool
+    @ids << node.object_id if node.is_a?(Iyi::MacroFor)
+    true
+  end
+
+  def visit(node) : Bool
+    true
+  end
+end
+
+class LocationWalk < Iyi::Visitor
+  getter nodes = 0
+  getter lines = [] of String
+  getter ordinals = Hash(String, Int32).new(0)
+  getter pointers = 0
+  getter placeholder_ids = [] of UInt64
+  getter macro_for_ids = [] of UInt64
+  getter placeholders = 0
+  getter macro_fors = 0
+
+  def visit_any(node) : Bool
+    @nodes += 1
+    if node.is_a?(Iyi::RangeLiteral)
+      mark_placeholder(node.from)
+      mark_placeholder(node.to)
+    end
+    if node.is_a?(Iyi::Macro)
+      collector = MacroForCollector.new
+      node.body.accept(collector)
+      @macro_for_ids.concat(collector.ids)
+    end
+    if node.is_a?(Iyi::Nop) && @placeholder_ids.includes?(node.object_id)
+      @placeholders += 1
+      name_construct(node, "RangePlaceholder", @placeholders)
+    elsif node.is_a?(Iyi::MacroFor) && @macro_for_ids.includes?(node.object_id)
+      @macro_fors += 1
+      name_construct(node, "MacroForInMacro", @macro_fors)
+    else
+      name_unlocated(node)
+    end
+    if node.is_a?(Iyi::ProcPointer)
+      @pointers += 1
+      @lines << "ProcPointer #{@pointers} start #{where(node.location)} end #{where(node.end_location)}"
+    end
+    true
+  end
+
+  def visit(node) : Bool
+    true
+  end
+
+  def mark_placeholder(node) : Nil
+    @placeholder_ids << node.object_id if node.is_a?(Iyi::Nop)
+  end
+
+  def name_unlocated(node) : Nil
+    return unless node.location.nil?
+    kind = dump_ast(node).split('\n').first.split(' ').first
+    @ordinals[kind] += 1
+    @lines << "#{kind} #{@ordinals[kind]} without a location"
+  end
+
+  def name_construct(node, label : String, ordinal : Int32) : Nil
+    @lines << "#{label} #{ordinal} without a location" if node.location.nil?
+  end
+
+  def where(loc)
+    loc ? "#{loc.line_number}:#{loc.column_number}" : "none"
+  end
+end
+
 if ARGV.size == 2 && ARGV[0] == "--verdicts"
   # One verdict per file in the list: ACCEPT, or REFUSE with the error's line and column and its message.
   File.read_lines(ARGV[1]).each do |path|
@@ -744,6 +826,18 @@ if ARGV.size == 2 && ARGV[0] == "--verdicts"
       puts "REFUSE #{path} #{text}"
     end
   end
+  exit 0
+end
+
+if ARGV.size == 2 && ARGV[0] == "--locations"
+  parser = Iyi::Parser.new(File.read(ARGV[1]))
+  parser.filename = ARGV[1]
+  walk = LocationWalk.new
+  parser.parse.accept(walk)
+  puts "nodes #{walk.nodes}"
+  walk.lines.each { |line| puts line }
+  puts "construct RangePlaceholder instances #{walk.placeholders}"
+  puts "construct MacroForInMacro instances #{walk.macro_fors}"
   exit 0
 end
 
@@ -767,53 +861,146 @@ CRYSTAL_PATH="$REPO_NATIVE/src" "$HOSTED_COMPILER" build -o "$WORK_NATIVE/dump_h
 fixture_count=0
 total_matched_nodes=0
 
-for fixture in \
-  "$REPO"/bench/fixtures/expr_literals.iyi \
-  "$REPO"/bench/fixtures/expr_variables_and_paths.iyi \
-  "$REPO"/bench/fixtures/expr_operators.iyi \
-  "$REPO"/bench/fixtures/expr_calls_and_blocks.iyi \
-  "$REPO"/bench/fixtures/expr_control.iyi \
-  "$REPO"/bench/fixtures/expr_modifiers.iyi \
-  "$REPO"/bench/fixtures/expr_collections.iyi \
-  "$REPO"/bench/fixtures/expr_precedence.iyi \
-  "$REPO"/bench/fixtures/expr_associativity.iyi \
-  "$REPO"/bench/fixtures/expr_combined.iyi \
-  "$REPO"/bench/fixtures/expr_ranges_and_tuples.iyi \
-  "$REPO"/bench/fixtures/expr_hashes_and_arrays.iyi \
-  "$REPO"/bench/fixtures/expr_blocks.iyi \
-  "$REPO"/bench/fixtures/expr_multi_assign.iyi \
-  "$REPO"/bench/fixtures/expr_case_when.iyi \
-  "$REPO"/bench/fixtures/expr_asm.iyi \
-  "$REPO"/bench/fixtures/expr_select.iyi \
-  "$REPO"/bench/fixtures/decl_classes_and_structs.iyi \
-  "$REPO"/bench/fixtures/decl_getter_type_leak.iyi \
-  "$REPO"/bench/fixtures/decl_def.iyi \
-  "$REPO"/bench/fixtures/decl_enums.iyi \
-  "$REPO"/bench/fixtures/decl_lib_and_fun.iyi \
-  "$REPO"/bench/fixtures/decl_modules_and_inclusion.iyi \
-  "$REPO"/bench/fixtures/decl_operators.iyi \
-  "$REPO"/bench/fixtures/decl_traits_and_impls.iyi \
-  "$REPO"/bench/fixtures/decl_types_and_vars.iyi \
-  "$REPO"/bench/fixtures/decl_visibility_and_annotations.iyi \
-  "$REPO"/bench/fixtures/syntax_macro_control_grammar.iyi \
-  "$REPO"/bench/fixtures/syntax_string_concat_and_magic.iyi \
-  "$REPO"/bench/fixtures/syntax_macro_text_splits.iyi \
-  "$REPO"/bench/fixtures/syntax_macro_keywords_and_escapes.iyi \
-  "$REPO"/bench/fixtures/syntax_proc_literals.iyi \
-  "$REPO"/bench/fixtures/syntax_proc_pointers.iyi \
-  "$REPO"/bench/fixtures/syntax_scope_locals.iyi \
-  "$REPO"/bench/fixtures/syntax_index_tuples_and_keyword_names.iyi \
-  "$REPO"/bench/fixtures/syntax_control_keyword_names.iyi \
-  "$REPO"/bench/fixtures/syntax_type_list_then_call.iyi \
-  "$REPO"/bench/fixtures/syntax_heredoc_command_and_folds.iyi \
-  "$REPO"/bench/fixtures/syntax_block_unpacks.iyi \
-  "$REPO"/bench/fixtures/syntax_named_forward_block.iyi \
-  "$REPO"/bench/fixtures/syntax_call_spans.iyi \
-  "$REPO"/bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi \
-  "$REPO"/bench/fixtures/syntax_op_assign_targets.iyi \
-  "$REPO"/bench/fixtures/syntax_call_arg_starts.iyi \
-  "$REPO"/bench/fixtures/syntax_string_keys.iyi \
-  "$REPO"/bench/fixtures/syntax_implicit_rescue.iyi; do
+# The location rule, checked over every parity fixture. The port's walk and the hosted walk of a fixture are compared as
+# sets of lines. A line only the port prints always fails: the port lacks a location that hosted gives, or a proc pointer
+# differs. A line only hosted prints is allowed for two constructs and no others, where the port locates a node hosted leaves
+# unlocated: a range placeholder (a Nop that fills a range endpoint, the start of `..x` or the end of `x..`) and a macro-body
+# for (a MacroFor reached from a macro body). The rule must be exercised over the fixtures, or it covers nothing: each
+# construct must occur at least once, and the port must locate at least one instance that hosted leaves unlocated.
+location_fixture_compare() {
+  local name="$1" base="$2" nodes_port nodes_hosted range_n macro_n range_used macro_used
+  nodes_port=$(sed -n 's/^nodes //p' "$base.port" || true)
+  nodes_hosted=$(sed -n 's/^nodes //p' "$base.hosted" || true)
+  loc_nodes=$((loc_nodes + ${nodes_port:-0}))
+  loc_hosted_nodes=$((loc_hosted_nodes + ${nodes_hosted:-0}))
+  LC_ALL=C grep -v '^nodes ' "$base.port" | LC_ALL=C sort > "$base.port.set" || true
+  LC_ALL=C grep -v '^nodes ' "$base.hosted" | LC_ALL=C sort > "$base.hosted.set" || true
+  LC_ALL=C comm -23 "$base.port.set" "$base.hosted.set" > "$base.port_only"
+  LC_ALL=C comm -13 "$base.port.set" "$base.hosted.set" > "$base.hosted_only"
+  grep -v -e '^RangePlaceholder [0-9]* without a location$' -e '^MacroForInMacro [0-9]* without a location$' "$base.hosted_only" > "$base.unexpected" || true
+  range_used=$(grep -c '^RangePlaceholder ' "$base.hosted_only" || true)
+  macro_used=$(grep -c '^MacroForInMacro ' "$base.hosted_only" || true)
+  range_n=$(sed -n 's/^construct RangePlaceholder instances //p' "$base.port" || true)
+  macro_n=$(sed -n 's/^construct MacroForInMacro instances //p' "$base.port" || true)
+  loc_range_instances=$((loc_range_instances + ${range_n:-0}))
+  loc_macro_instances=$((loc_macro_instances + ${macro_n:-0}))
+  loc_range_used=$((loc_range_used + ${range_used:-0}))
+  loc_macro_used=$((loc_macro_used + ${macro_used:-0}))
+  loc_port_less=$((loc_port_less + $(grep -c 'without a location' "$base.port.set" || true)))
+  loc_hosted_less=$((loc_hosted_less + $(grep -c 'without a location' "$base.hosted.set" || true)))
+  loc_proc=$((loc_proc + $(grep -c '^ProcPointer ' "$base.port.set" || true)))
+  if [ ! -s "$base.port_only" ] && [ ! -s "$base.unexpected" ]; then
+    return 0
+  fi
+  echo "  $name: LOCATION MISMATCH"
+  if [ -s "$base.port_only" ]; then
+    echo "    only the port prints (a location hosted gives is missing, or a proc pointer differs):"
+    sed 's/^/      /' "$base.port_only"
+  fi
+  if [ -s "$base.unexpected" ]; then
+    echo "    only hosted prints, outside the rule (the port locates what hosted leaves unlocated, or a proc pointer differs):"
+    sed 's/^/      /' "$base.unexpected"
+  fi
+  return 1
+}
+location_rule_run() {
+  local port_exe="$1" out="$2" fixture native name bad n=0 rc=0
+  loc_fixtures=0; loc_failed=0; loc_port_less=0; loc_hosted_less=0; loc_nodes=0; loc_hosted_nodes=0; loc_proc=0
+  loc_range_instances=0; loc_range_used=0; loc_macro_instances=0; loc_macro_used=0
+  rm -rf "$out"
+  mkdir -p "$out"
+  for fixture in "${parity_fixtures[@]}"; do
+    n=$((n + 1))
+    native="$(native_path "$fixture")"
+    name="${fixture#"$REPO/"}"
+    loc_fixtures=$((loc_fixtures + 1))
+    bad=0
+    if ! "$port_exe" --locations "$native" > "$out/$n.port" 2> "$out/$n.port.err"; then
+      echo "  $name: port location walk did not run"
+      cat "$out/$n.port.err"
+      bad=1
+    elif ! "$WORK/dump_hosted$EXE" --locations "$native" > "$out/$n.hosted" 2> "$out/$n.hosted.err"; then
+      echo "  $name: hosted location walk did not run"
+      cat "$out/$n.hosted.err"
+      bad=1
+    elif ! location_fixture_compare "$name" "$out/$n"; then
+      bad=1
+    fi
+    if [ "$bad" -eq 1 ]; then
+      loc_failed=$((loc_failed + 1))
+      rc=1
+    fi
+  done
+  if [ "$loc_range_instances" -eq 0 ] || [ "$loc_range_used" -eq 0 ]; then
+    echo "  range placeholder rule not exercised: $loc_range_instances instances, $loc_range_used located by the port alone"
+    rc=1
+  fi
+  if [ "$loc_macro_instances" -eq 0 ] || [ "$loc_macro_used" -eq 0 ]; then
+    echo "  macro-body for rule not exercised: $loc_macro_instances instances, $loc_macro_used located by the port alone"
+    rc=1
+  fi
+  return "$rc"
+}
+# A mutant of the parser must be caught by the location rule over every fixture. The check rebuilds the walk from the
+# parser as it stands, so it runs the mutant, and it returns non-zero (caught) when any fixture differs from hosted outside
+# the rule.
+check_location_rule() {
+  if ! "$IYI" build -o "$WORK_NATIVE/location_walk_mutant$EXE" "$REPO_NATIVE/bench/selfhost_parser_exercise.iyi" > "$WORK/location_mutant_build.log" 2>&1; then
+    invalid_mutant "the location walk did not build from the mutant"
+    return $?
+  fi
+  location_rule_run "$WORK_NATIVE/location_walk_mutant$EXE" "$WORK/loc-mutant" > "$WORK/loc-mutant.log" 2>&1
+}
+
+parity_fixtures=(
+  "$REPO"/bench/fixtures/expr_literals.iyi
+  "$REPO"/bench/fixtures/expr_variables_and_paths.iyi
+  "$REPO"/bench/fixtures/expr_operators.iyi
+  "$REPO"/bench/fixtures/expr_calls_and_blocks.iyi
+  "$REPO"/bench/fixtures/expr_control.iyi
+  "$REPO"/bench/fixtures/expr_modifiers.iyi
+  "$REPO"/bench/fixtures/expr_collections.iyi
+  "$REPO"/bench/fixtures/expr_precedence.iyi
+  "$REPO"/bench/fixtures/expr_associativity.iyi
+  "$REPO"/bench/fixtures/expr_combined.iyi
+  "$REPO"/bench/fixtures/expr_ranges_and_tuples.iyi
+  "$REPO"/bench/fixtures/expr_hashes_and_arrays.iyi
+  "$REPO"/bench/fixtures/expr_blocks.iyi
+  "$REPO"/bench/fixtures/expr_multi_assign.iyi
+  "$REPO"/bench/fixtures/expr_case_when.iyi
+  "$REPO"/bench/fixtures/expr_asm.iyi
+  "$REPO"/bench/fixtures/expr_select.iyi
+  "$REPO"/bench/fixtures/decl_classes_and_structs.iyi
+  "$REPO"/bench/fixtures/decl_getter_type_leak.iyi
+  "$REPO"/bench/fixtures/decl_def.iyi
+  "$REPO"/bench/fixtures/decl_enums.iyi
+  "$REPO"/bench/fixtures/decl_lib_and_fun.iyi
+  "$REPO"/bench/fixtures/decl_modules_and_inclusion.iyi
+  "$REPO"/bench/fixtures/decl_operators.iyi
+  "$REPO"/bench/fixtures/decl_traits_and_impls.iyi
+  "$REPO"/bench/fixtures/decl_types_and_vars.iyi
+  "$REPO"/bench/fixtures/decl_visibility_and_annotations.iyi
+  "$REPO"/bench/fixtures/syntax_macro_control_grammar.iyi
+  "$REPO"/bench/fixtures/syntax_string_concat_and_magic.iyi
+  "$REPO"/bench/fixtures/syntax_macro_text_splits.iyi
+  "$REPO"/bench/fixtures/syntax_macro_keywords_and_escapes.iyi
+  "$REPO"/bench/fixtures/syntax_proc_literals.iyi
+  "$REPO"/bench/fixtures/syntax_proc_pointers.iyi
+  "$REPO"/bench/fixtures/syntax_scope_locals.iyi
+  "$REPO"/bench/fixtures/syntax_index_tuples_and_keyword_names.iyi
+  "$REPO"/bench/fixtures/syntax_control_keyword_names.iyi
+  "$REPO"/bench/fixtures/syntax_type_list_then_call.iyi
+  "$REPO"/bench/fixtures/syntax_heredoc_command_and_folds.iyi
+  "$REPO"/bench/fixtures/syntax_block_unpacks.iyi
+  "$REPO"/bench/fixtures/syntax_named_forward_block.iyi
+  "$REPO"/bench/fixtures/syntax_call_spans.iyi
+  "$REPO"/bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi
+  "$REPO"/bench/fixtures/syntax_op_assign_targets.iyi
+  "$REPO"/bench/fixtures/syntax_call_arg_starts.iyi
+  "$REPO"/bench/fixtures/syntax_string_keys.iyi
+  "$REPO"/bench/fixtures/syntax_implicit_rescue.iyi
+)
+for fixture in "${parity_fixtures[@]}"; do
   fixture_name="${fixture#"$REPO/"}"
   fixture_native="$(native_path "$fixture")"
   "$WORK/exercise-plain$EXE" "$fixture_native" > "$WORK/iyi.ast"
@@ -833,6 +1020,10 @@ for fixture in \
 done
 
 echo "  Parity summary: $((fixture_count - diverged))/$fixture_count syntax fixtures match ($total_matched_nodes total nodes)"
+if ! location_rule_run "$WORK/exercise-plain$EXE" "$WORK/loc"; then
+  status=1
+fi
+echo "  Location summary: $((loc_fixtures - loc_failed))/$loc_fixtures fixtures match hosted outside the rule; location-less nodes: port $loc_port_less, hosted $loc_hosted_less; range placeholders: $loc_range_instances, located by the port alone $loc_range_used; macro-body for: $loc_macro_instances, located by the port alone $loc_macro_used; proc pointers: $loc_proc; nodes visited: port $loc_nodes, hosted $loc_hosted_nodes (not compared)"
 
 echo "== Unspaced sign and regex forms after a local, against the hosted parser"
 # Written here, not kept as a fixture: the repository's format check rewrites `x -1` as `x - 1` in every tracked
@@ -1856,8 +2047,8 @@ run_proof_in "mutation 22: a literal interpolation is not folded into the string
 run_proof_in "mutation 23: a command literal is not a backtick call" "$PARSER" \
   "    return node unless kind == DelimiterKind::COMMAND" "    return node"
 run_proof_in "mutation 24: a heredoc is not read with its indent removed" "$PARSER" \
-  $'if delimiter_state.kind == DelimiterKind::HEREDOC\n      return StringInterpolation' \
-  $'if false && delimiter_state.kind == DelimiterKind::HEREDOC\n      return StringInterpolation'
+  $'if delimiter_state.kind == DelimiterKind::HEREDOC\n      heredoc_nodes = remove_heredoc_indent' \
+  $'if false && delimiter_state.kind == DelimiterKind::HEREDOC\n      heredoc_nodes = remove_heredoc_indent'
 run_proof_in "mutation 25: a begin block gets the paren keyword" "$PARSER" \
   "      node.keyword = Expressions::Keyword::Begin" "      node.keyword = Expressions::Keyword::Paren"
 run_proof_in "mutation 26: &.name with a local of that name reads the local" "$PARSER" \
@@ -1886,7 +2077,7 @@ run_proof_in "mutation 32: a global path after a type list starts a type whateve
 # Mutation 33: an arrow followed by an identifier goes back to the proc-literal path,
 # which refuses it for want of `do` or `{`.
 run_proof_in "mutation 33: an arrow followed by an identifier goes back to the proc-literal path" "$PARSER" \
-  "      return parse_fun_pointer unless @token.keyword == Keyword::DO" \
+  "      return parse_fun_pointer.at(location) unless @token.keyword == Keyword::DO" \
   "      nil"
 # Mutation 34: a proc pointer drops its argument type list, so the typed pointers lose their args.
 run_proof_in "mutation 34: a proc pointer drops its argument type list" "$PARSER" \
@@ -2135,8 +2326,8 @@ prove_mutation "mutation 64: a string glued to its colon is not a named tuple's 
   '        syntax_error("a named tuple has no string name", @token.location)' -- strkey_hold || status=1
 # Mutation 65: a string literal a colon follows is not a named argument in a call (parser.cr 6819-6820).
 prove_mutation "mutation 65: a call's string name is not a named argument" "$PARSER" \
-  $'        if @token.type == TokenKind::OP_COLON && arg.is_a?(StringLiteral)\n          named_args = parse_named_args(allow_newline: true, first_name: arg.value)' \
-  $'        if false && @token.type == TokenKind::OP_COLON && arg.is_a?(StringLiteral)\n          named_args = parse_named_args(allow_newline: true, first_name: arg.value)' -- strkey_hold || status=1
+  $'        if @token.type == TokenKind::OP_COLON && arg.is_a?(StringLiteral)\n          named_args = parse_named_args(allow_newline: true, first_name: arg.value, first_location: arg.location)' \
+  $'        if false && @token.type == TokenKind::OP_COLON && arg.is_a?(StringLiteral)\n          named_args = parse_named_args(allow_newline: true, first_name: arg.value, first_location: arg.location)' -- strkey_hold || status=1
 # corpus_hold: a mutant's verdicts over the whole corpus. Caught when it refuses a corpus file hosted accepts.
 corpus_hold() {
   if ! build_mutant_exercise; then
@@ -2154,6 +2345,21 @@ corpus_hold() {
 prove_mutation "mutation 66: a string-keyed named tuple is refused, found by the whole-corpus check" "$PARSER" \
   '        return parse_named_tuple(location, first_key.value)' \
   '        syntax_error("a named tuple has no string name", @token.location)' -- corpus_hold || status=1
+# Mutations 67 to 70, each checked by the location rule over every fixture. 67 and 68 remove a proc pointer's start and end
+# locations. 69 gives a modifier if's else Nop a location that hosted does not record. 70 removes the port's location from a
+# range placeholder, so the rule's allowance covers nothing and its exercise check must fail.
+prove_mutation "mutation 67: a proc pointer loses its start location" "$PARSER" \
+  'return parse_fun_pointer.at(location) unless @token.keyword == Keyword::DO' \
+  'return parse_fun_pointer unless @token.keyword == Keyword::DO' -- check_location_rule || status=1
+prove_mutation "mutation 68: a proc pointer loses its end location" "$PARSER" \
+  'ProcPointer.new(obj, name, types, global_call).at_end(end_location)' \
+  'ProcPointer.new(obj, name, types, global_call)' -- check_location_rule || status=1
+prove_mutation "mutation 69: an ordinary Nop, a modifier if's else, gains a location hosted does not record" "$PARSER" \
+  'If.new(exp, res, Nop.new)' \
+  'If.new(exp, res, Nop.new.at(location))' -- check_location_rule || status=1
+prove_mutation "mutation 70: a range placeholder loses its location, so the rule's allowance covers nothing" "$PARSER" \
+  'exp = Nop.new.at(location)' \
+  'exp = Nop.new' -- check_location_rule || status=1
 
 echo
 echo "== Rebuilding and running restored parser exercise"
