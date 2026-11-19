@@ -1530,6 +1530,7 @@ pub class Parser < Lexer
 
       while @token.type != TokenKind::OP_RPAREN
         if @token.type == TokenKind::OP_AMP
+          amp_location = @token.location
           next_token_skip_space
           if @token.type == TokenKind::OP_PERIOD
             next_token_skip_space
@@ -1538,7 +1539,7 @@ pub class Parser < Lexer
             if call.is_a?(Call)
               call.obj = temp_arg
             end
-            block = Block.new([temp_arg], call)
+            block = Block.new([temp_arg], call).at(amp_location)
             skip_space_or_newline
             check(TokenKind::OP_RPAREN)
             break
@@ -1561,7 +1562,7 @@ pub class Parser < Lexer
         arg = parse_call_arg
         # Hosted parser.cr 6819-6820: a string literal that a colon follows is the name of a named argument.
         if @token.type == TokenKind::OP_COLON && arg.is_a?(StringLiteral)
-          named_args = parse_named_args(allow_newline: true, first_name: arg.value)
+          named_args = parse_named_args(allow_newline: true, first_name: arg.value, first_location: arg.location)
           next if @token.type == TokenKind::OP_AMP
           check(TokenKind::OP_RPAREN)
           break
@@ -1638,6 +1639,7 @@ pub class Parser < Lexer
 
     while true
       if @token.type == TokenKind::OP_AMP
+        amp_location = @token.location
         next_token_skip_space
         if @token.type == TokenKind::OP_PERIOD
           next_token_skip_space
@@ -1646,7 +1648,7 @@ pub class Parser < Lexer
           if call.is_a?(Call)
             call.obj = temp_arg
           end
-          block = Block.new([temp_arg], call)
+          block = Block.new([temp_arg], call).at(amp_location)
           end_location = call.end_location
           break
         else
@@ -1667,7 +1669,7 @@ pub class Parser < Lexer
       arg = parse_call_arg
       # Hosted parser.cr 6819-6820: a string literal that a colon follows is the name of a named argument.
       if @token.type == TokenKind::OP_COLON && arg.is_a?(StringLiteral)
-        named_args = parse_named_args(allow_newline: false, first_name: arg.value)
+        named_args = parse_named_args(allow_newline: false, first_name: arg.value, first_location: arg.location)
         next if @token.type == TokenKind::OP_AMP
         end_location = named_args.last.value.end_location || token_end_location
         break
@@ -1775,9 +1777,11 @@ pub class Parser < Lexer
     byte == 32_u8 || byte == 9_u8 || byte == 10_u8 || byte == 13_u8
   end
 
-  def parse_named_args(allow_newline : Bool = false, first_name : String? = nil) : Array(NamedArgument)
+  # Hosted parser.cr 6820 and 6907: a call's string name starts the first named argument, so that argument has the name's
+  # location (first_location). Otherwise the first argument is located at the token that begins the list.
+  def parse_named_args(allow_newline : Bool = false, first_name : String? = nil, first_location : Location? = nil) : Array(NamedArgument)
     named_args = [] of NamedArgument
-    location = @token.location
+    location = first_location || @token.location
 
     while true
       if first_name
@@ -6327,7 +6331,12 @@ pub class Parser < Lexer
       end
     end
     if delimiter_state.kind == DelimiterKind::HEREDOC
-      return StringInterpolation.new(remove_heredoc_indent(pieces, delimiter_state.heredoc_indent)).at(location)
+      heredoc_nodes = remove_heredoc_indent(pieces, delimiter_state.heredoc_indent)
+      # Hosted parser.cr 3772-3774: a body with no interpolation is one string, located at the heredoc's node (3584).
+      if heredoc_nodes.size == 1 && heredoc_nodes[0].is_a?(StringLiteral)
+        heredoc_nodes[0].at(location)
+      end
+      return StringInterpolation.new(heredoc_nodes).at(location)
     end
 
     has_interp = false
@@ -6543,7 +6552,8 @@ pub class Parser < Lexer
     while true
       case @token.type
       when TokenKind::STRING
-        elements << StringLiteral.new(@token.value)
+        # Hosted parser.cr 3945 and 3984: a %w element is located at its token, through the end of that token.
+        elements << StringLiteral.new(@token.value).at(@token.location).at_end(token_end_location)
       when TokenKind::SPACE
         # skip
       when TokenKind::STRING_ARRAY_END, TokenKind::DELIMITER_END, TokenKind::EOF
@@ -6553,7 +6563,8 @@ pub class Parser < Lexer
       delimiter_state = @token.delimiter_state
     end
     next_token
-    ArrayLiteral.new(elements).at(location)
+    # Hosted parser.cr 3906: a %w array's element type is ::String, which has no location.
+    ArrayLiteral.new(elements, Path.global("String")).at(location)
   end
 
   def parse_symbol_array : ASTNode
@@ -6567,7 +6578,8 @@ pub class Parser < Lexer
     while true
       case @token.type
       when TokenKind::STRING
-        elements << SymbolLiteral.new(@token.value)
+        # Hosted parser.cr 3945 and 3984: a %i element is located at its token, through the end of that token.
+        elements << SymbolLiteral.new(@token.value).at(@token.location).at_end(token_end_location)
       when TokenKind::SPACE
         # skip
       when TokenKind::STRING_ARRAY_END, TokenKind::DELIMITER_END, TokenKind::EOF
@@ -6577,7 +6589,8 @@ pub class Parser < Lexer
       delimiter_state = @token.delimiter_state
     end
     next_token
-    ArrayLiteral.new(elements).at(location)
+    # Hosted parser.cr 3915: a %i array's element type is ::Symbol, which has no location.
+    ArrayLiteral.new(elements, Path.global("Symbol")).at(location)
   end
 
   def check(kind : TokenKind) : Nil
