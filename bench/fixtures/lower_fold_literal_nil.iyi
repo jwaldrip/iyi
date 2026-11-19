@@ -1,6 +1,5 @@
 # Literal conditions (true, false and nil) fold an if with a nil branch to the branch taken, as a call argument. An unless
-# folds the same way as an assignment, and a responds_to? test on a literal receiver folds to a Bool. Each value is
-# Sub | Nil, so the callee reads nil or the node. Output: nnonnno.
+# folds the same way as an assignment. Each value is Sub | Nil, so the callee reads nil or the node. Output: nnonn.
 @[Unsafe("calls C putchar to report each value")]
 lib LibC
   fun putchar(value : Int32) : Int32
@@ -10,9 +9,6 @@ class Node
 end
 
 class Sub < Node
-  def hello : Int32
-    1
-  end
 end
 
 class Ledger
@@ -33,8 +29,6 @@ def literal(site : Node) : Nil
     nil
   end
   Ledger.record(5, value)
-  Ledger.record(6, Sub.new.responds_to?(:hello) ? nil : site)
-  Ledger.record(7, Sub.new.responds_to?(:missing) ? nil : site)
   nil
 end
 

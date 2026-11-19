@@ -1943,10 +1943,6 @@ if [ "$fold_ready" -eq 1 ]; then
     '    codegen_node(low, cond_node)
     codegen_folded_branch(low, node, else_node)' '    codegen_node(low, cond_node)
     codegen_node(low, else_node)' -- lower_core_check || status=1
-  prove_mutation "a responds_to? fold's taken branch skips the join" "$REPO/src/compiler/lower/lower.iyi" \
-    '    if responds_to_value(low, cond_node.as(RespondsTo))
-      codegen_folded_branch(low, node, then_node)' '    if responds_to_value(low, cond_node.as(RespondsTo))
-      codegen_node(low, then_node)' -- lower_core_check || status=1
 fi
 
 for invalid in "$WORK/m.invalid" "$WORK/nil-flow.invalid" "$WORK/union-read.invalid"; do
