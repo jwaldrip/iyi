@@ -540,7 +540,7 @@ fixture_check release scalar_slot changed
 fixture_check release frame_cap changed
 fixture_check release returns_twice changed
 fixture_check release nested_objects changed
-if ! "$DRV" print "$(native_path "$FIXTURES/licm/invariant_arith.out.ir")" >"$WORK/licm-release-expected.ir" 2>"$WORK/licm-release.err" || \
+if ! "$DRV" print "$(native_path "$FIXTURES/layout/invariant_arith_release.out.ir")" >"$WORK/licm-release-expected.ir" 2>"$WORK/licm-release.err" || \
    ! "$DRV" run --verify-each release "$(native_path "$FIXTURES/licm/invariant_arith.ir")" >"$WORK/licm-release-actual.ir" 2>"$WORK/licm-release.err" || \
    ! cmp -s "$WORK/licm-release-expected.ir" "$WORK/licm-release-actual.ir"; then
   fail 'release tier did not hoist live invariant arithmetic'
@@ -1184,6 +1184,21 @@ prove_mutation 'M20: preserve every block during layout' src/compiler/ir/opt/lay
   '    @fn.blocks[0, @fn.blocks.size] = ordered[0, ordered.size - 1] # mutation M20: preserve every block' \
   -- mutation_check M20 layout unreachable_phi || fail 'M20 was not caught'
 mutation_result M20
+prove_mutation 'R7a: a loop test stays first in its region' src/compiler/ir/opt/layout.iyi \
+  '      orders << rotated_order(post.reversed, region - 1) # mutation R7-rotate: the header stays first' \
+  '      orders << post.reversed # mutation R7-rotate: the header stays first' \
+  -- mutation_check R7a layout rotate_while || fail 'R7a was not caught'
+mutation_result R7a
+prove_mutation 'R7b: a loop with two inside successors is not rotated' src/compiler/ir/opt/layout.iyi \
+  '    inside == 1' \
+  '    inside >= 1 # mutation R7-inside: a header with two inside successors is rotated' \
+  -- mutation_check R7b layout two_inside || fail 'R7b was not caught'
+mutation_result R7b
+prove_mutation 'R7c: an unconditional header is not rotated' src/compiler/ir/opt/layout.iyi \
+  '    return false unless term.op == Op::CondBr && term.targets[0] != term.targets[1]' \
+  '    return false unless (term.op == Op::CondBr && term.targets[0] != term.targets[1]) || term.op == Op::Br # mutation R7-condbr: an unconditional header is rotated' \
+  -- mutation_check R7c layout uncond_header || fail 'R7c was not caught'
+mutation_result R7c
 prove_mutation 'S6P1: forward five-arm dispatch limit' src/compiler/ir/opt/inline.iyi \
   '    return true if suffix > 4 # mutation S6P1: a five-arm chain exceeds the limit' \
   '    return true if suffix > 5 # mutation S6P1: a five-arm chain exceeds the limit' \

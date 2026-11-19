@@ -582,6 +582,138 @@ check_mir "$DRV" all || fail "the per-function MIR comparison failed"
 check_mir "$DRV" custom || fail "the custom MIR edge predicate failed"
 check_prealloc "$PRE_DRV" || fail "the pre-allocation MIR comparison failed"
 
+echo "== 4b. loop rotation: a loop's test is laid out last, so its only branch per iteration is taken"
+FIX_LAYOUT=bench/fixtures/opt/layout
+OPT="$WORK/iyi-opt$EXE"
+build_layout_driver() {
+  ./bin/iyi build -o "$(native_path "$1")" "$(native_path src/compiler/tools/ir_opt.iyi)" >"$WORK/build.$(basename "$1").log" 2>&1
+}
+cat >"$WORK/check_rotate.py" <<'PY'
+import os
+import re
+import subprocess
+import sys
+
+layout_driver, mir_driver, source, name, work = sys.argv[1:]
+
+def run(args, env=None):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, env=env)
+    except OSError as exc:
+        print(f"INVALID: cannot run {args[0]}: {exc}")
+        sys.exit(2)
+
+laid = run([layout_driver, "run", "layout", source])
+if laid.returncode:
+    print("INVALID: layout failed: " + laid.stderr.strip())
+    sys.exit(2)
+path = os.path.join(work, name + ".laid.ir")
+with open(path, "w", encoding="utf-8") as stream:
+    stream.write(laid.stdout)
+
+# The MIR dump after cleanup: the latch's fall-through jump is already removed.
+env = dict(os.environ, IYI_NATIVE_MIR_CLEAN="1")
+result = run([mir_driver, "mir", path, name], env)
+if result.returncode or not result.stdout.startswith("function " + name + "\n"):
+    print("INVALID: MIR dump failed: " + result.stderr.strip())
+    sys.exit(2)
+blocks = {}
+current = None
+for line in result.stdout.splitlines():
+    match = re.match(r"^block (\d+) ", line)
+    if match:
+        current = int(match.group(1))
+        blocks[current] = []
+        continue
+    match = re.match(r"^  ([A-Za-z0-9_]+)/\d+f?(?: |$)", line)
+    if match and current is not None:
+        target = re.search(r"\btarget=(\d+)", line)
+        blocks[current].append((match.group(1), int(target.group(1)) if target else None))
+if not blocks:
+    print("INVALID: no blocks in the MIR dump")
+    sys.exit(2)
+
+# A backward branch closes a loop. Rotated, that is the test's conditional branch to the body,
+# and no unconditional branch may lie inside the loop.
+defects = []
+backs = [(number, op, target) for number, insts in blocks.items()
+         for op, target in insts if target is not None and target < number]
+if len(backs) != 1:
+    defects.append(f"{name}: expected one backward branch, found {len(backs)}")
+for number, op, target in backs:
+    if op != "Bcond":
+        defects.append(f"{name}: backward branch from block {number} is {op}, not a conditional test")
+    for inside in range(target, number + 1):
+        for got, _ in blocks.get(inside, []):
+            if got == "B":
+                defects.append(f"{name}: unconditional branch in block {inside} inside the loop {target}..{number}")
+for problem in defects:
+    print("decisive: " + problem)
+if defects:
+    sys.exit(1)
+print(f"{name}: loop {backs[0][2]}..{backs[0][0]} has one conditional backedge and no unconditional branch")
+PY
+check_rotate() {
+  "$PY" "$(native_path "$WORK/check_rotate.py")" "$(native_path "$1")" "$(native_path "$DRV")" \
+    "$(native_path "$2")" "$3" "$(native_path "$WORK")"
+}
+if build_layout_driver "$OPT"; then
+  check_rotate "$OPT" "$FIX_LAYOUT/counted_loop.ir" counted || fail "the rotated counted loop keeps an unconditional branch in its loop"
+  check_rotate "$OPT" "$FIX_LAYOUT/rotate_while.ir" rotate_while || fail "rotate_while keeps an unconditional branch in its loop"
+else
+  cat "$WORK/build.$(basename "$OPT").log"
+  fail "the layout driver does not build"
+fi
+
+echo "== 4c. loop rotation: runtime parity with the hosted build at both tiers"
+RUN_PROG="$FIX_LAYOUT/rotate_run.iyi"
+if [ "$HOST_ID" = darwin-arm64 ]; then
+  if ./bin/iyi build -o "$(native_path "$WORK/rotate_run.hosted$EXE")" "$(native_path "$RUN_PROG")" >"$WORK/rotate_run.hosted.log" 2>&1 &&
+     bounded_run "$WORK/rotate_run.hosted$EXE" "$WORK/rotate_run.hosted" &&
+     ./bin/iyi build -o "$(native_path "$WORK/compile_native$EXE")" "$(native_path src/compiler/tools/compile_native.iyi)" >"$WORK/compile_native.build.log" 2>&1; then
+    printf '0 0 21 4950\n1 2 21008\n0 0 159\n0 9 -1\n' >"$WORK/rotate_run.expected"
+    cmp -s "$WORK/rotate_run.expected" "$WORK/rotate_run.hosted.out" || fail "the hosted rotate_run output is not the expected lines"
+    for tier in default release; do
+      release_flag=
+      [ "$tier" = release ] && release_flag=--release
+      if ! "$WORK/compile_native$EXE" "$(native_path "$RUN_PROG")" -o "$(native_path "$WORK/rotate_run.$tier$EXE")" \
+           --pipeline typed --prelude $release_flag >"$WORK/rotate_run.$tier.log" 2>&1; then
+        cat "$WORK/rotate_run.$tier.log"
+        fail "rotate_run does not build at the $tier tier"
+        continue
+      fi
+      if ! bounded_run "$WORK/rotate_run.$tier$EXE" "$WORK/rotate_run.$tier"; then
+        fail "rotate_run $tier did not run to completion"
+        continue
+      fi
+      cmp -s "$WORK/rotate_run.hosted.out" "$WORK/rotate_run.$tier.out" &&
+        cmp -s "$WORK/rotate_run.hosted.status" "$WORK/rotate_run.$tier.status" ||
+        fail "rotate_run $tier differs from the hosted build"
+    done
+  else
+    cat "$WORK/rotate_run.hosted.log" "$WORK/compile_native.build.log" 2>/dev/null || true
+    fail "rotate_run hosted build or compile tool does not build"
+  fi
+else
+  host_limited "rotate_run runtime parity (macOS arm64)"
+fi
+check_rotate_mutant() {
+  local opt="$WORK/mutant-iyi-opt$EXE" result
+  if ! build_layout_driver "$opt"; then
+    cat "$WORK/build.$(basename "$opt").log"
+    mutation_invalid "mutant layout driver did not build"
+    return 2
+  fi
+  check_rotate "$opt" "$FIX_LAYOUT/counted_loop.ir" counted >"$WORK/rotate-mutant.log" 2>&1
+  result=$?
+  [ "$result" -ne 2 ] || { mutation_invalid "rotation predicate could not run"; return 2; }
+  if [ "$result" -eq 1 ] && ! grep -Fq 'decisive:' "$WORK/rotate-mutant.log"; then
+    mutation_invalid "rotation mutation had no decisive finding"
+    return 2
+  fi
+  return "$result"
+}
+
 # A fixture result is a detected regression only after object emission, linking and signing succeeded.
 check_fixture_output() {
   local drv=$1 ir=$2 key prefix result ext
@@ -714,6 +846,17 @@ prove_clean_mutation "branch: drop an unconditional branch regardless of its tar
   src/compiler/native/mir_clean.iyi \
   '        if tail.target == block.index + 1 # fallthrough-branch' \
   '        if true # fallthrough-branch' branch
+prove_rotate_mutation() {
+  local label=$1 old=$2 new=$3
+  rm -f "$MUTATION_INVALID"
+  if ! prove_mutation "$label" src/compiler/ir/opt/layout.iyi "$old" "$new" -- check_rotate_mutant; then
+    fail "mutation was not caught: $label"
+  fi
+  [ ! -e "$MUTATION_INVALID" ] || fail "mutation check had invalid setup: $label"
+}
+prove_rotate_mutation "layout: keep the loop test first in its region" \
+  '      orders << rotated_order(post.reversed, region - 1) # mutation R7-rotate: the header stays first' \
+  '      orders << post.reversed # mutation R7-rotate: the header stays first'
 
 [ ! -e "$NATIVE_SIGNATURE_FAILURE_FILE" ] || fail "a native executable failed signature verification"
 echo
