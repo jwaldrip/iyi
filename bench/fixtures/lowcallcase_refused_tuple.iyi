@@ -1,10 +1,14 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
 # An exhaustive `case ... in` over a tuple subject (S6): the tuple shape stays refused by name in the semantic pass
 # (hosted exhaustiveness_checker.cr check_tuple_exp).
 
-def label(a : Int32, b : String) : String
+def label(a : Int32, b : Int32) : Int32
   case {a, b}
-  in {Int32, String} then "pair"
+  in {Int32, Int32} then 1
   end
 end
 
-puts label(1, "x")
+LibC.exit(label(1, 2))

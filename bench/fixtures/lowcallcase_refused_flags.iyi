@@ -1,3 +1,7 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
 # An exhaustive `case ... in` over a @[Flags] enum (S6): a flags enum cannot be proved exhaustive by its members, so the
 # shape stays refused by name in the semantic pass (hosted exhaustiveness_checker.cr flags_enum_message).
 
@@ -7,11 +11,11 @@ enum Perm
   Write
 end
 
-def label(p : Perm) : String
+def label(p : Perm) : Int32
   case p
-  in Perm::Read  then "r"
-  in Perm::Write then "w"
+  in Perm::Read  then 1
+  in Perm::Write then 2
   end
 end
 
-puts label(Perm::Read)
+LibC.exit(label(Perm::Read))

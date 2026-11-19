@@ -1,5 +1,10 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
 # A non-exhaustive `case ... in` over a plain enum (S6): Warn has no branch. Hosted refuses it with `case is not
-# exhaustive for enum Level.` and `Missing members: - Warn`. The port refuses it in the semantic pass.
+# exhaustive for enum Level.` and `Missing members: - Warn`. The port refuses it in the semantic pass, and its message
+# lists only the uncovered member: Debug and Info are covered.
 
 enum Level
   Debug
@@ -7,11 +12,11 @@ enum Level
   Warn
 end
 
-def label(l : Level) : String
+def label(l : Level) : Int32
   case l
-  in Level::Debug then "quiet"
-  in Level::Info  then "ordinary"
+  in Level::Debug then 1
+  in Level::Info  then 2
   end
 end
 
-puts label(Level::Info)
+LibC.exit(label(Level::Info))

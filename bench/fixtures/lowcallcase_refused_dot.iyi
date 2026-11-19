@@ -1,3 +1,7 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
 # An exhaustive `case ... in` with a `.foo?` pattern (S6): the pattern stays refused by name in the semantic pass
 # (hosted exhaustiveness_checker.cr EnumMemberNamePattern).
 
@@ -6,11 +10,11 @@ enum Level
   Info
 end
 
-def label(l : Level) : String
+def label(l : Level) : Int32
   case l
-  in .debug? then "quiet"
-  in .info?  then "ordinary"
+  in .debug? then 1
+  in .info?  then 2
   end
 end
 
-puts label(Level::Info)
+LibC.exit(label(Level::Info))

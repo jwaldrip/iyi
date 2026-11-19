@@ -1,20 +1,35 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
 # An exhaustive `case ... in` over a plain enum (S6), run with a value outside its members. Hosted replaces the
-# case's Unreachable else with `raise "Unhandled case: enum value outside of defined enum members"`
-# (cleanup_transformer.cr:341-359), because `Level.new(7)` can produce a value no branch covers. The program prints
-# the first label, then raises, so its status and stdout are what the gate compares.
+# case's Unreachable else with a call to `raise` with the message "Unhandled case: enum value outside of defined enum
+# members" (cleanup_transformer.cr:341-359). This program defines `raise` itself, so the prelude-empty oracle has a
+# target for that call: the status is 9 when the replacement is taken. The enum defines the comparisons its member
+# patterns use (the empty prelude does not provide them).
+
+def raise(message : String) : NoReturn
+  LibC.exit(9)
+end
 
 enum Level
   Debug
   Info
-end
 
-def label(l : Level) : String
-  case l
-  in Level::Debug then "quiet"
-  in Level::Info  then "ordinary"
+  def ==(other : Level) : Bool
+    value == other.value
+  end
+
+  def ===(other : Level) : Bool
+    value == other.value
   end
 end
 
-puts label(Level::Info)
-puts label(Level.new(7))
-puts "not reached"
+def code(l : Level) : Int32
+  case l
+  in Level::Debug then 1
+  in Level::Info  then 2
+  end
+end
+
+LibC.exit(code(Level.new(7)))

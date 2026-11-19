@@ -1,11 +1,15 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
 # An exhaustive `case ... in` over a Bool (S6): the Bool subject stays refused by name in the semantic pass (hosted
 # exhaustiveness_checker.cr BoolTarget), never lowered with an Unreachable.
 
-def label(b : Bool) : String
+def label(b : Bool) : Int32
   case b
-  in true  then "yes"
-  in false then "no"
+  in true  then 1
+  in false then 2
   end
 end
 
-puts label(true)
+LibC.exit(label(true))

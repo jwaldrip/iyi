@@ -1,21 +1,36 @@
-# An exhaustive `case ... in` over a plain enum used as a value (S6): every member has a branch, so the case has
-# no `else`. Its subject is an enum, so the enum's replacement raise stands in for the Unreachable: an enum value
-# outside the members is an error, and the Unreachable is never taken for a value of the enum.
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+# An exhaustive `case ... in` over a plain enum used as a value (S6): every member has a branch, so the case has no
+# `else`. Its subject is an enum, so hosted replaces the Unreachable else with a call to `raise` (cleanup_transformer.cr
+# :341-359). This program defines `raise` for the prelude-empty oracle, and the enum defines the comparisons its member
+# patterns use (`===`), which the empty prelude does not provide.
+
+def raise(message : String) : NoReturn
+  LibC.exit(9)
+end
 
 enum Level
   Debug
   Info
   Warn
-end
 
-def label(l : Level) : String
-  case l
-  in Level::Debug then "quiet"
-  in Level::Info  then "ordinary"
-  in Level::Warn  then "loud"
+  def ==(other : Level) : Bool
+    value == other.value
+  end
+
+  def ===(other : Level) : Bool
+    value == other.value
   end
 end
 
-puts label(Level::Info)
-puts label(Level::Warn)
-puts label(Level::Debug)
+def code(l : Level) : Int32
+  case l
+  in Level::Debug then 1
+  in Level::Info  then 2
+  in Level::Warn  then 3
+  end
+end
+
+LibC.exit(code(Level::Info) &* 10 &+ code(Level::Warn))
