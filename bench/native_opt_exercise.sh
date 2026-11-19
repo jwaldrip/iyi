@@ -483,6 +483,45 @@ for file in "$FIXTURES/prove/"*.ir; do
   if [ -f "$FIXTURES/prove/$name.out.ir" ]; then fixture_check prove "$name" changed; else fixture_check prove "$name" keep; fi
   fixture_stats prove "$file"
 done
+# R5 (range proof): each rule's changed and keep fixture, pinned by name. The loop above also runs them.
+for name in induction_start srem_urem nsw_add repeat_flag repeat_cmp range_arith; do fixture_check prove "$name" changed; done
+for name in induction_start_negative srem_keep sdiv_divisor_keep nsw_keep leaf_unchecked_keep wrap_add_keep; do fixture_check prove "$name" keep; done
+
+echo '== 2b-rt. range proof: runtime negatives, hosted and native at release'
+if ./bin/iyi build -o "$WORK/compile_native$EXE" src/compiler/tools/compile_native.iyi >"$WORK/rt-tool.build.log" 2>&1; then
+  "$PY" - "$(native_path "$WORK")" "$(native_path "$FIXTURES/prove/runtime")" "$(native_path "$WORK/compile_native$EXE")" "$EXE" <<'PY' || fail 'range proof runtime negatives disagree with the hosted build'
+import os, subprocess, sys
+work, runtime, tool, exe = sys.argv[1:]
+# The hosted and native builds, both at release, must agree on exit status, stdout and the first line of stderr.
+# The expected status is 1 where a check must really fire: an index below -len, and an overflow.
+programs = [('rem_div', 0), ('min_rem', 0), ('induction_index', 1), ('overflow_flag', 1)]
+bad = 0
+for name, expected in programs:
+    source = os.path.join(runtime, name + '.iyi')
+    hosted = os.path.join(work, 'rt-hosted-' + name + exe)
+    native = os.path.join(work, 'rt-native-' + name + exe)
+    for args in (['./bin/iyi', 'build', '--release', '-o', hosted, source],
+                 [tool, source, '-o', native, '--pipeline', 'typed', '--prelude', '--release']):
+        built = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+        if built.returncode != 0:
+            print('  build failed:', ' '.join(args), file=sys.stderr)
+            sys.exit(1)
+    results = []
+    for binary in (hosted, native):
+        ran = subprocess.run([binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        results.append((ran.returncode, ran.stdout, ran.stderr.decode('utf-8', 'replace').splitlines()[:1]))
+    if results[0] != results[1] or results[0][0] != expected:
+        bad += 1
+        print('  runtime mismatch in', name, results, file=sys.stderr)
+    else:
+        print('  ok: runtime', name, 'status', expected)
+if bad:
+    sys.exit(1)
+PY
+else
+  fail 'the compile_native tool did not build for the range proof runtime checks'
+  cat "$WORK/rt-tool.build.log" >&2
+fi
 
 echo '== 2c. loop-invariant code motion'
 for file in "$FIXTURES/licm/"*.ir; do
@@ -1164,6 +1203,46 @@ prove_mutation 'M15: induction bound is not one too wide' src/compiler/ir/opt/pr
   '        return upper + step + 1_i64 if add_fits?(upper, step, lo, hi - 1_i64) # mutation M15: widen induction range' \
   -- mutation_check M15 prove bounded_exit || fail 'M15 was not caught'
 mutation_result M15
+prove_mutation 'R5a: the induction lower bound is the least start' src/compiler/ir/opt/prove.iyi \
+  'return Interval.new(start_lo, upper)' \
+  'return Interval.new(start_hi, upper)' \
+  -- mutation_check R5a prove induction_start_negative || fail 'R5a was not caught'
+mutation_result R5a
+prove_mutation 'R5b: an exact sum that wraps is not a range' src/compiler/ir/opt/prove.iyi \
+  '      return exact if exact.lo >= lo && exact.hi <= hi # mutation R5-wrap: the exact result must fit the type' \
+  '      return exact if exact.lo >= lo # mutation R5-wrap: the exact result must fit the type' \
+  -- mutation_check R5b prove wrap_add_keep || fail 'R5b was not caught'
+mutation_result R5b
+prove_mutation 'R5c: a product whose ends are swapped is an empty range' src/compiler/ir/opt/prove.iyi \
+  'return Interval.new(p < q ? p : q, p < q ? q : p)' \
+  'return Interval.new(p, q)' \
+  -- mutation_check R5c prove range_arith || fail 'R5c was not caught'
+mutation_result R5c
+prove_mutation 'R5d: a checked result is a range on every use' src/compiler/ir/opt/prove.iyi \
+  'return nil unless uses_dominated_by?(leaf, succ)' \
+  'return nil unless true' \
+  -- mutation_check R5d prove leaf_unchecked_keep || fail 'R5d was not caught'
+mutation_result R5d
+prove_mutation 'R5e: a dividend of -1 may be unsigned' src/compiler/ir/opt/prove.iyi \
+  'return false if x.lo < 0_i64 # mutation R5-div: a dividend that can be negative stays signed' \
+  'return false if x.lo < -1_i64 # mutation R5-div: a dividend that can be negative stays signed' \
+  -- mutation_check R5e prove srem_keep || fail 'R5e was not caught'
+mutation_result R5e
+prove_mutation 'R5f: a divisor of -1 may be unsigned' src/compiler/ir/opt/prove.iyi \
+  'return false if d.lo <= 0_i64 # mutation R5-divisor: a divisor that can be zero or negative stays signed' \
+  'return false if d.lo < -2_i64 # mutation R5-divisor: a divisor that can be zero or negative stays signed' \
+  -- mutation_check R5f prove sdiv_divisor_keep || fail 'R5f was not caught'
+mutation_result R5f
+prove_mutation 'R5g: an unsafe pair gets nsw without its proof' src/compiler/ir/opt/prove.iyi \
+  'elsif inst.op == Op::Intrinsic && inst.aux.is_a?(IntrinsicAux) && pair_safe?(inst) # mutation R5-nsw: only a pair safe at its own block gets nsw' \
+  'elsif inst.op == Op::Intrinsic && inst.aux.is_a?(IntrinsicAux) && inst.args.size == 2 # mutation R5-nsw: only a pair safe at its own block gets nsw' \
+  -- mutation_check R5g prove nsw_keep || fail 'R5g was not caught'
+mutation_result R5g
+prove_mutation 'R5h: a repeated branch takes the opposite edge fact' src/compiler/ir/opt/prove.iyi \
+  'record_known(term.args[0], truth, 0)' \
+  'record_known(term.args[0], !truth, 0)' \
+  -- mutation_check R5h prove repeat_flag || fail 'R5h was not caught'
+mutation_result R5h
 prove_mutation 'M16: trapping division stays in the loop' src/compiler/ir/opt/licm.iyi \
   '  return false if inst.op == Op::SDiv || inst.op == Op::UDiv || inst.op == Op::SRem || inst.op == Op::URem # mutation M16: never speculate integer division' \
   '  return false if inst.op == Op::UDiv || inst.op == Op::SRem || inst.op == Op::URem # mutation M16: never speculate integer division' \

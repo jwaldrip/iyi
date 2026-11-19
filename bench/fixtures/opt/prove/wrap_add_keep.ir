@@ -1,0 +1,11 @@
+; iyi-ir 1
+source_filename = "wrap_add_keep"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i1 @wrap_add_keep(i8 %x) {
+entry:
+  %m = and i8 %x, 63
+  %y = add i8 %m, 100
+  %lt = icmp slt i8 %y, 0
+  ret i1 %lt
+}

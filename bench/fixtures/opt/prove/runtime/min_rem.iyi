@@ -1,0 +1,6 @@
+def rem_by(a : Int32, d : Int32) : Int32
+  a % d
+end
+
+puts "rem=#{rem_by(-2147483648, -1)}"
+puts "rem3=#{rem_by(-2147483647, 3)}"
