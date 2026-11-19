@@ -2110,8 +2110,15 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     t = @program.lookup_type_path(node, @current_type)
-    # Hosted main_visitor.cr:237-248 types a simple alias as its underlying type.
-    t = @program.remove_alias(t) if t.is_a?(AliasType)
+    # Hosted main_visitor.cr:237-248 types a simple alias as its underlying type, and
+    # check_type_in_type_args then gives it the metaclass that an expression names.
+    aliased = t.is_a?(AliasType)
+    if aliased
+      # AliasType#process_value gives a generic alias its generic base, not its instance, until a merge hook is installed,
+      # so the type system is installed before the alias is read (visit_generic does the same).
+      type_node_system(@program)
+      t = @program.remove_alias(t)
+    end
     if t.const?
       c = t.as(Const)
       c.used = true
@@ -2141,11 +2148,26 @@ pub class MainVisitor < TypeNodeHost
           set_type(node, c_type)
         end
       end
+    elsif aliased && @in_type_args == 0 && !t.is_a?(LibType)
+      return set_alias_metaclass(node, t)
     elsif t.is_a?(ModuleType) && @in_type_args == 0 && !t.is_a?(LibType)
       set_type(node, t.as(ModuleType).metaclass)
     else
       set_type(node, t)
     end
+    false
+  end
+
+  # A type an alias names, written in an expression: its metaclass, as hosted check_type_in_type_args gives it.
+  # `Bytes.new(4)` with `alias Bytes = Slice(UInt8)` is a call on that instance's metaclass. A type with no
+  # metaclass in the port (a union) is refused by name, not typed as its instance, which would dispatch the call
+  # over the union's members.
+  def set_alias_metaclass(node : ASTNode, aliased : Type) : Bool
+    meta = type_node_metaclass(aliased)
+    if meta.nil?
+      return refuse(node, "#{aliased.full_name}.class is not typed by the port yet")
+    end
+    set_type(node, meta.as(Type))
     false
   end
 
@@ -3987,6 +4009,27 @@ pub class MainVisitor < TypeNodeHost
     nil
   end
 
+  # The union an alias names when a call's receiver is that alias written as a path (`Either.new`), else nil.
+  def union_alias_receiver?(obj : ASTNode) : Type?
+    return nil unless obj.is_a?(Path)
+    named = @program.lookup_type_path?(obj.as(Path), @current_type)
+    return nil unless named.is_a?(AliasType)
+    target = @program.remove_alias(named.as(Type))
+    return target if target.is_a?(UnionType)
+    nil
+  end
+
+  # The text hosted gives a method called on a union alias. `new` with no argument is refused as an instance of
+  # a union; with one it is the arity error. Any other name is undefined on the union's metaclass.
+  def union_receiver_refusal(call_node : Call, union : Type) : String
+    shown = union.full_name
+    if call_node.name == "new"
+      return "can't create instance of a union type" if call_node.args.empty?
+      return "wrong number of arguments for '#{shown}.new' (given #{call_node.args.size}, expected 0)\nOverloads are:\n - Union(*T).new()"
+    end
+    "undefined method '#{call_node.name}' for #{shown}.class"
+  end
+
   # Written blocks and blocks run by yielding defs keep their node identity.
   # A captured forwarded proc is identified by its component types instead.
   def instance_key(rec_type : Type, target_def : Def, args : Array(ASTNode), block : Block?, call_node : Call?) : String
@@ -5597,7 +5640,13 @@ pub class MainVisitor < TypeNodeHost
     @needs_type_filters = 0
     rec_type : Type
     if obj = node.obj
-      obj.accept(self)
+      if union = union_alias_receiver?(obj)
+        # Hosted types a union alias receiver as the union's metaclass, which has `new` (Union(*T).new()) and
+        # no other method. The port has no union metaclass, so the call refuses with hosted's text.
+        refuse_call(node, union_receiver_refusal(node, union))
+      else
+        obj.accept(self)
+      end
       if ot = child_type(obj)
         rec_type = ot
       else

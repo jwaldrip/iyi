@@ -1,0 +1,16 @@
+# A `new` through an alias of a generic instance is the constructor of that instance. The
+# main pass types the alias path as the instance's metaclass, so each call takes the
+# generated `new` of Box(Int32), as the call through the written-out instance does. Read by
+# bench/selfhost_semantic_new_exercise.sh.
+
+class Box(T)
+  def initialize(v : T)
+  end
+end
+
+alias IntBox = Box(Int32)
+alias IntBoxAgain = IntBox
+
+b = IntBox.new(1)
+c = IntBoxAgain.new(2)
+d = Box(Int32).new(3)

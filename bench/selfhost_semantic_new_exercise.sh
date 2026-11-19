@@ -209,6 +209,21 @@ prove_mutation "a new generated from an initialize drops its forall names" "$TOP
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# The main pass types an alias path as its target's metaclass (main_visitor.iyi set_alias_metaclass, hosted
+# check_type_in_type_args). Typing it as the instance is the defect this gate guards; a non-generic alias path
+# left without its metaclass refuses a program hosted accepts.
+prove_mutation "an alias path is typed as its instance, not its metaclass" "$MAIN_VISITOR_FILE" \
+  '    set_type(node, meta.as(Type))' \
+  '    set_type(node, aliased)' \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a non-generic alias path has no metaclass in the main pass" "$MAIN_VISITOR_FILE" \
+  '    meta = type_node_metaclass(aliased)' \
+  '    meta = type_node_metaclass(aliased) unless aliased.is_a?(ModuleType)' \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

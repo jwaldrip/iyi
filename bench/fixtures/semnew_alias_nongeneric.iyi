@@ -1,0 +1,14 @@
+# A `new` through an alias of a class, or of an alias of that alias, is the constructor of the
+# class, as the written-out name is. Read by bench/selfhost_semantic_new_exercise.sh.
+
+class Point
+  def initialize(x : Int32)
+  end
+end
+
+alias P = Point
+alias Q = P
+
+a = P.new(3)
+b = Q.new(4)
+c = Point.new(5)
