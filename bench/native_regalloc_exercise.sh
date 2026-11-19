@@ -936,6 +936,39 @@ else
   host_limited "runtime parity: const_pressure native execution (macOS arm64)"
 fi
 
+# The dead-call fixture: the trap's call sits inside each loop value's interval hull, but it never returns and no value
+# is live after it. The loop values take caller-saved registers, so the function saves no callee-saved register and
+# spills nothing. A save or a frame operation here means the hull decided the crossing, not liveness.
+check_dead_call_crossing() {
+  local drv=$1 out="$WORK/dead_call_hull.mir"
+  [ -x "$drv" ] || return 2
+  if ! "$drv" mir "$FIX_RA/dead_call_hull.ir" sum_to >"$out" 2>&1; then
+    echo "could not emit the dead-call fixture"
+    return 2
+  fi
+  "$PY" - "$out" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+if not text.startswith("function sum_to\n"):
+    print("invalid MIR for the dead-call fixture")
+    sys.exit(2)
+bad = re.findall(r"^  (?:SpStore|SpLoad|StrFrame|LdrFrame)/", text, re.M)
+if bad:
+    print(f"a value crosses a call that never returns: {len(bad)} callee-saved or frame operation(s)")
+    sys.exit(1)
+print("dead call crossing: loop values use caller-saved registers, with no save and no frame slot")
+PY
+}
+if check_dead_call_crossing "$DRV" >"$WORK/dead_call.pristine.log" 2>&1; then
+  cat "$WORK/dead_call.pristine.log"
+else
+  cat "$WORK/dead_call.pristine.log"
+  fail "dead-call crossing MIR fixture"
+fi
+
 echo "== 6. mutation proofs"
 prove_mutation "floating ABI: flag typed parameters and call results" \
   src/compiler/native/regalloc_linear.iyi check_typed_abi_fprs \
@@ -970,8 +1003,8 @@ prove_mutation "collector: trust an unknown fixed FPR source" \
   '                safe_roots << v # fixed-fpr-provenance-unknown'
 prove_mutation "collector: ignore inline asm as a collector boundary" \
   src/compiler/native/regalloc_linear.iyi check_asm_boundary \
-  '        @call_prefix[p + 1] = @call_prefix[p] + (inst.call || !inst.asm.nil? ? 1 : 0) # collector-boundary' \
-  '        @call_prefix[p + 1] = @call_prefix[p] + (inst.call ? 1 : 0) # collector-boundary'
+  '        if inst.call || !inst.asm.nil? # collector-boundary' \
+  '        if inst.call # collector-boundary'
 prove_mutation "spill: store values with no virtual uses" \
   src/compiler/native/regalloc_linear.iyi check_dead_spills \
   '        stores << slot_access(fn.isa, false, reg, fn.vreg_slot[v], fp) if has_use[v] # skip-unused-spill-store' \
@@ -1112,8 +1145,8 @@ prove_mutation "collector: a flagged value may take a floating-point register ac
 if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_mutation "linear: a value live into a block that starts with a call is not counted as crossing it" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
-    '        cross = @call_prefix[@ends[v]] - @call_prefix[@starts[v]] > 0' \
-    '        cross = @call_prefix[@ends[v]] - @call_prefix[@starts[v] + 1] > 0'
+    '        if inst.call || !inst.asm.nil? # collector-boundary' \
+    '        if i > 0 && (inst.call || !inst.asm.nil?) # collector-boundary'
 else
   host_limited "runtime mutation: a value live into a call-headed block is not counted as crossing (macOS arm64)"
 fi
@@ -1129,6 +1162,10 @@ prove_mutation "spill scratch: one register fewer than the largest instruction n
   src/compiler/native/regalloc_linear.iyi check_mir_constants \
   '  largest # spill-scratch-count' \
   '  largest - 1 # spill-scratch-count'
+prove_mutation "crossing: a value live into a block with a boundary counts as crossing it" \
+  src/compiler/native/regalloc_linear.iyi check_dead_call_crossing \
+  '        live << @live_out[b][w]' \
+  '        live << (@live_out[b][w] | @live_in[b][w])'
 prove_mutation "hoisting: a constant used only as an argument copy is hoisted anyway" \
   src/compiler/native/mir_const.iyi check_mir_constants \
   ' && other_use[inst.defs[0].reg]' \

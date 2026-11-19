@@ -1360,8 +1360,125 @@ class LinearScan
   end
 end
 
+# Copy coalescing before the scan (round 2, slice R10). A copy d <- s between two general-purpose virtual registers is
+# deleted when s and d are never live together: renaming s to d everywhere then cannot change what any read sees. The
+# scan gives d the register of s only when that register is free over the whole hull of d, which a phi merge rarely is,
+# so these copies stay in the code. Each register takes part in at most one merge. A pair keeps its class, its pointer
+# flag and its 64-bit width, and a rematerializable constant is left to the allocator.
+pub def coalesce_copies(fn : MFunction) : Int32
+  n = fn.vreg_count
+  cand_dst = [] of Int32
+  cand_src = [] of Int32
+  first = int_row(n, -1) # the source each destination was first copied from
+  fn.blocks.each do |block|
+    block.insts.each do |inst|
+      next unless is_role?(fn.isa, inst, Role::Copy) && inst.size == 64 && !inst.fp && inst.asm.nil?
+      next unless inst.defs.size == 1 && inst.uses.size == 1
+      next unless inst.defs[0].kind == OperandKind::Virtual && inst.uses[0].kind == OperandKind::Virtual
+      d = inst.defs[0].reg
+      s = inst.uses[0].reg
+      next if d == s
+      next unless fn.vreg_classes[d] == RegClass::Gpr && fn.vreg_classes[s] == RegClass::Gpr
+      next unless fn.vreg_pointer[d] == fn.vreg_pointer[s]
+      next if fn.vreg_rematerializable[d] || fn.vreg_rematerializable[s]
+      next unless first[d] < 0 || first[d] == s
+      if first[d] < 0
+        first[d] = s
+        cand_dst << d
+        cand_src << s
+      end
+    end
+  end
+  kn = cand_dst.size
+  return 0 if kn == 0
+  scan = LinearScan.new(fn)
+  scan.build_successors
+  scan.solve_liveness
+  words = (n + 63) >> 6
+  conflict = bool_row(kn)
+  b = 0
+  while b < fn.blocks.size
+    insts = fn.blocks[b].insts
+    live = [] of UInt64
+    w = 0
+    while w < words
+      live << scan.live_out[b][w]
+      w = w + 1
+    end
+    i = insts.size - 1
+    while i >= 0
+      inst = insts[i]
+      # The point after inst: a candidate's two values live together, or a definition of one clobbers the other while live.
+      k = 0
+      while k < kn
+        conflict[k] = true if bit?(live, cand_dst[k]) && bit?(live, cand_src[k])
+        k = k + 1
+      end
+      inst.defs.each do |op|
+        next unless op.kind == OperandKind::Virtual
+        k = 0
+        while k < kn
+          conflict[k] = true if op.reg == cand_dst[k] && bit?(live, cand_src[k])
+          conflict[k] = true if op.reg == cand_src[k] && bit?(live, cand_dst[k])
+          k = k + 1
+        end
+      end
+      inst.defs.each do |op|
+        bit_clear(live, op.reg) if op.kind == OperandKind::Virtual
+      end
+      inst.uses.each do |op|
+        bit_set(live, op.reg) if op.kind == OperandKind::Virtual
+      end
+      i = i - 1
+    end
+    # The point at the entry of the block.
+    k = 0
+    while k < kn
+      conflict[k] = true if bit?(live, cand_dst[k]) && bit?(live, cand_src[k])
+      k = k + 1
+    end
+    b = b + 1
+  end
+  taken = bool_row(n)
+  rename = int_row(n, -1)
+  merged = 0
+  k = 0
+  while k < kn
+    d = cand_dst[k]
+    s = cand_src[k]
+    unless conflict[k] || taken[d] || taken[s]
+      taken[d] = true
+      taken[s] = true
+      rename[s] = d
+      merged = merged + 1
+    end
+    k = k + 1
+  end
+  return 0 if merged == 0
+  fn.blocks.each do |block|
+    acc = [] of MInst
+    block.insts.each do |inst|
+      inst.uses.each_with_index do |op, j|
+        next unless op.kind == OperandKind::Virtual && rename[op.reg] >= 0
+        inst.uses[j] = Operand.new(OperandKind::Virtual, rename[op.reg])
+      end
+      inst.defs.each_with_index do |op, j|
+        next unless op.kind == OperandKind::Virtual && rename[op.reg] >= 0
+        inst.defs[j] = Operand.new(OperandKind::Virtual, rename[op.reg])
+      end
+      identity = is_role?(fn.isa, inst, Role::Copy) && inst.defs.size == 1 && inst.uses.size == 1 &&
+                 inst.defs[0].kind == OperandKind::Virtual && inst.uses[0].kind == OperandKind::Virtual &&
+                 inst.defs[0].reg == inst.uses[0].reg
+      acc << inst unless identity
+    end
+    block.insts = acc
+  end
+  merged
+end
+
 # Allocates one function by linear scan, then writes the spill code.
 pub def allocate_linear(fn : MFunction) : Nil
+  coalesce_copies(fn)
   scan = LinearScan.new(fn)
   scan.run
   rewrite_spills(fn)
