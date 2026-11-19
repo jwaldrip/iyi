@@ -1,0 +1,19 @@
+; iyi-ir 1
+source_filename = "thread_or"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external void @raise_error()
+
+define internal i32 @thread_or(i32 %i, i32 %n) {
+entry:
+  %neg = icmp slt i32 %i, 0
+  br i1 %neg, label %raise, label %rhs
+rhs:
+  %big = icmp sge i32 %i, %n
+  br i1 %big, label %raise, label %ok
+raise:
+  call void () @raise_error()
+  unreachable
+ok:
+  ret i32 %i
+}
