@@ -1,0 +1,25 @@
+@[Unsafe("raw slot for a test")]
+class Slot(T)
+  @got : T
+
+  def initialize
+    @got = uninitialized T
+  end
+
+  def fill(v : T) : Nil
+    p = pointerof(@got)
+    p.value = v
+  end
+
+  def got : T
+    @got
+  end
+end
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+s = Slot(Int32).new
+s.fill(42)
+LibC.exit(s.got)

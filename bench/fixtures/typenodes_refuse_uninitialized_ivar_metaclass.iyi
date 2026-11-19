@@ -1,0 +1,11 @@
+@[Unsafe("a class method has no instance to hold the variable")]
+class Slot
+  @x : Int32
+
+  def self.make
+    @x = uninitialized Int32
+    1
+  end
+end
+
+Slot.make

@@ -1,0 +1,22 @@
+@[Unsafe("an uninitialized instance variable is raw memory until it is written")]
+class Base
+  @x : Int32
+
+  def initialize
+    @x = uninitialized Int32
+  end
+
+  def set : Int32
+    @x = uninitialized Int32
+    1
+  end
+end
+
+class Sub < Base
+end
+
+def use(b : Base) : Int32
+  b.set
+end
+
+use(Sub.new)

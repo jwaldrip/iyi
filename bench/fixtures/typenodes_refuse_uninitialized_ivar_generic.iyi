@@ -1,0 +1,11 @@
+@[Unsafe("a bare generic names no type to hold")]
+class Box(T)
+end
+
+class Slot
+  def initialize
+    @x = uninitialized Box
+  end
+end
+
+Slot.new

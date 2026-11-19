@@ -19,9 +19,9 @@ module compiler/semantic/type_nodes
 # accepts, so the port refuses them by name; and the `raises` mark a cast leaves
 # on its method, which the port does not track yet.
 
-import compiler/syntax/ast::{ASTNode, AlignOf, Cast, EnumDef, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, NumberLiteral, PointerOf, ProcNotation, Self, SizeOf, Splat, TypeOf, Union, UninitializedVar, Var}
+import compiler/syntax/ast::{ASTNode, AlignOf, Cast, ClassVar, EnumDef, FunDef, Generic, Global, InstanceAlignOf, InstanceSizeOf, InstanceVar, Metaclass, NilableCast, NumberLiteral, PointerOf, ProcNotation, Self, SizeOf, Splat, TypeOf, Union, UninitializedVar, Var}
 import compiler/semantic/type_node_host::{TypeNodeHost}
-import compiler/semantic/top_level::{GenericClassType, GenericModuleType, LibFun, ModuleType, SemanticProgram, Type, TypeHook, TypeParameterType}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, LibFun, MetaclassType, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeHook, TypeParameterType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, NamedArgumentType, TupleInstanceType, TypeQueries, TypeSplat}
 import compiler/types/unification::{TypeUnification}
@@ -619,14 +619,20 @@ pub def visit_pointer_of(visitor : TypeNodeHost, node : PointerOf) : Bool
   visitor.refuse(node, "pointerof of #{exp.to_s} is not ported yet: only a local variable is")
 end
 
-# `x = uninitialized Int32`: the declared type is a type argument, the local is
-# recorded in the scope under its name, and the variable and the node are typed
-# as that type (hosted `visit(node : UninitializedVar)` main_visitor.cr 490-520).
-# A name already declared refuses as the hosted pass does. Only a local variable
-# is ported; the hosted meta-variable binding is the port's `vars` entry.
+# `x = uninitialized Int32` and `@x = uninitialized Int32`: the declared type is a
+# type argument. A local is recorded in the scope under its name, and the variable
+# and the node are typed as that type (hosted `visit(node : UninitializedVar)`,
+# main_visitor.cr 501-581; the local branch is 503-535). A name already declared
+# refuses as the hosted pass does. The hosted meta-variable binding is the port's
+# `vars` entry. An instance variable goes to visit_uninitialized_instance_var; a
+# class variable and a global refuse by name.
 pub def visit_uninitialized_var(visitor : TypeNodeHost, node : UninitializedVar) : Bool
   var = node.var
-  return visitor.refuse(node, "uninitialized of this target is not ported yet") unless var.is_a?(Var)
+  if var.is_a?(InstanceVar)
+    return visit_uninitialized_instance_var(visitor, node, var.as(InstanceVar))
+  end
+  return visitor.refuse(node, "uninitialized of a class variable is not ported yet") if var.is_a?(ClassVar)
+  return visitor.refuse(node, "uninitialized of a global variable is not ported yet") unless var.is_a?(Var)
   name = var.as(Var).name
   if visitor.vars[name]?
     return visitor.refuse(node, "variable '#{name}' already declared")
@@ -640,5 +646,80 @@ pub def visit_uninitialized_var(visitor : TypeNodeHost, node : UninitializedVar)
   visitor.vars[name] = declared
   visitor.set_type(var, declared)
   visitor.set_type(node, declared)
+  false
+end
+
+# `@x = uninitialized T`: hosted `visit(node : UninitializedVar)`, the InstanceVar
+# branch (main_visitor.cr 536-567). Hosted types the node Nil and stores nothing,
+# since codegen (codegen.cr 1835-1851) yields nil for a target that is not a
+# variable. The instance variable keeps the type its declaration gives it, so the
+# variable is not typed here.
+#
+# Two refusals hosted makes in earlier passes keep their text: a class method's
+# instance variable (type_guess_visitor.cr 95-96) and a program's (type_declaration_
+# visitor.cr 257). A class body is hosted's "already handled in a previous visitor"
+# branch (main_visitor.cr 550-552) and types nothing else. The port tells a class
+# body from a method body by the scope: a method body's scope is its receiver's type
+# (main_visitor.iyi, `@scope = rec_type` in the typing of a def), and a class body
+# has none.
+#
+# In a method body the declared type is typed and checked as check_declare_var_type
+# does (semantic_visitor.cr 2320-2332). The instance variable needs a type already,
+# from a class-level declaration or from the assignments the port has typed. Hosted
+# declares an undeclared one from this node (type_guess_visitor.cr 92-119), which the
+# port does not do yet, so that refuses by name. Where the variable has a type, hosted
+# lets a declared type win over this node and merges an assigned one with it, so the
+# port takes this node only when its type is the variable's own. A module's method is
+# typed through its metaclass, which refuses above, so the module case of hosted's
+# `case type` (main_visitor.cr 555-567) is not reached here.
+#
+# Not ported: the initialize-only `@vars` entry (main_visitor.cr 546-548). The port
+# does not know the def it types, and its instance-variable reads do not read `vars`.
+# A virtual owner is not unwrapped: hosted's case type refuses it (main_visitor.cr 555-567), and
+# the lookup below refuses it here by name.
+pub def visit_uninitialized_instance_var(visitor : TypeNodeHost, node : UninitializedVar, var : InstanceVar) : Bool
+  scope : Type? = visitor.scope_type
+  owner : Type = scope || visitor.current_type
+  if owner.is_a?(MetaclassType)
+    return visitor.refuse(node, "@instance_vars are not yet allowed in metaclasses: use @@class_vars instead")
+  end
+  if owner.is_a?(SemanticProgram)
+    return visitor.refuse(node, "can only declare instance variables of a non-generic class, not a main (<Program>)")
+  end
+  if scope.nil?
+    visitor.set_type(node, visitor.program.nil_type)
+    return false
+  end
+  lookup = type_node_lookup(visitor)
+  visitor.bracket_type_args(1)
+  node.declared_type.accept(visitor)
+  visitor.bracket_type_args(-1)
+  t = visitor.child_type(node.declared_type)
+  return false if t.nil?
+  stored = t.as(Type)
+  if stored.is_a?(GenericClassType)
+    return visitor.refuse(node, "can't declare variable of generic non-instantiated type #{lookup.shown(stored)}")
+  end
+  unless lookup.can_be_stored?(stored)
+    return visitor.refuse(node, "can't use #{lookup.shown(stored)} as the type of an instance variable yet, use a more specific type")
+  end
+  ivar_type : Type? = nil
+  if owner.is_a?(ModuleType)
+    if ivar = owner.as(ModuleType).lookup_instance_var?(var.name)
+      ivar_type = ivar.type
+    end
+  elsif owner.is_a?(GenericClassInstanceType)
+    if ivar = owner.as(GenericClassInstanceType).lookup_instance_var?(var.name)
+      ivar_type = ivar.type
+    end
+  end
+  if ivar_type.nil?
+    return visitor.refuse(node, "can't infer the type of instance variable '#{var.name}' of #{owner.full_name}: the port does not type one from an uninitialized assignment yet")
+  end
+  held = ivar_type.as(Type)
+  unless held.subtype_of?(stored) && stored.subtype_of?(held)
+    return visitor.refuse(node, "can't join uninitialized #{lookup.shown(stored)} into instance variable '#{var.name}' of #{owner.full_name}, which is #{lookup.shown(held)}: the port takes only the same type yet")
+  end
+  visitor.set_type(node, visitor.program.nil_type)
   false
 end

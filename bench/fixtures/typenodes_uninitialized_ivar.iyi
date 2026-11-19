@@ -1,0 +1,15 @@
+@[Unsafe("an uninitialized instance variable is raw memory until it is written")]
+class Slot
+  @x : Int32
+
+  def initialize
+    @x = uninitialized Int32
+  end
+
+  def address
+    pointerof(@x)
+  end
+end
+
+s = Slot.new
+p = s.address
