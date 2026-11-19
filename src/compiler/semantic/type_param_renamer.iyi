@@ -1,0 +1,152 @@
+module compiler/semantic/type_param_renamer
+
+# The rename half of an impl on a generic type: `impl Show for Pair(X, Y) forall X, Y` is
+# reopened with the names the target declared (`A`, `B` for `struct Pair(A, B)`), because a
+# generic's methods are instantiated under the bindings its own declaration names.
+#
+# Ported from hosted TypeParamRenamer (src/compiler/iyi/semantic/top_level_visitor.cr 1218-1253).
+# Hosted overrides two node kinds, Path (the rename and the capture check) and Def (its return
+# type, which the hosted base walk skips). The rest of the walk is the hosted base transformer's
+# (src/compiler/iyi/syntax/transformer.cr), which reaches every type position of a def: argument
+# restrictions and defaults, the block and double-splat arguments, generic arguments, unions,
+# metaclasses, proc types, rescue clauses, proc literal bodies and the type of a hash literal.
+# This port's base transformer (compiler/syntax/transformer) does not walk the children of those kinds that hold a type
+# (a def's arguments and return type, a generic's arguments, a union's members, a metaclass's name, a proc type's inputs
+# and output, an argument's restriction and default, a rescue clause's types, a proc literal's body, a hash literal's
+# own type), so this class overrides each kind and walks those children. The base class is unchanged.
+#
+# Renaming can capture: if the body already names one of the target's declared parameters with
+# a meaning of its own, the rename would silently make that name the impl's parameter. The first
+# capture is recorded in `refusal`, and the caller refuses the impl with it. Hosted raises at the first one its walk
+# meets; the order here follows hosted's for each kind this class overrides.
+
+import compiler/syntax/ast::{ASTNode, Arg, Def, Generic, HashLiteral, Metaclass, Path, ProcLiteral, ProcNotation, Rescue, Union}
+import compiler/syntax/transformer::{Transformer}
+
+pub class TypeParamRenamer < Transformer
+  # The capture that refuses the impl, or nil while the walk has found none.
+  getter refusal : String?
+
+  # `renames` maps each of the impl's own names to the name its target declared.
+  def initialize(@renames : Hash(String, String))
+    @refusal = nil
+    # hosted @targets: the declared names a rename brings in, that are not renamed away themselves.
+    @targets = [] of String
+    @renames.each do |from, to|
+      @targets << to if !@renames.has_key?(to) && !@targets.includes?(to)
+    end
+  end
+
+  # hosted TypeParamRenamer#transform(Path), top_level_visitor.cr 1230-1243.
+  def transform(node : Path) : ASTNode
+    return node if node.global || node.names.size != 1
+    name = node.names[0]
+    if @targets.includes?(name)
+      capture("#{name} is what this impl's target declared its type parameter as, so it can't also be used as a name here; rename the `forall` parameter to #{name}")
+      return node
+    end
+    if renamed = @renames[name]?
+      return Path.new([renamed]).at(node)
+    end
+    node
+  end
+
+  # hosted TypeParamRenamer#transform(Def), top_level_visitor.cr 1245-1252: the return type first,
+  # then what the base walk visits, in its order: the arguments, the body, the receiver, the double
+  # splat and the block argument.
+  def transform(node : Def) : ASTNode
+    if return_type = node.return_type
+      node.return_type = return_type.transform(self)
+    end
+    node.args.each do |arg|
+      arg.transform(self)
+    end
+    node.body = node.body.transform(self)
+    if receiver = node.receiver
+      node.receiver = receiver.transform(self)
+    end
+    if double_splat = node.double_splat
+      node.double_splat = double_splat.transform(self).as(Arg)
+    end
+    if block_arg = node.block_arg
+      node.block_arg = block_arg.transform(self).as(Arg)
+    end
+    node
+  end
+
+  # hosted base transform(Arg): the default value, then the restriction.
+  def transform(node : Arg) : ASTNode
+    if default_value = node.default_value
+      node.default_value = default_value.transform(self)
+    end
+    if restriction = node.restriction
+      node.restriction = restriction.transform(self)
+    end
+    node
+  end
+
+  # hosted base transform(Generic): the name, then the type arguments.
+  def transform(node : Generic) : ASTNode
+    node.name = node.name.transform(self)
+    transform_many(node.type_vars)
+    node
+  end
+
+  # hosted base transform(Union).
+  def transform(node : Union) : ASTNode
+    transform_many(node.types)
+    node
+  end
+
+  # hosted base transform(Metaclass): the name, as in `T.class`.
+  def transform(node : Metaclass) : ASTNode
+    node.name = node.name.transform(self)
+    node
+  end
+
+  # hosted base transform(ProcNotation): the inputs, then the output.
+  def transform(node : ProcNotation) : ASTNode
+    if inputs = node.inputs
+      transform_many(inputs)
+    end
+    if output_type = node.output
+      node.output = output_type.transform(self)
+    end
+    node
+  end
+
+  # hosted base transform(Rescue): the body, then the exception types.
+  def transform(node : Rescue) : ASTNode
+    node.body = node.body.transform(self)
+    if types = node.types
+      transform_many(types)
+    end
+    node
+  end
+
+  # hosted base transform(ProcLiteral) walks the body of the literal's def, and not its arguments.
+  def transform(node : ProcLiteral) : ASTNode
+    literal_def = node.def
+    literal_def.body = literal_def.body.transform(self)
+    node
+  end
+
+  # hosted base transform(HashLiteral): the entries, then the literal's own `of` type.
+  def transform(node : HashLiteral) : ASTNode
+    i = 0
+    while i < node.entries.size
+      entry = node.entries[i]
+      node.entries[i] = HashLiteral::Entry.new(entry.key.transform(self), entry.value.transform(self))
+      i += 1
+    end
+    if of_entry = node.of
+      node.of = HashLiteral::Entry.new(of_entry.key.transform(self), of_entry.value.transform(self))
+    end
+    node
+  end
+
+  # Records the first capture; the walk goes on, and the caller refuses the impl with it.
+  def capture(message : String) : Nil
+    @refusal = message if @refusal.nil?
+  end
+end

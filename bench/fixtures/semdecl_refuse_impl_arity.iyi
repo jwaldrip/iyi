@@ -1,0 +1,20 @@
+# `impl Show for Pair(X) forall X` gives one type var to a two-parameter target: refused with hosted's arity text.
+module samples/semdecl_refuse_impl_arity
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Pair(A, B)
+  getter first : A
+  getter second : B
+
+  def initialize(@first : A, @second : B)
+  end
+end
+
+impl Show for Pair(X) forall X
+  def show : String
+    "x"
+  end
+end

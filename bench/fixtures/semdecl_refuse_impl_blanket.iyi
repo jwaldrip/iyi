@@ -1,0 +1,12 @@
+# `impl Show for T forall T` is a blanket impl, refused for every type at once.
+module samples/semdecl_refuse_impl_blanket
+
+pub trait Show
+  abstract def show : String
+end
+
+impl Show for T forall T
+  def show : String
+    "any"
+  end
+end

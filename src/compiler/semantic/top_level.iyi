@@ -11,6 +11,7 @@ import compiler/macros/engine::{MacroEngine}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/semantic/inline_macros::{expand_inline_macro, splice_body_node, splice_inline_sites}
 import compiler/semantic/normalizer::{NormalizerProgram}
+import compiler/semantic/type_param_renamer::{TypeParamRenamer}
 
 pub class TypeException
   getter message : String
@@ -3665,6 +3666,229 @@ pub class TopLevelVisitor < Visitor
     false
   end
 
+  # iyi: a refusal of an impl. Strict mode refuses by name and exits, as refuse_constant does; total mode carries the
+  # message past, and the caller skips the impl.
+  def refuse_impl(message : String) : Nil
+    if @program.total_mode
+      @program.carried_refusals << message
+    else
+      refuse_port(message)
+    end
+  end
+
+  # iyi: hosted GenericType (types.cr 1868): a generic class, a generic module and a generic trait.
+  def generic_base?(base : Type?) : Bool
+    base.is_a?(GenericClassType) || base.is_a?(GenericModuleType) || base.is_a?(GenericTraitType)
+  end
+
+  # The type variables a generic declaration was declared with, in order. Empty for any other type.
+  def generic_declared_vars(base : Type?) : Array(String)
+    if base.is_a?(GenericClassType)
+      base.as(GenericClassType).type_vars
+    elsif base.is_a?(GenericModuleType)
+      base.as(GenericModuleType).type_vars
+    elsif base.is_a?(GenericTraitType)
+      base.as(GenericTraitType).type_vars
+    else
+      [] of String
+    end
+  end
+
+  # The position of the `*` parameter of a generic declaration, or nil. A trait has none.
+  def generic_splat_index_of(base : Type?) : Int32?
+    if base.is_a?(GenericClassType)
+      base.as(GenericClassType).splat_index
+    elsif base.is_a?(GenericModuleType)
+      base.as(GenericModuleType).splat_index
+    else
+      nil
+    end
+  end
+
+  # The parameters of a generic declaration as hosted prints them (types.cr 2204-2215): `*` before the splat one.
+  def generic_params_text(base : Type?) : Array(String)
+    splat = generic_splat_index_of(base)
+    params = [] of String
+    generic_declared_vars(base).each_with_index do |name, index|
+      star = false
+      if s = splat
+        star = true if s == index
+      end
+      params << (star ? "*#{name}" : name)
+    end
+    params
+  end
+
+  # hosted `#{base}` for a generic declaration: its full name and its parameters. The port's own to_s leaves the star out.
+  def generic_text(base : Type) : String
+    "#{base.full_name}(#{generic_params_text(base).join(", ")})"
+  end
+
+  # hosted `#{type}` in a message: a generic declaration with its parameters, anything else by its full name.
+  def declared_text(type : Type) : String
+    if generic_base?(type)
+      generic_text(type)
+    else
+      type.full_name
+    end
+  end
+
+  # The `forall` name a written type argument is: a name the impl introduced, written alone. "" for anything else.
+  def forall_name(node : ASTNode, type_vars : Array(String)) : String
+    if node.is_a?(Path)
+      path = node.as(Path)
+      if !path.global && path.names.size == 1 && type_vars.includes?(path.names[0])
+        return path.names[0]
+      end
+    end
+    ""
+  end
+
+  # iyi: whether the `*` parameter of a generic declaration is at this position.
+  def splat_index_is?(splat : Int32?, index : Int32) : Bool
+    if s = splat
+      return s == index
+    end
+    false
+  end
+
+  # hosted iyi_generic_impl_spelling (top_level_visitor.cr 1126-1132): the impl a refusal asks the author to write, with
+  # one `forall` name for each parameter the target declares.
+  def generic_impl_spelling(node : ImplDef, target : Generic) : String
+    trait_text = node.trait.to_s
+    written = target.name.to_s
+    if base = @program.lookup_type_node?(target.name, @current_type)
+      if generic_base?(base)
+        names = generic_declared_vars(base).join(", ")
+        return "impl #{trait_text} for #{written}(#{generic_params_text(base).join(", ")}) forall #{names}"
+      end
+    end
+    "impl #{trait_text} for #{written}(T) forall T"
+  end
+
+  # iyi: a generic impl's target (hosted resolve_generic_impl_target, top_level_visitor.cr 1147-1216). Each `forall` name
+  # is bound to the parameter of the target at its position, and the body is renamed to the names the target declared,
+  # since the methods are instantiated under those. Returns the declaration the methods are defined on, or nil when the
+  # impl is refused (total mode carries the refusal past).
+  #
+  # The bounds refusal (`forall T : Show`) is not here: the parser reads a bound on an impl's `forall` and discards it
+  # (parser.iyi:5224-5227), so there is nothing to refuse. Such an impl is accepted as if unbounded: a known gap.
+  def resolve_generic_impl_target(node : ImplDef, type_vars : Array(String)) : Type?
+    target = node.target
+    trait_text = node.trait.to_s
+
+    # A blanket impl: the target is the parameter itself. Refused before anything else.
+    if target.is_a?(Path)
+      written = target.as(Path)
+      if !written.global && written.names.size == 1 && type_vars.includes?(written.names[0])
+        refuse_impl("can't implement #{trait_text} for every type. A blanket impl lets one module add methods to types it has never heard of, which is the open-class problem traits exist to remove \u{2014} implement #{trait_text} for each type instead")
+        return nil
+      end
+    end
+
+    unless target.is_a?(Generic)
+      refuse_impl("#{target.to_s} takes no type parameters, so `forall #{type_vars.join(", ")}` has nothing to bind")
+      return nil
+    end
+    generic_target = target.as(Generic)
+
+    base = @program.lookup_type_node(generic_target.name, @current_type)
+    unless generic_base?(base)
+      refuse_impl("#{base.full_name} is not a generic type")
+      return nil
+    end
+    declared = generic_declared_vars(base)
+    written_args = generic_target.type_vars
+    if written_args.size != declared.size
+      refuse_impl("wrong number of type vars for #{generic_text(base)} (given #{written_args.size}, expected #{declared.size}). Write `#{generic_impl_spelling(node, generic_target)}`")
+      return nil
+    end
+
+    # Each argument is one of the `forall` names, and each name is used once. A concrete argument, as in
+    # `impl Show for Box(Int32)`, is refused rather than read as a specialisation (SPEC.md II.7). A splat parameter is
+    # bound the way it was declared, `Tuple(*T)`, and `Tuple(T)` binds it too.
+    splat = generic_splat_index_of(base)
+    renames = {} of String => String
+    index = 0
+    while index < written_args.size
+      arg = written_args[index]
+      if arg.is_a?(Splat)
+        unless splat_index_is?(splat, index)
+          refuse_impl("#{declared[index]} is not a splat parameter of #{generic_text(base)}, so it is bound without `*`: `#{generic_impl_spelling(node, generic_target)}`")
+          return nil
+        end
+        arg = arg.as(Splat).exp
+      end
+      name = forall_name(arg, type_vars)
+      if name.empty?
+        refuse_impl("expected one of the type parameters introduced by `forall` (#{type_vars.join(", ")}); iyi has no specialised impls, so a concrete type here is not a narrower impl but an error")
+        return nil
+      end
+      if renames.has_key?(name)
+        refuse_impl("type parameter #{name} is bound twice; each of #{generic_text(base)}'s parameters needs its own")
+        return nil
+      end
+      renames[name] = declared[index]
+      index += 1
+    end
+
+    unused = [] of String
+    type_vars.each do |name|
+      unused << name unless renames.has_key?(name)
+    end
+    unless unused.empty?
+      verb = unused.size == 1 ? "is" : "are"
+      refuse_impl("`forall` introduces #{unused.join(", ")}, which #{verb} never used in #{target.to_s}")
+      return nil
+    end
+
+    # The body is renamed when a name changes. A rename that would capture a declared name refuses the impl.
+    renamed = false
+    type_vars.each do |name|
+      renamed = true if renames[name] != name
+    end
+    if renamed
+      renamer = TypeParamRenamer.new(renames)
+      node.body = node.body.transform(renamer)
+      if message = renamer.refusal
+        refuse_impl(message)
+        return nil
+      end
+    end
+    base
+  end
+
+  # iyi: a target written without `forall` (hosted check_generic_impl_without_forall, top_level_visitor.cr 1096-1117). A
+  # generic target is refused whatever its arguments: a name not in scope needs the binder, and a concrete argument is no
+  # specialisation. Any other target resolves as it always did.
+  def plain_impl_target(node : ImplDef) : Type?
+    target = node.target
+    unless target.is_a?(Generic)
+      return @program.lookup_type_node(target, @current_type)
+    end
+    generic_target = target.as(Generic)
+    trait_text = node.trait.to_s
+    unbound = [] of String
+    generic_target.type_vars.each do |written|
+      arg = written
+      if arg.is_a?(Splat)
+        arg = arg.as(Splat).exp
+      end
+      next unless arg.is_a?(Path)
+      path = arg.as(Path)
+      next if path.global || path.names.size != 1
+      next if @program.lookup_type_node?(arg, @current_type)
+      unbound << path.names[0]
+    end
+    if unbound.empty?
+      refuse_impl("can't implement #{trait_text} for #{target.to_s} alone: iyi has no specialised impls, so a trait is implemented for #{generic_target.name.to_s} once, for every instantiation. Write `#{generic_impl_spelling(node, generic_target)}`")
+    else
+      verb = unbound.size == 1 ? "is" : "are"
+      refuse_impl("#{unbound.join(", ")} #{verb} not a type here. To implement #{trait_text} for every #{generic_target.name.to_s}, introduce the parameters with `forall`: `impl #{trait_text} for #{target.to_s} forall #{unbound.join(", ")}`")
+    end
+    nil
+  end
+
   def visit(node : ImplDef) : Bool
     trait_type = @program.lookup_type_node(node.trait, @current_type)
     unless trait_type.trait?
@@ -3674,11 +3898,26 @@ pub class TopLevelVisitor < Visitor
       return false
     end
 
-    target_type = @program.lookup_type_node(node.target, @current_type)
+    # A generic target is its declaration, with the impl's own names renamed to the declared ones (hosted
+    # visit(ImplDef), top_level_visitor.cr 776-783). Any other target resolves as it always did.
+    if type_vars = node.type_vars
+      resolved = resolve_generic_impl_target(node, type_vars)
+    else
+      resolved = plain_impl_target(node)
+    end
+    return false if resolved.nil?
+    target_type = resolved.as(Type)
     if target_type.trait?
       message = "can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one \u{2014} to give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)"
       raise(message) unless @program.total_mode
       @program.carried_refusals << message
+      return false
+    end
+
+    # hosted visit(ImplDef), top_level_visitor.cr 797-799: a module is not implementable. Every type that includes it
+    # would get the trait with no impl of its own for R-3 to check, which is the `include` hole II.8 refuses.
+    if target_type.is_a?(NonGenericModuleType) || target_type.is_a?(GenericModuleType)
+      refuse_impl("can't implement #{declared_text(trait_type)} for #{declared_text(target_type)}, it's a module. A trait is implemented for a type, and a module is not one: every type that includes #{declared_text(target_type)} would get #{declared_text(trait_type)} with no impl of its own for R-3 to check, which is the `include` hole II.8 refuses \u{2014} implement #{declared_text(trait_type)} for each type instead (SPEC.md II.8)")
       return false
     end
 

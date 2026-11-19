@@ -1,0 +1,44 @@
+# An impl's own `forall` names are bound to the declared parameters of its target (`Pair(A, B)` here, `X` and `Y`
+# in the impl). The methods are instantiated under the declared names, so the arguments, the return type and the
+# overloads of `size` all have to be renamed for the call to find them: `size(v : X)` is `size(v : A)`.
+trait Measure
+  abstract def measure : Int32
+end
+
+class Pair(A, B)
+  def initialize(@first : A, @second : B)
+  end
+
+  def first : A
+    @first
+  end
+
+  def second : B
+    @second
+  end
+end
+
+impl Measure for Pair(X, Y) forall X, Y
+  def measure : Int32
+    size(first) &+ size(second)
+  end
+
+  def size(v : X) : Int32
+    10
+  end
+
+  def size(v : Y) : Int32
+    1
+  end
+
+  def head : X
+    first
+  end
+end
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+pair = Pair.new(7, true)
+LibC.exit(pair.measure &+ pair.head)

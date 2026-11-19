@@ -1,0 +1,20 @@
+# `impl Show for Pair(X, X) forall X` binds one name to two parameters: refused.
+module samples/semdecl_refuse_impl_repeated
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Pair(A, B)
+  getter first : A
+  getter second : B
+
+  def initialize(@first : A, @second : B)
+  end
+end
+
+impl Show for Pair(X, X) forall X
+  def show : String
+    "x"
+  end
+end

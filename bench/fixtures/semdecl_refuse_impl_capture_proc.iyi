@@ -1,0 +1,24 @@
+# A proc type names `A` among its inputs, which the rename would capture: refused (the proc notation is walked).
+module samples/semdecl_refuse_impl_capture_proc
+
+pub trait Show
+  abstract def show : String
+end
+
+pub struct Pair(A, B)
+  getter first : A
+  getter second : B
+
+  def initialize(@first : A, @second : B)
+  end
+end
+
+impl Show for Pair(X, Y) forall X, Y
+  def show : String
+    "pair"
+  end
+
+  def run(f : A -> Int32) : Int32
+    1
+  end
+end

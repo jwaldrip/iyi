@@ -1,0 +1,19 @@
+# `impl Show for Helpers` where Helpers is a module: refused, since a module is not implementable (every includer would
+# get the trait without an impl of its own).
+module samples/semdecl_refuse_impl_module
+
+pub trait Show
+  abstract def show : String
+end
+
+module Helpers
+  def self.helper : Int32
+    1
+  end
+end
+
+impl Show for Helpers
+  def show : String
+    "helpers"
+  end
+end
