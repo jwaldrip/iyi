@@ -303,6 +303,11 @@ pub def rewrite_spills(fn : MFunction) : Nil
   end
 end
 
+# A general-purpose virtual register with no home: it lives in its frame slot, or is rebuilt as a constant, at each use.
+def spilled_gpr?(fn : MFunction, v : Int32) : Bool
+  fn.vreg_home[v] < 0 && fn.vreg_classes[v] == RegClass::Gpr
+end
+
 def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
   acc = [] of MInst
   cache = int_row(64, -1)
@@ -314,6 +319,21 @@ def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
   block.insts.each do |inst|
     blocked = fixed[index] # protect-staged-physical
     index = index + 1
+    # A copy between a spilled general-purpose value and a fixed register moves in one instruction: a reload into the
+    # fixed register, or a store from it. A copy into a spilled value that nothing reads is dead and is dropped.
+    if is_role?(fn.isa, inst, Role::Copy) && inst.size == 64 && !inst.fp && inst.defs.size == 1 && inst.uses.size == 1
+      d = inst.defs[0]
+      s = inst.uses[0]
+      if d.kind == OperandKind::Physical && d.reg >= 0 && d.reg < 31 && s.kind == OperandKind::Virtual && spilled_gpr?(fn, s.reg)
+        cache[d.reg] = -1 # physical-def-invalidates-reload
+        acc << reload_inst(fn, s.reg, d.reg)
+        next
+      end
+      if s.kind == OperandKind::Physical && s.reg >= 0 && s.reg < 31 && d.kind == OperandKind::Virtual && spilled_gpr?(fn, d.reg) && !fn.vreg_rematerializable[d.reg]
+        acc << slot_access(fn.isa, false, s.reg, fn.vreg_slot[d.reg], false) if has_use[d.reg]
+        next
+      end
+    end
     used = 0_u64
     dropped = false
     inst.uses.each do |op|
