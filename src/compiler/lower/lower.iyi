@@ -43,7 +43,7 @@ import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, N
 import compiler/lower/context::{BodyVisit, BranchPhi, Lowerer, LowerVar}
 import compiler/lower/locals::{preallocate_locals}
 import compiler/lower/helpers::{abi_name, int1, llvm_nil, load_aligned, store_aligned, at_terminator?, raise_overflow_name}
-import compiler/lower/cond::{cond_bool, nil_condition?}
+import compiler/lower/cond::{cond_bool}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
 import compiler/lower/call::{codegen_call_node, codegen_responds_to, responds_to_value, declare_lib_var}
@@ -1249,17 +1249,6 @@ pub def lower_expanded_bool(low : Lowerer, node : ASTNode) : Nil
   refuse_port("lower: a typed && or || has no recorded expansion (hosted cleanup_transformer.cr: transform(ExpandableNode))")
 end
 
-# The hosted `visit(And)` and `visit(Or)`: the normaliser's `If`. `a && b` is `if a then b else a`,
-# and `a || b` is `if a then a else b`; the left operand is lowered again in the branch that
-# takes it, which is what the hosted code emits.
-pub def codegen_and(low : Lowerer, node : And) : Nil
-  codegen_branch(low, node, node.left, node.right, node.left)
-end
-
-pub def codegen_or(low : Lowerer, node : Or) : Nil
-  codegen_branch(low, node, node.left, node.left, node.right)
-end
-
 # The branch shared by `if`, `unless`, `&&` and `||`. `node` gives the merged type.
 pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_node : ASTNode, else_node : ASTNode) : Nil
   if cond_node.is_a?(BoolLiteral) || cond_node.is_a?(NilLiteral)
@@ -1274,7 +1263,18 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     return
   end
   if cond_node.is_a?(RespondsTo)
-    if responds_to_value(low, cond_node.as(RespondsTo))
+    # Hosted cleanup evaluates a receiver that is not a plain variable before it folds responds_to? (the hosted
+    # module keeps the receiver's call), as the is_a? fold below does. Then the branch taken is lowered.
+    responds = cond_node.as(RespondsTo)
+    responds_obj = responds.obj
+    unless responds_obj.is_a?(Var) || responds_obj.is_a?(InstanceVar) || responds_obj.is_a?(ClassVar)
+      responds_wants = low.needs_value
+      low.needs_value = false
+      codegen_node(low, responds_obj)
+      low.needs_value = responds_wants
+      return if block_ended?(low)
+    end
+    if responds_to_value(low, responds)
       codegen_folded_branch(low, node, then_node)
     else
       codegen_folded_branch(low, node, else_node)
@@ -1329,11 +1329,6 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
   end
 
   wants = low.needs_value
-  if nil_condition?(low, cond_node)
-    codegen_node(low, cond_node)
-    codegen_folded_branch(low, node, else_node)
-    return
-  end
   blocks = low.new_blocks(["then", "else"])
   then_block = blocks[0]
   else_block = blocks[1]

@@ -483,6 +483,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_while_true lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union lower_trait lower_nilable_reference_union_assign lower_union_consumers lower_union_block_jumps"
 CORE_CHECK_FIXTURES="$CORE_CHECK_FIXTURES lower_trait_assoc lower_negated_is_a"
 CORE_CHECK_FIXTURES="$CORE_CHECK_FIXTURES lower_fold_nil_slot lower_fold_nil_arg lower_fold_literal_nil lower_fold_value_union lower_fold_nil_cond"
+CORE_CHECK_FIXTURES="$CORE_CHECK_FIXTURES lower_fold_responds_recv"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -1939,10 +1940,7 @@ if [ "$fold_ready" -eq 1 ]; then
       codegen_folded_branch(low, node, then_node)
     else
       codegen_node(low, else_node)' -- lower_core_check || status=1
-  prove_mutation "a Nil-typed condition's else branch skips the join" "$REPO/src/compiler/lower/lower.iyi" \
-    '    codegen_node(low, cond_node)
-    codegen_folded_branch(low, node, else_node)' '    codegen_node(low, cond_node)
-    codegen_node(low, else_node)' -- lower_core_check || status=1
+  prove_mutation "a RespondsTo fold drops its receiver call" "$REPO/src/compiler/lower/lower.iyi" 'codegen_node(low, responds_obj)' 'nil' -- lower_core_check || status=1
 fi
 
 for invalid in "$WORK/m.invalid" "$WORK/nil-flow.invalid" "$WORK/union-read.invalid"; do
