@@ -8,7 +8,7 @@ b = MBlock.new(0, "entry")
 fn.blocks << b
 live = [] of Int32
 i = 0
-while i < 19
+while i < 23
   v = fn.new_vreg(RegClass::Gpr)
   live << v
   m = MInst.new(MOp::MovImm.value.to_i32)

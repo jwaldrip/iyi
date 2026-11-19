@@ -25,14 +25,14 @@ module compiler/native/regalloc_linear
 # selector's flags also cover. The constraint is asserted after assignment on every pointer-carrying vreg, and a
 # function that breaks it is refused.
 #
-# Never allocated: x18 (the darwin platform register), x9..x15 (spill reload scratch), x16 and x17 (encoder
+# Never allocated: x18 (the darwin platform register), the spill scratch (the first of x9..x15, spill_scratch_count), x16 and x17 (encoder
 # and veneer scratch), x29 (frame pointer), x30 (link register), sp, and d16..d18 (spill scratch).
 #
 # Determinism. Intervals are processed in (start, vreg id) order and candidate registers in a fixed order.
 # No hash table decides anything.
 
-import compiler/native/mir::{MFunction, MBlock, MInst, Operand, OperandKind, RegClass, Role}
-import compiler/native/target::{new_inst, is_role?, terminator?, leaves_block?, block_branch?, table_branch?, distinct_inputs_and_defs?, bitwise_gpr_value?, integer_literal?, typed_fpr_value?}
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, Role}
+import compiler/native/target::{new_inst, is_role?, terminator?, leaves_block?, block_branch?, table_branch?, distinct_inputs_and_defs?, bitwise_gpr_value?, integer_literal?, typed_fpr_value?, isa_aarch64}
 import compiler/native/aarch64/regs::{callee_saved_gprs, callee_saved_fprs, caller_saved_gprs, caller_saved_fprs, scratch_gprs, scratch_fprs, probe_reg, fp_reg, lr_reg, integer_arg_regs, fp_arg_regs}
 
 # x17: the encoder's veneer scratch. regs.iyi names it in a comment and has no accessor for it.
@@ -100,7 +100,7 @@ end
 
 # The blocks a block can transfer control to: its branch targets, and the next block when control can fall
 # through its end.
-def block_successors(fn : MFunction, b : Int32) : Array(Int32)
+pub def block_successors(fn : MFunction, b : Int32) : Array(Int32)
   acc = [] of Int32
   block = fn.blocks[b]
   block.insts.each do |inst|
@@ -124,11 +124,11 @@ def block_successors(fn : MFunction, b : Int32) : Array(Int32)
   acc
 end
 
-# The gpr pool for values that do not cross a call: the caller-saved registers that are not reserved.
-pub def caller_gpr_pool : Array(Int32)
+# The gpr pool for values that do not cross a call: the caller-saved registers that are neither reserved nor spill scratch.
+pub def caller_gpr_pool(scratch : Array(Int32)) : Array(Int32)
   acc = [] of Int32
   caller_saved_gprs.each do |r|
-    acc << r unless member?(scratch_gprs, r) || r == probe_reg || r == veneer_reg || r == platform_reg
+    acc << r unless member?(scratch, r) || r == probe_reg || r == veneer_reg || r == platform_reg
   end
   acc
 end
@@ -144,9 +144,9 @@ end
 
 # Refuses a pool that names a reserved register. The pools derive from regs.iyi, so this only fires when that
 # file changes in a way that hands the allocator a register the selector, encoder or frame still needs.
-def assert_pools(gprs : Array(Int32), fprs : Array(Int32)) : Nil
+def assert_pools(gprs : Array(Int32), fprs : Array(Int32), scratch : Array(Int32)) : Nil
   gprs.each do |r|
-    if r == platform_reg || r == fp_reg || r == lr_reg || r == 31 || r == probe_reg || r == veneer_reg || member?(scratch_gprs, r)
+    if r == platform_reg || r == fp_reg || r == lr_reg || r == 31 || r == probe_reg || r == veneer_reg || member?(scratch, r)
       raise "regalloc: x#{r} is reserved and may not be allocated"
     end
   end
@@ -190,6 +190,61 @@ def slot_access(isa : Int32, load : Bool, reg : Int32, slot : Int32, fp : Bool) 
   m
 end
 
+# The spill scratch registers a function uses: the first min(7, max(3, k)) of x9..x15, where k is the largest number of
+# distinct virtual gpr operands (uses and defs) of any instruction, inline assembly included. Any physical operand in
+# x9..x15 keeps all seven. The registers past the scratch set join the caller-saved pool, so a function with few operands
+# homes values in x12..x15 as well.
+pub def spill_scratch_count(fn : MFunction) : Int32
+  largest = 0
+  pinned = false
+  fn.blocks.each do |block|
+    block.insts.each do |inst|
+      seen = [] of Int32
+      inst.uses.each do |op|
+        seen << op.reg if op.kind == OperandKind::Virtual && fn.vreg_classes[op.reg] == RegClass::Gpr && !member?(seen, op.reg)
+      end
+      inst.defs.each do |op|
+        seen << op.reg if op.kind == OperandKind::Virtual && fn.vreg_classes[op.reg] == RegClass::Gpr && !member?(seen, op.reg)
+      end
+      inst.uses.each do |op|
+        pinned = true if op.kind == OperandKind::Physical && op.reg >= 9 && op.reg <= 15
+      end
+      inst.defs.each do |op|
+        pinned = true if op.kind == OperandKind::Physical && op.reg >= 9 && op.reg <= 15
+      end
+      largest = seen.size if seen.size > largest
+    end
+  end
+  return 7 if pinned # a physical operand in x9..x15 may be staged across reloads: keep all seven scratch registers
+  return 3 if largest < 3
+  return 7 if largest > 7
+  largest # spill-scratch-count
+end
+
+# The first n registers of a list, or all of them when the list is shorter.
+def first_of(list : Array(Int32), n : Int32) : Array(Int32)
+  acc = [] of Int32
+  list.each_with_index do |r, i|
+    acc << r if i < n
+  end
+  acc
+end
+
+# A spilled rematerializable vreg is read by building its constant in the scratch register: one MovImm and no frame slot.
+def remat_inst(fn : MFunction, reg : Int32, v : Int32) : MInst
+  raise "regalloc: a rematerialized constant needs the aarch64 MovImm" unless fn.isa == isa_aarch64
+  m = MInst.new(MOp::MovImm.value.to_i32)
+  m.defs << Operand.new(OperandKind::Physical, reg)
+  m.imm = fn.vreg_remat[v]
+  m
+end
+
+# The instruction that brings spilled vreg v into scratch register reg: a rebuilt constant or a frame slot load.
+def reload_inst(fn : MFunction, v : Int32, reg : Int32) : MInst
+  return remat_inst(fn, reg, v) if fn.vreg_rematerializable[v]
+  slot_access(fn.isa, true, reg, fn.vreg_slot[v], fn.vreg_classes[v] == RegClass::Fpr)
+end
+
 # Physical inputs may be staged several instructions before their use.
 # Keep their entire local live range unavailable to spill scratch allocation.
 def fixed_live_before(block : MBlock) : Array(UInt64)
@@ -229,6 +284,7 @@ end
 # Rewrite virtual operands, retaining spilled values in scratch registers
 # within a block. Stack slots remain current after every definition.
 pub def rewrite_spills(fn : MFunction) : Nil
+  fn.spill_count = spill_scratch_count(fn)
   has_use = bool_row(fn.vreg_count)
   fn.blocks.each do |block|
     block.insts.each do |inst|
@@ -246,6 +302,7 @@ def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
   acc = [] of MInst
   cache = int_row(64, -1)
   gprs = scratch_gprs
+  gprs = first_of(gprs, fn.spill_count)
   fprs = scratch_fprs
   fixed = fixed_live_before(block)
   index = 0
@@ -253,6 +310,7 @@ def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
     blocked = fixed[index] # protect-staged-physical
     index = index + 1
     used = 0_u64
+    dropped = false
     inst.uses.each do |op|
       if op.kind == OperandKind::Physical && op.reg >= 0 && op.reg < 64
         blocked = blocked | (1_u64 << op.reg)
@@ -276,7 +334,7 @@ def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
         pool = fp ? fprs : gprs
         reg = cached_scratch(pool, cache, blocked, used, v)
         if cache[reg] != v
-          reloads << slot_access(fn.isa, true, reg, fn.vreg_slot[v], fp)
+          reloads << reload_inst(fn, v, reg)
           cache[reg] = v
         end
         used = used | (1_u64 << reg)
@@ -286,6 +344,10 @@ def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
     inst.defs.each_with_index do |op, k|
       next unless op.kind == OperandKind::Virtual
       v = op.reg
+      if fn.vreg_home[v] < 0 && fn.vreg_rematerializable[v]
+        dropped = true # a rematerialized definition emits nothing; each use rebuilds the constant
+        next
+      end
       if fn.vreg_home[v] >= 0
         inst.defs[k] = Operand.new(OperandKind::Physical, fn.vreg_home[v])
       else
@@ -307,6 +369,7 @@ def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
     identity = is_role?(fn.isa, inst, Role::Copy) && inst.size == 64 && inst.defs.size == 1 && inst.uses.size == 1 &&
                inst.defs[0].kind == OperandKind::Physical && inst.uses[0].kind == OperandKind::Physical &&
                inst.defs[0].reg == inst.uses[0].reg
+    identity = true if dropped
     acc << inst unless identity
     inst.clobbers.each do |reg|
       cache[reg] = -1 if reg >= 0 && reg < 64 # call-clobber-invalidates-reload
@@ -475,9 +538,23 @@ def dominator_intervals(succs : Array(Array(Int32)), order : Array(Int32), numbe
   {first, last}
 end
 
+# The loop structure of a CFG, from block_loop_nest: the nesting depth of every block, the innermost loop header that
+# encloses it (-1 for none), which blocks are loop headers, and the dominator-tree intervals (a dominates b when
+# first[a] <= first[b] <= last[a]). The intervals are empty when the graph has no cycle.
+pub class LoopNest
+  getter depth : Array(Int32)
+  getter owner : Array(Int32)
+  getter header : Array(Bool)
+  getter dom_first : Array(Int32)
+  getter dom_last : Array(Int32)
+
+  def initialize(@depth : Array(Int32), @owner : Array(Int32), @header : Array(Bool), @dom_first : Array(Int32), @dom_last : Array(Int32))
+  end
+end
+
 # Collapse natural loops from inner to outer. Dominator filtering excludes
 # irreducible retreating edges; union-find compresses the collapsed paths.
-def block_loop_depths(succs : Array(Array(Int32))) : Array(Int32)
+pub def block_loop_nest(succs : Array(Array(Int32))) : LoopNest
   n = succs.size
   depth = int_row(n, 0)
   number = int_row(n, -1)
@@ -519,7 +596,7 @@ def block_loop_depths(succs : Array(Array(Int32))) : Array(Int32)
     end
     start = start + 1
   end
-  return depth unless cyclic
+  return LoopNest.new(depth, int_row(n, -1), bool_row(n), [] of Int32, [] of Int32) unless cyclic
   dom = dominator_intervals(succs, order, number, tree_parent, component)
   back = [] of Array(Int32)
   forward = [] of Array(Int32)
@@ -566,7 +643,7 @@ def block_loop_depths(succs : Array(Array(Int32))) : Array(Int32)
       x = pending[j]
       forward[x].each do |p|
         r = loop_root(parent, p)
-        return int_row(n, 0) unless dfs_ancestor?(number, last, h, r)
+        return LoopNest.new(int_row(n, 0), int_row(n, -1), bool_row(n), dom[0], dom[1]) unless dfs_ancestor?(number, last, h, r)
         if r != h && seen[r] != h
           seen[r] = h
           pending << r
@@ -586,7 +663,11 @@ def block_loop_depths(succs : Array(Array(Int32))) : Array(Int32)
   order.each do |v|
     depth[v] = (owner[v] >= 0 ? depth[owner[v]] : 0) + (header[v] ? 1 : 0)
   end
-  depth
+  LoopNest.new(depth, owner, header, dom[0], dom[1])
+end
+
+pub def block_loop_depths(succs : Array(Array(Int32))) : Array(Int32)
+  block_loop_nest(succs).depth
 end
 
 def spill_weight_limit : Int64
@@ -619,6 +700,7 @@ class LinearScan
   property hint_reg : Array(Int32)
   property fpr_pool : Array(Int32)
   property callee_fpr_pool : Array(Int32)
+  property spill_gprs : Array(Int32)
 
   def initialize(@fn : MFunction)
     @vcount = fn.vreg_count
@@ -645,7 +727,8 @@ class LinearScan
     end
     @homes = [] of Int32
     @active = [] of Int32
-    @caller_pool = caller_gpr_pool
+    @spill_gprs = first_of(scratch_gprs, spill_scratch_count(fn))
+    @caller_pool = caller_gpr_pool(@spill_gprs)
     @callee_pool = callee_saved_gprs
     @hint_vreg = [] of Int32
     @hint_reg = [] of Int32
@@ -655,7 +738,7 @@ class LinearScan
 
   # Runs every stage and leaves the homes and the frame slots on the function.
   def run : Nil
-    assert_pools(@caller_pool + @callee_pool, @fpr_pool)
+    assert_pools(@caller_pool + @callee_pool, @fpr_pool, @spill_gprs)
     number_positions
     build_successors
     measure_weights
@@ -694,6 +777,11 @@ class LinearScan
         end
       end
       b = b + 1
+    end
+    v = 0
+    while v < @vcount
+      @weights[v] = @weights[v] // 4_i64 if @fn.vreg_rematerializable[v] # a rematerialized vreg is a quarter as costly to spill
+      v = v + 1
     end
   end
 
@@ -1123,6 +1211,7 @@ class LinearScan
       return @fpr_pool
     end
     if @crossing[iv]
+      return [] of Int32 if @fn.vreg_rematerializable[iv] # a rebuilt constant beats a callee-saved save and restore per call
       return @callee_pool
     end
     @caller_pool + @callee_pool
@@ -1214,7 +1303,7 @@ class LinearScan
     slots = [] of Int32
     v = 0
     while v < @vcount
-      if @homes[v] == -1 && @has_interval[v]
+      if @homes[v] == -1 && @has_interval[v] && !@fn.vreg_rematerializable[v]
         slots << @fn.frame.add_slot(8_i64, 8)
       else
         slots << -1
