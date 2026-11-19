@@ -310,6 +310,7 @@ for name in guards tls_keep always_runtime_keep; do fixture_check inline "$name"
 fixture_check deadfn roots changed
 fixture_check deadfn global_keep keep
 fixture_check deadfn asm_keep keep
+fixture_check deadfn asm_names changed
 
 echo '== 2e. inliner chain decisions and callee cache invalidation'
 if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" <<'PY'
@@ -1404,10 +1405,20 @@ prove_mutation 'S9R3a: externally visible definitions are callback targets' src/
   -- mutation_check S9R3a escape external_callback || fail 'S9R3a was not caught'
 mutation_result S9R3a
 prove_mutation 'S9R3b: assembly-named functions are address taken' src/compiler/ir/opt/escape.iyi \
-  '@addresses[candidate] = true if template.includes?(candidate.name) # mutation S9-asm-address' \
-  'nil if template.includes?(candidate.name) # mutation S9-asm-address' \
+  '@addresses[fn] = true # mutation S9-asm-address: assembly can name a function' \
+  'nil # mutation S9-asm-address: assembly can name a function' \
   -- mutation_check S9R3b escape asm_callback || fail 'S9R3b was not caught'
 mutation_result S9R3b
+prove_mutation 'S9R8: an asm template names a function only as a whole symbol' src/compiler/ir/opt/effects.iyi \
+  '      if whole_symbol_in?(templates[k], fn.name) || whole_symbol_in?(templates[k], "_" + fn.name)' \
+  '      if templates[k].includes?(fn.name)' \
+  -- mutation_check S9R8 escape asm_substring_promote || fail 'S9R8 was not caught'
+mutation_result S9R8
+prove_mutation 'S9R8d: deadfn keeps only whole-symbol asm names' src/compiler/ir/opt/effects.iyi \
+  '      if whole_symbol_in?(templates[k], fn.name) || whole_symbol_in?(templates[k], "_" + fn.name)' \
+  '      if templates[k].includes?(fn.name)' \
+  -- mutation_check S9R8d deadfn asm_names || fail 'S9R8d was not caught'
+mutation_result S9R8d
 prove_mutation 'S9R4a: a first GEP index of i1 true is sign-extended' src/compiler/ir/opt/escape.iyi \
   '    first = gep_index(inst.args[1]) # mutation S9-escape-gep-i1-first: sign-extend i1' \
   '    first = int_value(inst.args[1]) # mutation S9-escape-gep-i1-first: sign-extend i1' \

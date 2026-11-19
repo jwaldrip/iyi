@@ -10,7 +10,7 @@ import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/opt/analysis::{DefUse}
 import compiler/ir/opt/edit::{new_inst}
 import compiler/ir/opt/fold::{int_value}
-import compiler/ir/opt/effects::{function_returns_twice?}
+import compiler/ir/opt/effects::{function_returns_twice?, asm_named_functions}
 
 # Publication is not a GC barrier. Look for uses rather than definitions:
 # non-partitioned runtimes also define these helpers without calling them.
@@ -284,25 +284,15 @@ class LongLivedFrames
         work << init
       end
     end
+    asm_named_functions(mod).each do |fn, flag|
+      @addresses[fn] = true # mutation S9-asm-address: assembly can name a function
+    end
     mod.functions.each do |fn|
       if personality = fn.personality
         work << personality
       end
       fn.blocks.each do |block|
         block.insts.each do |inst|
-          assembly = nil.as(AsmAux?)
-          if inst.aux.is_a?(AsmAux)
-            assembly = inst.aux.as(AsmAux)
-          elsif !inst.args.empty? && inst.args[0].is_a?(Inst)
-            target = inst.args[0].as(Inst)
-            assembly = target.aux.as(AsmAux) if target.aux.is_a?(AsmAux)
-          end
-          if inline_asm = assembly
-            template = inline_asm.template
-            mod.functions.each do |candidate|
-              @addresses[candidate] = true if template.includes?(candidate.name) # mutation S9-asm-address: assembly can name a function
-            end
-          end
           k = 0
           while k < inst.args.size
             operand = inst.args[k]
