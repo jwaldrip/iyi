@@ -1,0 +1,11 @@
+module bench/spawnshare_unit
+
+import std/unit::{Unit}
+
+# `spawn(in: u)` runs its task in the Unit's unit: the port does not place that yet, so it is never kept as written.
+counts = Unit.new { [1, 2] }
+
+group do |g|
+  size = g.spawn(in: counts) { |hits| hits.size } # hosted: unit; site: unit
+  nil
+end

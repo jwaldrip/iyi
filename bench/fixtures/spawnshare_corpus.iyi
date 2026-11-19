@@ -210,7 +210,7 @@ gap = InlineMacroGap.new(1)
 gap.poke
 
 group do |g|
-  g.spawn { assigned.n }            # hosted: stays
+  g.spawn { assigned.n }            # hosted: stays; site: captured
   g.spawn { opassigned.n }          # hosted: stays
   g.spawn { multi.a }               # hosted: stays
   g.spawn { parameter.n }           # hosted: stays
@@ -230,6 +230,54 @@ group do |g|
   g.spawn { macrocall.n }           # hosted: parallel
   g.spawn { nested.n }              # hosted: parallel
   g.spawn { text.size }             # hosted: parallel
-  g.spawn { gap.n }                 # hosted: stays; gap: in-def macro
+  g.spawn { gap.n }                 # hosted: stays; gap: in-def macro; site: gap
   nil
 end
+
+class LimitBox
+  getter n : Int32
+
+  def initialize(@n : Int32); end
+
+  def bump
+    @n = @n + 1
+  end
+end
+
+LIMIT_BOX = LimitBox.new(1)
+
+class LimitReader
+  def self.read_limit : Int32
+    LIMIT_BOX.n
+  end
+end
+
+class SelfHolder
+  getter n : Int32
+
+  def initialize(@n : Int32); end
+
+  def bump
+    @n = @n + 1
+  end
+
+  def run_task
+    group do |g|
+      g.spawn { @n } # hosted: stays; site: self
+      nil
+    end
+  end
+end
+
+counter = 0
+later = 1
+group do |g|
+  g.spawn { LIMIT_BOX.n }            # hosted: stays; site: constant
+  g.spawn { LimitReader.read_limit } # hosted: stays; site: reach
+  g.spawn { counter += 1 }           # hosted: stays; site: assigned
+  g.spawn { later }                  # hosted: stays; site: outside
+  g.spawn(unit: :new) { text.size }  # hosted: own; site: own
+  nil
+end
+later = 2
+SelfHolder.new(1).run_task

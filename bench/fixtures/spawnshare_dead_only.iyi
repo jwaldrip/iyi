@@ -1,0 +1,13 @@
+module bench/spawnshare_dead_only
+
+# The only spawn is in a Nil-dead then arm, so no verdict and no pool reach it. A mutant that visits that arm
+# reaches the pool from it: the pool is reported at this site, and nothing later proves it away.
+def only_dead(input : String?)
+  group do |g|
+    if text = input
+      g.spawn { 1 } # hosted: none; site: dead_only
+    end
+  end
+end
+
+only_dead(nil)
