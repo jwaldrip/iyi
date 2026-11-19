@@ -342,6 +342,8 @@ ALLOWED_LINES: list[tuple[str, str]] = [
      "the Crystal compiler identity recorded in the native IR oracle manifest"),
     (r'^# Normalize external LLVM/Crystal transport only;',
      "the LLVM layout oracle compiled from Crystal, not the iyi driver under test"),
+    (r'@"Crystal::BUILD_COMMIT"',
+     "the build constant's global as the hosted module names it, in the lower-calls gate's filter probe"),
     # The linker's search path, in the gate that proves the binaries build
     # with bdw-gc unreachable. `IYI_LIBRARY_PATH` is not a substitute: it adds
     # to the default search path where `CRYSTAL_LIBRARY_PATH` replaces it, and
