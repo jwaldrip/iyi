@@ -1,0 +1,49 @@
+module spill_copies
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/regalloc_linear::{rewrite_spills}
+import compiler/native/driver::{dump_mfunction}
+
+# Every general-purpose value is spilled to its frame slot. A copy from a fixed register into a spilled value is one
+# store from that register, a copy from a spilled value into a fixed register is one load into it, and a copy into a
+# spilled value that nothing reads is dead. The dump must therefore contain no move at all, and must not name x2, the
+# register that only the dead copy reads. The last two instructions use tmp only inside the block, so its store is dead:
+# the dump must hold exactly the two stores of src and dst, and none to the slot of tmp (slot 3).
+def inst_of(op : MOp, def_reg : Int32, use_reg : Int32, imm : Int64) : MInst
+  m = MInst.new(op.value.to_i32)
+  m.imm = imm
+  m.defs << Operand.new(OperandKind::Virtual, def_reg) if def_reg >= 0
+  m.uses << Operand.new(OperandKind::Virtual, use_reg) if use_reg >= 0
+  m
+end
+
+def copy_inst(dst_kind : OperandKind, dst_reg : Int32, src_kind : OperandKind, src_reg : Int32) : MInst
+  m = MInst.new(MOp::Mov.value.to_i32)
+  m.size = 64
+  m.defs << Operand.new(dst_kind, dst_reg)
+  m.uses << Operand.new(src_kind, src_reg)
+  m
+end
+
+fn = MFunction.new("spilled")
+b = MBlock.new(0, "entry")
+fn.blocks << b
+src = fn.new_vreg(RegClass::Gpr)
+dst = fn.new_vreg(RegClass::Gpr)
+dead = fn.new_vreg(RegClass::Gpr)
+tmp = fn.new_vreg(RegClass::Gpr)
+res = fn.new_vreg(RegClass::Gpr)
+v = 0
+while v < fn.vreg_count
+  fn.vreg_home << -1
+  fn.vreg_slot << fn.frame.add_slot(8_i64, 8)
+  v = v + 1
+end
+b.insts << inst_of(MOp::MovImm, src, -1, 5_i64)
+b.insts << copy_inst(OperandKind::Physical, 1, OperandKind::Virtual, src)
+b.insts << copy_inst(OperandKind::Virtual, dst, OperandKind::Physical, 0)
+b.insts << copy_inst(OperandKind::Virtual, dead, OperandKind::Physical, 2)
+b.insts << copy_inst(OperandKind::Physical, 0, OperandKind::Virtual, dst)
+b.insts << inst_of(MOp::MovImm, tmp, -1, 7_i64)
+b.insts << inst_of(MOp::AddImm, res, tmp, 1_i64)
+rewrite_spills(fn)
+print dump_mfunction(fn)

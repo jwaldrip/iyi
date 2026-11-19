@@ -301,6 +301,43 @@ pub def rewrite_spills(fn : MFunction) : Nil
   fn.blocks.each do |block|
     rewrite_block(fn, block, has_use)
   end
+  drop_dead_spill_stores(fn)
+end
+
+# A spill store is dead when no reload reads its slot: every use of the value is then served from the scratch cache inside
+# its block, and a call or inline asm body clears that cache, so the value never has to be in memory. The store goes; the
+# slot stays allocated. Frame slots that isel uses for stack objects are not spill slots, so they are left alone.
+def drop_dead_spill_stores(fn : MFunction) : Nil
+  top = -1
+  fn.vreg_slot.each do |s|
+    top = s if s > top
+  end
+  return nil if top < 0
+  spill = bool_row(top + 1)
+  fn.vreg_home.each_with_index do |h, v|
+    spill[fn.vreg_slot[v]] = true if h < 0 && fn.vreg_slot[v] >= 0
+  end
+  read = bool_row(top + 1)
+  fn.blocks.each do |block|
+    block.insts.each do |inst|
+      next unless is_role?(fn.isa, inst, Role::SlotLoad) && inst.uses.size > 0 && inst.uses[0].kind == OperandKind::FrameSlot
+      slot = inst.uses[0].reg
+      read[slot] = true if slot >= 0 && slot <= top
+    end
+  end
+  fn.blocks.each do |block|
+    acc = [] of MInst
+    block.insts.each do |inst|
+      dead = false
+      if is_role?(fn.isa, inst, Role::SlotStore) && inst.uses.size > 1 && inst.uses[1].kind == OperandKind::FrameSlot
+        slot = inst.uses[1].reg
+        dead = true if slot >= 0 && slot <= top && spill[slot] && !read[slot]
+      end
+      acc << inst unless dead
+    end
+    block.insts = acc
+  end
+  nil
 end
 
 # A general-purpose virtual register with no home: it lives in its frame slot, or is rebuilt as a constant, at each use.
