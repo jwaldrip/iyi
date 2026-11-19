@@ -1109,8 +1109,11 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Case) : Bool
+    # The subject is read as the locals stood before the case was typed: its branches narrow the variable.
+    entry_vars = @vars
+    entry_vars = @vars.dup if node.exhaustive
     expand_literal(node)
-    check_exhaustive_case(self, node, @expansions[node]?, @node_types) if node.exhaustive
+    check_exhaustive_case(self, node, @expansions[node]?, @node_types, entry_vars) if node.exhaustive
     false
   end
 

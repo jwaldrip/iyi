@@ -13,7 +13,9 @@ module compiler/semantic/exhaustiveness
 #
 # The host is TypeNodeHost, not MainVisitor, because the import graph is a DAG (type_node_host.iyi). The node
 # types are read from the visitor's table without raising: the expander clones a variable subject into its
-# comparisons, so the original subject is untyped, and a checker that raised there would be wrong.
+# comparisons, so the original subject is untyped. The variable's type is read from the locals as they were
+# before the case was typed, because the case's own branches narrow that variable (hosted reads the subject's
+# type from the node, which is typed before its branches).
 
 import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Case, Expressions, Generic, If, ImplicitObj, NilLiteral, NodeMap, Path, StringLiteral, TupleLiteral, Underscore, Unreachable, Var}
 import compiler/semantic/top_level::{Const, EnumType, ModuleType, Type, UnionType}
@@ -121,21 +123,22 @@ pub class CoverTarget
 end
 
 # The check of one `case ... in` (hosted ExhaustivenessChecker#check_single_exp, and the cleanup's replacement of
-# the Unreachable else for an enum). `expanded` is the case's typed expansion; `node_types` is the visitor's table.
-pub def check_exhaustive_case(host : TypeNodeHost, node : Case, expanded : ASTNode?, node_types : NodeMap(Type)) : Nil
+# the Unreachable else for an enum). `expanded` is the case's typed expansion; `node_types` is the visitor's table;
+# `entry_vars` are the locals as they were before the case was typed.
+pub def check_exhaustive_case(host : TypeNodeHost, node : Case, expanded : ASTNode?, node_types : NodeMap(Type), entry_vars : Hash(String, Type)) : Nil
   if cond = node.cond
-    check_subject(host, node, cond, expanded, node_types)
+    check_subject(host, node, cond, expanded, node_types, entry_vars)
   else
     host.refuse(node, "an exhaustive case with no subject is not ported (hosted exhaustiveness_checker.cr)")
   end
 end
 
-def check_subject(host : TypeNodeHost, node : Case, cond : ASTNode, expanded : ASTNode?, node_types : NodeMap(Type)) : Nil
+def check_subject(host : TypeNodeHost, node : Case, cond : ASTNode, expanded : ASTNode?, node_types : NodeMap(Type), entry_vars : Hash(String, Type)) : Nil
   if cond.is_a?(TupleLiteral)
     host.refuse(node, "an exhaustive case over a tuple is not ported (hosted exhaustiveness_checker.cr check_tuple_exp)")
     return
   end
-  cond_type = subject_type(host, node, cond, node_types)
+  cond_type = subject_type(host, node, cond, node_types, entry_vars)
   return if cond_type.nil?
   types = expand_types(cond_type)
   i = 0
@@ -195,13 +198,14 @@ def check_subject(host : TypeNodeHost, node : Case, cond : ASTNode, expanded : A
 end
 
 # The subject's type. A variable subject is cloned into the comparisons, so its original is untyped; its type is
-# then the local of that name, which is what visit(Var) reads. Any other untyped subject is refused by name.
-def subject_type(host : TypeNodeHost, node : Case, cond : ASTNode, node_types : NodeMap(Type)) : Type?
+# the local of that name as it was before the case, which is what visit(Var) read. Any other untyped subject is
+# refused by name.
+def subject_type(host : TypeNodeHost, node : Case, cond : ASTNode, node_types : NodeMap(Type), entry_vars : Hash(String, Type)) : Type?
   if t = node_types[cond]?
     return t
   end
   if cond.is_a?(Var)
-    if t = host.vars[cond.as(Var).name]?
+    if t = entry_vars[cond.as(Var).name]?
       return t
     end
   end
