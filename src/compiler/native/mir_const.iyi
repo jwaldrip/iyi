@@ -63,6 +63,18 @@ def preheader_kind(fn : MFunction, succs : Array(Array(Int32)), nest : LoopNest,
   1
 end
 
+# The instructions encode.iyi's move_imm spends on a MovImm of value: one movz or movk per nonzero 16-bit chunk, and one
+# instruction for zero. A constant that costs one instruction is cheaper to rebuild at each use than to reload.
+def movimm_cost(value : Int64) : Int32
+  n = 0
+  shift = 0
+  while shift < 64
+    n = n + 1 if ((value >> shift) & 65535_i64) != 0_i64
+    shift = shift + 16
+  end
+  n == 0 ? 1 : n
+end
+
 # Moves the loop-invariant MovImm instructions of fn to their preheaders and returns how many constants were hoisted
 # (deduplicated constants count once). A function without a natural loop is unchanged.
 pub def hoist_constants(fn : MFunction) : Int32
@@ -162,8 +174,10 @@ pub def hoist_constants(fn : MFunction) : Int32
         first = table[key]?
         if first.nil?
           table[key] = v
-          fn.vreg_remat[v] = inst.imm
-          fn.vreg_rematerializable[v] = true
+          if movimm_cost(inst.imm) == 1
+            fn.vreg_remat[v] = inst.imm
+            fn.vreg_rematerializable[v] = true
+          end
           moved[target[b]] << inst
         else
           rep[v] = first.as(Int32)

@@ -191,10 +191,12 @@ def slot_access(isa : Int32, load : Bool, reg : Int32, slot : Int32, fp : Bool) 
 end
 
 # The spill scratch registers a function uses: the first min(7, max(3, k)) of x9..x15, where k is the largest number of
-# distinct virtual gpr operands (uses and defs) of any instruction, inline assembly included. The registers past them
-# join the caller-saved pool, so a function with few operands homes values in x12..x15 as well.
+# distinct virtual gpr operands (uses and defs) of any instruction, inline assembly included. Any physical operand in
+# x9..x15 keeps all seven. The registers past the scratch set join the caller-saved pool, so a function with few operands
+# homes values in x12..x15 as well.
 pub def spill_scratch_count(fn : MFunction) : Int32
   largest = 0
+  pinned = false
   fn.blocks.each do |block|
     block.insts.each do |inst|
       seen = [] of Int32
@@ -204,9 +206,16 @@ pub def spill_scratch_count(fn : MFunction) : Int32
       inst.defs.each do |op|
         seen << op.reg if op.kind == OperandKind::Virtual && fn.vreg_classes[op.reg] == RegClass::Gpr && !member?(seen, op.reg)
       end
+      inst.uses.each do |op|
+        pinned = true if op.kind == OperandKind::Physical && op.reg >= 9 && op.reg <= 15
+      end
+      inst.defs.each do |op|
+        pinned = true if op.kind == OperandKind::Physical && op.reg >= 9 && op.reg <= 15
+      end
       largest = seen.size if seen.size > largest
     end
   end
+  return 7 if pinned # a physical operand in x9..x15 may be staged across reloads: keep all seven scratch registers
   return 3 if largest < 3
   return 7 if largest > 7
   largest # spill-scratch-count
