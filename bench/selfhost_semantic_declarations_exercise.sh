@@ -1144,8 +1144,8 @@ prove_mutation "a glob import brings in a type that is not exported" "$MUT_SEM" 
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a name two imports bring in as different types is never refused" "$MUT_SEM" \
-  '    return nil unless sources' \
-  '    return nil if sources' \
+  'refuse_ambiguous_import(name, kind, found.unit, source.unit, location)' \
+  'found.unit' \
   -- check_fixture_outcomes || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
