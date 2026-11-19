@@ -159,3 +159,30 @@ asm_inst.uses.each do |op|
   regs = regs + " " + op.reg.to_s
 end
 puts "asm:#{regs}"
+
+# Part 5: a loop constant whose only use is a copy into the argument register x0. It stays in the loop, so the copy
+# still coalesces with a single MovImm; hoisting it would cost a rebuild and a copy at each use.
+arg_fn = MFunction.new("argument")
+arg_entry = MBlock.new(0, "entry")
+arg_loop = MBlock.new(1, "loop")
+arg_latch = MBlock.new(2, "latch")
+arg_exit = MBlock.new(3, "exit")
+arg_fn.blocks << arg_entry
+arg_fn.blocks << arg_loop
+arg_fn.blocks << arg_latch
+arg_fn.blocks << arg_exit
+ai = arg_fn.new_vreg(RegClass::Gpr)
+put_inst(arg_entry, MOp::MovImm, [ai] of Int32, [] of Int32, 0_i64)
+ac = arg_fn.new_vreg(RegClass::Gpr)
+put_inst(arg_loop, MOp::MovImm, [ac] of Int32, [] of Int32, 4096_i64)
+arg_copy = MInst.new(MOp::Mov.value.to_i32)
+arg_copy.defs << Operand.new(OperandKind::Physical, 0)
+arg_copy.uses << Operand.new(OperandKind::Virtual, ac)
+arg_loop.insts << arg_copy
+put_inst(arg_loop, MOp::AddImm, [ai], [ai], 1_i64)
+put_inst(arg_loop, MOp::CmpImm, [] of Int32, [ai], 4_i64)
+conditional(arg_loop, 3)
+branch(arg_latch, 1)
+arg_exit.insts << MInst.new(MOp::Ret.value.to_i32)
+arg_hoisted = hoist_constants(arg_fn)
+puts "arg: hoisted=#{arg_hoisted} body_movimm=#{movimm_count(arg_loop)}"

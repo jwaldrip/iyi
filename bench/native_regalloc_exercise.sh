@@ -866,7 +866,8 @@ check_mir_constants() {
   expect='hoist: hoisted=2 body_movimm=0 entry_movimm=4 entry_const=1
 remat: body_movimm=1 imm_ok=true const_slot=-1 wide_slot=true frame_slots=8 entry_movimm=3
 homes: 0 1 2 3 4 5 6 7 8 12 13 14 15 19
-asm: 9 10 11 12 13 14 15'
+asm: 9 10 11 12 13 14 15
+arg: hoisted=0 body_movimm=1'
   if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/mir_constants.iyi")" >"$WORK/mir_constants.build.log" 2>&1; then
     cat "$WORK/mir_constants.build.log"
     return 2
@@ -1128,6 +1129,10 @@ prove_mutation "spill scratch: one register fewer than the largest instruction n
   src/compiler/native/regalloc_linear.iyi check_mir_constants \
   '  largest # spill-scratch-count' \
   '  largest - 1 # spill-scratch-count'
+prove_mutation "hoisting: a constant used only as an argument copy is hoisted anyway" \
+  src/compiler/native/mir_const.iyi check_mir_constants \
+  ' && other_use[inst.defs[0].reg]' \
+  ' && true'
 echo "mutation totals: $mutation_caught/$mutation_total detected"
 echo "a mutation that changes nothing is refused by the proof helper:"
 [ ! -e "$NATIVE_SIGNATURE_FAILURE_FILE" ] || fail "a native executable failed signature verification"
