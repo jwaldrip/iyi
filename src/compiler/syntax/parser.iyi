@@ -4792,7 +4792,9 @@ pub class Parser < Lexer
     when TokenKind::OP_LPAREN, TokenKind::OP_LCURLY, TokenKind::OP_COLON
       nil
     else
-      return parse_fun_pointer unless @token.keyword == Keyword::DO
+      # Hosted parser.cr 3389 returns parse_fun_pointer's node, which has an end location only. parse_atomic (1542-1547)
+      # gives a node with no location the location of the `->` that began it, and that is this location.
+      return parse_fun_pointer.at(location) unless @token.keyword == Keyword::DO
     end
 
     params = [] of Arg
