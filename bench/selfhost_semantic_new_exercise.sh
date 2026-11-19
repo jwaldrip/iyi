@@ -184,7 +184,7 @@ prove_mutation "a metaclass restriction's forall name is not seen as free" "$RES
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a metaclass restriction does not match the class it is given" "$RESTRICTIONS_FILE" \
-  '      return ArgRestriction.restrict_metaclass(ts, scope, node.as(Metaclass), arg_type, owner, free, bound)' \
+  '      return ArgRestriction.restrict_metaclass(ts, scope, node.as(Metaclass), arg_type.as(MetaclassType), owner, free, bound)' \
   '      return RestrictResult.no_match' \
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))

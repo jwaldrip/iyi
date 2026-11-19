@@ -159,7 +159,8 @@ pub class ArgRestriction
   end
 
   # The metaclass of a bound free name (`: H.class` with H bound). The inner name is resolved
-  # through the bindings, then its metaclass is built as TypeLookup#lookup_metaclass builds one.
+  # through the bindings, then its metaclass is built as hosted TypeLookup#lookup(Metaclass) builds
+  # it (type_lookup.cr:237-243).
   def self.lookup_free_metaclass(ts : TypeSystem, scope : ModuleType, node : Metaclass, owner : Type?, bound : Hash(String, Type)) : Type | LookupError
     inner = ArgRestriction.lookup_free(ts, scope, node.name, owner, bound)
     return inner if inner.is_a?(LookupError)
@@ -211,8 +212,10 @@ pub class ArgRestriction
     if node.is_a?(Splat)
       return ArgRestriction.restrict_argument(ts, scope, node.as(Splat).exp, arg_type, owner, free, bound)
     end
-    if node.is_a?(Metaclass) && FreeBindings.mentions?(node, free)
-      return ArgRestriction.restrict_metaclass(ts, scope, node.as(Metaclass), arg_type, owner, free, bound)
+    # An instance is not a metaclass, so it matches no metaclass restriction here and falls to the
+    # general no-match rule below (hosted Metaclass restrict on an instance returns nil, restrictions.cr:1016-1018).
+    if node.is_a?(Metaclass) && arg_type.is_a?(MetaclassType) && FreeBindings.mentions?(node, free)
+      return ArgRestriction.restrict_metaclass(ts, scope, node.as(Metaclass), arg_type.as(MetaclassType), owner, free, bound)
     end
     if node.is_a?(Path)
       names = node.as(Path).names
@@ -242,13 +245,11 @@ pub class ArgRestriction
     RestrictResult.matched(restricted.as(Type))
   end
 
-  # Hosted MetaclassType#restrict(other : Metaclass), restrictions.cr:1615-1618. The argument's
+  # Hosted MetaclassType#restrict(other : Metaclass), restrictions.cr:1602-1605. The argument's
   # instance type restricts against the written name, and the argument matches only when that
-  # answer is the instance type itself (`instance_type == restricted ? self : nil`). An argument
-  # that is not a metaclass matches no metaclass restriction.
-  def self.restrict_metaclass(ts : TypeSystem, scope : ModuleType, node : Metaclass, arg_type : Type, owner : Type?, free : Array(String), bound : Hash(String, Type)) : RestrictResult
-    return RestrictResult.no_match unless arg_type.is_a?(MetaclassType)
-    instance = arg_type.as(MetaclassType).instance_type
+  # answer is the instance type itself (`instance_type == restricted ? self : nil`).
+  def self.restrict_metaclass(ts : TypeSystem, scope : ModuleType, node : Metaclass, arg_type : MetaclassType, owner : Type?, free : Array(String), bound : Hash(String, Type)) : RestrictResult
+    instance = arg_type.instance_type
     inner = ArgRestriction.restrict_argument(ts, scope, node.name, instance, owner, free, bound)
     return inner if inner.error
     restricted = inner.type

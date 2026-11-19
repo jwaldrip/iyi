@@ -559,13 +559,8 @@ prove_mutation "an imported type is not found during restriction lookup" "$REPO/
   -- check_calls_diverge bench/fixtures/semcall_match_import.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-# A metaclass restriction given an argument that is not a metaclass matches nothing (restrictions.cr:1615-1618),
-# and a named argument of that kind is not bound by it either (the named path of the match).
-prove_mutation "a metaclass restriction matches an argument that is not a metaclass" "$RESTRICT_FILE" \
-  '    return RestrictResult.no_match unless arg_type.is_a?(MetaclassType)' \
-  '    return RestrictResult.matched(arg_type) unless arg_type.is_a?(MetaclassType)' \
-  -- check_calls_diverge || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+# A named argument that is not a metaclass is not bound by a metaclass restriction, so the match
+# refuses it as hosted does (an instance matches no metaclass restriction, restrictions.cr:1016-1018).
 prove_mutation "a metaclass restriction binds from an argument that is not a metaclass" "$RESTRICT_FILE" \
   '      return false unless arg_type.is_a?(MetaclassType)' \
   '      return true unless arg_type.is_a?(MetaclassType)' \
