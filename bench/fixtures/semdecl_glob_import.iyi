@@ -1,0 +1,20 @@
+# Glob imports (`import a/b::*`): a type, a trait impl and a pub def reached through `::*`.
+# Without the glob the file names `Crate` and `Named` as undefined constants.
+import semdecl/box::*
+
+class Wrapper
+  getter crate : Crate
+
+  def initialize(@crate : Crate)
+  end
+
+  def make(text : String) : Crate
+    Crate.new(text)
+  end
+end
+
+impl Named for Wrapper
+  def name : String
+    describe("wrapped")
+  end
+end

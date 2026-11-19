@@ -1,0 +1,5 @@
+module semdecl/tally_b
+
+pub def tally(count : Int32) : Int32
+  count + 2
+end

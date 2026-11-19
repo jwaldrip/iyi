@@ -1,0 +1,14 @@
+module semdecl/other
+
+# A second module exporting a type named `Crate`, as a different type from `semdecl/box`'s.
+# A file importing both is fine until it uses `Crate`, which is then ambiguous (SPEC II.3).
+pub class Crate
+  getter weight : Int32
+
+  def initialize(@weight : Int32)
+  end
+end
+
+pub def tally(count : Int32) : Int32
+  count + 1
+end

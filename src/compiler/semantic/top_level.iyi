@@ -586,8 +586,9 @@ pub abstract class ModuleType < NamedType
     if self != @program
       found = @program.lookup_call_macro_in_scope?(call)
       return found.as(Macro) if found.is_a?(Macro)
+      return nil if found == true
     end
-    nil
+    @program.lookup_import_macro?(call)
   end
 
   def macro_matches_call?(a_macro : Macro, call : Call) : Bool
@@ -1683,6 +1684,17 @@ pub class SemanticProgram < NonGenericModuleType
   # names it may write are its own file's (the hosted pass keeps a scope per file).
   getter file_imports : Hash(String, Hash(String, Type)) = Hash(String, Hash(String, Type)).new
   getter file_import_defs : Hash(String, Hash(String, Array(Def))) = Hash(String, Hash(String, Array(Def))).new
+  # The modules whose pub macros this file imports (`import a/b::*`, or `import a/b::{some_macro}`), by
+  # macro name. Swapped per file like the tables above. A macro call no scope of the file answers is
+  # looked up in these modules, after the file's own scope (hosted call.cr lookup_using_macro).
+  property current_import_macros : Hash(String, Array(ModuleType))
+  getter file_import_macros : Hash(String, Hash(String, Array(ModuleType))) = Hash(String, Hash(String, Array(ModuleType))).new
+  # For each name this file imports, where each import of it came from: its kind ("type" or "def"), the
+  # module that exports it, and for a type the type it names. A name two modules export, or one type
+  # reached as two different types, is ambiguous and refused only where the name is used (SPEC II.3,
+  # hosted path_lookup.cr:195-224). One module imported twice is one source.
+  property current_import_sources : Hash(String, Array(ImportSource))
+  getter file_import_sources : Hash(String, Hash(String, Array(ImportSource))) = Hash(String, Hash(String, Array(ImportSource))).new
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
   # iyi: the directory of the entry file: the first root an import is resolved from, as
@@ -2150,6 +2162,8 @@ pub class SemanticProgram < NonGenericModuleType
     @pending_generic_includes = [] of PendingGenericInclude
     @current_imports = Hash(String, Type).new
     @current_import_defs = Hash(String, Array(Def)).new
+    @current_import_macros = Hash(String, Array(ModuleType)).new
+    @current_import_sources = Hash(String, Array(ImportSource)).new
     @project_root = nil
     @entry_dir = nil
     @total_mode = false
@@ -2598,6 +2612,87 @@ pub class SemanticProgram < NonGenericModuleType
     found
   end
 
+  # Records where an import of *name* came from, for the ambiguity check at its use. *kind* is "type" or
+  # "def"; *item* is the type a type import names, and nil for a def group. One module imported twice is one source.
+  def record_import_source(name : String, kind : String, unit : ModuleType, item : Type?) : Nil
+    sources = @current_import_sources[name]? || ([] of ImportSource)
+    unless sources.any? { |s| s.same?(kind, unit, item) }
+      sources << ImportSource.new(kind, unit, item)
+    end
+    @current_import_sources[name] = sources
+    nil
+  end
+
+  # Refuses a use of *name* that the file's imports bring in as two different things: a def that two modules
+  # export, or a type reached as two different types. Only the use is refused, never the import (SPEC II.3,
+  # hosted path_lookup.cr:195-224 and call.cr:546). A name nothing makes ambiguous passes without a word.
+  def check_import_ambiguity(name : String, kind : String, location : Location?) : Nil
+    sources = @current_import_sources[name]?
+    return nil unless sources
+    first : ImportSource? = nil
+    i = 0
+    while i < sources.size
+      source = sources[i]
+      if source.kind == kind
+        if found = first
+          if found.key != source.key
+            refuse_ambiguous_import(name, kind, found.unit, source.unit, location)
+          end
+        else
+          first = source
+        end
+      end
+      i = i + 1
+    end
+    nil
+  end
+
+  # The hosted wording for a name two modules export (path_lookup.cr:207-211, call.cr:556, call.cr:1209).
+  def refuse_ambiguous_import(name : String, kind : String, first : ModuleType, second : ModuleType, location : Location?) : NoReturn
+    exported = kind == "macro" ? "exported as a macro" : "exported"
+    qualify = kind == "type" ? "Qualify it" : "Qualify the call"
+    message = "'#{name}' is ambiguous here: it is #{exported} by both #{first.full_name} and #{second.full_name}. #{qualify}, or narrow one of the imports' name lists."
+    if loc = location
+      unless loc.filename.empty? || loc.line_number <= 0
+        message = "#{message}\n  source: #{loc.filename}:#{loc.line_number}:#{loc.column_number}"
+      end
+    end
+    refuse_port(message)
+  end
+
+  # The macro a call names through the pub macros its file imports (hosted call.cr lookup_using_macro): a module
+  # whose macro takes the call answers it. Two such modules answering one call are refused where the call is made.
+  def lookup_import_macro?(call : Call) : Macro?
+    modules = @current_import_macros[call.name]?
+    return nil unless modules
+    found : Macro? = nil
+    found_in : ModuleType? = nil
+    i = 0
+    while i < modules.size
+      mod = modules[i]
+      if list = mod.macros[call.name]?
+        j = 0
+        while j < list.size
+          a_macro = list[j]
+          if a_macro.visibility == Visibility::Public && mod.macro_matches_call?(a_macro, call)
+            if other = found_in
+              if other.object_id != mod.object_id
+                refuse_ambiguous_import(call.name, "macro", other, mod, call.location)
+              end
+            else
+              found = a_macro
+              found_in = mod
+            end
+            break
+          end
+          j = j + 1
+        end
+      end
+      i = i + 1
+    end
+    found
+  end
+
   def lookup_type_path?(path : Path, current_type : ModuleType) : Type?
     # A metaclass resolves names in its instance type's scope.
     if current_type.is_a?(MetaclassType)
@@ -2633,6 +2728,7 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
     if t.nil?
+      check_import_ambiguity(first_name, "type", path.location)
       t = @current_imports[first_name]?
     end
     if t.nil?
@@ -2695,6 +2791,39 @@ pub class SemanticProgram < NonGenericModuleType
       refuse_port(message)
     end
     UnresolvedType.new(self, path.to_s)
+  end
+end
+
+# One import of a name into a file (SemanticProgram#current_import_sources): the kind of name it brings in
+# ("type" or "def"), the module that exports it, and for a type the type it names.
+pub class ImportSource
+  getter kind : String
+  getter unit : ModuleType
+  getter item : Type?
+
+  def initialize(@kind : String, @unit : ModuleType, @item : Type?)
+  end
+
+  # Whether this source is the same import as the one given: one module's type, or one module's def group.
+  def same?(kind : String, unit : ModuleType, item : Type?) : Bool
+    return false unless @kind == kind
+    return false unless @unit.object_id == unit.object_id
+    if mine = @item
+      if theirs = item
+        return mine.object_id == theirs.object_id
+      end
+      return false
+    end
+    item.nil?
+  end
+
+  # What two imports of one name are compared by: the type a type import names, or the module a def comes from.
+  # Two imports whose keys differ are two different things under one name.
+  def key : UInt64
+    if mine = @item
+      return mine.object_id
+    end
+    @unit.object_id
   end
 end
 
@@ -2873,6 +3002,8 @@ pub class TopLevelVisitor < Visitor
     if file = @file
       @program.file_imports[file] = @program.current_imports
       @program.file_import_defs[file] = @program.current_import_defs
+      @program.file_import_macros[file] = @program.current_import_macros
+      @program.file_import_sources[file] = @program.current_import_sources
     end
   end
 
@@ -2954,26 +3085,104 @@ pub class TopLevelVisitor < Visitor
       refuse_port("can't find module '#{written}'")
     end
     unit = load_file(file.as(String))
-    if names = node.names
+    if node.glob || node.names
       if unit.nil?
         refuse_port("import '#{written}' names types of a file that is still being read")
       end
-      names.each do |name|
-        found = unit.as(ModuleType).types[name]?
-        if found
-          @program.current_imports[name] = found.as(Type)
-        else
-          # A lowercase name is a def the file declares (`import a/b::{refuse_port}`):
-          # the calls slice resolves calls to it, so the pass records it here.
-          defs = unit.as(ModuleType).defs[name]?
-          unless defs
-            refuse_port("undefined constant #{name} in '#{written}'")
-          end
-          @program.current_import_defs[name] = defs.as(Array(Def))
-        end
+    end
+    if unit_module = unit
+      um = unit_module.as(ModuleType)
+      if node.glob
+        import_glob(um)
+      end
+      if names = node.names
+        names.each { |name| import_name(name, um, written) }
       end
     end
     false
+  end
+
+  # One name of the selective form (`import a/b::{name}`): a type, a def group or a pub macro. A name the
+  # unit does not export is refused as it always was.
+  def import_name(name : String, unit : ModuleType, written : String) : Nil
+    found = unit.types[name]?
+    if found
+      if found.private?
+        refuse_port("undefined constant #{name} in '#{written}'")
+      end
+      import_type(name, found, unit)
+      return nil
+    end
+    # A lowercase name is a def the file declares (`import a/b::{refuse_port}`): the calls slice
+    # resolves calls to it, so the pass records it here.
+    if defs = unit.defs[name]?
+      import_def(name, defs, unit)
+      return nil
+    end
+    # A macro is named the same way (`import a/b::{shout}`). Only a `pub` one is exported, so a private
+    # macro is refused like any other name the module lacks.
+    unless exports_macro?(unit, name)
+      refuse_port("undefined constant #{name} in '#{written}'")
+    end
+    import_macros(name, unit)
+    nil
+  end
+
+  # Whether *unit* exports a macro called *name*: one of its macros with that name is `pub`.
+  def exports_macro?(unit : ModuleType, name : String) : Bool
+    if list = unit.macros[name]?
+      return list.any? { |m| m.visibility == Visibility::Public }
+    end
+    false
+  end
+
+  # The glob form (`import a/b::*`) brings in every name the unit exports: each type that is not private,
+  # each def group that has a public def, and each `pub` macro. An unexported name is private already
+  # (`iyi_unexported?`), so it is never copied and a use of it stays undefined.
+  def import_glob(unit : ModuleType) : Nil
+    unit.types.each do |name, found|
+      import_type(name, found, unit) unless found.private?
+    end
+    unit.defs.each do |name, defs|
+      public_defs = defs.select { |d| d.visibility == Visibility::Public }
+      import_def(name, public_defs, unit) unless public_defs.empty?
+    end
+    unit.macros.each do |name, list|
+      import_macros(name, unit) if list.any? { |m| m.visibility == Visibility::Public }
+    end
+    nil
+  end
+
+  # Brings one type into the file's names and records where it came from, so that a use the same name
+  # reaches through another import as a different type is refused where it is used.
+  def import_type(name : String, found : Type, unit : ModuleType) : Nil
+    @program.current_imports[name] = found
+    @program.record_import_source(name, "type", unit, found)
+    nil
+  end
+
+  # Brings the def group *defs* of *unit* into the file's names under *name*. A def that two modules export
+  # under one name stays recorded from both, and a call that reaches both is refused where it is made.
+  def import_def(name : String, defs : Array(Def), unit : ModuleType) : Nil
+    merged = [] of Def
+    if existing = @program.current_import_defs[name]?
+      existing.each { |d| merged << d }
+    end
+    defs.each do |d|
+      merged << d unless merged.any? { |e| e.object_id == d.object_id }
+    end
+    @program.current_import_defs[name] = merged
+    @program.record_import_source(name, "def", unit, nil)
+    nil
+  end
+
+  # Records that the pub macros called *name* in *unit* are imported into the file. A macro call that two
+  # such modules both answer is refused where the call is made.
+  def import_macros(name : String, unit : ModuleType) : Nil
+    modules = @program.current_import_macros[name]? || ([] of ModuleType)
+    modules << unit unless modules.any? { |m| m.object_id == unit.object_id }
+    @program.current_import_macros[name] = modules
+    nil
   end
 
   # iyi: `import a/b` resolved as the hosted build resolves it (Program#iyi_import_candidates):
@@ -3020,18 +3229,26 @@ pub class TopLevelVisitor < Visitor
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
     saved_defs = @program.current_import_defs
+    saved_macros = @program.current_import_macros
+    saved_sources = @program.current_import_sources
     @program.current_imports = Hash(String, Type).new
     # A required file never finishes its own pending instance variables. It hands them to
     # the file that reads it, and the root that read them finishes once, after every file
     # it read is declared (the hosted pass resolves them after all top-level declarations).
     inner.exp_nest = 1
     @program.current_import_defs = Hash(String, Array(Def)).new
+    @program.current_import_macros = Hash(String, Array(ModuleType)).new
+    @program.current_import_sources = Hash(String, Array(ImportSource)).new
     @program.file_imports[file] = @program.current_imports
     @program.file_import_defs[file] = @program.current_import_defs
+    @program.file_import_macros[file] = @program.current_import_macros
+    @program.file_import_sources[file] = @program.current_import_sources
     nodes.accept(inner)
     inner.take_pending_ivars.each { |pi| @pending_ivars << pi }
     @program.current_imports = saved
     @program.current_import_defs = saved_defs
+    @program.current_import_macros = saved_macros
+    @program.current_import_sources = saved_sources
     if unit = inner.unit
       @program.loaded_units[file] = unit
     end

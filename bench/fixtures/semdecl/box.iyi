@@ -1,0 +1,24 @@
+module semdecl/box
+
+# A glob import (`import semdecl/box::*`) brings every name this module exports into the
+# importing file: the type, the trait and the def marked `pub`. `Secret` is not marked, so
+# the glob does not bring it in.
+pub class Crate
+  getter label : String
+
+  def initialize(@label : String)
+  end
+end
+
+pub trait Named
+  abstract def name : String
+end
+
+pub def describe(text : String) : String
+  "box: #{text}"
+end
+
+class Secret
+  def initialize
+  end
+end
