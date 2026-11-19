@@ -1,0 +1,17 @@
+# An exhaustive `case ... in` over a @[Flags] enum (S6): a flags enum cannot be proved exhaustive by its members, so the
+# shape stays refused by name in the semantic pass (hosted exhaustiveness_checker.cr flags_enum_message).
+
+@[Flags]
+enum Perm
+  Read
+  Write
+end
+
+def label(p : Perm) : String
+  case p
+  in Perm::Read  then "r"
+  in Perm::Write then "w"
+  end
+end
+
+puts label(Perm::Read)

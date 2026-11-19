@@ -123,11 +123,13 @@ Ported and measured: `visit(Return)` in a def (`codegen_return_node`, a value of
 |---|---|---|---|---|
 | `TupleLiteral`, `NamedTupleLiteral`, `PointerOf`, `SizeOf`, `InstanceSizeOf`, `TypeOf`, `MultiAssign`, `Underscore`: not typed by the analysis (`node has no type`, or `undefined local variable` for a multi-assign target) | codegen.cr visit(...) for each | refused by name through `pending_visit_node` | S1d2Bodies (main_visitor.iyi) | lower_tuple, lower_named_tuple, lower_pointer_of, lower_sizeof, lower_instance_sizeof, lower_typeof, lower_multi_assign, lower_underscore |
 | `out` argument of a lib call: the analysis types no lib fun (row 31) | call.cr out args, lib funs | not typed | the lib slice (row 31, S1d2Bodies) | lower_out |
-| `Unreachable`, `ExpandableNode` | codegen.cr visit(Unreachable), visit(ExpandableNode) | not lowered: the parser and the analysis never create them from source, so there is nothing to port against | none | none |
+| `ExpandableNode` | codegen.cr visit(ExpandableNode) | not lowered: the parser and the analysis never create it from source, so there is nothing to port against | none | none |
 | A `return` at the top level | codegen.cr visit(Return), `node.target` is a Def | refused by name (`top_level` flag in context.iyi) | none: iyi has no top-level return | none |
 | A variable declared twice, or a value of another type than the declaration | codegen.cr declare_var, codegen_assign upcast | refused by name | the casts slice (upcast, S2d) | none |
 
 Note on the gate: `lower_out` names a libc function (`time`), because the hosted build must link; a lib fun with no body in the libc does not link under `--prelude empty` (measured on `take`).
+
+`Unreachable` is lowered (S6, `lower.iyi`, hosted codegen.cr:2364-2365): it is the else an exhaustive `case` with no `else` gets (`literal_expander.iyi`), typed NoReturn (`main_visitor.iyi`), and checked by `semantic/exhaustiveness.iyi`, which refuses every exhaustive shape the port does not check, so the lowering never sees one.
 
 Non-aarch64 target: LLVM prints the async unwind-table kind as `uwtable`, while the port prints `uwtable(async)`; the hosted and port target choices are both sync for aarch64 and async otherwise. Reconcile the text when enabling another target (hosted fun.cr:437-440; lower/fun.iyi `uwtable_kind`).
 

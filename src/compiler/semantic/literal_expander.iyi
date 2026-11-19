@@ -30,14 +30,12 @@ module compiler/semantic/literal_expander
 # hosted pass does for every iyi `case` with a subject: a `__temp_N` takes the
 # subject, `it` takes the temporary, and the branch's own `it`s are renamed to
 # the temporary in a copy. A `case` with no subject keeps each condition as
-# written. A missing `else` stays `Nop` here, which is what the hosted pass
-# leaves too.
+# written. A missing `else` stays `Nop` here, except an exhaustive `case`, which gets an `Unreachable`
+# (hosted literal_expander.cr:813-815).
 #
 # Not ported, named here rather than left out silently:
 # - `case` with a tuple subject (`case a, b`): the walk leaves that `case` as
 #   written, because the hosted pass zips its tuple against each `when` tuple.
-# - an exhaustive `case` with no `else`, which the hosted pass fills with an
-#   `Unreachable` node; the port has no such node.
 # - a `when` condition that is an implicit receiver (`when .foo`), which the
 #   hosted pass refuses.
 # - multiple assignment, op-assign, `select`, regex and proc literals, none yet
@@ -50,6 +48,7 @@ module compiler/semantic/literal_expander
 
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/syntax/ast::{ASTNode, Arg, And, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, Cast, CharLiteral, ClassVar, Def, EnumDef, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, MacroExpression, MacroFor, MacroIf, Metaclass, MultiAssign, NilLiteral, Nop, Not, NumberLiteral, Or, Path, RangeLiteral, Select, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
+import compiler/syntax/ast::{Unreachable}
 import compiler/syntax/transformer::{Transformer}
 
 pub class LiteralExpander < Transformer
@@ -382,7 +381,7 @@ pub class LiteralExpander < Transformer
       bodies << bind_it(node.whens[i].body, it_subject)
       i += 1
     end
-    chain = else_or_nop(node.else, it_subject)
+    chain = case_else(node, it_subject)
     i = node.whens.size - 1
     while i >= 0
       chain = when_chain(node.whens[i], bodies[i], subject, chain, tuple_temps)
@@ -434,6 +433,15 @@ pub class LiteralExpander < Transformer
       return bind_it(e, subject)
     end
     Nop.new
+  end
+
+  # The `else` of a case's `if` chain. An exhaustive case with no `else` gets an `Unreachable`, as the hosted
+  # pass gives it (literal_expander.cr:813-815). Any other missing `else` stays `Nop`.
+  def case_else(node : Case, subject : ASTNode?) : ASTNode
+    if node.exhaustive && node.else.nil?
+      return Unreachable.new
+    end
+    else_or_nop(node.else, subject)
   end
 
   # One `when`: an `if` over its conditions, with `tail` as its `else`. When every

@@ -1,0 +1,11 @@
+# An exhaustive `case ... in` over a Bool (S6): the Bool subject stays refused by name in the semantic pass (hosted
+# exhaustiveness_checker.cr BoolTarget), never lowered with an Unreachable.
+
+def label(b : Bool) : String
+  case b
+  in true  then "yes"
+  in false then "no"
+  end
+end
+
+puts label(true)

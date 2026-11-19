@@ -31,6 +31,8 @@ import compiler/types/restrictions::{TypeRestrictions}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature, CallMatch}
+import compiler/syntax/ast::{Unreachable}
+import compiler/semantic/exhaustiveness::{check_exhaustive_case}
 import compiler/semantic/match::{Match, NumericAutocast}
 import compiler/semantic/method_lookup::{ArmWalk, Matches, MethodLookup}
 import compiler/semantic/cover::{CallCover}
@@ -1108,6 +1110,8 @@ pub class MainVisitor < TypeNodeHost
 
   def visit(node : Case) : Bool
     expand_literal(node)
+    check_exhaustive_case(self, node, @expansions[node]?, @node_types) if node.exhaustive
+    false
   end
 
   def visit(node : Select) : Bool
@@ -1488,6 +1492,14 @@ pub class MainVisitor < TypeNodeHost
 
   def visit(node : Nop) : Bool
     set_type(node, @program.nil_type)
+    false
+  end
+
+  # The hosted visit(Unreachable) (main_visitor.cr:3828-3831): the else an exhaustive case gets when it has none.
+  # It never completes, so it is NoReturn and the code after it is unreachable.
+  def visit(node : Unreachable) : Bool
+    @unreachable = true
+    set_type(node, @program.no_return_type)
     false
   end
 

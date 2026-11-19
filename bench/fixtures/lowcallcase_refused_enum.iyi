@@ -1,0 +1,17 @@
+# A non-exhaustive `case ... in` over a plain enum (S6): Warn has no branch. Hosted refuses it with `case is not
+# exhaustive for enum Level.` and `Missing members: - Warn`. The port refuses it in the semantic pass.
+
+enum Level
+  Debug
+  Info
+  Warn
+end
+
+def label(l : Level) : String
+  case l
+  in Level::Debug then "quiet"
+  in Level::Info  then "ordinary"
+  end
+end
+
+puts label(Level::Info)

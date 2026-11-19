@@ -301,6 +301,43 @@ if ! super_refusal_checks "$WORK/port$EXE"; then
   status=1
 fi
 
+# S6, exhaustive `case ... in` (semantic/exhaustiveness.iyi, lower/lower.iyi). The runnable fixtures are lowcall_case_*.iyi: the loop above has
+# compared their modules with hosted's, and here the port must still lower each to the hosted module. A non-exhaustive case is refused by the
+# semantic pass with hosted's first line; every other exhaustive shape the checker does not port is refused by name.
+case_refused_with() {
+  local driver="$1" name="$2" text="$3" text2="${4:-}"
+  if "$driver" emit "$(native_path "$REPO/bench/fixtures/$name.iyi")" "$WORK_NATIVE/$name.refused.ll" > "$WORK/$name.refused.out" 2> "$WORK/$name.refused.err"; then
+    echo "  $name: port unexpectedly accepted a refused case"
+    return 1
+  fi
+  grep -Fq -- "$text" "$WORK/$name.refused.err" || { echo "  $name: refusal does not carry: $text"; return 1; }
+  if [ -n "$text2" ]; then
+    grep -Fq -- "$text2" "$WORK/$name.refused.err" || { echo "  $name: refusal does not carry: $text2"; return 1; }
+  fi
+  return 0
+}
+case_checks() {
+  local driver="$1" name
+  for name in lowcall_case_union lowcall_case_enum lowcall_case_enum_raise; do
+    if ! "$driver" lower "$(native_path "$REPO/bench/fixtures/$name.iyi")" "$WORK_NATIVE/$name.oracle.ll" > "$WORK/$name.case.out" 2> "$WORK/$name.case.err"; then
+      echo "  $name: port refused an exhaustive case: $(awk 'NR==1' "$WORK/$name.case.err")"
+      return 1
+    fi
+    summary_check "$WORK/$name.case.out" || return 1
+  done
+  case_refused_with "$driver" lowcallcase_refused_union 'case is not exhaustive.' 'Missing types:' || return 1
+  case_refused_with "$driver" lowcallcase_refused_enum 'case is not exhaustive for enum Level.' 'Missing members:' || return 1
+  case_refused_with "$driver" lowcallcase_refused_flags 'exhaustive case over a @[Flags] enum is not ported' || return 1
+  case_refused_with "$driver" lowcallcase_refused_bool 'exhaustive case over Bool is not ported' || return 1
+  case_refused_with "$driver" lowcallcase_refused_tuple 'exhaustive case over a tuple is not ported' || return 1
+  case_refused_with "$driver" lowcallcase_refused_dot '`.foo?` patterns in an exhaustive case are not ported' || return 1
+  return 0
+}
+if ! case_checks "$WORK/port$EXE"; then
+  echo "  FAIL: the S6 exhaustive case checks do not hold on the unmutated port"
+  status=1
+fi
+
 # LLVM bindings must lower to instructions, with malformed bindings refused before linking.
 intrinsic_refusal_checks() {
   local driver="$1" pair name expected
@@ -2019,6 +2056,31 @@ else
   status=1
 fi
 
+case_mutant_check() {
+  if ! "$IYI" build -o "$WORK_NATIVE/casemut$EXE" "$REPO_NATIVE/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/casemut.build.log" 2>&1; then
+    invalid_mutation "$WORK/casemut.build.log"
+    return $?
+  fi
+  if case_checks "$WORK_NATIVE/casemut$EXE"; then
+    return 0
+  fi
+  return 1
+}
+if case_checks "$WORK/port$EXE"; then
+  prove_mutation "an exhaustive case's Unreachable is not lowered" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if node.is_a?(Unreachable)' '  if node.is_a?(Unreachable) && false' -- case_mutant_check || status=1
+  prove_mutation "the missing-types refusal is disabled" "$REPO/src/compiler/semantic/exhaustiveness.iyi" \
+    '  if !uncovered.empty?' '  if !uncovered.empty? && uncovered[0].enum_target?' -- case_mutant_check || status=1
+  prove_mutation "an enum member is never covered" "$REPO/src/compiler/semantic/exhaustiveness.iyi" \
+    'kept << member unless member.name == name' 'kept << member' -- case_mutant_check || status=1
+  prove_mutation "the expander gives an exhaustive case Nop, not Unreachable" "$REPO/src/compiler/semantic/literal_expander.iyi" \
+    '      return Unreachable.new' '      return Nop.new' -- case_mutant_check || status=1
+  prove_mutation "an enum subject keeps the Unreachable, with no raise" "$REPO/src/compiler/semantic/exhaustiveness.iyi" \
+    '      an_if.else = raise_call' '      an_if.else = an_if.else' -- case_mutant_check || status=1
+else
+  echo 'FAIL: the S6 exhaustive case baseline fails, so its mutation proofs are not run'
+  status=1
+fi
 if [ -e "$WORK/general-mutation.invalid" ]; then
   echo "  FAIL: a mutation driver could not be built or verified; behavioral detection is unproven"
   cat "$WORK/general-mutation.invalid"

@@ -403,6 +403,34 @@ pub class Nop < ASTNode
   end
 end
 
+# The hosted `Unreachable` node (src/compiler/iyi/semantic/ast.cr:926-932): the `else` the expander gives an
+# exhaustive `case` with no `else`. It never completes, so its type is NoReturn, and the lowering ends the
+# block with `unreachable`. No source text parses to it.
+pub class Unreachable < ASTNode
+  def initialize
+  end
+
+  def clone_without_location : self
+    Unreachable.new
+  end
+
+  def ==(other : self) : Bool
+    true
+  end
+
+  def ==(other : ASTNode) : Bool
+    other.is_a?(Unreachable)
+  end
+
+  def hash : Int32
+    1
+  end
+
+  def to_s(sb : StringBuilder) : Nil
+    sb << "raise \"unreachable\""
+  end
+end
+
 # The body of a def declared with `@[Primitive(:name)]`: the declarations pass puts this node in place of the
 # def's own (empty) body, the main pass types it by name, and the lowering emits the operation it names. No
 # source text parses to it. The hosted compiler declares it in semantic/ast.cr; it lives with the other nodes

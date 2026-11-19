@@ -1,0 +1,26 @@
+# An exhaustive `case ... in` over a union used as a value (S6). Every type of the union has a branch, so the
+# case has no `else`: the expander gives it an Unreachable else, typed NoReturn, so the case's value is Int32
+# and `v + 1` types. The union is returned by a method, so the subject is a union and not narrowed by an assignment.
+
+def maybe(n : Int32) : Int32 | String | Nil
+  if n == 0
+    nil
+  elsif n == 1
+    1
+  else
+    "abc"
+  end
+end
+
+def label(x : Int32 | String | Nil) : Int32
+  v = case x
+      in Int32  then x + 1
+      in String then x.size
+      in Nil    then 0
+      end
+  v + 1
+end
+
+puts label(maybe(0))
+puts label(maybe(1))
+puts label(maybe(2))

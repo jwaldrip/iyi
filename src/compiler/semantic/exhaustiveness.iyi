@@ -1,0 +1,370 @@
+module compiler/semantic/exhaustiveness
+
+# The exhaustiveness check of a `case ... in`: a port of the hosted ExhaustivenessChecker
+# (src/compiler/iyi/semantic/exhaustiveness_checker.cr), and of the hosted cleanup's replacement of the
+# Unreachable else for an enum subject (cleanup_transformer.cr:323-367, 2138-2142).
+#
+# Ported: a subject that is a type or a union of types, and a plain enum whose patterns are its members
+# (`in Level::Info`) or types. Every other shape is refused by name, through TypeNodeHost#refuse, so the
+# program is an error and never reaches the lowering: a tuple subject, a Bool subject, a @[Flags] enum, a
+# `.foo?` pattern, a value pattern, a subject with no type, and a case with no subject. The messages are the
+# hosted ones: `case is not exhaustive.`, with `Missing types:` for types, `Missing members:` for an enum alone,
+# and `Missing cases:` for a mix.
+#
+# The host is TypeNodeHost, not MainVisitor, because the import graph is a DAG (type_node_host.iyi). The node
+# types are read from the visitor's table without raising: the expander clones a variable subject into its
+# comparisons, so the original subject is untyped, and a checker that raised there would be wrong.
+
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Case, Expressions, Generic, If, ImplicitObj, NilLiteral, NodeMap, Path, StringLiteral, TupleLiteral, Underscore, Unreachable, Var}
+import compiler/semantic/top_level::{Const, EnumType, ModuleType, Type, UnionType}
+import compiler/semantic/type_node_host::{TypeNodeHost}
+
+# A pattern as the hosted checker reads a when condition (ExhaustivenessChecker::Pattern).
+pub class CasePattern
+  def initialize
+  end
+end
+
+# `in Foo` or `in nil`: covers a target whose type implements Foo.
+pub class TypePattern < CasePattern
+  getter type : Type
+
+  def initialize(@type : Type)
+  end
+end
+
+# `in Level::Info`: a member of a plain enum.
+pub class EnumMemberPattern < CasePattern
+  getter member : Const
+
+  def initialize(@member : Const)
+  end
+end
+
+# `in _`: covers every type.
+pub class UnderscorePattern < CasePattern
+  def initialize
+  end
+end
+
+# A bool literal such as `in true`: it covers no type. A Bool subject is refused before this.
+pub class OtherPattern < CasePattern
+  def initialize
+  end
+end
+
+# A subject type the checker covers: the type itself, or, for a plain enum, its members not yet covered
+# (hosted Target: TypeTarget and EnumTarget without subtargets, since tuples are refused).
+pub class CoverTarget
+  getter type : Type
+  getter original_size : Int32
+  property type_covered : Bool
+
+  # The enum members not yet covered; nil for a target that is a type.
+  property members : Array(Const)?
+
+  def initialize(@type : Type)
+    @type_covered = false
+    @original_size = 0
+    @members = nil
+    t = @type
+    if t.is_a?(EnumType)
+      list = [] of Const
+      t.as(EnumType).members.each_value { |member| list << member }
+      @members = list
+      @original_size = list.size
+    end
+  end
+
+  def enum_target? : Bool
+    !@members.nil?
+  end
+
+  def cover(pattern : CasePattern) : Nil
+    if pattern.is_a?(TypePattern)
+      @type_covered = true if @type.implements?(pattern.as(TypePattern).type)
+    elsif pattern.is_a?(UnderscorePattern)
+      @type_covered = true
+      if @members
+        @members = [] of Const
+      end
+    elsif pattern.is_a?(EnumMemberPattern)
+      if list = @members
+        name = pattern.as(EnumMemberPattern).member.name
+        kept = [] of Const
+        list.each { |member| kept << member unless member.name == name }
+        @members = kept
+      end
+    end
+  end
+
+  def covered? : Bool
+    if list = @members
+      return @type_covered || list.empty?
+    end
+    @type_covered
+  end
+
+  def missing_cases : Array(String)
+    cases = [] of String
+    if list = @members
+      if list.size == @original_size
+        cases << @type.to_s
+      else
+        list.each { |member| cases << member.to_s }
+      end
+    else
+      cases << @type.to_s
+    end
+    cases
+  end
+end
+
+# The check of one `case ... in` (hosted ExhaustivenessChecker#check_single_exp, and the cleanup's replacement of
+# the Unreachable else for an enum). `expanded` is the case's typed expansion; `node_types` is the visitor's table.
+pub def check_exhaustive_case(host : TypeNodeHost, node : Case, expanded : ASTNode?, node_types : NodeMap(Type)) : Nil
+  if cond = node.cond
+    check_subject(host, node, cond, expanded, node_types)
+  else
+    host.refuse(node, "an exhaustive case with no subject is not ported (hosted exhaustiveness_checker.cr)")
+  end
+end
+
+def check_subject(host : TypeNodeHost, node : Case, cond : ASTNode, expanded : ASTNode?, node_types : NodeMap(Type)) : Nil
+  if cond.is_a?(TupleLiteral)
+    host.refuse(node, "an exhaustive case over a tuple is not ported (hosted exhaustiveness_checker.cr check_tuple_exp)")
+    return
+  end
+  cond_type = subject_type(host, node, cond, node_types)
+  return if cond_type.nil?
+  types = expand_types(cond_type)
+  i = 0
+  while i < types.size
+    t = types[i]
+    if t.full_name == "Bool"
+      host.refuse(node, "an exhaustive case over Bool is not ported (hosted exhaustiveness_checker.cr BoolTarget)")
+      return
+    end
+    if t.is_a?(EnumType) && flags_enum?(t.as(EnumType))
+      host.refuse(node, "an exhaustive case over a @[Flags] enum is not ported (hosted exhaustiveness_checker.cr flags_enum_message)")
+      return
+    end
+    i += 1
+  end
+
+  targets = [] of CoverTarget
+  i = 0
+  while i < types.size
+    targets << CoverTarget.new(types[i])
+    i += 1
+  end
+
+  all_patterns_are_types = true
+  i = 0
+  while i < node.whens.size
+    a_when = node.whens[i]
+    j = 0
+    while j < a_when.conds.size
+      if pattern = case_pattern(host, node, a_when.conds[j], node_types)
+        all_patterns_are_types = false unless pattern.is_a?(TypePattern)
+        k = 0
+        while k < targets.size
+          targets[k].cover(pattern)
+          k += 1
+        end
+      else
+        return
+      end
+      j += 1
+    end
+    i += 1
+  end
+
+  uncovered = [] of CoverTarget
+  i = 0
+  while i < targets.size
+    uncovered << targets[i] unless targets[i].covered?
+    i += 1
+  end
+
+  if !uncovered.empty?
+    host.refuse(node, missing_message(uncovered, all_patterns_are_types))
+    return
+  end
+  replace_unreachable_for_enum(host, types, expanded)
+end
+
+# The subject's type. A variable subject is cloned into the comparisons, so its original is untyped; its type is
+# then the local of that name, which is what visit(Var) reads. Any other untyped subject is refused by name.
+def subject_type(host : TypeNodeHost, node : Case, cond : ASTNode, node_types : NodeMap(Type)) : Type?
+  if t = node_types[cond]?
+    return t
+  end
+  if cond.is_a?(Var)
+    if t = host.vars[cond.as(Var).name]?
+      return t
+    end
+  end
+  host.refuse(node, "an exhaustive case whose subject has no type is not ported (hosted exhaustiveness_checker.cr check_single_exp)")
+  nil
+end
+
+# The message the hosted checker raises for the targets left uncovered.
+def missing_message(uncovered : Array(CoverTarget), all_patterns_are_types : Bool) : String
+  all_types = true
+  i = 0
+  while i < uncovered.size
+    all_types = false if uncovered[i].enum_target?
+    i += 1
+  end
+  if all_patterns_are_types && all_types
+    names = [] of String
+    i = 0
+    while i < uncovered.size
+      names << uncovered[i].type.to_s
+      i += 1
+    end
+    return "case is not exhaustive.\n\nMissing types:\n - " + names.join("\n - ")
+  end
+  if uncovered.size == 1 && uncovered[0].enum_target?
+    target = uncovered[0]
+    names = [] of String
+    if list = target.members
+      list.each { |member| names << member.name }
+    end
+    return "case is not exhaustive for enum #{target.type}.\n\nMissing members:\n - " + names.join("\n - ")
+  end
+  cases = [] of String
+  i = 0
+  while i < uncovered.size
+    uncovered[i].missing_cases.each { |missing| cases << missing }
+    i += 1
+  end
+  "case is not exhaustive.\n\nMissing cases:\n - " + cases.join("\n - ")
+end
+
+# The hosted `Pattern` of one when condition, or nil once it is refused (ExhaustivenessChecker#when_pattern).
+def case_pattern(host : TypeNodeHost, node : Case, when_cond : ASTNode, node_types : NodeMap(Type)) : CasePattern?
+  if when_cond.is_a?(Path)
+    path = when_cond.as(Path)
+    named = host.program.lookup_type_path(path, host.current_type)
+    if named.const?
+      const = named.as(Const)
+      if const.namespace.is_a?(EnumType)
+        return EnumMemberPattern.new(const)
+      end
+      host.refuse(path, "can't use constant values in exhaustive case, only constant types (hosted exhaustiveness_checker.cr when_pattern)")
+      return nil
+    end
+    return TypePattern.new(named.devirtualize)
+  end
+  if when_cond.is_a?(Generic)
+    if generic_type = node_types[when_cond]?
+      return TypePattern.new(generic_type.devirtualize)
+    end
+    host.refuse(node, "an exhaustive case with an untyped generic pattern is not ported (hosted exhaustiveness_checker.cr when_pattern)")
+    return nil
+  end
+  if when_cond.is_a?(Call)
+    call = when_cond.as(Call)
+    if receiver = call.obj
+      if receiver.is_a?(ImplicitObj) && call.name.ends_with?("?")
+        host.refuse(call, "`.foo?` patterns in an exhaustive case are not ported (hosted exhaustiveness_checker.cr EnumMemberNamePattern)")
+        return nil
+      end
+      if call.name == "class"
+        receiver_type = node_types[receiver]?
+        if receiver_type.nil?
+          host.refuse(call, "an exhaustive case with an untyped `.class` pattern is not ported (hosted exhaustiveness_checker.cr when_pattern)")
+          return nil
+        end
+        if receiver_type.is_a?(ModuleType)
+          return TypePattern.new(receiver_type.as(ModuleType).metaclass.devirtualize)
+        end
+        host.refuse(call, "an exhaustive case with a `.class` pattern on a non-module type is not ported (hosted exhaustiveness_checker.cr when_pattern)")
+        return nil
+      end
+    end
+    host.refuse(call, "this call pattern in an exhaustive case is not ported (hosted exhaustiveness_checker.cr when_pattern)")
+    return nil
+  end
+  if when_cond.is_a?(BoolLiteral)
+    return OtherPattern.new
+  end
+  if when_cond.is_a?(NilLiteral)
+    return TypePattern.new(host.program.nil_type)
+  end
+  if when_cond.is_a?(Underscore)
+    return UnderscorePattern.new
+  end
+  host.refuse(when_cond, "a value pattern in an exhaustive case is not ported (hosted exhaustiveness_checker.cr when_pattern)")
+  nil
+end
+
+# A union is its members; any other type is itself. Virtual types are devirtualized, as the hosted
+# expand_types does, because a virtual type can be extended.
+def expand_types(type : Type) : Array(Type)
+  out = [] of Type
+  if type.is_a?(UnionType)
+    members = type.as(UnionType).union_types
+    i = 0
+    while i < members.size
+      out << members[i].devirtualize
+      i += 1
+    end
+  else
+    out << type.devirtualize
+  end
+  out
+end
+
+# Whether an enum carries @[Flags], which the checker refuses (its annotations are recorded on the type).
+def flags_enum?(type : EnumType) : Bool
+  if annotations = type.annotations
+    keys = annotations.keys
+    i = 0
+    while i < keys.size
+      return true if keys[i].full_name == "Flags"
+      i += 1
+    end
+  end
+  false
+end
+
+# The hosted cleanup's replacement (cleanup_transformer.cr:341-359): when the subject has an enum type, the
+# Unreachable else can be reached by `Enum.new(value)` with a value outside the members, so it raises instead.
+# Replaced once: a second visit finds no Unreachable and changes nothing.
+def replace_unreachable_for_enum(host : TypeNodeHost, types : Array(Type), expanded : ASTNode?) : Nil
+  has_enum = false
+  i = 0
+  while i < types.size
+    has_enum = true if types[i].is_a?(EnumType)
+    i += 1
+  end
+  return unless has_enum
+  if tree = expanded
+    if an_if = unreachable_parent(tree)
+      raise_call = Call.global("raise", StringLiteral.new("Unhandled case: enum value outside of defined enum members"))
+      raise_call.accept(host)
+      an_if.else = raise_call
+    end
+  end
+end
+
+# The `if` whose else is the Unreachable, in the case's chain. The chain comes last in an expansion of assignments
+# and then the chain (hosted cleanup_transformer.cr:369-387).
+def unreachable_parent(expanded : ASTNode) : If?
+  node = expanded
+  if node.is_a?(Expressions)
+    list = node.as(Expressions).expressions
+    return nil if list.empty?
+    node = list[list.size - 1]
+  end
+  while node.is_a?(If)
+    an_if = node.as(If)
+    else_node = an_if.else
+    return an_if if else_node.is_a?(Unreachable)
+    node = else_node
+  end
+  nil
+end

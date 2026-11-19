@@ -1,0 +1,15 @@
+# An exhaustive `case ... in` with no `else` (S6): the literal expander ends its `if` chain with an Unreachable, as
+# hosted does (literal_expander.cr:813-815). A non-exhaustive case with no `else` keeps its Nop, in the same file.
+
+def label(x)
+  case x
+  in Int32  then "int"
+  in String then "text"
+  end
+end
+
+def partial(x)
+  case x
+  when Int32 then "int"
+  end
+end

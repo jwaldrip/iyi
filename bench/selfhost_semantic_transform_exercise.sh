@@ -428,6 +428,8 @@ prove_mutation "an and binds a temporary and runs the right side on false" "$LIT
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "an or binds a temporary and runs the right side on true" "$LITERAL" 'If.new(Assign.new(temp.clone, left), temp.clone, node.right)' 'If.new(Assign.new(temp.clone, left), node.right, temp.clone)' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "an exhaustive case with no else gets Nop, not Unreachable" "$LITERAL" '      return Unreachable.new' '      return Nop.new' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "an or is expanded as an and" "$LITERAL" 'expanded = expand_or(node)' 'expanded = expand_and(And.new(node.left, node.right))' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "an and is not marked as an and" "$LITERAL" 'a_if.from_and = true' 'a_if.from_and = false' -- check_literals_agree || status=1

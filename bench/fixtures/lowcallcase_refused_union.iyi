@@ -1,0 +1,20 @@
+# A non-exhaustive `case ... in` over a union (S6): String is a type of the subject that no branch covers. Hosted
+# refuses it with `case is not exhaustive.` and `Missing types: - String`. The port refuses it in the semantic pass
+# (semantic/exhaustiveness.iyi), so the lowering never sees an Unreachable for a missing type.
+
+def maybe(n : Int32) : Int32 | String
+  if n == 0
+    1
+  else
+    "abc"
+  end
+end
+
+def label(x : Int32 | String) : Int32
+  v = case x
+      in Int32 then x + 1
+      end
+  v
+end
+
+puts label(maybe(0))

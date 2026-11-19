@@ -1,0 +1,21 @@
+# An exhaustive `case ... in` over a plain enum used as a value (S6): every member has a branch, so the case has
+# no `else`. Its subject is an enum, so the enum's replacement raise stands in for the Unreachable: an enum value
+# outside the members is an error, and the Unreachable is never taken for a value of the enum.
+
+enum Level
+  Debug
+  Info
+  Warn
+end
+
+def label(l : Level) : String
+  case l
+  in Level::Debug then "quiet"
+  in Level::Info  then "ordinary"
+  in Level::Warn  then "loud"
+  end
+end
+
+puts label(Level::Info)
+puts label(Level::Warn)
+puts label(Level::Debug)
