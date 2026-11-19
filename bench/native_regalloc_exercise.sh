@@ -863,8 +863,8 @@ PY
 check_mir_constants() {
   local exe expect out
   exe="$WORK/mir_constants$EXE"
-  expect='hoist: hoisted=1 body_movimm=0 entry_movimm=3 entry_const=1
-remat: body_movimm=1 imm_ok=true const_slot=-1 frame_slots=6 entry_movimm=2
+  expect='hoist: hoisted=2 body_movimm=0 entry_movimm=4 entry_const=1
+remat: body_movimm=1 imm_ok=true const_slot=-1 wide_slot=true frame_slots=8 entry_movimm=3
 homes: 0 1 2 3 4 5 6 7 8 12 13 14 15 19
 asm: 9 10 11 12 13 14 15'
   if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/mir_constants.iyi")" >"$WORK/mir_constants.build.log" 2>&1; then
@@ -887,6 +887,52 @@ if check_mir_constants >"$WORK/mir_constants.pristine.log" 2>&1; then
 else
   cat "$WORK/mir_constants.pristine.log"
   fail "MIR constants fixture"
+fi
+
+# Run-time parity: a loop with twelve 64-bit constants and sixteen live values, built by the native compiler and by the
+# hosted compiler, must print the same checksums.
+check_const_pressure() {
+  local tool hosted native want got sep=:
+  [ "$HOST_OS" = windows ] && sep=';'
+  tool="$WORK/compile_native$EXE"
+  hosted="$WORK/const_pressure.hosted$EXE"
+  native="$WORK/const_pressure.native$EXE"
+  if ! ./bin/iyi build -o "$(native_path "$tool")" "$(native_path src/compiler/tools/compile_native.iyi)" >"$WORK/const_pressure.tool.log" 2>&1; then
+    cat "$WORK/const_pressure.tool.log"
+    return 2
+  fi
+  if ! ./bin/iyi build -o "$(native_path "$hosted")" "$(native_path "$FIX_RA/const_pressure.iyi")" >"$WORK/const_pressure.hosted.log" 2>&1; then
+    cat "$WORK/const_pressure.hosted.log"
+    return 2
+  fi
+  if ! want=$("$hosted"); then
+    echo "const pressure: the hosted twin could not run"
+    return 2
+  fi
+  if ! IYI_PATH="$(native_path "$PWD/src")${sep}$(native_path "$PWD/samples/iyi")" "$tool" "$(native_path "$FIX_RA/const_pressure.iyi")" -o "$(native_path "$native")" --pipeline typed --prelude >"$WORK/const_pressure.native.log" 2>&1; then
+    cat "$WORK/const_pressure.native.log"
+    echo "const pressure: the native compiler refused the program"
+    return 1
+  fi
+  if ! got=$("$native"); then
+    echo "const pressure: the native program could not run"
+    return 1
+  fi
+  if [ "$got" != "$want" ]; then
+    printf 'hosted:\n%s\nnative:\n%s\n' "$want" "$got"
+    return 1
+  fi
+  echo "const pressure: native and hosted checksums match"
+}
+if [ "$HOST_ID" = darwin-arm64 ]; then
+  if check_const_pressure >"$WORK/const_pressure.pristine.log" 2>&1; then
+    cat "$WORK/const_pressure.pristine.log"
+  else
+    cat "$WORK/const_pressure.pristine.log"
+    fail "const pressure run-time parity"
+  fi
+else
+  host_limited "runtime parity: const_pressure native execution (macOS arm64)"
 fi
 
 echo "== 6. mutation proofs"

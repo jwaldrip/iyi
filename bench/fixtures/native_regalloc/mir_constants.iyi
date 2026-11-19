@@ -56,9 +56,12 @@ def spill_everything(fn : MFunction) : Nil
   end
 end
 
-# Parts 1 and 2: a loop with two equal 64-bit constants (one is a duplicate) and a counter. The constants move to the
-# loop's preheader, once. Then every vreg is spilled, so the constant is rebuilt at its use with no frame slot.
-big = 1234567890123_i64
+# Parts 1 and 2: a loop with two equal single-instruction constants (one is a duplicate) and a multi-instruction
+# constant, plus a counter. All three move to the loop's preheader; the duplicate is merged into the first. Then every
+# vreg is spilled: the single-instruction constant is rebuilt at its use with no slot, and the multi-instruction one
+# takes a slot, because a rebuild would cost more than the reload.
+small = 40000_i64
+wide = 1234567890123_i64
 fn = MFunction.new("remat")
 entry = MBlock.new(0, "entry")
 head = MBlock.new(1, "head")
@@ -70,32 +73,37 @@ fn.blocks << body
 fn.blocks << exit
 i = fn.new_vreg(RegClass::Gpr)
 lim = fn.new_vreg(RegClass::Gpr)
-put_inst(entry, MOp::MovImm, [i], [] of Int32, 0_i64)
-put_inst(entry, MOp::MovImm, [lim], [] of Int32, 3_i64)
+put_inst(entry, MOp::MovImm, [i] of Int32, [] of Int32, 0_i64)
+put_inst(entry, MOp::MovImm, [lim] of Int32, [] of Int32, 3_i64)
 put_inst(head, MOp::Cmp, [] of Int32, [i, lim], 0_i64)
 conditional(head, 3)
 c2 = fn.new_vreg(RegClass::Gpr)
 c3 = fn.new_vreg(RegClass::Gpr)
+wv = fn.new_vreg(RegClass::Gpr)
 u = fn.new_vreg(RegClass::Gpr)
 w = fn.new_vreg(RegClass::Gpr)
 i2 = fn.new_vreg(RegClass::Gpr)
-put_inst(body, MOp::MovImm, [c2], [] of Int32, big)
-put_inst(body, MOp::MovImm, [c3], [] of Int32, big)
+wd = fn.new_vreg(RegClass::Gpr)
+put_inst(body, MOp::MovImm, [c2] of Int32, [] of Int32, small)
+put_inst(body, MOp::MovImm, [c3] of Int32, [] of Int32, small)
+put_inst(body, MOp::MovImm, [wd] of Int32, [] of Int32, wide)
 put_inst(body, MOp::Add, [u], [c2, i], 0_i64)
 put_inst(body, MOp::Add, [w], [c3, u], 0_i64)
+put_inst(body, MOp::Add, [wv], [wd, i], 0_i64)
 put_inst(body, MOp::AddImm, [i2], [i], 1_i64)
 put_inst(body, MOp::Mov, [i], [i2], 0_i64)
 branch(body, 1)
 exit.insts << MInst.new(MOp::Ret.value.to_i32)
 
 hoisted = hoist_constants(fn)
-puts "hoist: hoisted=#{hoisted} body_movimm=#{movimm_count(body)} entry_movimm=#{movimm_count(entry)} entry_const=#{movimm_with(entry, big)}"
+puts "hoist: hoisted=#{hoisted} body_movimm=#{movimm_count(body)} entry_movimm=#{movimm_count(entry)} entry_const=#{movimm_with(entry, small)}"
 
 spill_everything(fn)
 rewrite_spills(fn)
 reloads = movimm_count(body)
-same = movimm_with(body, big) == reloads
-puts "remat: body_movimm=#{reloads} imm_ok=#{same} const_slot=#{fn.vreg_slot[c2]} frame_slots=#{fn.frame.slots.size} entry_movimm=#{movimm_count(entry)}"
+same = movimm_with(body, small) == reloads
+wide_slot = fn.vreg_slot[wd] >= 0
+puts "remat: body_movimm=#{reloads} imm_ok=#{same} const_slot=#{fn.vreg_slot[c2]} wide_slot=#{wide_slot} frame_slots=#{fn.frame.slots.size} entry_movimm=#{movimm_count(entry)}"
 
 # Part 3: fourteen values alive at once, each read by a two-operand instruction. The allocator homes them in the
 # caller-saved registers in pool order: x0..x8, then x12..x15 (two-operand functions keep three spill scratch
@@ -107,7 +115,7 @@ vals = [] of Int32
 k = 0
 while k < 14
   v = home_fn.new_vreg(RegClass::Gpr)
-  put_inst(home_block, MOp::MovImm, [v], [] of Int32, k.to_i64 + 100_i64)
+  put_inst(home_block, MOp::MovImm, [v] of Int32, [] of Int32, k.to_i64 + 100_i64)
   vals << v
   k = k + 1
 end
@@ -133,7 +141,7 @@ seven = [] of Int32
 k = 0
 while k < 7
   v = asm_fn.new_vreg(RegClass::Gpr)
-  put_inst(asm_block, MOp::MovImm, [v], [] of Int32, k.to_i64)
+  put_inst(asm_block, MOp::MovImm, [v] of Int32, [] of Int32, k.to_i64)
   seven << v
   k = k + 1
 end
