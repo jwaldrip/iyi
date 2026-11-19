@@ -148,6 +148,10 @@ pub def hoist_constants(fn : MFunction) : Int32
   b = 0
   while b < n
     moved << ([] of MInst)
+    b = b + 1
+  end
+  b = 0
+  while b < n
     acc = [] of MInst
     fn.blocks[b].insts.each do |inst|
       if target[b] >= 0 && integer_literal?(fn.isa, inst) && inst.defs.size == 1 && inst.uses.empty? && inst.asm.nil? &&
