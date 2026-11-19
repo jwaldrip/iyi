@@ -1,0 +1,14 @@
+# A constructor whose initialize binds a forall name from an instance argument (`t : T`).
+# The generated `new` must keep the forall name so that `Foo.new(Bar.new)` binds T to
+# Bar. Read by bench/selfhost_semantic_new_exercise.sh.
+
+class Bar
+end
+
+class Foo
+  def initialize(t : T) forall T
+    @x = 1
+  end
+end
+
+Foo.new(Bar.new)

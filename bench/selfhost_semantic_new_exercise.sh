@@ -176,6 +176,39 @@ prove_mutation "a generic child copies initializers beyond the first ancestor" "
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# A metaclass restriction on a forall name (restrictions.cr:1602-1605, 923-926): the name is free, the
+# argument's class restricts against it, and the restriction then matches the argument.
+prove_mutation "a metaclass restriction's forall name is not seen as free" "$RESTRICTIONS_FILE" \
+  '      return FreeBindings.mentions?(node.as(Metaclass).name, free)' \
+  '      return false' \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a metaclass restriction does not match the class it is given" "$RESTRICTIONS_FILE" \
+  '      return ArgRestriction.restrict_metaclass(ts, scope, node.as(Metaclass), arg_type.as(MetaclassType), owner, free, bound)' \
+  '      return RestrictResult.no_match' \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a metaclass return does not bind its forall name" "$RESTRICTIONS_FILE" \
+  '    if node.is_a?(Metaclass) && FreeBindings.mentions?(node, bound.keys)' \
+  '    if false' \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a metaclass return resolves to the instance, not its metaclass" "$RESTRICTIONS_FILE" \
+  '    TypeQueries.virtual_type(meta.as(Type))' \
+  '    base_type' \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic child's copied new drops its forall names" "$NEW_FILE" \
+  '      made.free_vars = init.free_vars' \
+  '      made.free_vars = nil' \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a new generated from an initialize drops its forall names" "$TOP_LEVEL_FILE" \
+  '      new_def.free_vars = node.free_vars' \
+  '      new_def.free_vars = nil' \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

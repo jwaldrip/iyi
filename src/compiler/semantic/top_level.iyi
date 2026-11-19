@@ -4491,6 +4491,7 @@ pub class TopLevelVisitor < Visitor
       new_def.splat_index = node.splat_index
       new_def.double_splat = node.double_splat
       new_def.block_arg = node.block_arg
+      new_def.free_vars = node.free_vars
       new_def.visibility = Visibility::Public
       target_type.metaclass.add_def(new_def)
       @program.record_generated_new(new_def)

@@ -1,11 +1,12 @@
 module compiler/semantic/restrictions
 
-import compiler/syntax/ast::{ASTNode, Arg, Def, Generic, Path, Self, Splat, Union}
-import compiler/semantic/top_level::{AliasType, GenericClassType, ModuleType, Type, TypeParameterType, UnionType}
+import compiler/syntax/ast::{ASTNode, Arg, Def, Generic, Metaclass, Path, Self, Splat, Union}
+import compiler/semantic/top_level::{AliasType, GenericClassType, MetaclassType, ModuleType, Type, TypeParameterType, UnionType}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/type_system::{TypeSystem}
-import compiler/types/types::{GenericInstanceType, TypeSplat}
+import compiler/types/types::{GenericInstanceType, TypeQueries, TypeSplat}
+import compiler/types/unification::{TypeUnification}
 
 # The answer to "what does this argument's restriction name": a type, nil when
 # the argument has no restriction, or an error message when the written type does
@@ -136,6 +137,9 @@ pub class ArgRestriction
         return found.as(Type) if found
       end
     end
+    if node.is_a?(Metaclass) && FreeBindings.mentions?(node, bound.keys)
+      return ArgRestriction.lookup_free_metaclass(ts, scope, node.as(Metaclass), owner, bound)
+    end
     if node.is_a?(Generic)
       generic_node = node.as(Generic)
       base = TypeLookup.new(ts.instances).lookup(scope, generic_node.name)
@@ -152,6 +156,18 @@ pub class ArgRestriction
       end
     end
     ArgRestriction.lookup_bound(ts, scope, node, owner)
+  end
+
+  # The metaclass of a bound free name (`: H.class` with H bound). The inner name is resolved
+  # through the bindings, then its metaclass is built as hosted TypeLookup#lookup(Metaclass) builds
+  # it (type_lookup.cr:237-243).
+  def self.lookup_free_metaclass(ts : TypeSystem, scope : ModuleType, node : Metaclass, owner : Type?, bound : Hash(String, Type)) : Type | LookupError
+    inner = ArgRestriction.lookup_free(ts, scope, node.name, owner, bound)
+    return inner if inner.is_a?(LookupError)
+    base_type = inner.as(Type)
+    meta = TypeUnification.metaclass_of(TypeQueries.virtual_type(base_type))
+    return LookupError.new("#{base_type.full_name} doesn't have a metaclass") if meta.nil?
+    TypeQueries.virtual_type(meta.as(Type))
   end
 
   # The one union merge, with free-variable bindings in force (`T | Nil` forall T).
@@ -196,6 +212,11 @@ pub class ArgRestriction
     if node.is_a?(Splat)
       return ArgRestriction.restrict_argument(ts, scope, node.as(Splat).exp, arg_type, owner, free, bound)
     end
+    # An instance is not a metaclass, so it matches no metaclass restriction here and falls to the
+    # general no-match rule below (hosted Metaclass restrict on an instance returns nil, restrictions.cr:1016-1018).
+    if node.is_a?(Metaclass) && arg_type.is_a?(MetaclassType) && FreeBindings.mentions?(node, free)
+      return ArgRestriction.restrict_metaclass(ts, scope, node.as(Metaclass), arg_type.as(MetaclassType), owner, free, bound)
+    end
     if node.is_a?(Path)
       names = node.as(Path).names
       if names.size == 1 && FreeBindings.free?(names[0], free)
@@ -222,6 +243,19 @@ pub class ArgRestriction
     restricted = ts.restrict(concrete_arg.as(Type), allowed.as(Type))
     return RestrictResult.no_match if restricted.nil?
     RestrictResult.matched(restricted.as(Type))
+  end
+
+  # Hosted MetaclassType#restrict(other : Metaclass), restrictions.cr:1602-1605. The argument's
+  # instance type restricts against the written name, and the argument matches only when that
+  # answer is the instance type itself (`instance_type == restricted ? self : nil`).
+  def self.restrict_metaclass(ts : TypeSystem, scope : ModuleType, node : Metaclass, arg_type : MetaclassType, owner : Type?, free : Array(String), bound : Hash(String, Type)) : RestrictResult
+    instance = arg_type.instance_type
+    inner = ArgRestriction.restrict_argument(ts, scope, node.name, instance, owner, free, bound)
+    return inner if inner.error
+    restricted = inner.type
+    return RestrictResult.no_match if restricted.nil?
+    return RestrictResult.no_match if restricted.as(Type).full_name != instance.full_name
+    RestrictResult.matched(arg_type)
   end
 
   # A union restriction (`Array(T)?`, `T | Nil`) takes an argument when each member of the argument is taken by some
@@ -338,6 +372,9 @@ pub class FreeBindings
       end
       return false
     end
+    if node.is_a?(Metaclass)
+      return FreeBindings.mentions?(node.as(Metaclass).name, free)
+    end
     if node.is_a?(Splat)
       return FreeBindings.mentions?(node.as(Splat).exp, free)
     end
@@ -368,6 +405,12 @@ pub class FreeBindings
         bound[names[0]] = arg_type
       end
       return true
+    end
+    if node.is_a?(Metaclass)
+      meta = node.as(Metaclass)
+      return true unless FreeBindings.mentions?(meta.name, free)
+      return false unless arg_type.is_a?(MetaclassType)
+      return FreeBindings.bind(meta.name, arg_type.as(MetaclassType).instance_type, free, bound)
     end
     if node.is_a?(Union)
       return FreeBindings.bind_union(node.as(Union), arg_type, free, bound)

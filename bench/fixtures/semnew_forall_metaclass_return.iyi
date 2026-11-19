@@ -1,0 +1,12 @@
+# A method whose return is a metaclass of a forall name (`: T.class` with T bound by its
+# argument). The return type resolves through the binding, so the call's result is Bar's
+# metaclass and `.new` on it builds a Bar. Read by bench/selfhost_semantic_new_exercise.sh.
+
+class Bar
+end
+
+def pick(t : T.class) : T.class forall T
+  t
+end
+
+pick(Bar).new

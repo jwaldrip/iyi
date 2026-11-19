@@ -1,0 +1,21 @@
+# The shape of std/crypto's HMAC: a class method takes a metaclass restriction on a forall
+# name, and constructs through `Foo.new` with it, while the initialize builds an ivar from
+# the class. Both the method and the constructor bind H to Bar. Read by
+# bench/selfhost_semantic_new_exercise.sh.
+
+class Bar
+end
+
+class Foo
+  @inner : Bar
+
+  def initialize(algorithm : H.class, key : Int32) forall H
+    @inner = algorithm.new
+  end
+
+  def self.make(algorithm : H.class, key : Int32) : Foo forall H
+    Foo.new(algorithm, key)
+  end
+end
+
+Foo.make(Bar, 1)
