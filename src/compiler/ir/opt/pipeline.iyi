@@ -56,19 +56,19 @@ end
 
 pub def pass_name(id : PassId) : String
   case id
-  when PassId::CfgSimplify then "cfg-simplify"
-  when PassId::Mem2Reg     then "mem2reg"
-  when PassId::Simplify    then "simplify"
-  when PassId::Dce         then "dce"
-  when PassId::Sroa        then "sroa"
-  when PassId::Inline      then "inline"
-  when PassId::DeadFn      then "deadfn"
-  when PassId::Cse         then "cse"
-  when PassId::Prove       then "prove"
-  when PassId::Licm        then "licm"
-  when PassId::Layout      then "layout"
-  when PassId::Escape      then "escape"
-  when PassId::Barrier     then "barrier"
+  when PassId::CfgSimplify  then "cfg-simplify"
+  when PassId::Mem2Reg      then "mem2reg"
+  when PassId::Simplify     then "simplify"
+  when PassId::Dce          then "dce"
+  when PassId::Sroa         then "sroa"
+  when PassId::Inline       then "inline"
+  when PassId::DeadFn       then "deadfn"
+  when PassId::Cse          then "cse"
+  when PassId::Prove        then "prove"
+  when PassId::Licm         then "licm"
+  when PassId::Layout       then "layout"
+  when PassId::Escape       then "escape"
+  when PassId::Barrier      then "barrier"
   when PassId::BarrierStack then "barrier-stack"
   else
     raise "BUG: unknown IR pass"
@@ -77,19 +77,19 @@ end
 
 pub def pass_named(name : String) : PassId?
   case name
-  when "cfg-simplify" then PassId::CfgSimplify
-  when "mem2reg"      then PassId::Mem2Reg
-  when "simplify"     then PassId::Simplify
-  when "dce"          then PassId::Dce
-  when "sroa"         then PassId::Sroa
-  when "inline"       then PassId::Inline
-  when "deadfn"       then PassId::DeadFn
-  when "cse"          then PassId::Cse
-  when "prove"        then PassId::Prove
-  when "licm"         then PassId::Licm
-  when "layout"       then PassId::Layout
-  when "escape"       then PassId::Escape
-  when "barrier"      then PassId::Barrier
+  when "cfg-simplify"  then PassId::CfgSimplify
+  when "mem2reg"       then PassId::Mem2Reg
+  when "simplify"      then PassId::Simplify
+  when "dce"           then PassId::Dce
+  when "sroa"          then PassId::Sroa
+  when "inline"        then PassId::Inline
+  when "deadfn"        then PassId::DeadFn
+  when "cse"           then PassId::Cse
+  when "prove"         then PassId::Prove
+  when "licm"          then PassId::Licm
+  when "layout"        then PassId::Layout
+  when "escape"        then PassId::Escape
+  when "barrier"       then PassId::Barrier
   when "barrier-stack" then PassId::BarrierStack
   else
     nil
@@ -121,14 +121,14 @@ pub def run_function_pass(mod : Module, fn : Function, id : PassId) : Bool
     changed = run_sroa(mod, fn)
     changed = run_mem2reg(mod, fn) unless changed
     changed
-  when PassId::Inline      then run_inline(mod, fn, CallGraph.new(mod), InlineBudget.new(mod))
-  when PassId::DeadFn      then run_deadfn(mod)
-  when PassId::Cse         then run_cse(mod, fn)
-  when PassId::Prove       then run_prove(mod, fn)
-  when PassId::Licm        then run_licm(mod, fn)
-  when PassId::Layout      then run_layout(mod, fn)
-  when PassId::Escape      then run_escape(mod, fn)
-  when PassId::Barrier     then run_barrier(mod, fn)
+  when PassId::Inline       then run_inline(mod, fn, CallGraph.new(mod), InlineBudget.new(mod))
+  when PassId::DeadFn       then run_deadfn(mod)
+  when PassId::Cse          then run_cse(mod, fn)
+  when PassId::Prove        then run_prove(mod, fn)
+  when PassId::Licm         then run_licm(mod, fn)
+  when PassId::Layout       then run_layout(mod, fn)
+  when PassId::Escape       then run_escape(mod, fn)
+  when PassId::Barrier      then run_barrier(mod, fn)
   when PassId::BarrierStack then run_stack_barrier(mod, fn)
   else
     raise "BUG: unknown IR pass"

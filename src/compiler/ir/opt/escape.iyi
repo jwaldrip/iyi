@@ -10,7 +10,7 @@ import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/opt/analysis::{DefUse}
 import compiler/ir/opt/edit::{new_inst}
 import compiler/ir/opt/fold::{int_value}
-import compiler/ir/opt/effects::{function_returns_twice?}
+import compiler/ir/opt/effects::{function_returns_twice?, asm_named_functions}
 
 # Publication is not a GC barrier. Look for uses rather than definitions:
 # non-partitioned runtimes also define these helpers without calling them.
@@ -211,7 +211,6 @@ class SlotShapes
   end
 end
 
-
 # GEP indices are signed, including i1 true, which fold represents as 1.
 def gep_index(value : Value) : Int64?
   index = int_value(value)
@@ -285,25 +284,15 @@ class LongLivedFrames
         work << init
       end
     end
+    asm_named_functions(mod).each do |fn, flag|
+      @addresses[fn] = true # mutation S9-asm-address: assembly can name a function
+    end
     mod.functions.each do |fn|
       if personality = fn.personality
         work << personality
       end
       fn.blocks.each do |block|
         block.insts.each do |inst|
-          assembly = nil.as(AsmAux?)
-          if inst.aux.is_a?(AsmAux)
-            assembly = inst.aux.as(AsmAux)
-          elsif !inst.args.empty? && inst.args[0].is_a?(Inst)
-            target = inst.args[0].as(Inst)
-            assembly = target.aux.as(AsmAux) if target.aux.is_a?(AsmAux)
-          end
-          if inline_asm = assembly
-            template = inline_asm.template
-            mod.functions.each do |candidate|
-              @addresses[candidate] = true if template.includes?(candidate.name) # mutation S9-asm-address: assembly can name a function
-            end
-          end
           k = 0
           while k < inst.args.size
             operand = inst.args[k]
@@ -368,7 +357,10 @@ end
 # One synthetic hub represents the edges from indirect calls and declarations
 # to address-taken and externally visible definitions, without their Cartesian product.
 class CallCycles
-  def initialize(mod : Module, addresses : Hash(Function, Bool))
+  getter edge_count : Int64
+
+  def initialize(mod : Module, addresses : Hash(Function, Bool), count_edges : Bool = false)
+    @edge_count = 0_i64
     @recursive = Hash(Function, Bool).new
     ids = Hash(Function, Int32).new
     edges = [] of Array(Int32)
@@ -406,9 +398,12 @@ class CallCycles
           end
         end
       end
-      edges[k] << hub if indirect # mutation S9-indirect: indirect calls may reach address-taken functions
+      edges[k] << hub if indirect                                                                                                          # mutation S9-indirect: indirect calls may reach address-taken functions
       edges[hub] << k if addresses.has_key?(fn) || (!fn.declaration? && fn.linkage != Linkage::Internal && fn.linkage != Linkage::Private) # mutation S9-hub: externally visible symbols can be called back
       k = k + 1
+    end
+    if count_edges
+      edges.each { |targets| @edge_count = @edge_count + targets.size.to_i64 }
     end
     stack = [] of Int32
     nodes = [] of Int32
@@ -904,7 +899,7 @@ def argument_attributes_safe?(inst : Inst, index : Int32, candidate : Candidate,
   return true if arg < 0 || arg >= attrs.size
   attrs[arg].each do |attr|
     if attr.name == "align"
-      return false if attr.int_value > 16_u64 # mutation S9-call-align: preserve required alignment
+      return false if attr.int_value > 16_u64                                                           # mutation S9-call-align: preserve required alignment
       return false unless aligned_pointer?(candidate, inst.args[index], attr.int_value.to_i64, offsets) # mutation S9-call-offset-align: honor actual pointer offset
     elsif attr.name == "dereferenceable" || attr.name == "dereferenceable_or_null"
       span = offsets.span(inst.args[index])
@@ -933,7 +928,7 @@ def bulk_use?(inst : Inst, index : Int32, candidate : Candidate, offsets : Offse
   return true if id == IntrinsicId::Memset
   return true if index == 1
   source_span = offsets.span(inst.args[1])
-  return false unless source_span && length % 8_i64 == 0_i64 # mutation S9-bulk-length: copy whole pointer words
+  return false unless source_span && length % 8_i64 == 0_i64                                          # mutation S9-bulk-length: copy whole pointer words
   return false unless aligned_span?(target, 0_i64, 8_i64) && aligned_span?(source_span, 0_i64, 8_i64) # mutation S9-bulk-align: do not shift pointer words
   origin = source_span.origin
   if origin == candidate.call
@@ -947,7 +942,6 @@ def bulk_use?(inst : Inst, index : Int32, candidate : Candidate, offsets : Offse
   return false if alignment < 8_i64 || source_span.low < 0_i64 || source_span.high > info.alloc || length > info.alloc - source_span.high
   true
 end
-
 
 # Include existing allocas, so another invocation cannot exceed the per-frame
 # budget by promoting the candidates left behind by the previous invocation.
@@ -1070,6 +1064,12 @@ pub class EscapeInfo
   end
 end
 
+# Count the actual recursion graph, not the equivalent uncompressed call relation.
+pub def call_cycle_edge_count(mod : Module) : Int64
+  frames = LongLivedFrames.new(mod)
+  CallCycles.new(mod, frames.addresses, true).edge_count
+end
+
 pub def run_escape(mod : Module, fn : Function) : Bool
   EscapeInfo.new(mod, partitioned_heap?(mod)).run(fn)
 end
@@ -1081,8 +1081,8 @@ end
 def run_escape_with_facts(mod : Module, fn : Function, partitioned : Bool, frames : LongLivedFrames, cycles : CallCycles) : Bool
   return false if partitioned
   return false if fn.declaration? || frames.protects?(fn) # mutation S9-top-call: remove top-level exclusion
-  return false if cycles.recursive?(fn) # mutation S9-recursion: remove this guard
-  return false if function_returns_twice?(fn) # mutation S9-returns-twice: promoted objects cannot cross a second return
+  return false if cycles.recursive?(fn)                   # mutation S9-recursion: remove this guard
+  return false if function_returns_twice?(fn)             # mutation S9-returns-twice: promoted objects cannot cross a second return
   return false unless mod.layout.pointer_size(0) == 8
   sizes = SizeTable.new(mod)
   pointer_shapes = SlotShapes.new(sizes, false)

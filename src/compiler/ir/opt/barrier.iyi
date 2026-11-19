@@ -480,7 +480,7 @@ class BarrierPass
         destination = store.args[0]
       end
       dest = address(destination)
-      return false unless length > 0_i64 && dest && dest.base == shade.base # mutation S9-constant-base: stored bytes must belong to the shaded base
+      return false unless length > 0_i64 && dest && dest.base == shade.base                                      # mutation S9-constant-base: stored bytes must belong to the shaded base
       return false unless dest.offset >= shade.offset && dest.offset <= finish && length <= finish - dest.offset # mutation S9-constant-contained: stores stay within the shade
       ranges << BarrierRange.new(dest.offset, dest.offset + length)
     end
@@ -611,7 +611,7 @@ class BarrierPass
           next_lower = next_address.offset
           next_upper = next_lower + following.words * 8_i64
           break if next_upper > BARRIER_LIMIT || (next_lower - lower) % 8_i64 != 0_i64
-          break if next_lower > upper || next_upper < lower # mutation S9-merge-gap: the union cannot shade untouched words
+          break if next_lower > upper || next_upper < lower                        # mutation S9-merge-gap: the union cannot shade untouched words
           break if next_lower != lower && (!same_object || !next_address.inbounds) # mutation S9-merge-inbounds: differing addresses must stay in one object
           if next_lower < lower
             lower = next_lower
