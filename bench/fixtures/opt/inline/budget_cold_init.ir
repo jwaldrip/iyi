@@ -1,0 +1,232 @@
+; iyi-ir 1
+source_filename = "budget_cold_init"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i64 @scale(i64 %x) {
+entry:
+  %a = mul i64 %x, 3
+  %b = add i64 %a, 1
+  %c = xor i64 %b, 5
+  ret i64 %c
+}
+define external i64 @init00() {
+entry:
+  %v = call i64 (i64) @scale(i64 0)
+  ret i64 %v
+}
+define external i64 @init01() {
+entry:
+  %v = call i64 (i64) @scale(i64 1)
+  ret i64 %v
+}
+define external i64 @init02() {
+entry:
+  %v = call i64 (i64) @scale(i64 2)
+  ret i64 %v
+}
+define external i64 @init03() {
+entry:
+  %v = call i64 (i64) @scale(i64 3)
+  ret i64 %v
+}
+define external i64 @init04() {
+entry:
+  %v = call i64 (i64) @scale(i64 4)
+  ret i64 %v
+}
+define external i64 @init05() {
+entry:
+  %v = call i64 (i64) @scale(i64 5)
+  ret i64 %v
+}
+define external i64 @init06() {
+entry:
+  %v = call i64 (i64) @scale(i64 6)
+  ret i64 %v
+}
+define external i64 @init07() {
+entry:
+  %v = call i64 (i64) @scale(i64 7)
+  ret i64 %v
+}
+define external i64 @init08() {
+entry:
+  %v = call i64 (i64) @scale(i64 8)
+  ret i64 %v
+}
+define external i64 @init09() {
+entry:
+  %v = call i64 (i64) @scale(i64 9)
+  ret i64 %v
+}
+define external i64 @init10() {
+entry:
+  %v = call i64 (i64) @scale(i64 10)
+  ret i64 %v
+}
+define external i64 @init11() {
+entry:
+  %v = call i64 (i64) @scale(i64 11)
+  ret i64 %v
+}
+define external i64 @init12() {
+entry:
+  %v = call i64 (i64) @scale(i64 12)
+  ret i64 %v
+}
+define external i64 @init13() {
+entry:
+  %v = call i64 (i64) @scale(i64 13)
+  ret i64 %v
+}
+define external i64 @init14() {
+entry:
+  %v = call i64 (i64) @scale(i64 14)
+  ret i64 %v
+}
+define external i64 @init15() {
+entry:
+  %v = call i64 (i64) @scale(i64 15)
+  ret i64 %v
+}
+define external i64 @init16() {
+entry:
+  %v = call i64 (i64) @scale(i64 16)
+  ret i64 %v
+}
+define external i64 @init17() {
+entry:
+  %v = call i64 (i64) @scale(i64 17)
+  ret i64 %v
+}
+define external i64 @init18() {
+entry:
+  %v = call i64 (i64) @scale(i64 18)
+  ret i64 %v
+}
+define external i64 @init19() {
+entry:
+  %v = call i64 (i64) @scale(i64 19)
+  ret i64 %v
+}
+define external i64 @init20() {
+entry:
+  %v = call i64 (i64) @scale(i64 20)
+  ret i64 %v
+}
+define external i64 @init21() {
+entry:
+  %v = call i64 (i64) @scale(i64 21)
+  ret i64 %v
+}
+define external i64 @init22() {
+entry:
+  %v = call i64 (i64) @scale(i64 22)
+  ret i64 %v
+}
+define external i64 @init23() {
+entry:
+  %v = call i64 (i64) @scale(i64 23)
+  ret i64 %v
+}
+define external i64 @init24() {
+entry:
+  %v = call i64 (i64) @scale(i64 24)
+  ret i64 %v
+}
+define external i64 @init25() {
+entry:
+  %v = call i64 (i64) @scale(i64 25)
+  ret i64 %v
+}
+define external i64 @init26() {
+entry:
+  %v = call i64 (i64) @scale(i64 26)
+  ret i64 %v
+}
+define external i64 @init27() {
+entry:
+  %v = call i64 (i64) @scale(i64 27)
+  ret i64 %v
+}
+define external i64 @init28() {
+entry:
+  %v = call i64 (i64) @scale(i64 28)
+  ret i64 %v
+}
+define external i64 @init29() {
+entry:
+  %v = call i64 (i64) @scale(i64 29)
+  ret i64 %v
+}
+define external i64 @init30() {
+entry:
+  %v = call i64 (i64) @scale(i64 30)
+  ret i64 %v
+}
+define external i64 @init31() {
+entry:
+  %v = call i64 (i64) @scale(i64 31)
+  ret i64 %v
+}
+define external i64 @init32() {
+entry:
+  %v = call i64 (i64) @scale(i64 32)
+  ret i64 %v
+}
+define external i64 @init33() {
+entry:
+  %v = call i64 (i64) @scale(i64 33)
+  ret i64 %v
+}
+define external i64 @init34() {
+entry:
+  %v = call i64 (i64) @scale(i64 34)
+  ret i64 %v
+}
+define external i64 @init35() {
+entry:
+  %v = call i64 (i64) @scale(i64 35)
+  ret i64 %v
+}
+define external i64 @init36() {
+entry:
+  %v = call i64 (i64) @scale(i64 36)
+  ret i64 %v
+}
+define external i64 @init37() {
+entry:
+  %v = call i64 (i64) @scale(i64 37)
+  ret i64 %v
+}
+define external i64 @init38() {
+entry:
+  %v = call i64 (i64) @scale(i64 38)
+  ret i64 %v
+}
+define external i64 @init39() {
+entry:
+  %v = call i64 (i64) @scale(i64 39)
+  ret i64 %v
+}
+define internal i64 @acc(i64 %x) {
+entry:
+  %a = mul i64 %x, 7
+  %b = add i64 %a, 2
+  %c = xor i64 %b, 9
+  ret i64 %c
+}
+define external i64 @user(i64 %n) {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, label %entry ], [ %next, label %loop ]
+  %s = phi i64 [ 0, label %entry ], [ %sum, label %loop ]
+  %v = call i64 (i64) @acc(i64 %i)
+  %sum = add i64 %s, %v
+  %next = add i64 %i, 1
+  %done = icmp eq i64 %next, %n
+  br i1 %done, label %exit, label %loop
+exit:
+  ret i64 %sum
+}

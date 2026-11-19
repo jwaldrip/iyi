@@ -8,7 +8,7 @@ import compiler/ir/opt/mem2reg::{run_mem2reg}
 import compiler/ir/opt/simplify::{run_simplify}
 import compiler/ir/opt/dce::{run_dce}
 import compiler/ir/opt/callgraph::{CallGraph}
-import compiler/ir/opt/inline::{InlineBudget, run_inline}
+import compiler/ir/opt/inline::{InlineBudget, run_inline, instruction_count}
 import compiler/ir/opt/sroa::{run_sroa}
 import compiler/ir/opt/deadfn::{run_deadfn}
 import compiler/ir/opt/cse::{run_cse}
@@ -102,10 +102,10 @@ pub def tier_passes(tier : OptTier) : Array(PassId)
     return [PassId::CfgSimplify, PassId::Sroa, PassId::Simplify, PassId::Cse, PassId::Dce, PassId::CfgSimplify,
             PassId::Inline,
             PassId::CfgSimplify, PassId::Sroa, PassId::Simplify, PassId::Cse, PassId::Dce, PassId::CfgSimplify,
-            PassId::CfgSimplify, PassId::Sroa, PassId::Simplify, PassId::Cse, PassId::Dce, PassId::CfgSimplify,
+            PassId::CfgSimplify, PassId::Sroa, PassId::Simplify, PassId::Dce, PassId::CfgSimplify,
             PassId::Escape, PassId::BarrierStack, PassId::Sroa, PassId::Simplify, PassId::Dce,
             PassId::Prove, PassId::Simplify, PassId::Dce, PassId::CfgSimplify,
-            PassId::Licm, PassId::Barrier, PassId::Layout, PassId::DeadFn]
+            PassId::Licm, PassId::Cse, PassId::Barrier, PassId::Layout, PassId::DeadFn]
   end
   [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::CfgSimplify]
 end
@@ -236,6 +236,12 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
         k = begin_at
         gate_changed = false
         group_changed = false
+        start_used = 0
+        start_size = 0
+        if inline_budget = budget
+          start_used = inline_budget.used
+          start_size = instruction_count(fn)
+        end
         while k < end_at
           break if k > begin_at && selective_escape && !gate_changed
           if clock = timings
@@ -267,6 +273,8 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
         if group_changed
           if inline_budget = budget
             inline_budget.invalidate(fn) # mutation S6P2: invalidate after function cleanup
+            # Charge the function's net size change for the group, not its clone charge (mutation R1S).
+            inline_budget.settle(start_used, start_size, fn)
           end
         end
       end

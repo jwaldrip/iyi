@@ -3,6 +3,67 @@ module compiler/ir/opt/callgraph
 import compiler/ir/function::{Function}
 import compiler/ir/inst::{Op}
 import compiler/ir/module::{Module}
+import compiler/ir/opt/analysis::{Cfg}
+
+# Blocks that reach `unreachable` but no `ret`: the raise paths. Index i is fn.blocks[i].
+pub def cold_blocks(fn : Function) : Array(Bool)
+  cfg = Cfg.new(fn)
+  normal = [] of Bool
+  cold_path = [] of Bool
+  k = 0
+  while k < cfg.size
+    normal << false
+    cold_path << false
+    k = k + 1
+  end
+  work = [] of Int32
+  k = 0
+  while k < cfg.size
+    if cfg.block(k).terminator.op == Op::Ret
+      normal[k] = true
+      work << k
+    end
+    k = k + 1
+  end
+  head = 0
+  while head < work.size
+    node = work[head]
+    head = head + 1
+    cfg.preds(node).each do |pred|
+      unless normal[pred]
+        normal[pred] = true
+        work << pred
+      end
+    end
+  end
+  work = [] of Int32
+  k = 0
+  while k < cfg.size
+    if cfg.block(k).terminator.op == Op::Unreachable
+      cold_path[k] = true
+      work << k
+    end
+    k = k + 1
+  end
+  head = 0
+  while head < work.size
+    node = work[head]
+    head = head + 1
+    cfg.preds(node).each do |pred|
+      unless cold_path[pred]
+        cold_path[pred] = true
+        work << pred
+      end
+    end
+  end
+  result = [] of Bool
+  k = 0
+  while k < cfg.size
+    result << (cold_path[k] && !normal[k])
+    k = k + 1
+  end
+  result
+end
 
 # Edges follow module, block and instruction order. Hashes are lookup tables only.
 pub class CallGraph
@@ -26,16 +87,22 @@ pub class CallGraph
     k = 0
     while k < @mod.functions.size
       fn = @mod.functions[k]
+      # A call in a raise path adds no edge, so raise paths never join or form a recursive group. It still counts as a site.
+      cold = [] of Bool
+      cold = cold_blocks(fn) unless fn.declaration?
+      bi = 0
       fn.blocks.each do |block|
+        is_cold = bi < cold.size && cold[bi]
         block.insts.each do |inst|
           if inst.op == Op::Call && !inst.args.empty? && inst.args[0].is_a?(Function)
             callee = inst.args[0].as(Function)
             if to = @ids[callee]?
-              @edges[k] << to
+              @edges[k] << to unless is_cold
               @sites[to] = @sites[to] + 1
             end
           end
         end
+        bi = bi + 1
       end
       k = k + 1
     end

@@ -6,13 +6,15 @@ import compiler/ir/function::{Function, Linkage}
 import compiler/ir/module::{Module}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/opt/analysis::{Cfg, DomTree, LoopInfo}
-import compiler/ir/opt/callgraph::{CallGraph}
+import compiler/ir/opt/callgraph::{CallGraph, cold_blocks}
 import compiler/ir/opt/effects::{runtime_entry?, returns_twice_call?}
 import compiler/ir/opt/edit::{new_inst, new_phi}
 
 pub class InlineBudget
   getter limit : Int32
   property used : Int32
+  # The round of run_inline in progress. A recursive callee is copied only in round 0.
+  property round : Int32
 
   def initialize(mod : Module)
     total = 0
@@ -21,6 +23,7 @@ pub class InlineBudget
     end
     @used = total
     @limit = total + total // 2
+    @round = 0
     @eligible = Hash(Function, Int32).new
     @costs = Hash(Function, Int32).new
   end
@@ -50,10 +53,23 @@ pub class InlineBudget
     @costs.delete(fn)
     nil
   end
+
+  # Replaces a function's transient clone charge with its net size change over the
+  # whole group, so `used` tracks the module's current size.
+  def settle(start_used : Int32, start_size : Int32, fn : Function) : Nil
+    @used = start_used + (instruction_count(fn) - start_size)
+    nil
+  end
 end
 
 def has_attr?(attrs : Array(Attribute), name : String) : Bool
   attrs.any? { |attr| attr.name == name }
+end
+
+# Source-mandated inlining: alwaysinline on the callee or on the call site.
+def source_mandated?(callee : Function, call : Inst) : Bool
+  return true if has_attr?(callee.attrs, "alwaysinline")
+  call.aux.is_a?(CallAux) && has_attr?(call.aux.as(CallAux).fn_attrs, "alwaysinline")
 end
 
 def tls_value?(value : Value) : Bool
@@ -114,7 +130,7 @@ def callee_allowed?(fn : Function) : Bool
   returns > 0
 end
 
-def instruction_count(fn : Function) : Int32
+pub def instruction_count(fn : Function) : Int32
   count = 0
   fn.blocks.each { |block| count = count + block.insts.size }
   count
@@ -124,55 +140,7 @@ end
 # return. Their instructions cost zero, and each connected region costs five.
 def inline_cost(fn : Function) : Int32
   cfg = Cfg.new(fn)
-  normal = [] of Bool
-  cold_path = [] of Bool
-  k = 0
-  while k < cfg.size
-    normal << false
-    cold_path << false
-    k = k + 1
-  end
-  work = [] of Int32
-  k = 0
-  while k < cfg.size
-    term = cfg.block(k).terminator
-    if term.op == Op::Ret
-      normal[k] = true
-      work << k
-    end
-    k = k + 1
-  end
-  head = 0
-  while head < work.size
-    node = work[head]
-    head = head + 1
-    cfg.preds(node).each do |pred|
-      unless normal[pred]
-        normal[pred] = true
-        work << pred
-      end
-    end
-  end
-  work = [] of Int32
-  k = 0
-  while k < cfg.size
-    if cfg.block(k).terminator.op == Op::Unreachable
-      cold_path[k] = true
-      work << k
-    end
-    k = k + 1
-  end
-  head = 0
-  while head < work.size
-    node = work[head]
-    head = head + 1
-    cfg.preds(node).each do |pred|
-      unless cold_path[pred]
-        cold_path[pred] = true
-        work << pred
-      end
-    end
-  end
+  cold = cold_blocks(fn)
   visited = [] of Bool
   k = 0
   while k < cfg.size
@@ -182,7 +150,7 @@ def inline_cost(fn : Function) : Int32
   cost = 0
   k = 0
   while k < cfg.size
-    if cold_path[k] && !normal[k]
+    if cold[k]
       unless visited[k]
         cost = cost + 5
         visited[k] = true
@@ -191,7 +159,7 @@ def inline_cost(fn : Function) : Int32
           node = region.pop
           neighbors = cfg.succs(node) + cfg.preds(node)
           neighbors.each do |other|
-            if cold_path[other] && !normal[other] && !visited[other]
+            if cold[other] && !visited[other]
               visited[other] = true
               region << other
             end
@@ -312,8 +280,10 @@ def call_allowed?(fn : Function, block : Block, call : Inst, callee : Function, 
     k = k + 1
   end
   return false unless budget.callee_allowed(callee)
-  return false if graph.same_component?(fn, callee) || graph.recursive?(callee)
-  always = has_attr?(callee.attrs, "alwaysinline") || has_attr?(aux.fn_attrs, "alwaysinline")
+  return false if callee == fn || graph.same_component?(fn, callee)
+  # A recursive callee may be copied once into an outside caller, in round 0 only.
+  return false if budget.round > 0 && graph.recursive?(callee)
+  always = source_mandated?(callee, call)
   return false if top_level?(fn) && !always && !in_loop?(fn, block)
   # Source-mandated inlining is exempt from the cost-model size limits.
   # inline_one still charges its growth, so later ordinary calls see it.
@@ -430,27 +400,34 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
   changed = false
   round = 0
   while round < 2
+    budget.round = round
     sites = [] of Inst
     fn.blocks.each do |block|
       block.insts.each { |inst| sites << inst if inst.op == Op::Call }
     end
+    # Raise paths are cold. Blocks an inline creates later in this round have no entry and count as hot.
+    cold = cold_blocks(fn)
     round_changed = false
     sites.each do |site|
       next if site.args.empty? || !site.args[0].is_a?(Function)
       callee = site.args[0].as(Function)
       owner = nil.as(Block?)
       position = -1
+      owner_index = -1
+      scan = 0
       fn.blocks.each do |block|
         k = 0
         while k < block.insts.size
           if block.insts[k] == site
             owner = block
             position = k
+            owner_index = scan
             break
           end
           k = k + 1
         end
         break if owner
+        scan = scan + 1
       end
       if block = owner
         # Leaving an existing alloca in the continuation would violate I4.
@@ -461,6 +438,8 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
           k = k + 1
         end
         next if after_alloca
+        # A raise path is cold: only source-mandated inlining may copy into it.
+        next if owner_index < cold.size && cold[owner_index] && !source_mandated?(callee, site)
         next unless call_allowed?(fn, block, site, callee, graph, budget)
         budget.used = budget.used + inline_one(mod, fn, block, position, site, callee)
         changed = true
