@@ -1,0 +1,11 @@
+{% if @top_level.nope("X") %}
+  lib LibSkipped
+    fun exit(status : Int32) : NoReturn
+  end
+{% end %}
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(0)

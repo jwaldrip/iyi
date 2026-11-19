@@ -1,0 +1,11 @@
+{% if `echo 1`.strip == "1" %}
+  {% for n in [1] %}
+    require "./loader_if_b"
+  {% end %}
+{% end %}
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(0)

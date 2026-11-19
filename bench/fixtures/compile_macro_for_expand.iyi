@@ -1,0 +1,11 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+{% for n in [1, 2] %}
+def part{{ n }} : Int32
+  {{ n }}
+end
+{% end %}
+
+LibC.exit(part2)

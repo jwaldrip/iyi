@@ -1,0 +1,7 @@
+HAS_X = {{ `printf '1\nrequire "./loader_if_b"'`.strip }}
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(0)

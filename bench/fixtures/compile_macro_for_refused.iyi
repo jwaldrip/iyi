@@ -1,0 +1,7 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+{% for name in @top_level.nope %}
+  LibC.exit(42)
+{% end %}

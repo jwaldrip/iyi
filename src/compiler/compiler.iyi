@@ -14,6 +14,7 @@ module compiler/compiler
 
 import compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, ModuleHeader, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
 import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
+import compiler/semantic/inline_macros::{expand_inline_macro, InlineMacroLedger}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dir_of, normalize_path}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor}
@@ -701,28 +702,56 @@ pub class Compiler
     end
   end
 
-  # A macro `if` that the declarations walk reaches after the semantic pass refused it: its condition did not evaluate,
-  # so neither branch is what the program means. The pass keeps a refused site as written for this walk, which used to
-  # take the else branch, or drop the then branch, with no message. The port refuses by name, at the condition.
-  def self.refuse_macro_if(mif : MacroIf, interp : MacroInterpreter) : NoReturn
-    reason = "skip_file ends the file's expansion early, which the port does not expand"
-    if failure = interp.failure
-      reason = failure.message
+  # A macro site the untyped walk meets at top level or in a module body: a `{% if %}`, a `{% for %}` or a `{{ }}`. The
+  # semantic pass expands such a site with expand_inline_macro, rendering and parsing its output. This walk does the same
+  # and walks the expansion like any other top-level code, so the branch that holds the program's meaning is the one that
+  # runs and is declared. A site the engine refuses is refused here by name, at the site. An empty expansion declares nothing.
+  def self.extract_macro_site(site : ASTNode, classes : Array(ClassDef), funs : Array(FunDef), defs : Hash(String, Def), libs : Array(LibDef), top_level : Array(ASTNode), flags : Array(String), host_flags : Array(String)) : Nil
+    normalizer = NormalizerProgram.new
+    normalizer.macro_flags = flags
+    normalizer.host_flags = host_flags
+    file = ""
+    if loc = site.location
+      file = loc.filename
+    end
+    expanded = expand_inline_macro(site, "<Program>", file, false, normalizer)
+    if expanded.nil?
+      sites = InlineMacroLedger.sites
+      reason = sites[sites.size - 1].reason
+      unless reason.nil?
+        Compiler.refuse_macro_site(site, reason.as(String))
+      end
+      return
+    end
+    extract_declarations(expanded.as(ASTNode), classes, funs, defs, libs, top_level, flags, host_flags)
+  end
+
+  # The by-name refusal of a macro site the engine refused. A macro if names its condition, which is what fails; a for and
+  # an expression name the site.
+  def self.refuse_macro_site(site : ASTNode, reason : String) : NoReturn
+    place = site.location
+    if site.is_a?(MacroIf)
+      place = site.as(MacroIf).cond.location || site.location
     end
     where = "an unlocated site"
-    if place = mif.cond.location || mif.location
-      where = "line #{place.line_number}, column #{place.column_number}"
-      unless place.filename.empty?
-        idx = Compiler.last_index_of(place.filename, '/')
+    if here = place
+      where = "line #{here.line_number}, column #{here.column_number}"
+      unless here.filename.empty?
+        idx = Compiler.last_index_of(here.filename, '/')
         base = if i = idx
-                 place.filename[i + 1, place.filename.size - i - 1]
+                 here.filename[i + 1, here.filename.size - i - 1]
                else
-                 place.filename
+                 here.filename
                end
-        where = "#{base}:#{place.line_number}:#{place.column_number}"
+        where = "#{base}:#{here.line_number}:#{here.column_number}"
       end
     end
-    refuse_port("port limitation: the port cannot evaluate the macro if condition at #{where} (#{reason}), so it refuses instead of taking either branch")
+    if site.is_a?(MacroIf)
+      refuse_port("port limitation: the port cannot evaluate the macro if condition at #{where} (#{reason}), so it refuses instead of taking either branch")
+    elsif site.is_a?(MacroFor)
+      refuse_port("port limitation: the port cannot expand the macro for at #{where} (#{reason}), so it refuses instead of dropping it")
+    end
+    refuse_port("port limitation: the port cannot expand the macro expression at #{where} (#{reason}), so it refuses instead of dropping it")
   end
 
   pub def self.extract_declarations(
@@ -778,17 +807,11 @@ pub class Compiler
       classes << cdef
     elsif node.is_a?(VisibilityModifier)
       extract_declarations(node.as(VisibilityModifier).exp, classes, funs, defs, libs, top_level, target_flags, shared_host)
-    elsif node.is_a?(MacroIf)
-      mif = node.as(MacroIf)
-      interp = MacroInterpreter.new(nil, target_flags, "<Program>", shared_host)
-      cond_val = interp.evaluate(mif.cond)
-      # The condition did not evaluate, so neither branch is the program's meaning: refuse by name, at the condition.
-      if interp.halted?
-        Compiler.refuse_macro_if(mif, interp)
-      end
-      branch = MacroMethods.truthy?(cond_val) ? mif.then : mif.else
-      extract_declarations(branch, classes, funs, defs, libs, top_level, target_flags, shared_host)
-    elsif node.is_a?(Alias) || node.is_a?(ImplDef) || node.is_a?(MacroFor) || node.is_a?(MacroExpression)
+    elsif node.is_a?(MacroIf) || node.is_a?(MacroFor) || node.is_a?(MacroExpression)
+      # A macro site is expanded as the semantic pass expands it, and its expansion is walked. A site the engine refuses is
+      # refused by name here. Nothing is dropped, and no branch is taken by default.
+      Compiler.extract_macro_site(node, classes, funs, defs, libs, top_level, target_flags, shared_host)
+    elsif node.is_a?(Alias) || node.is_a?(ImplDef)
       # Declarations or compile-time constructs, not top-level runtime code
     elsif node.is_a?(ImportDecl) || node.is_a?(Require) || node.is_a?(ModuleHeader)
       # Module loader directives and compilation-unit metadata

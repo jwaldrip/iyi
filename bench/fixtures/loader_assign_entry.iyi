@@ -1,0 +1,7 @@
+{% llvm_version = `echo 1`.strip %}
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(0)

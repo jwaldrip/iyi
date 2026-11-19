@@ -79,6 +79,10 @@ FIXTURES=(
   "bench/fixtures/compile_ivar_infer.iyi"
   "bench/fixtures/compile_stdout.iyi"
   "bench/fixtures/compile_macro_if_control.iyi"
+  "bench/fixtures/compile_macro_if_expand.iyi"
+  "bench/fixtures/compile_macro_for_expand.iyi"
+  "bench/fixtures/compile_macro_expr_expand.iyi"
+  "bench/fixtures/compile_expr_position_unused.iyi"
 )
 
 matched=0
@@ -599,7 +603,15 @@ check_refusal() {
       ;;
     compile_macro_if_refused.iyi)
       site='compile_macro_if_refused\.iyi:7:7'
-      expected="port limitation: the port cannot evaluate the macro if condition at compile_macro_if_refused.iyi:7:7 (undefined macro method 'MacroId#has_constant?'), so it refuses instead of taking either branch"
+      expected="port limitation: the port cannot evaluate the macro if condition at compile_macro_if_refused.iyi:7:7 (macro method 'TypeNode#has_constant?' is refused: the names of <Program> are not known to the macro engine), so it refuses instead of taking either branch"
+      ;;
+    compile_macro_for_refused.iyi)
+      site='compile_macro_for_refused\.iyi:5:1'
+      expected="port limitation: the port cannot expand the macro for at compile_macro_for_refused.iyi:5:1 (undefined macro method 'TypeNode#nope'), so it refuses instead of dropping it"
+      ;;
+    compile_macro_expr_refused.iyi)
+      site='compile_macro_expr_refused\.iyi:5:1'
+      expected="port limitation: the port cannot expand the macro expression at compile_macro_expr_refused.iyi:5:1 (undefined macro method 'TypeNode#nope'), so it refuses instead of loading its imports"
       ;;
     *) echo "INVALID PROOF: unknown refusal fixture" >&2; return 2 ;;
   esac
@@ -722,6 +734,12 @@ clean_must_pass "raise refusal" check_refusal "$REPO/bench/fixtures/compile_rais
 clean_must_pass "untyped ivar refusal" check_refusal_rebuilt "$REPO/bench/fixtures/compile_ivar_untyped_refused.iyi" "instance variable @v has no type the port can read"
 clean_must_pass "macro if refusal names the unevaluable condition" check_refusal "$REPO/bench/fixtures/compile_macro_if_refused.iyi" "port limitation: the port cannot evaluate the macro if condition"
 clean_must_pass "macro if control with an evaluable condition is not refused and exits 9" check_macro_if_control "$REPO/bench/fixtures/compile_macro_if_control.iyi" 9
+clean_must_pass "macro for refusal names the for" check_refusal "$REPO/bench/fixtures/compile_macro_for_refused.iyi" "port limitation: the port cannot expand the macro for"
+clean_must_pass "macro expression refusal names the expression" check_refusal "$REPO/bench/fixtures/compile_macro_expr_refused.iyi" "port limitation: the port cannot expand the macro expression"
+clean_must_pass "macro if expansion runs and exits 42" check_compile_rc "$REPO/bench/fixtures/compile_macro_if_expand.iyi" 42
+clean_must_pass "macro for expansion runs and exits 2" check_compile_rc "$REPO/bench/fixtures/compile_macro_for_expand.iyi" 2
+clean_must_pass "macro expression expansion runs and exits 42" check_compile_rc "$REPO/bench/fixtures/compile_macro_expr_expand.iyi" 42
+clean_must_pass "a constant nothing reads is not expanded and exits 0" check_compile_rc "$REPO/bench/fixtures/compile_expr_position_unused.iyi" 0
 
 if [ "$baseline_ok" -eq 1 ]; then
 
@@ -849,22 +867,29 @@ prove_mutation "a stdout difference fails the stdout parity check" \
   'LibC.putchar(108)' \
   -- check_stdout_parity "$REPO/bench/fixtures/compile_stdout.iyi" "$WORK/oracle_stdout.txt" || status=1
 
-# A macro if whose condition does not evaluate is refused by name. Removing the refusal restores the fall-through: the
-# fixture then builds and exits 9 (the trailing statement, the then branch's 42 silently gone) where hosted exits 42, and
-# the refusal check must catch it.
-mutate_compiler_source "unevaluable macro if takes a branch with no message" \
+# A macro if whose condition does not evaluate is refused by name. Dropping the refusal lets the site vanish, so the fixture
+# builds, and the refusal check reports the build it accepted as a caught difference.
+mutate_compiler_source "an unevaluable macro if is dropped instead of refused" \
   "$COMPILER_SRC" \
-  '        Compiler.refuse_macro_if(mif, interp)' \
+  '        Compiler.refuse_macro_site(site, reason.as(String))' \
   '        nil' \
   -- check_refusal_rebuilt "$REPO/bench/fixtures/compile_macro_if_refused.iyi" "port limitation: the port cannot evaluate the macro if condition" || status=1
 
-# A condition that evaluates is not refused. Refusing every macro if makes the evaluable control fail to build with the
-# refusal, which the control check reports as a caught difference.
-mutate_compiler_source "a macro if whose condition evaluates is refused" \
+# A macro for whose expansion does not evaluate is refused by name. Letting it through as dropped builds the fixture, so the
+# refusal check reports the build as a caught difference.
+mutate_compiler_source "an unevaluable macro for is dropped instead of refused" \
   "$COMPILER_SRC" \
-  '      if interp.halted?' \
-  '      if true' \
-  -- check_macro_if_control "$REPO/bench/fixtures/compile_macro_if_control.iyi" 9 || status=1
+  '      unless reason.nil?' \
+  '      unless reason.nil? || site.is_a?(MacroFor)' \
+  -- check_refusal_rebuilt "$REPO/bench/fixtures/compile_macro_for_refused.iyi" "port limitation: the port cannot expand the macro for" || status=1
+
+# A macro if that expands is walked. Skipping the walk drops the branch's statements: the expansion's exit 42 never runs,
+# and the mutated program exits 0, which the exit check reports as a caught difference.
+mutate_compiler_source "a macro if expansion is not walked" \
+  "$COMPILER_SRC" \
+  '    extract_declarations(expanded.as(ASTNode), classes, funs, defs, libs, top_level, flags, host_flags)' \
+  '    nil' \
+  -- check_compile_rc "$REPO/bench/fixtures/compile_macro_if_expand.iyi" 42 || status=1
 else
   echo "  FAIL: mutation proofs require their clean baselines"
   status=1
