@@ -90,11 +90,17 @@ bench/fixtures/sem_bodies_self_return.iyi 10
 bench/fixtures/sem_bodies_setter_value.iyi 27
 bench/fixtures/sem_bodies_splat_restriction.iyi 10
 bench/fixtures/sem_bodies_static_array_return.iyi 32
+bench/fixtures/sem_bodies_trait_assoc_restriction.iyi 18
 bench/fixtures/sem_bodies_trait_associated_generic.iyi 16
 bench/fixtures/sem_bodies_trait_associated_union.iyi 17
 bench/fixtures/sem_bodies_trait_def.iyi 6
 bench/fixtures/sem_bodies_trait_dispatch.iyi 21
+bench/fixtures/sem_bodies_trait_generic_array.iyi 24
+bench/fixtures/sem_bodies_trait_generic_impl_restriction.iyi 15
+bench/fixtures/sem_bodies_trait_impl_after_instance.iyi 18
+bench/fixtures/sem_bodies_trait_includers.iyi 15
 bench/fixtures/sem_bodies_trait_requirement.iyi 7
+bench/fixtures/sem_bodies_trait_virtual_restriction.iyi 12
 bench/fixtures/sem_bodies_tuple_scalar.iyi 31
 bench/fixtures/sem_bodies_union.iyi 15
 bench/fixtures/sem_bodies_union_generic.iyi 15

@@ -1,0 +1,37 @@
+module sem_bodies_trait_assoc_restriction
+
+# A trait with an associated type, used as a restriction (the planner's v1,
+# samples/iyi/collections.iyi's `describe(e : Enumerable)`). `size` is a
+# default method on the trait, so `e.size` inside `describe` is found only
+# through the generic instance `Coll(String)` that `Words` includes.
+
+trait Coll
+  type Elem
+
+  abstract def each(& : Elem -> Nil) : Nil
+
+  def size : Int32
+    n = 0
+    each { |e| n = n + 1 }
+    n
+  end
+end
+
+struct Words
+  def initialize(@a : String)
+  end
+end
+
+impl Coll for Words
+  type Elem = String
+
+  def each(& : String -> Nil) : Nil
+    yield @a
+  end
+end
+
+def describe(e : Coll) : String
+  "#{e.size} items"
+end
+
+describe(Words.new("ab"))

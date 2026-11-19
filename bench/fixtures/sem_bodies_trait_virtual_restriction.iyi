@@ -1,0 +1,31 @@
+module sem_bodies_trait_virtual_restriction
+
+# A value typed by a class is narrowed by a non-generic trait that one of its
+# subclasses implements. The narrowing is a virtual type meeting a module, which
+# must answer the subclass that includes the trait.
+
+class Animal
+end
+
+class Dog < Animal
+end
+
+trait Show
+  abstract def show : String
+end
+
+impl Show for Dog
+  def show : String
+    "dog"
+  end
+end
+
+def describe(a : Animal) : String
+  if a.is_a?(Show)
+    a.show
+  else
+    "none"
+  end
+end
+
+describe(Dog.new)

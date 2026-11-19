@@ -1,0 +1,31 @@
+module sem_bodies_trait_generic_impl_restriction
+
+# A generic type implementing a non-generic trait through a generic impl (the
+# planner's v3). `Box(Int32)` is an instance of Box(T), and its restriction to
+# `Show` must hold through `impl Show for Box(T) forall T`, which the instance
+# copies from the generic type.
+
+trait Show
+  abstract def show : String
+end
+
+struct Box(T)
+  def initialize(@value : T)
+  end
+
+  def value : T
+    @value
+  end
+end
+
+impl Show for Box(T) forall T
+  def show : String
+    "Box(#{value})"
+  end
+end
+
+def describe(s : Show) : String
+  s.show
+end
+
+describe(Box.new(1))

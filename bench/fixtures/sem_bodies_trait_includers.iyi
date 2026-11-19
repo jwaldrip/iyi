@@ -1,0 +1,34 @@
+module sem_bodies_trait_includers
+
+# A value typed by a non-generic trait is narrowed to a generic instance that
+# implements it through a generic impl. The narrowing meets the trait's
+# includers, so Box(Int32) must be one of them.
+
+trait Show
+  abstract def show : String
+end
+
+struct Box(T)
+  def initialize(@value : T)
+  end
+
+  def value : T
+    @value
+  end
+end
+
+impl Show for Box(T) forall T
+  def show : String
+    "Box(#{value})"
+  end
+end
+
+def pick(s : Show) : String
+  if s.is_a?(Box(Int32))
+    "boxed int"
+  else
+    "other"
+  end
+end
+
+pick(Box.new(1))

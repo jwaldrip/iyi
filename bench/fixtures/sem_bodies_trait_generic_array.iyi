@@ -1,0 +1,30 @@
+module sem_bodies_trait_generic_array
+
+# An array typed by a non-generic trait, holding instances of a generic
+# implementer (samples/iyi/generics.iyi's `shown ... of Show`). Each element
+# is `Box(Int32)` or `Box(String)`, and both must restrict to `Show` as they
+# are appended.
+
+trait Show
+  abstract def show : String
+end
+
+struct Box(T)
+  def initialize(@value : T)
+  end
+
+  def value : T
+    @value
+  end
+end
+
+impl Show for Box(T) forall T
+  def show : String
+    "Box(#{value})"
+  end
+end
+
+shown = Array(Show).new
+shown << Box.new(1)
+shown << Box.new("two")
+shown.each { |s| puts s.show }

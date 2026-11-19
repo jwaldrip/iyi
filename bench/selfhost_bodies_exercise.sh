@@ -822,6 +822,10 @@ body_prove prove_mutation "a block whose declared output is _ is checked against
 body_prove prove_mutation "a call-site __LINE__ expands as a string" "$MAIN_VISITOR" \
   'literal = magic.expand_node(node.location, node.end_location).at(node)' \
   'literal = StringLiteral.new("?").at(node)' -- bodies_at_floor || status=1
+body_prove prove_mutation "a generic trait instance does not implement its generic trait (types.cr:2436-2438)" "$REPO/src/compiler/types/types.iyi" \
+  "    return true if @generic_type.subtype_of?(other)" \
+  "    return true if false" -- typed_fixture_at_floor \
+  "$REPO/bench/fixtures/sem_bodies_trait_assoc_restriction.iyi" || status=1
 body_prove prove_mutation "if x narrows a truthy variable in its then branch" "$MAIN_VISITOR" \
   "    filter_vars(cond_type_filters)
     then_dead = @narrowed_out" \

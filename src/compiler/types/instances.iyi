@@ -1,6 +1,6 @@
 module compiler/types/instances
 
-import compiler/semantic/top_level::{GenericClassType, GenericModuleType, GenericTraitType, NonGenericModuleType, SemanticProgram, Type, VoidType}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, GenericTraitType, NonGenericModuleType, SemanticProgram, TraitType, Type, VoidType}
 import compiler/semantic/top_level::{ClassType}
 import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceType, GenericTraitInstanceType, NamedArgumentType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, TypeQueries}
 
@@ -50,6 +50,9 @@ pub class TypeInstances
       if parent.is_a?(NonGenericModuleType)
         inst.included_modules << parent
         parent.as(NonGenericModuleType).add_including_type(inst)
+      elsif parent.is_a?(TraitType) && !parent.is_a?(GenericTraitType)
+        inst.included_modules << parent
+        parent.as(TraitType).add_including_type(inst)
       elsif parent.is_a?(GenericModuleInstanceType) || parent.is_a?(GenericTraitInstanceType)
         inst.included_modules << parent
       end

@@ -1,0 +1,21 @@
+trait Coll
+  type Elem
+
+  abstract def each(& : Elem -> Nil) : Nil
+end
+
+struct Words
+  def initialize(@a : Array(String))
+  end
+end
+
+impl Coll for Words
+  type Elem = String
+
+  def each(& : String -> Nil) : Nil
+  end
+end
+
+# op intersect(Words, Coll)
+# op intersect(Coll, Words)
+# op restriction(program, Coll)

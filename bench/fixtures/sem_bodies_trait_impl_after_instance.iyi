@@ -1,0 +1,37 @@
+module sem_bodies_trait_impl_after_instance
+
+# Box(Int32) is instantiated by Holder's instance variable, before the impl
+# below is declared. Passing a Box(Int32) to a Show parameter must still match,
+# because the instance reads the generic's parents as they are now.
+
+struct Box(T)
+  def initialize(@value : T)
+  end
+
+  def value : T
+    @value
+  end
+end
+
+struct Holder
+  @box : Box(Int32)
+
+  def initialize(@box : Box(Int32))
+  end
+end
+
+trait Show
+  abstract def show : String
+end
+
+impl Show for Box(T) forall T
+  def show : String
+    "Box(#{value})"
+  end
+end
+
+def describe(s : Show) : String
+  s.show
+end
+
+describe(Box.new(1))

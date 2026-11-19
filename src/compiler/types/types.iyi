@@ -395,6 +395,14 @@ pub class GenericTraitInstanceType < GenericInstanceType
     true
   end
 
+  # Hosted GenericInstanceType#implements? (types.cr:2436-2438): an instance implements what its generic trait
+  # implements, its own generic included.
+  def subtype_of?(other : Type) : Bool
+    return true if self == other
+    return true if @generic_type.subtype_of?(other)
+    super
+  end
+
   def type_desc : String
     "trait"
   end

@@ -329,6 +329,12 @@ prove_mutation "generic instances do not take the modules of their generic type"
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a generic trait instance does not implement its generic trait" "$TYPES_FILE" \
+  "    return true if @generic_type.subtype_of?(other)" \
+  "    return true if false" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
