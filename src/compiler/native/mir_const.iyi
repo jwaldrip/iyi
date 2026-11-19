@@ -1,0 +1,218 @@
+module compiler/native/mir_const
+
+# Loop-invariant constants (round 2, slice R8). hoist_constants moves each MovImm inside a loop to the end of the
+# preheader of the outermost enclosing loop that has one, so a loop reads its constants instead of rebuilding them on
+# every iteration. Equal immediates in one preheader share the first vreg. Each hoisted vreg is marked rematerializable
+# with its immediate (MFunction#vreg_remat), so the allocator gives a spilled one a MovImm at each use, not a frame slot.
+#
+# Soundness. A block is the preheader of a loop when the loop's header is not the entry block, has exactly one
+# predecessor outside the loop, and that predecessor leads only to the header: it ends in an unconditional branch or
+# falls through, and nothing before its end branches. The header dominates its loop body and the preheader dominates the
+# header, so the hoisted definition dominates every use it replaces. Both dominance facts are checked, not assumed. Only
+# a vreg with exactly one definition moves, so its value is the same wherever it is read.
+
+import compiler/native/mir::{MFunction, MInst, Operand, OperandKind, RegClass, Role}
+import compiler/native/target::{is_role?, terminator?, integer_literal?}
+import compiler/native/regalloc_linear::{block_loop_nest, block_successors, LoopNest}
+
+def ints_of(n : Int32, value : Int32) : Array(Int32)
+  acc = [] of Int32
+  i = 0
+  while i < n
+    acc << value
+    i = i + 1
+  end
+  acc
+end
+
+# Whether block p lies in the loop headed by h: p is h, or one of the loops around p has header h.
+def in_loop?(nest : LoopNest, p : Int32, h : Int32) : Bool
+  return true if p == h
+  c = nest.owner[p]
+  while c >= 0
+    return true if c == h
+    c = nest.owner[c]
+  end
+  false
+end
+
+# Whether block a dominates block b (the dominator-tree interval test of regalloc_linear.iyi).
+def dominates?(nest : LoopNest, a : Int32, b : Int32) : Bool
+  nest.dom_first[a] <= nest.dom_first[b] && nest.dom_first[b] <= nest.dom_last[a]
+end
+
+# How constants may be placed in block p as the preheader of the loop headed by h: 0 when p is not a preheader,
+# 1 when they go at the end of p (it falls through), 2 when they go before p's final unconditional branch.
+def preheader_kind(fn : MFunction, succs : Array(Array(Int32)), nest : LoopNest, p : Int32, h : Int32) : Int32
+  return 0 if h == 0 || p < 0 || p == h
+  return 0 unless dominates?(nest, p, h)
+  return 0 if succs[p].size == 0
+  succs[p].each do |s|
+    return 0 unless s == h
+  end
+  insts = fn.blocks[p].insts
+  last = insts.size - 1
+  i = 0
+  while i < insts.size
+    if terminator?(fn.isa, insts[i])
+      return 0 unless i == last && is_role?(fn.isa, insts[i], Role::Branch)
+    end
+    i = i + 1
+  end
+  return 2 if last >= 0 && is_role?(fn.isa, insts[last], Role::Branch)
+  1
+end
+
+# Moves the loop-invariant MovImm instructions of fn to their preheaders and returns how many constants were hoisted
+# (deduplicated constants count once). A function without a natural loop is unchanged.
+pub def hoist_constants(fn : MFunction) : Int32
+  n = fn.blocks.size
+  succs = [] of Array(Int32)
+  b = 0
+  while b < n
+    succs << block_successors(fn, b)
+    b = b + 1
+  end
+  nest = block_loop_nest(succs)
+  preds = [] of Array(Int32)
+  b = 0
+  while b < n
+    preds << ([] of Int32)
+    b = b + 1
+  end
+  b = 0
+  while b < n
+    succs[b].each do |s|
+      next if s < 0 || s >= n
+      preds[s] << b unless preds[s].size > 0 && preds[s][preds[s].size - 1] == b
+    end
+    b = b + 1
+  end
+
+  # The preheader of each loop header, and how constants are placed in it.
+  pre = ints_of(n, -1)
+  kind = ints_of(n, 0)
+  h = 1
+  while h < n
+    if nest.header[h]
+      outside = -1
+      count = 0
+      preds[h].each do |p|
+        next if in_loop?(nest, p, h)
+        outside = p
+        count = count + 1
+      end
+      if count == 1
+        k = preheader_kind(fn, succs, nest, outside, h)
+        if k > 0 && kind[outside] == 0
+          pre[h] = outside
+          kind[outside] = k
+        end
+      end
+    end
+    h = h + 1
+  end
+
+  # Single-definition counts, so that only a vreg whose value is the same at every use moves.
+  defs = ints_of(fn.vreg_count, 0)
+  fn.blocks.each do |block|
+    block.insts.each do |inst|
+      inst.defs.each do |op|
+        defs[op.reg] = defs[op.reg] + 1 if op.kind == OperandKind::Virtual
+      end
+    end
+  end
+
+  # Where each block's constants go: the preheader of the outermost loop around the block that has one, provided that
+  # loop's header dominates the block. The chain runs from the innermost loop outward, so the last match is the outermost.
+  target = ints_of(n, -1)
+  b = 0
+  while b < n
+    best = -1
+    best = b if nest.header[b] && pre[b] >= 0
+    c = nest.owner[b]
+    while c >= 0
+      best = c if pre[c] >= 0 && dominates?(nest, c, b)
+      c = nest.owner[c]
+    end
+    target[b] = pre[best] if best >= 0
+    b = b + 1
+  end
+
+  # First pass: pull the qualifying MovImm instructions out of their blocks, keeping the first vreg of each constant
+  # (per preheader and pointer flag) and recording the renames of the others.
+  rep = ints_of(fn.vreg_count, -1)
+  table = Hash(String, Int32).new
+  kept = [] of Array(MInst)
+  moved = [] of Array(MInst)
+  b = 0
+  while b < n
+    moved << ([] of MInst)
+    acc = [] of MInst
+    fn.blocks[b].insts.each do |inst|
+      if target[b] >= 0 && integer_literal?(fn.isa, inst) && inst.defs.size == 1 && inst.uses.empty? && inst.asm.nil? &&
+         inst.defs[0].kind == OperandKind::Virtual && fn.vreg_classes[inst.defs[0].reg] == RegClass::Gpr &&
+         defs[inst.defs[0].reg] == 1
+        v = inst.defs[0].reg
+        key = "#{target[b]}:#{inst.imm}:#{fn.vreg_pointer[v]}"
+        first = table[key]?
+        if first.nil?
+          table[key] = v
+          fn.vreg_remat[v] = inst.imm
+          fn.vreg_rematerializable[v] = true
+          moved[target[b]] << inst
+        else
+          rep[v] = first.as(Int32)
+        end
+      else
+        acc << inst
+      end
+    end
+    kept << acc
+    b = b + 1
+  end
+
+  # Second pass: uses of a deduplicated vreg name its first vreg instead.
+  b = 0
+  while b < n
+    kept[b].each do |inst|
+      inst.uses.each_with_index do |op, k|
+        next unless op.kind == OperandKind::Virtual && rep[op.reg] >= 0
+        inst.uses[k] = Operand.new(OperandKind::Virtual, rep[op.reg])
+      end
+    end
+    b = b + 1
+  end
+
+  # Third: place each preheader's constants before its final branch, or at its end.
+  hoisted = 0
+  b = 0
+  while b < n
+    extra = moved[b]
+    hoisted = hoisted + extra.size
+    if extra.size == 0
+      fn.blocks[b].insts = kept[b]
+    else
+      before = kind[b] == 2
+      out = [] of MInst
+      i = 0
+      while i < kept[b].size
+        if before && i == kept[b].size - 1
+          extra.each do |m|
+            out << m
+          end
+        end
+        out << kept[b][i]
+        i = i + 1
+      end
+      unless before
+        extra.each do |m|
+          out << m
+        end
+      end
+      fn.blocks[b].insts = out
+    end
+    b = b + 1
+  end
+  hoisted
+end

@@ -283,6 +283,12 @@ pub class MFunction
   property naked : Bool               # a naked body: no prologue, epilogue, probe or callee-saved save
   property isa : Int32                # the target whose opcode enum MInst#opcode holds (target.iyi)
 
+  # Rematerialization (see mir_const.iyi): a hoisted MovImm vreg's immediate, and whether its spill rebuilds it.
+  property vreg_remat : Array(Int64)
+  property vreg_rematerializable : Array(Bool)
+  # regalloc: the first spill_count of x9..x15 are the spill scratch registers (regalloc_linear.iyi).
+  property spill_count : Int32
+
   def initialize(@name : String)
     @blocks = [] of MBlock
     @frame = FrameInfo.new
@@ -293,11 +299,16 @@ pub class MFunction
     @vreg_pointer = [] of Bool
     @naked = false
     @isa = 0
+    @vreg_remat = [] of Int64
+    @vreg_rematerializable = [] of Bool
+    @spill_count = 7
   end
 
   def new_vreg(cls : RegClass) : Int32
     @vreg_classes << cls
     @vreg_pointer << false
+    @vreg_remat << 0_i64
+    @vreg_rematerializable << false
     @vreg_classes.size - 1
   end
 
