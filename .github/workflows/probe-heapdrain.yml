@@ -1,0 +1,151 @@
+# Probe for rl/heapdrain at a44b9d3 plus the c5/c1/c2/c8 state proofs: the whole
+# gate ten times per job, two jobs per runner shape (Linux, Windows, macOS, macOS
+# jobs sequential). Probe branch only, never merged.
+name: probe-heapdrain-rl-hd5
+
+on:
+  push:
+    branches: ["probe/rl-hd5-20261120"]
+
+permissions:
+  contents: read
+
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: "*"
+  PYTHONUTF8: "1"
+
+jobs:
+  linux:
+    name: "heap_drain, Linux (probe ${{ matrix.part }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [a, b]
+    runs-on: namespace-profile-default
+    timeout-minutes: 350
+    container:
+      image: crystallang/crystal:1.21.0-build
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build iyi
+        run: |
+          make crystal
+          make iyi
+      - name: heap_drain, ten whole-gate runs
+        shell: bash
+        run: |
+          set -u +e
+          failures=0
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            log="$RUNNER_TEMP/hd-$i.log"
+            bash bench/heap_drain.sh >"$log" 2>&1
+            code=$?
+            [ "$code" -eq 0 ] || failures=$((failures + 1))
+            echo "RUN $i exit=$code"
+            grep -E '^  (a unit holds|a large mapping|a placed large|the directory|a partition|a taken|a helper|an idle|a cooled|a partition takes|the global|flag off|optimised|verifier|plain|chaos|stress|dir:|arenas|idle:|drain:)|missed|build failed|setup failed|FAIL' "$log" || true
+          done
+          exit "$failures"
+
+  windows:
+    name: "heap_drain, Windows (probe ${{ matrix.part }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [a, b]
+    runs-on: windows-2025
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1.9.5
+        with:
+          crystal: 1.21.0
+      - name: What this machine has
+        shell: pwsh
+        run: |
+          if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
+            choco install make --no-progress -y
+          }
+          $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
+          if (-not (Test-Path "$lib\llvm_VERSION")) {
+            Write-Host "no llvm_VERSION beside the Crystal package's libraries, at $lib"
+            exit 1
+          }
+          $llvm = (Get-Content "$lib\llvm_VERSION")[0].Trim()
+          Write-Host "bootstrap libraries: $lib"
+          Write-Host "llvm: $llvm"
+          "CRYSTAL_LIBRARY_PATH=$lib" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "LLVM_VERSION=$llvm" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Build the fork's compiler, then iyi
+        shell: cmd
+        run: |
+          make -f Makefile.win crystal || exit /b 1
+          make -f Makefile.win iyi
+      - name: heap_drain, ten whole-gate runs
+        shell: bash
+        env:
+          MSYS2_ARG_CONV_EXCL: "*"
+        run: |
+          set -u +e
+          failures=0
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            log="$RUNNER_TEMP/hd-$i.log"
+            bash bench/heap_drain.sh >"$log" 2>&1
+            code=$?
+            [ "$code" -eq 0 ] || failures=$((failures + 1))
+            echo "RUN $i exit=$code"
+            grep -E '^  (a unit holds|a large mapping|a placed large|the directory|a partition|a taken|a helper|an idle|a cooled|a partition takes|the global|flag off|optimised|verifier|plain|chaos|stress|dir:|arenas|idle:|drain:)|missed|build failed|setup failed|FAIL' "$log" || true
+          done
+          exit "$failures"
+
+  macos:
+    name: "heap_drain, darwin (probe ${{ matrix.part }})"
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        part: [a, b]
+    runs-on: namespace-profile-macos-15
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the bootstrap toolchain
+        run: |
+          for f in crystal coreutils pkgconf; do brew list --versions "$f" >/dev/null || brew install "$f"; done
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          for v in LDFLAGS CPPFLAGS CFLAGS CXXFLAGS LIBRARY_PATH CPATH; do echo "$v=" >> "$GITHUB_ENV"; done
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+      - name: Restore the static LLVM
+        id: llvm-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/llvm-static
+          key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
+      - name: The static LLVM, built on a cache miss
+        run: |
+          [ "${{ steps.llvm-cache.outputs.cache-hit }}" = true ] || bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+          echo "LLVM_STATIC=$HOME/llvm-static" >> "$GITHUB_ENV"
+      - name: Build iyi
+        run: make iyi LLVM_CONFIG="$LLVM_STATIC/bin/llvm-config"
+      - name: heap_drain, ten whole-gate runs
+        shell: bash
+        run: |
+          set -u +e
+          failures=0
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            log="$RUNNER_TEMP/hd-$i.log"
+            bash bench/heap_drain.sh >"$log" 2>&1
+            code=$?
+            [ "$code" -eq 0 ] || failures=$((failures + 1))
+            echo "RUN $i exit=$code"
+            grep -E '^  (a unit holds|a large mapping|a placed large|the directory|a partition|a taken|a helper|an idle|a cooled|a partition takes|the global|flag off|optimised|verifier|plain|chaos|stress|dir:|arenas|idle:|drain:)|missed|build failed|setup failed|FAIL' "$log" || true
+          done
+          exit "$failures"
