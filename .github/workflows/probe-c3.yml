@@ -1,0 +1,77 @@
+name: probe-c3-diagnostics
+on:
+  push:
+    branches: ["probe/rl-hd7-c3"]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: namespace-profile-default
+    timeout-minutes: 180
+    container:
+      image: crystallang/crystal:1.21.0-build
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build iyi
+        run: |
+          make crystal
+          make iyi
+      - name: Capture verifier endings
+        shell: bash
+        run: |
+          set -u +e
+          export KEEP="$RUNNER_TEMP/c3"
+          bash bench/heap_drain.sh copies > "$RUNNER_TEMP/build-gate.log" 2>&1
+          if [ ! -x "$KEEP/c3-bin" ]; then cat "$RUNNER_TEMP/build-gate.log"; exit 1; fi
+          misses=0
+          for n in $(seq 1 20); do
+            HEAP22_PRINT_ONLY=1 timeout 300 "$KEEP/c3-bin" 8 24 4 > "$RUNNER_TEMP/c3.out" 2> "$RUNNER_TEMP/c3.err"
+            code=$?
+            echo "RUN $n exit=$code"
+            cat "$RUNNER_TEMP/c3.out" "$RUNNER_TEMP/c3.err"
+            if [ "$code" -ne 86 ] || ! grep -Fxq '  a slot names a LOCAL chunk its local mark left unmarked, about to be freed' "$RUNNER_TEMP/c3.err"; then misses=$((misses+1)); fi
+          done
+          exit "$misses"
+  macos:
+    runs-on: namespace-profile-macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install bootstrap toolchain
+        run: |
+          for f in crystal coreutils pkgconf; do brew list --versions "$f" >/dev/null || brew install "$f"; done
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          for v in LDFLAGS CPPFLAGS CFLAGS CXXFLAGS LIBRARY_PATH CPATH; do echo "$v=" >> "$GITHUB_ENV"; done
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+      - name: Restore static LLVM
+        id: llvm-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/llvm-static
+          key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
+      - name: Build LLVM on cache miss
+        run: |
+          [ "${{ steps.llvm-cache.outputs.cache-hit }}" = true ] || bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+          echo "LLVM_STATIC=$HOME/llvm-static" >> "$GITHUB_ENV"
+      - name: Build iyi
+        run: make iyi LLVM_CONFIG="$LLVM_STATIC/bin/llvm-config"
+      - name: Capture verifier endings
+        shell: bash
+        run: |
+          set -u +e
+          export KEEP="$RUNNER_TEMP/c3"
+          bash bench/heap_drain.sh copies > "$RUNNER_TEMP/build-gate.log" 2>&1
+          if [ ! -x "$KEEP/c3-bin" ]; then cat "$RUNNER_TEMP/build-gate.log"; exit 1; fi
+          misses=0
+          for n in $(seq 1 20); do
+            HEAP22_PRINT_ONLY=1 timeout 300 "$KEEP/c3-bin" 8 24 4 > "$RUNNER_TEMP/c3.out" 2> "$RUNNER_TEMP/c3.err"
+            code=$?
+            echo "RUN $n exit=$code"
+            cat "$RUNNER_TEMP/c3.out" "$RUNNER_TEMP/c3.err"
+            if [ "$code" -ne 86 ] || ! grep -Fxq '  a slot names a LOCAL chunk its local mark left unmarked, about to be freed' "$RUNNER_TEMP/c3.err"; then misses=$((misses+1)); fi
+          done
+          exit "$misses"
