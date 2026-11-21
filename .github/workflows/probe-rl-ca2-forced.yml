@@ -1,0 +1,136 @@
+name: probe-rl-ca2-forced
+on:
+  push:
+    branches: [probe/rl-ca2-forced-v5-20261121]
+permissions:
+  contents: read
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: safe.directory
+  GIT_CONFIG_VALUE_0: "*"
+  PYTHONUTF8: "1"
+  PROBE_RUN: |
+    set -u +e
+    failed=0
+    for n in $(seq 1 10); do
+      log="$RUNNER_TEMP/ca2-$n.log"
+      printf 'PROBE start %s\n' "$n"
+      bash bench/parallel_exercise.sh > "$log" 2>&1
+      status=$?
+      printf 'PROBE gate %s exit=%s\n' "$n" "$status"
+      bad=0
+      if [ "$status" -ne 0 ]; then bad=1; fi
+      witness() {
+        label="$1"; text="$2"; expected="${3:-1}"
+        count=$(grep -Fxc -- "$text" "$log")
+        if [ "$count" != "$expected" ]; then
+          printf 'PROBE MISSING %s %s expected=%s found=%s: %s\n' "$n" "$label" "$expected" "$count" "$text"
+          bad=1
+        else
+          printf 'PROBE WITNESS %s %s count=%s: %s\n' "$n" "$label" "$count" "$text"
+        fi
+      }
+      witness duplicate '  exits 1 at "iyi: panic: the pool handed one parallel task to a worker twice: two threads would run one stack"'
+      witness duplicate_control "  hook-only control duplicate_hook passes: \"steal: a second steal found the task the first took gone from its victim's queue\""
+      witness closeshome '  exits 1 at "closes: the main thread closed a socket on the thread its reader parked on"'
+      witness closes_control '  closes: the registered reader parked on a different thread from the main thread that closed its socket' 2
+      witness sockets_control '  sockets: a socket read resumed on a spare while its worker was held, and its list stayed whole' 2
+      witness deep_control '  deep: a channel wake resumed on a spare while its worker was held, then ran deep frames' 2
+      witness nosteal "  exits 1 at \"balance: a worker looking for work took none of the tasks woken into a held worker's ring\""
+      witness nosteal_control "  hook-only control nosteal_hook passes: \"balance: a worker looking for work took tasks woken into a held worker's ring\""
+      witness preemptoff '  exits 1 at "slice: the short task queued before the walk ran only after the walk ended"'
+      witness preemptoff_control '  slice: the short task queued before the walk ran inside it on the same worker' 2
+      witness noflag "  exits 1 at \"slice: the monitor's preemption decision for a held worker left its word down\""
+      witness noflag_control "  hook-only control noflag_hook passes: \"slice: the monitor's preemption decision for a held worker raised its word\""
+      witness nopoll "  exits 1 at \"poller: a preemption with a read waiting did not poll its worker's poller\""
+      witness nopoll_control "  hook-only control nopoll_hook passes: \"poller: a preemption with a read waiting polled its worker's poller\""
+      witness stale '  exits 1 at "fresh: the word raised for the task before was still up after the switch"'
+      witness stale_control '  hook-only control stale_hook passes: "fresh: the switch after a task held its raised word lowered the word"'
+      witness stale_release_control '  hook-only control stale_release_hook passes: "fresh: the switch after a task held its raised word lowered the word"'
+      witness tokenless "  exits 1 at \"unit: a task of the same unit ran inside the preempted task\""
+      witness tokenless_control "  unit: the task of the same unit ran only after the computing task's preemption check" 2
+      for op in sort copy rehash join; do
+        witness "library_$op" "  exits 1 at \"$op: the library's loop turned with its worker's word raised and kept its worker\""
+        witness "library_${op}_control" "  hook-only control libruntime_hook passes: \"$op: the library's loop gave its worker up at the turn after its word was raised\""
+      done
+      if ! grep -Eq '^  asked for [0-9]+, ran on 1, one run:' "$log"; then echo "PROBE MISSING $n one-worker negative"; bad=1; fi
+      if ! grep -qF 'performance information:' "$log"; then echo "PROBE MISSING $n speed information"; bad=1; fi
+      if [ "$bad" -ne 0 ]; then cat "$log"; failed=1; break; fi
+    done
+    exit "$failed"
+jobs:
+  linux:
+    runs-on: namespace-profile-default
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [a, b]
+    container:
+      image: crystallang/crystal:1.21.0-build
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: make crystal && make -o .build/crystal iyi
+      - name: Ten complete gate runs
+        shell: bash
+        run: bash -c "$PROBE_RUN"
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [a, b]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587
+        with:
+          crystal: 1.21.0
+      - name: Bootstrap library configuration
+        shell: pwsh
+        run: |
+          $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
+          if (-not (Test-Path "$lib\llvm_VERSION")) { exit 1 }
+          $llvm = (Get-Content "$lib\llvm_VERSION")[0].Trim()
+          "CRYSTAL_LIBRARY_PATH=$lib" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "LLVM_VERSION=$llvm" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Build compiler
+        shell: cmd
+        run: |
+          make -f Makefile.win crystal || exit /b 1
+          make -f Makefile.win iyi
+      - name: Ten complete gate runs
+        shell: bash
+        env:
+          MSYS2_ARG_CONV_EXCL: "*"
+        run: bash -c "$PROBE_RUN"
+  macos:
+    runs-on: namespace-profile-macos-15
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        part: [a, b]
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install bootstrap toolchain
+        run: |
+          for f in crystal coreutils pkgconf llvm; do brew list --versions "$f" >/dev/null || brew install "$f"; done
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          for v in LDFLAGS CPPFLAGS CFLAGS CXXFLAGS LIBRARY_PATH CPATH; do echo "$v=" >> "$GITHUB_ENV"; done
+          echo "LLVM_CONFIG=$(brew --prefix llvm)/bin/llvm-config" >> "$GITHUB_ENV"
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+      - run: make crystal && make iyi
+      - name: Ten complete gate runs
+        shell: bash
+        run: bash -c "$PROBE_RUN"
