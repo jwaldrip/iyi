@@ -66,10 +66,17 @@ jobs:
           make -f Makefile.win iyi
 
       # The gate keeps its work directory when this is set, so a red run leaves
-      # both sides' output for the last step to print.
+      # both sides' output for the last step to print. It goes under /tmp, where
+      # the gate's own mktemp puts its work, so the paths it prints are the ones
+      # upstream's job prints.
       - name: Where the gate keeps its work
         shell: bash
-        run: echo "MACRO_GATE_KEEP=$(cygpath -m "$RUNNER_TEMP")/macro-keep" >> "$GITHUB_ENV"
+        run: |
+          echo "TMPDIR=${TMPDIR:-unset} TEMP=${TEMP:-unset} TMP=${TMP:-unset}"
+          d="$(mktemp -d)"
+          echo "mktemp: $(cygpath -m "$d")"
+          rmdir "$d"
+          echo "MACRO_GATE_KEEP=$(cygpath -m /tmp)/macro-keep" >> "$GITHUB_ENV"
 
       - name: The macro gate
         shell: bash
