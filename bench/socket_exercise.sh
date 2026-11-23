@@ -345,12 +345,13 @@ case "$(uname -s)" in
       echo "  SIGPIPE on a connection reset before its accept: the patched library did not build"
       status=1
     else
-      "$WORK/sigpipe/program" >"$WORK/sigpipe/out" 2>&1
+      run_bounded "SIGPIPE on a connection reset before its accept" "$WORK/sigpipe/out" "$WORK/sigpipe/program"
       code=$?
-      if [ "$code" -eq 141 ] && grep -q "disconnect: ok" "$WORK/sigpipe/out" && ! grep -q "reset_before_accept: ok" "$WORK/sigpipe/out"; then
+      if [ "$code" -eq 141 ] && grep -q '^disconnect: ok' "$WORK/sigpipe/out" && grep -qxF "reset_before_accept: writing to the reset peer" "$WORK/sigpipe/out" && ! grep -q '^reset_before_accept: ok' "$WORK/sigpipe/out"; then
         echo "  SIGPIPE on a connection reset before its accept: killed by the signal there (exit 141)"
       else
         echo "  SIGPIPE on a connection reset before its accept: exited $code, so the check does not see it"
+        sed 's/^/    /' "$WORK/sigpipe/out"
         status=1
       fi
     fi ;;
