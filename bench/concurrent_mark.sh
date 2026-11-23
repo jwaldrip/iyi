@@ -4,66 +4,84 @@
 #
 #     bash bench/concurrent_mark.sh
 #
-# Every failure proof runs its broken copy once and requires exit 1 and the
-# whole named failure sentence (numeric observations may vary). Explicit
-# fixture-premise, build, watchdog and Windows boost-query failures exit 76
-# with their own sentences. Other unexpected process failures retain their
-# status. A forced copy waits on a word the program sets; code not compiled
-# on this platform is named, not silently passed.
+# Every failure proof runs its broken copy once and requires exit 1 and the whole
+# named failure sentence (numeric observations may vary). A premise that does not
+# hold, a build, a watchdog, or a Windows boost query that cannot be read exits 76
+# with its own sentence. Other unexpected process failures retain their status. A
+# forced copy waits on a word the program sets; code not compiled on this platform
+# is named, not silently passed.
 # In the order they run:
-#   - the program, release: rounds that move a payload into a black holder
-#     under a running mark, the pauses of a concurrent collection against the
-#     stop-the-world mark, a large block outgrown under a mark, a small live
-#     set finished in its stop, a stray barrier, the share beside busy threads,
-#     the wakes, and on Windows the priority boost counted over the process's
-#     threads;
+#   - the program, release: rounds that move a payload into a black holder under a
+#     running mark, the pauses of a concurrent collection against the stop-the-
+#     world mark, a large block outgrown under a mark (judged when two or more were
+#     outgrown under a running mark), a small live set finished in its stop, a
+#     stray barrier, the share beside busy threads, the wakes (on Windows a second
+#     round decides), and on Windows the priority boost counted over the process's threads;
 #   - the machine alone, reported as a measurement, and the first collections
-#     beside threads computing on every core, judged on Windows against four
-#     times the time with no helpers and 100 ms;
+#     beside threads computing on every core, printed everywhere and judged on
+#     Windows against four times the time with no helpers and 100 ms;
 #   - buffers grown by realloc beside a mark, ten runs;
-#   - small chunks freed in bursts across the pauses, ten runs, on every shape;
-#   - chunks the last mark kept, freed beside the sweep, ten runs, and the
-#     armed look that holds the sweep at one kept chunk until the program frees it;
-#   - failure proofs: an unlocked free inside a sweep's look; a barrier that
-#     shades nothing; a barrier run after its mark ended; a block outgrown
-#     under a held mark; a sweep that never frees an outgrown large block, caught
-#     when all eight stay mapped under a mark (partial retention is conservative
-#     and is not judged); and a small live set given the thousand-object bound;
-#   - marks beside twenty-four connections on twelve workers, with every helper
-#     and with one;
-#   - failure proofs: the remainder round's count stored over assists; helper 0
-#     waiting past the next mark; a collection let go after the release; the
-#     stopped, bounded and verb collections let go late; a free outside the
-#     allocator's bracket; an idle pool whose workers wait for task arrival,
-#     and a queued-work turn that starts no worker; a first collection waiting
-#     for every helper to park;
-#   - on Windows only: the boost checked structurally, with a failed-query
-#     control (the shipped build's wake timing is judged on its pinned run); the
-#     helper cap beside a busy program; the pool's waiting
-#     workers counted as the program's; a busy pool's running workers counted
-#     free. Those proofs exist only where their code is compiled (thread.iyi's
-#     start_helper and prelude.iyi's start_concurrent under win32), and the
-#     gate names that platform arm instead of passing silently.
+#   - small chunks freed in bursts across the pauses, ten runs (not on darwin);
+#   - the sweep's widened copy, which exits 1 by name if a free lands inside its
+#     100 us look at a kept chunk, ten runs (not on darwin);
+#   - the armed look: a copy that holds the sweep's look at one kept chunk by a word
+#     the program sets, its control, its premise and the unlocked free it catches;
+#     under -Dfreed_force the program ends after this section, so it runs on every
+#     shape;
+#   - failure proofs: a barrier that shades nothing; a barrier run after its mark
+#     ended; a block outgrown under a held mark; a sweep that never frees an
+#     outgrown large block, caught when all eight stay mapped under a mark (a partial
+#     retention is conservative and is not judged); a small live set given the
+#     thousand-object bound;
+#   - marks beside twenty-four connections on twelve workers, with every helper and
+#     with one;
+#   - failure proofs: the stored remainder count over assists; helper 0 waiting past
+#     the next mark; a collection let go after the release; the stopped, bounded and
+#     verb collections let go late; a free outside the allocator's bracket; an idle
+#     pool whose workers wait for task arrival; a queued-work turn that starts no
+#     worker; a pool whose launch count reads one short; and a first collection
+#     waiting for every helper to park;
+#   - on Windows only: the shipped build pinned beside a spinner, and the boosted copy
+#     pinned beside it (the wake verdict, three runs); the boost count of a copy whose
+#     helpers keep the boost; a failed boost query; a helper cap beside a busy
+#     program; the pool's waiting workers counted as the program's; a busy pool's
+#     running workers counted free; and the first collection's timed wait (five
+#     rounds of three, past the crowded bound). These exist only where their code is
+#     compiled (thread.iyi's start_helper and prelude.iyi's start_concurrent under
+#     win32), and the gate names that platform arm instead of passing silently.
 #
-# Deadlines. A deadline is a watchdog, not part of a verdict: product checks
-# are decided by the forced predicates and their exact sentences. A deadline
-# that never fires only leaves a later hang at its site unnamed; the run then
-# ends at its outer timeout or shows as a hang. It cannot flip a verdict.
+# The held round that found no mark (diagnosed). The premise copy of the held round
+# failed in a build where the four chains were dead: the last mark kept 1,125,104
+# bytes against 800,000 cells, so the round's allocation saw no running mark. Reading
+# the chains after that allocation keeps them live, and that build's premise and
+# controls then exit 0 (3 of 3 and 2 of 2). The reason the compiler let them die in
+# that build is not established. The plain build is unchanged: on the 18-core Mac
+# used for this slice its large section saw no running mark in its runs (0 of 48).
+# With the same read in a plain build, one run saw 8 of 10 under a mark, so the plain
+# verdict is seldom judged on darwin; enabling it there is a decision this gate has
+# not taken.
 #
-# Routed through a setup helper and counted by the structural check. Every
-# marked deadline in the two repo fixtures leaves through setup_fail, and every
-# status-76 exit sits inside a setup helper: setup_fail, plus the Windows
-# ThreadBoost.setup_failure in concurrent_mark.iyi, matched by name prefix. Two
-# mutants of release_trigger.iyi must fail the check: a direct exit, and an
-# unrouted deadline. The busy pool's two waits are the deadlines left in
-# concurrent_mark.iyi; the idle pool's counts are verdicts, as master has them.
+# Deadlines. A deadline is a watchdog, not part of a verdict: product checks are
+# decided by the forced predicates and their exact sentences. A deadline that never
+# fires only leaves a later hang at its site unnamed; the run then ends at its outer
+# timeout or shows as a hang. It cannot flip a verdict.
 #
-# Forced by their own control in the Darwin gate (exit 76 at the sentence):
-# the release-trigger ready, counted and churn waits, the round's premise that
-# none of its collections went beside the program (the concurrent non-target
-# control), the busy pool exits and their premises, and the watchdog phases for
-# chain readback, copy acknowledgement, producers stopped, bracket setup and
-# bracket stop.
+# Routed through a setup helper and counted by the structural check. Every marked
+# deadline in the two repo fixtures leaves through setup_fail, and every status-76
+# exit sits inside a setup helper: setup_fail, plus the Windows ThreadBoost.
+# setup_failure in concurrent_mark.iyi, matched by name prefix. Two mutants of
+# release_trigger.iyi must fail the check: a direct exit, and an unrouted deadline;
+# each mutant's anchor is counted once, and a miss exits 76. The busy pool's two
+# Windows-only waits are the deadlines in concurrent_mark.iyi. The idle pool's tasks
+# spin to a deadline that returns, and that is not a failure of its own.
+#
+# Forced by their own control in the Darwin gate (exit 76 at the sentence): the
+# release-trigger ready, counted and churn waits; the round's premise that none of
+# its collections went beside the program (the concurrent non-target control); the
+# benchmark's premises (small-live, small-none, move-white, move-none, concurrent-none,
+# large-mark, large-count, busy-page, share-mark, idle-mark, busy-mark, share-cores,
+# pool-cores); and the watchdog phases for chain readback, copy acknowledgement,
+# producers stopped, bracket setup and bracket stop.
 #
 # NOT routed and NOT individually forced. Each exits 76 with the sentence
 # shown when its deadline expires, by source reading; no forced copy in the
