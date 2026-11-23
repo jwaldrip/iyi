@@ -176,6 +176,13 @@
   still refused on Linux and Windows. `spec/compiler/iyimod_spec.cr`'s
   "does not ship the body" reads the artifact's symbols back unescaped the
   same way.
+- **`bench/heap_drain.sh` catches each broken copy by a forced pair, and keeps
+  master's bounds.** Every mechanism a copy removes now fails by its own
+  sentence, under a copy-only hook that waits on a word and a hook-only control
+  beside it. The copies no longer depend on arena growth, the resident set, a
+  race or a retry. The sound builds keep master's growth, warm-pool, cold-byte,
+  resident-set, residency, mark and claim verdicts; the claim verdict now judges
+  only windows in which a helper swept, and fails only when no window held.
 
 ## 0.22.0 — 2026-11-22
 
