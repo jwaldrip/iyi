@@ -6145,8 +6145,10 @@ five rounds overlap: 45.4 to 53.1 before, 42.7 to 46.0 after.
 3. `iyi test --chaos=1 --chaos-runs 100` catches each. The `--chaos=SEED`
    line it prints fails again, and five traced runs of the seed print the
    same output and the same schedule hash.
-4. A seed drawn by `iyi test --chaos --chaos-runs 200` on a test that fails
-   on every seed fails at run 1 of 200, and fails again when named.
+4. A seed drawn by `iyi test --chaos --chaos-runs 200` catches the claim,
+   and fails again when named, with the same trace. A test that fails on
+   every seed fails at run 1 of 200 whichever seed is drawn, and fails
+   again when named.
 5. `bench/chaos_exercise.iyi` runs under seeds 1 to 30, twice each. It
    has three parallel units, two unit-mates, a mutex, a `wait_for`, a
    buffered channel and a two-arm `select`. Every run holds the unit
@@ -6154,13 +6156,16 @@ five rounds overlap: 45.4 to 53.1 before, 42.7 to 46.0 after.
    seed's two runs are byte-identical, schedule hash included. The 30
    seeds meet at least 20 orders and both arms. Parallel units start
    before the spawner parks under some seeds and not under others.
-6. Seven broken copies of the scheduler, each caught at the check that
-   names it. Five come first:
+6. Eight broken copies of the scheduler, each caught at the check that
+   names it. Six come first:
    - the stream ignored, every draw 0, which is the plain scheduler's
      choice everywhere: at the known failing seed of each bug (6 for the
      claim, 42 for the join) it exits 0 at that fixture's healthy verdict;
    - the seed consumed but both streams use the next seed: seed 1 runs
-     seed 2's schedule, which seed 2's run must equal;
+     seed 2's schedule, which seed 2's run must equal, and the claim at
+     seed 5 runs schedule 6, so it exits 1 at its verdict;
+   - the seed not honoured, the stream seeded from the clock: one seed's
+     two runs differ;
    - units ignored: a unit-mate runs before its spawner parks;
    - parallel tasks left in their spawner's unit: at seed 2 no parallel
      task starts early, where the healthy seed 2 starts one;
@@ -6172,7 +6177,8 @@ five rounds overlap: 45.4 to 53.1 before, 42.7 to 46.0 after.
    when two of them run between each other's operations, and a `Unit`'s
    tasks left in their spawner's unit, caught when at seed 2 no Unit task
    starts before the spawner parks, where the healthy seed 2 has one. The
-   table below was measured before them.
+   table below was measured at `7ab239979`, before the two Unit copies, the
+   seed-consumed copy and the fails-every-seed step of item 4.
 
 | | Linux x86-64, 12 vCPUs, shared | macOS 26.6, Apple M2 Pro, 10 cores (the user's machine) | Windows 11, 12 logical processors (the user's machine) |
 |---|---|---|---|

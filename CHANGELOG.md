@@ -177,13 +177,16 @@
   "does not ship the body" reads the artifact's symbols back unescaped the
   same way.
 - **`bench/chaos_exercise.sh` judges each failure by its exact report, not by a
-  search for one.** A drawn seed now comes from a test that fails on every seed,
-  so it is run 1 of 200 whatever the clock draws. The two planted bugs are caught
-  at their pinned seeds, 6 and 42, each through its exact fixture verdict, and the
-  chaos runs use one worker, so a seed names one schedule. The broken copies of
-  the scheduler are judged at their known seeds and exact sentences, and an anchor
-  that does not match exactly once stops the gate. A setup failure or a watchdog
-  expiry exits 76 with its own sentence; a verdict exits 1.
+  search for one.** The two planted bugs are caught at their pinned seeds, 6 and
+  42, each through its exact fixture verdict. The search, run as printed, ends
+  there, and its reproduce line fails again as printed and traced. The chaos runs
+  use one worker, so a seed names one schedule. The claim is also caught under a
+  seed the clock draws (run R of 200), and that seed's replay must print the same
+  trace. A test that fails on every seed is caught at run 1 of 200, and its seed
+  fails again. The broken copies of the scheduler are judged at their known seeds
+  and exact sentences, and an anchor that does not match exactly once stops the
+  gate. A setup failure or a watchdog expiry exits 76 with its own sentence, and a
+  verdict exits 1.
 
 - **`bench/sweep_exercise.sh`'s widened trim-stress copies hold a sweep
   slice's listing window open, and their audits end the program where
