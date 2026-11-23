@@ -79,6 +79,20 @@ run_bounded() { # run_bounded <seconds> <label> <output> <program> [argument...]
   return "$code"
 }
 
+# The verdict on one run of a failure proof, as one word, from its exit status
+# and its output. Only `caught` passes. A watchdog (124 or 137) and a setup
+# failure (76) are failures whatever their output says: a setup failure prints
+# its own sentence, and a phrase can be the prefix of a check's success line
+# that the exercise printed before a later rendezvous failed.
+proof_verdict() { # proof_verdict <exit> <output> <phrase>
+  case "$1" in
+    124 | 137) echo watchdog; return ;;
+    76) echo setup; return ;;
+    0) echo passed; return ;;
+  esac
+  if grep -q -e "$3" "$2"; then echo caught; else echo wrong; fi
+}
+
 run_case() {
   local label="$1" name="$2"
   shift 2
@@ -225,25 +239,25 @@ prove_fails() {
   fi
   run_bounded 120 "$label" "$WORK/$dir/out" "$WORK/$dir/program"
   local exit_code=$?
-  if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ]; then
-    sed 's/^/    /' "$WORK/$dir/out"
-    status=1
-    return
-  fi
-  if [ "$exit_code" -eq 0 ]; then
-    echo "  $label: the exercise still passed, so it does not test this"
-    sed 's/^/    /' "$WORK/$dir/out"
-    status=1
-    return
-  fi
-  if ! grep -q "$phrase" "$WORK/$dir/out"; then
-    echo "  $label: failed, but not at the expected check"
-    sed 's/^/    /' "$WORK/$dir/out"
-    status=1
-    return
-  fi
-  printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
-    "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
+  case "$(proof_verdict "$exit_code" "$WORK/$dir/out" "$phrase")" in
+    caught)
+      printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
+        "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')" ;;
+    watchdog)
+      status=1 ;;
+    setup)
+      echo "  $label: failed at setup (exit 76), not at the check"
+      sed 's/^/    /' "$WORK/$dir/out"
+      status=1 ;;
+    passed)
+      echo "  $label: the exercise still passed, so it does not test this"
+      sed 's/^/    /' "$WORK/$dir/out"
+      status=1 ;;
+    wrong)
+      echo "  $label: failed, but not at the expected check"
+      sed 's/^/    /' "$WORK/$dir/out"
+      status=1 ;;
+  esac
 }
 
 # 1. Broken payload reception
@@ -483,6 +497,10 @@ prove_port() { # prove_port <label> <dir> <phrase, a regex> <awk script>
   local code=$?
   if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
     status=1
+  elif [ "$code" -eq 76 ]; then
+    echo "  $label: failed at setup (exit 76), not at the check"
+    sed 's/^/    /' "$WORK/$dir/out"
+    status=1
   elif [ "$code" -eq 0 ] && ! grep -q "iyi: panic" "$WORK/$dir/out"; then
     echo "  $label: the exercise still passed, so it does not test this"
     status=1
@@ -706,6 +724,32 @@ refuses_after_close "a write after close" closed_write 'puts c.write("x").or_pan
 refuses_after_close "an empty write after close" closed_write_empty 'puts c.write("").or_panic'
 refuses_after_close "local_port after close" closed_port 'puts c.local_port'
 refuses_after_close "accept after close" closed_accept 'puts l.accept.or_panic.closed?'
+echo
+echo "== a setup failure is never a catch"
+# A copy that prints retain's catch sentence and then fails its setup with
+# status 76. Its verdict must be setup, whatever its output says. The same
+# output at status 1 is the catch, so matching the sentence still works.
+cat > "$WORK/setup76.iyi" <<'IYI'
+module main
+
+print "retain: a reader parked on its next read kept alive the object its last read's bytes pointed at\n"
+__iyi_exit(76)
+IYI
+if ! "$IYI" build -o "$WORK/setup76" "$WORK/setup76.iyi" > "$WORK/setup76.build" 2>&1; then
+  echo "  the setup control did not build"; sed -n '1,8p' "$WORK/setup76.build"; status=1
+else
+  run_bounded 60 "the setup control" "$WORK/setup76.out" "$WORK/setup76"
+  setup_code=$?
+  setup_verdict="$(proof_verdict "$setup_code" "$WORK/setup76.out" "retain: a reader parked")"
+  catch_verdict="$(proof_verdict 1 "$WORK/setup76.out" "retain: a reader parked")"
+  if [ "$setup_verdict" = setup ] && [ "$catch_verdict" = caught ]; then
+    echo "  a setup failure that prints the catch sentence exits $setup_code and is refused as $setup_verdict"
+    echo "  the same output at exit 1 is $catch_verdict"
+  else
+    echo "  the setup control: exit $setup_code gave $setup_verdict, and exit 1 gave $catch_verdict"
+    status=1
+  fi
+fi
 
 echo
 if [ "$status" -eq 0 ]; then
