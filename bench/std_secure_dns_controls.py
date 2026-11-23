@@ -11,6 +11,12 @@ Mode names after the Bash run a subset. The controls stay out of the workflows,
 because a full run takes minutes on each runner. A startup control asserts its
 verdict lines exactly. body-killed signals the body, so it runs on POSIX only, and
 Windows skips it by name.
+
+cancel-term sends the gate's whole process group a TERM during a dig query, as
+timeout does, and cancel-hup sends a HUP, as a closed terminal does. The body
+has its own session and gets no signal, so the gate must end the body, the
+query and the server itself, and exit 143 with none of them left. They run on
+POSIX only, and Windows skips them by name.
 """
 import os
 import pathlib
@@ -184,7 +190,115 @@ def harness_fail(mode, output, message):
     raise RuntimeError("%s: %s" % (mode, message))
 
 
+FAKE_DIG = """#!/bin/sh
+# Stands in for dig: its help and version as dig prints them, and a query that
+# never answers, so a cancel can arrive while the gate waits on it.
+case "$1" in
+  -h)
+    printf 'Usage: dig [@server] [-b address] name [type]\\n +[no]short \\n +[no]tls \\n +[no]https[=path] \\n'
+    exit 0
+    ;;
+  -v) echo 'DiG 9.20.30 (controlled)'; exit 0 ;;
+esac
+: >"$SDNS_TEST_DIG_STARTED"
+sleep 97
+"""
+
+
+def survivors(root):
+    # The processes of one run: those whose command names its temporary tree,
+    # and the stand-in dig's sleep, which names nothing else. Zombies count.
+    listing = subprocess.run(["ps", "-axo", "pid=,pgid=,stat=,command="],
+                             capture_output=True, text=True, check=True).stdout
+    found = []
+    for line in listing.splitlines():
+        fields = line.split(None, 3)
+        if len(fields) == 4 and (str(root) in fields[3] or fields[3].strip() == "sleep 97"):
+            found.append((int(fields[0]), fields[2], fields[3].strip()))
+    return found
+
+
+def cancel_group(mode, signum):
+    if os.name == "nt":
+        print("%s: skipped on Windows, where no process group signal exists" % mode, flush=True)
+        return
+    with tempfile.TemporaryDirectory(prefix="sdns-review-control-") as temp:
+        root = pathlib.Path(temp)
+        bench = root / "bench"
+        bench.mkdir()
+        (bench / "end_process.sh").write_text(HELPER, newline="\n")
+        (bench / "std_secure_dns_exercise.sh").write_text(GATE, newline="\n")
+        (bench / "std_secure_dns_server.py").write_text(SERVER, newline="\n")
+        shutil.copy2(ROOT / "bench/std_secure_dns_exercise.iyi", bench / "std_secure_dns_exercise.iyi")
+        (root / "src").symlink_to(ROOT / "src", target_is_directory=True)
+        fake = root / "fake-bin"
+        fake.mkdir()
+        (fake / "dig").write_text(FAKE_DIG, newline="\n")
+        (fake / "dig").chmod(0o755)
+        (root / "tmp").mkdir()
+        started = root / "dig-started"
+        env = os.environ.copy()
+        env["PATH"] = str(fake) + os.pathsep + env["PATH"]
+        env["TMPDIR"] = str(root / "tmp")
+        env["IYI"] = str(ROOT / "bin/iyi")
+        env["SDNS_TEST_DIG_STARTED"] = str(started)
+        output = root / "fixture-output.log"
+        process = None
+        returncode = None
+        before = []
+        left = []
+        try:
+            with output.open("wb") as log:
+                process = subprocess.Popen([SHELL, (bench / "std_secure_dns_exercise.sh").as_posix()],
+                                           env=env, stdout=log, stderr=subprocess.STDOUT,
+                                           start_new_session=True)
+                await_fixture(process, lambda: True if started.exists() else None,
+                              mode, output, "its dig query")
+                stop = time.monotonic() + 10
+                before = survivors(root)
+                while not any(command == "sleep 97" for _, _, command in before) and time.monotonic() < stop:
+                    time.sleep(0.05)
+                    before = survivors(root)
+                commands = [command for _, _, command in before]
+                if "sleep 97" not in commands or not any("--dns-body" in c for c in commands) \
+                        or not any("std_secure_dns_server.py" in c for c in commands):
+                    harness_fail(mode, output,
+                                 "the body, the server and the query were not all running: %r" % commands)
+                os.killpg(process.pid, signum)
+                returncode = process.wait(timeout=80)
+                stop = time.monotonic() + 5
+                left = survivors(root)
+                while left and time.monotonic() < stop:
+                    time.sleep(0.2)
+                    left = survivors(root)
+        finally:
+            if process is not None and process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+            for pid, _, _ in survivors(root):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        captured = output.read_text(errors="replace")
+        print("=== %s: running before the cancel: %s ===" % (mode, "; ".join(commands)), flush=True)
+        problems = []
+        expected = 128 + signum
+        if returncode != expected:
+            problems.append("the gate exited %s, not %s" % (returncode, expected))
+        if "the std/secure_dns exercise holds" in captured:
+            problems.append("the gate reported a pass after its cancel")
+        if left:
+            problems.append("these outlived the cancel: " + "; ".join("%d %s %s" % entry for entry in left))
+        if problems:
+            print(captured, flush=True)
+            raise RuntimeError(mode + ": " + "; ".join(problems))
+        print("%s: exit %s, and no body, server or dig process remains" % (mode, expected), flush=True)
+
+
 def test(mode):
+    if mode in ("cancel-term", "cancel-hup"):
+        return cancel_group(mode, signal.SIGTERM if mode == "cancel-term" else getattr(signal, "SIGHUP", None))
     if mode == "body-killed" and os.name == "nt":
         print("body-killed: skipped on Windows, where a body is not ended by a signal", flush=True)
         return
@@ -649,7 +763,7 @@ if __name__ == "__main__":
         "dig-hang", "dig-query-hang", "dig-version-hang",
         "gap-hang", "gap-evidence-hang", "server-exit-tool",
         "dig-broken", "dig-junk", "dig-usage-only", "plain-timeout", "release-timeout",
-        "mutation-timeout", "exit-124",
+        "mutation-timeout", "exit-124", "cancel-term", "cancel-hup",
     ]
     for mode in modes:
         test(mode)
