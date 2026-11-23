@@ -54,7 +54,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)" && [ -d "$WORK" ] || { echo "FAIL: gate setup: cannot create the work directory"; exit 76; }
 EXE=""
-PLAIN_RUNS="${PLAIN_RUNS:-40}"
+PLAIN_RUNS="${PLAIN_RUNS-40}"
 
 case "$(uname -s)" in
   MINGW* | MSYS* | CYGWIN* | Windows_NT)
@@ -84,6 +84,14 @@ watched() { # seconds, label, command...
   esac
   return "$code"
 }
+
+case "$PLAIN_RUNS" in
+  ''|*[!0-9]*) setup_fail "PLAIN_RUNS must be a positive integer, not '$PLAIN_RUNS'" ;;
+esac
+case "$PLAIN_RUNS" in
+  *[1-9]*) ;;
+  *) setup_fail "PLAIN_RUNS must be a positive integer, not '$PLAIN_RUNS'" ;;
+esac
 
 # A build of *source* into *name*, under the prelude *prelude* (empty for
 # the repository's own), with the rest of the arguments.
