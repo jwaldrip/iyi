@@ -103,6 +103,12 @@ TOOLS = {
     # heap_verify_fuzz in its place. Run by hand.
     "heap_verify_matrix.sh",
     "heap_verify_web.py",
+    # Forces each startup and watchdog failure of the secure DNS gate and
+    # asserts its sentence and status; minutes long, so run by hand.
+    "std_secure_dns_controls.py",
+    # Runs the secure DNS gate COUNT times against its full verdict; minutes
+    # per run, so run by hand.
+    "std_secure_dns_gates.sh",
 }
 
 # A command's place in a line: its start, after `;`, `&&`, `|`, `$(`, a
