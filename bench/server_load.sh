@@ -115,7 +115,7 @@ case "$(uname -s)" in
     fi
     timeout -k 5 300 ./hidden > hidden.txt 2>&1
     code=$?
-    if [ "$code" -ne 1 ] || ! grep -q 'freed the OVERLAPPED' hidden.txt; then
+    if [ "$code" -ne 1 ] || ! grep -qF "FAIL: a collection between a connection's read and its write freed the OVERLAPPED the write hands the kernel" hidden.txt; then
       echo "an OVERLAPPED the collector cannot see survived the run, so the run proves nothing (exit $code):"
       tail -3 hidden.txt; exit 1
     fi
@@ -162,7 +162,7 @@ if ! IYI_PATH="$WORK/patched${PSEP}$REPO/src" "$IYI" build "$REPO/bench/server_l
 fi
 timeout 300 ./noreuse > noreuse.txt 2>&1
 code=$?
-if [ "$code" -ne 1 ] || ! grep -q 'the stacks were not reused' noreuse.txt; then
+if [ "$code" -ne 1 ] || ! grep -qF "iyi: panic: FAIL: the stacks were not reused - 200 of them for 200 connections" noreuse.txt; then
   echo "the stack-reuse check did not fire (exit $code):"; tail -3 noreuse.txt; exit 1
 fi
 printf '  exits 1 at "%s"\n' "$(grep -m1 'the stacks were not reused' noreuse.txt | sed 's/^iyi: panic: FAIL: //')"
