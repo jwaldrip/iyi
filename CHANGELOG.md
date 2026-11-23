@@ -197,6 +197,20 @@
   last chunk beginning below the bound reaches into it; the run must end
   where its last chunk reaches under a page into the rest. A copy that
   cuts at the word fails there on 4 KB and 16 KB pages.
+- **`bench/reuse_integrity.iyi`'s fresh-object check waits for its size class to
+  go idle and judges one attempt; its failure proofs are forced pairs.** It used
+  to retry a carve that met only warm pages up to three times. It now waits for
+  the runtime's own idle test (`IyiMark.class_idle?`) under a 60-second
+  watchdog, then judges one attempt. A stale field is a verdict (exit 1)
+  whatever the carve took up. A class that never goes idle, a carve that takes
+  up no released page and a copy that keeps no cold page each end at their own
+  sentence with status 76, not at a verdict. Status 76 still fails the gate,
+  since every sound run must exit 0, and the carve failure it reports is the one
+  master's retry answered: an earlier survey of master's CI since 2026-11-10,
+  not observed on this branch, found that failure in 9 of 112 ubuntu, 4 of 111
+  windows and 1 of 74 macos-15 jobs. The straddle, advice and key proofs each run
+  once on a copy-only hook; the straddle and advice proofs have controls with
+  their defect left out, and the sound runs control the key proof.
 
 ### Fixed
 
