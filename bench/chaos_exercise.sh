@@ -30,16 +30,17 @@
 #      and a `Unit`'s tasks (SPEC.md III.4.18), start before the spawner
 #      parks under some seeds and not others.
 #   6. Broken copies of the scheduler, each caught at the check that names
-#      it: the stream ignored (every draw 0, which is the plain
-#      scheduler's choice everywhere) finds neither bug; the seed not
-#      honoured (the stream seeded from the clock) does not run one seed's
-#      schedule twice; units ignored (any task chosen, a unit-mate's
-#      included) runs a task between a unit-mate's operations or before
-#      its spawner parks; parallel tasks left in their spawner's unit
-#      never start before it parks; a `Unit`'s tasks given a chaos unit
-#      each run between each other's operations; a `Unit`'s tasks given
-#      none, left in the spawner's, never start before it parks; and a
-#      point left in a build without the flag names the scheduler in its IR.
+#      it: the stream ignored (every draw 0, which is the plain scheduler's
+#      choice everywhere) exits 0 at the healthy verdict at the known failing
+#      seed of each bug, 6 and 42; the seed consumed but both streams on the
+#      next seed runs seed 2's schedule, which seed 2's run must equal; units
+#      ignored (any task chosen, a unit-mate's included) runs a task between a
+#      unit-mate's operations or before its spawner parks; parallel tasks left
+#      in their spawner's unit never start before it parks; a `Unit`'s tasks
+#      given a chaos unit each run between each other's operations; a `Unit`'s
+#      tasks given none, left in the spawner's, never start before it parks;
+#      and a point left in a build without the flag names the scheduler in its
+#      IR.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -311,10 +312,23 @@ for test in claim join; do
   echo "  prngignored $test: seed $seed exited 0 at $verdict"
 done
 
-step "broken copy: the seed not honoured, the stream seeded from the clock"
-broken seedignored chaos.iyi '/^    IyiStat\.set\(IyiStat::CHAOS_STREAM, seed\)$/ { print "    IyiStat.set(IyiStat::CHAOS_STREAM, __iyi_monotonic_ns.to_u64)"; next } { print }'
-seeds "$WORK/seedignored" seedignored > seedignored.txt 2>&1
-expect_caught seedignored "two runs differ"
+step "broken copy: the seed consumed but both streams use the next seed"
+broken seedignored chaos.iyi '/^    IyiStat\.set\(IyiStat::CHAOS_STREAM, seed\)$/ { n++; print "    IyiStat.set(IyiStat::CHAOS_STREAM, seed &+ 1_u64)"; next } /value = IyiStat.get\(IyiStat::CHAOS_SEED\) \^ mix/ { m++; sub(/IyiStat.get\(IyiStat::CHAOS_SEED\)/, "(IyiStat.get(IyiStat::CHAOS_SEED) \\&+ 1_u64)"); print; next } { print } END { if (n != 1 || m != 1) exit 3 }' || die "seedignored anchor missing or ambiguous"
+build exercise-seedignored "$WORK/seedignored" "$REPO/bench/chaos_exercise.iyi" -Diyi_chaos || die "seedignored build failed: $(tail -20 build-exercise-seedignored.log)"
+IYI_CHAOS=1 IYI_CHAOS_TRACE=1 IYI_WORKERS=1 timeout -k 5 120 "./exercise-seedignored$EXE" > seedignored.txt 2>&1
+code=$?
+[ "$code" -eq 0 ] && grep -qxF "every property held" seedignored.txt || die "seedignored fixture verdict missing (exit $code): $(tail -20 seedignored.txt)"
+grep -q '^iyi chaos: seed 1, ' seedignored.txt || die "seedignored did not consume supplied seed 1"
+sed 's/^iyi chaos: seed [0-9]*,/iyi chaos: seed,/' seedignored.txt > seedignored-normalized.txt
+sed 's/^iyi chaos: seed [0-9]*,/iyi chaos: seed,/' seed-shipped-2-a.txt > seed2-normalized.txt
+sed 's/^iyi chaos: seed [0-9]*,/iyi chaos: seed,/' seed-shipped-1-a.txt > seed1-normalized.txt
+! cmp -s seed1-normalized.txt seed2-normalized.txt || die "seedignored witness unarmed: healthy seeds 1 and 2 have identical schedules"
+cmp -s seedignored-normalized.txt seed2-normalized.txt || die "seedignored did not run seed 2's schedule: $(diff seed2-normalized.txt seedignored-normalized.txt)"
+echo "  seedignored consumed seed 1 and ran seed 2's schedule"
+
+# Each copy runs one seed. The healthy seed 2 must witness both early starts.
+grep -qE '^left arms [0-3] of 3, parallel units started before the spawner parked: [1-9][0-9]*$' seed-shipped-2-a.txt || die "parallel early-start witness was not armed"
+grep -qE '^Unit tasks started before the spawner parked: [1-9][0-9]*$' seed-shipped-2-a.txt || die "Unit early-start witness was not armed"
 
 step "broken copy: units ignored, a unit-mate chosen like any task"
 broken unitsignored chaos.iyi '/^      if unit.stamp != generation$/ { print "      if true"; next } { print }'
