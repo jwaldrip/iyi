@@ -176,6 +176,7 @@
   still refused on Linux and Windows. `spec/compiler/iyimod_spec.cr`'s
   "does not ship the body" reads the artifact's symbols back unescaped the
   same way.
+- **`bench/concurrent_mark.sh` proves its failure cases by construction, and keeps master's verdicts.** Each proof that used to catch a planted bug by a race, a clock window or a retry now runs a copy-only hook that waits on a word, and passes only on its exact sentence at status 1; a premise that does not hold exits 76 with its own sentence. The crowded bound and the Windows wake timing with its second round, the idle pool's launch and wait counts, and the share and busy-pool helper counts are judged as before. The leak verdict now judges only when all eight outgrown blocks stay mapped under a mark: stale words kept one of two blocks in 9 of 20 correct macOS runs (probe 44660980105), so a two-block verdict could fail a correct run. The Windows boost is counted over the process's threads.
 
 - **`bench/sweep_exercise.sh`'s widened trim-stress copies hold a sweep
   slice's listing window open, and their audits end the program where
