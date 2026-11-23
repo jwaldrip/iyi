@@ -197,6 +197,19 @@
   last chunk beginning below the bound reaches into it; the run must end
   where its last chunk reaches under a page into the rest. A copy that
   cuts at the word fails there on 4 KB and 16 KB pages.
+- **The server_load and socket failure proofs run once, and a setup failure
+  exits 76 with its own sentence.** The poller's buffer proof is one collection
+  made before the first poll, where it ran up to three times at 2,000 rounds. A
+  load that collects nothing exits 76, and a control built with
+  `-Dnocollect_force` shows it. The Linux closed-peer proof reads to the peer's
+  end before it writes and runs once; the sound Linux build must answer errno 32
+  at the disconnect. The darwin reset proof puts a connection barrier in place of
+  its sleep and makes one write, where master allowed up to a hundred. Every run
+  of the socket exercise, its failure-proof copies and its SIGPIPE copies has a
+  time limit: a run that expires fails the gate with the last lines of its
+  output, and a proof that exits 76 is refused as setup, never a catch. The
+  Linux and Windows arms of these proofs have not run in this change yet; CI runs
+  them.
 
 ### Fixed
 
