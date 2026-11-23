@@ -5,7 +5,7 @@
 #
 #     bash bench/server_load.sh
 #
-# Four steps, and two of them are failure proofs, because a gate that
+# Five steps. Steps 3 to 5 check that a failure can fire, because a gate that
 # cannot fail is not a gate:
 #
 #   1. The program holds, plain build: two hundred connections answered,
@@ -23,6 +23,9 @@
 #      exercise's collection between a read and a write finds it freed.
 #   4. Failure proof: a finished fiber's stack not handed back, and the
 #      two hundred connections take two hundred mappings.
+#   5. Control: a load in which the trigger is held off runs no collection, so
+#      the collection premise must end at its setup sentence (status 76), not
+#      as a verdict.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -161,6 +164,17 @@ if [ "$code" -ne 1 ] || ! grep -q 'the stacks were not reused' noreuse.txt; then
   echo "the stack-reuse check did not fire (exit $code):"; tail -3 noreuse.txt; exit 1
 fi
 printf '  exits 1 at "%s"\n' "$(grep -m1 'the stacks were not reused' noreuse.txt | sed 's/^iyi: panic: FAIL: //')"
+
+step "control: a load in which no collection runs is a setup failure, status 76, not a verdict"
+if ! "$IYI" build -Dnocollect_force "$REPO/bench/server_load.iyi" -o nocollect > build-nocollect.log 2>&1; then
+  cat build-nocollect.log; exit 1
+fi
+timeout -k 5 300 ./nocollect > nocollect.txt 2>&1
+code=$?
+if [ "$code" -ne 76 ] || ! grep -qF "FAIL: nothing was collected during load, so nothing was proven" nocollect.txt; then
+  echo "the collection premise did not fail as setup (exit $code):"; tail -3 nocollect.txt; exit 1
+fi
+printf '  exits %s at "%s"\n' "$code" "FAIL: nothing was collected during load, so nothing was proven"
 echo "workdir $WORK"
 echo "server load: every step held"
 exit 0
