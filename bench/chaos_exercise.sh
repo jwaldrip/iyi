@@ -36,11 +36,12 @@
 #      next seed runs seed 2's schedule, which seed 2's run must equal; units
 #      ignored (any task chosen, a unit-mate's included) runs a task between a
 #      unit-mate's operations or before its spawner parks; parallel tasks left
-#      in their spawner's unit never start before it parks; a `Unit`'s tasks
-#      given a chaos unit each run between each other's operations; a `Unit`'s
-#      tasks given none, left in the spawner's, never start before it parks;
-#      and a point left in a build without the flag names the scheduler in its
-#      IR.
+#      in their spawner's unit do not start before it parks at seed 2, where
+#      the healthy seed 2 starts one; a `Unit`'s tasks given a chaos unit each
+#      run between each other's operations; a `Unit`'s tasks left in their
+#      spawner's unit do not start before it parks at seed 2, where the
+#      healthy seed 2 has one; and a point left in a build without the flag
+#      names the scheduler in its IR.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -166,7 +167,7 @@ caught() { # prelude, label, source, expected seed, exact fixture verdict
 
 # Step 5 under one prelude: answers 1, saying why, when a property fails.
 seeds() { # prelude, label
-  local prelude="$1" label="$2" seed orders early late unit_early unit_late lefts rights
+  local prelude="$1" label="$2" seed orders early late unit_early unit_late lefts rights code
   build "exercise-$label" "$prelude" "$REPO/bench/chaos_exercise.iyi" -Diyi_chaos || { echo "$label: the exercise did not build:"; tail -20 "build-exercise-$label.log"; return 1; }
   : > "orders-$label.txt"
   early=0
@@ -176,7 +177,8 @@ seeds() { # prelude, label
   for seed in $(seq 1 30); do
     for twice in a b; do
       IYI_CHAOS="$seed" IYI_CHAOS_TRACE=1 IYI_WORKERS=1 timeout -k 5 120 "./exercise-$label$EXE" > "seed-$label-$seed-$twice.txt" 2>&1
-      if ! grep -q "every property held" "seed-$label-$seed-$twice.txt"; then
+      code=$?
+      if [ "$code" -ne 0 ] || ! grep -qxF "every property held" "seed-$label-$seed-$twice.txt"; then
         echo "$label: seed $seed: $(grep -m1 FAIL "seed-$label-$seed-$twice.txt" || tail -3 "seed-$label-$seed-$twice.txt")"; return 1
       fi
     done
@@ -330,29 +332,75 @@ echo "  seedignored consumed seed 1 and ran seed 2's schedule"
 grep -qE '^left arms [0-3] of 3, parallel units started before the spawner parked: [1-9][0-9]*$' seed-shipped-2-a.txt || die "parallel early-start witness was not armed"
 grep -qE '^Unit tasks started before the spawner parked: [1-9][0-9]*$' seed-shipped-2-a.txt || die "Unit early-start witness was not armed"
 
+# One broken copy's exercise, run once on one seed: it must exit with the
+# expected status and print the exact line, F for a whole-line match and E
+# for a whole-line extended regular expression.
+mutant_run() { # name, seed, expected exit, F or E, the line
+  local name="$1" seed="$2" want_code="$3" mode="$4" verdict="$5" code
+  build "exercise-$name" "$WORK/$name" "$REPO/bench/chaos_exercise.iyi" -Diyi_chaos || die "$name build failed: $(tail -20 "build-exercise-$name.log")"
+  IYI_CHAOS="$seed" IYI_CHAOS_TRACE=1 IYI_WORKERS=1 timeout -k 5 120 "./exercise-$name$EXE" > "$name.txt" 2>&1
+  code=$?
+  [ "$code" -eq "$want_code" ] && grep -qx"$mode" -e "$verdict" "$name.txt" || die "$name seed $seed did not exit $want_code at '$verdict' (exit $code): $(tail -20 "$name.txt")"
+  echo "  $name seed $seed: $verdict"
+}
+
 step "broken copy: units ignored, a unit-mate chosen like any task"
-broken unitsignored chaos.iyi '/^      if unit.stamp != generation$/ { print "      if true"; next } { print }'
-seeds "$WORK/unitsignored" unitsignored > unitsignored.txt 2>&1
-expect_caught unitsignored "FAIL: "
+broken unitsignored chaos.iyi '/^      if unit.stamp != generation$/ { n++; print "      if true"; next } { print } END { if (n != 1) exit 3 }'
+mutant_run unitsignored 2 1 F "FAIL: a task of the spawner's unit ran before the spawner parked"
 
 step "broken copy: a parallel task left in its spawner's unit"
-broken leftinunit chaos.iyi '/^    task.fiber.chaos_unit = IyiCross.shared \{ IyiChaosUnit.new\(IyiStat.get\(IyiStat::CHAOS_UNITS\), fresh_priority\) \}$/ { next } { print }'
-seeds "$WORK/leftinunit" leftinunit > leftinunit.txt 2>&1
-expect_caught leftinunit "no seed started a parallel unit before the spawner parked"
+broken leftinunit chaos.iyi '/^    task.fiber.chaos_unit = IyiCross.shared \{ IyiChaosUnit.new\(IyiStat.get\(IyiStat::CHAOS_UNITS\), fresh_priority\) \}$/ { n++; next } { print } END { if (n != 1) exit 3 }'
+mutant_run leftinunit 2 0 E "left arms [0-3] of 3, parallel units started before the spawner parked: 0"
+grep -qxF "every property held" leftinunit.txt || die "leftinunit fixture did not finish normally"
 
 step "broken copy: a Unit's tasks each given a chaos unit of their own"
-broken unitsplit chaos.iyi '/^    unless unit.is_a\?\(IyiChaosUnit\)$/ { print "    unless false"; next } { print }'
-seeds "$WORK/unitsplit" unitsplit > unitsplit.txt 2>&1
-expect_caught unitsplit "tasks of one Unit ran between each other's operations"
+broken unitsplit chaos.iyi '/^    unless unit.is_a\?\(IyiChaosUnit\)$/ { n++; print "    unless false"; next } { print } END { if (n != 1) exit 3 }'
+mutant_run unitsplit 4 1 F "FAIL: tasks of one Unit ran between each other's operations 1 times"
 
 step "broken copy: a Unit's tasks left in their spawner's unit"
-broken unitleft chaos.iyi '/^    fiber.chaos_unit = unit$/ { print "    fiber.chaos_unit = unit_of(IyiScheduler.current)"; next } { print }'
-seeds "$WORK/unitleft" unitleft > unitleft.txt 2>&1
-expect_caught unitleft "no seed started a Unit's task before the spawner parked"
+broken unitleft chaos.iyi '/^    fiber.chaos_unit = unit$/ { n++; print "    fiber.chaos_unit = unit_of(IyiScheduler.current)"; next } { print } END { if (n != 1) exit 3 }'
+mutant_run unitleft 2 0 F "Unit tasks started before the spawner parked: 0"
+grep -qxF "every property held" unitleft.txt || die "unitleft fixture did not finish normally"
 
 step "broken copy: the scheduler left in a build without the flag"
-broken pointleft prelude.iyi '/^  {% if flag\?\(:iyi_chaos\) %}$/ && !done { print "  {% if true %}"; done = 1; next } { print }'
-awk '{ sub(/\{% if flag\?\(:iyi_chaos\) %\}/, "{% if true %}"); print }' "$REPO/src/iyi/concurrency.iyi" > pointleft/iyi/concurrency.iyi
+broken pointleft prelude.iyi 'NR > 1 { if ($0 == "    require \"./chaos\"") { if (prev != "  {% if flag?(:iyi_chaos) %}") exit 3; prev = "  {% if true %}"; n++ } print prev } { prev = $0 } END { if (NR) print prev; if (n != 1) exit 3 }'
+# Loading chaos also needs each gated concurrency support block. Check each
+# block by its first line and multiplicity, not only a combined count.
+awk '
+  BEGIN {
+    expected["# The unit the chaos scheduler counts this fiber in, and whether it"] = 1
+    expected["fiber.homebound = true if IyiChaos.kept?(fiber)"] = 1
+    expected["fiber = IyiChaos.pick(st)"] = 1
+    expected["IyiChaos.at_idle"] = 1
+    expected["return chaos_wake_on(word, count) if IyiChaos.chooses_wakes?"] = 1
+    expected["drawn = IyiChaos.steal_start(count)"] = 1
+    expected["return if IyiChaos.back_edge"] = 1
+    expected["return give_up(st, fiber) if !fiber.homebound && IyiChaos.forced_turn?"] = 1
+    expected["IyiChaos.report"] = 1
+    expected["IyiChaos.point"] = 11
+    expected["# Its tasks\047 chaos unit, made at its first task (`IyiChaos.adopt_into`)."] = 1
+    expected["IyiChaos.adopt(fiber)"] = 1
+    expected["return chaos_task(pinned, &block) if IyiChaos.simulated?"] = 2
+    expected["IyiChaos.adopt_into(fiber, owner)"] = 1
+    expected["# The chaos scheduler\047s arm tried first (SPEC.md III.4.17); the"] = 1
+    expected["chaos_arm = IyiChaos.arm({{ U.size }})"] = 1
+  }
+  NR > 1 {
+    if (prev ~ /\{% if flag\?\(:iyi_chaos\) %\}/) {
+      key = $0
+      sub(/^[[:space:]]*/, "", key)
+      if (!(key in expected)) exit 3
+      found[key]++
+      sub(/\{% if flag\?\(:iyi_chaos\) %\}/, "{% if true %}", prev)
+    }
+    print prev
+  }
+  { prev = $0 }
+  END {
+    if (NR) print prev
+    for (key in expected) if (found[key] != expected[key]) exit 3
+  }
+' "$REPO/src/iyi/concurrency.iyi" > pointleft/iyi/concurrency.iyi || die "pointleft concurrency support anchor missing or ambiguous"
 off_is_nothing "$WORK/pointleft" pointleft > pointleft.txt 2>&1
 expect_caught pointleft "a plain build names the chaos scheduler"
 
