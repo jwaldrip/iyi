@@ -574,8 +574,9 @@
   # Eight rounds, and on past them until all eight have been outgrown under a
   # mark, up to forty-eight rounds in all: the leak verdict is judged only on
   # eight of eight, so a window that never holds is information, not a verdict.
+  # A window of no rounds (the large-count premise) runs none.
   large_rounds = 8
-  while large_round < large_rounds || (large_under_mark < 8 && large_round < 48)
+  while large_round < large_rounds || (large_rounds > 0 && large_under_mark < 8 && large_round < 48)
     IyiMark.auto = false
     {% if flag?(:unmapped_force) %}
       # The copy's closer for this round's mark waits before it finishes, so

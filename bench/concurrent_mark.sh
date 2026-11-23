@@ -1090,7 +1090,7 @@ for premise in $premises; do
     move-none) expected="FAIL: moves: no round made its move under a mark: nothing here was concurrent" ;;
     concurrent-none) expected="FAIL: no collection ran beside the program across 24 rounds" ;;
     large-mark) expected="FAIL: large: the held round's mark was not running when its block was outgrown" ;;
-    large-count) expected="FAIL: large: 0 of 8 held rounds reached the check, not 8" ;;
+    large-count) expected="FAIL: large: 0 of 0 held rounds reached the check, not 8" ;;
     boost-pool) expected="FAIL: wake boost: the pool started before the count, so every thread has the boost off" ;;
     boost-none) expected="FAIL: wake boost: no mark beside the program asked for helpers" ;;
     busy-page) expected="FAIL: share: the busy threads flag page could not be mapped" ;;
