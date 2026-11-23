@@ -183,10 +183,11 @@
   status 76. Three things that used to skip now fail with status 76: a present
   `h2` package that fails to import, a `dig -h` that fails or shows no usage
   line, and a Python, `ssl` or `cryptography` that is present but broken (a
-  missing one still skips). The startup failure that prompted this (iyilang/iyi
-  run 44329905718, job 134891405059: "the scripted servers did not start", with
-  an empty server log) is unexplained: this change names and bounds that wait
-  and does not claim a cause.
+  missing one still skips). A TERM or HUP to the gate ends its body, its tools
+  and its servers, and exits 143 or 129 respectively. The startup failure that
+  prompted this (iyilang/iyi run 44329905718, job 134891405059: "the scripted
+  servers did not start", with an empty server log) is unexplained: this change
+  names and bounds that wait and does not claim a cause.
 
 - **`bench/sweep_exercise.sh`'s widened trim-stress copies hold a sweep
   slice's listing window open, and their audits end the program where

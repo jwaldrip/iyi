@@ -621,7 +621,23 @@ def run_body(server):
     return verdict
 
 
+def cancel_on_signal(signum, frame):
+    # A TERM or HUP reaches this supervisor alone or as its group's signal. The
+    # body has its own session and gets neither, and a supervisor that dies to
+    # the signal runs no finally block, so nothing would end the body. Touching
+    # the cancel file is the cancel bash sends from its own traps: startup() and
+    # control() poll it every 0.1 s and return 143, and the finally blocks end
+    # the body's group and the server on the way out.
+    try:
+        (work / "cancel").touch()
+    except OSError:
+        pass
+
+
 def main():
+    if os.name != "nt":
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(signum, cancel_on_signal)
     (work / "supervisor.armed").touch()
     server = None
     verdict = FAILURE
