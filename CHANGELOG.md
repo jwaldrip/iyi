@@ -176,6 +176,19 @@
   still refused on Linux and Windows. `spec/compiler/iyimod_spec.cr`'s
   "does not ship the body" reads the artifact's symbols back unescaped the
   same way.
+- **`bench/heap_drain.sh` fails each broken copy by its own sentence, and its
+  sound runs keep their verdicts.** Copies c2 and c4 to c9 carry a copy-only
+  hook: a witness the program reads, a word it waits on, or a placement it
+  checks. c1, c3 and c8 are edits with no hook. Each copy runs once and must
+  exit on its exact line, and a setup failure (exit 76) never counts as a
+  catch. The sound runs keep the arena growth, warm-pool, cold-byte,
+  resident-set, directory residency, mark and six-round claim verdicts, and
+  the directory's unasked exit: a run in which no large object lands outside
+  the arenas' slots exits 75 and runs again, up to 12 times, and then fails
+  the gate. Three sound-path failures are new: a drain in which no parked run
+  is taken again (exit 1), a directory predicate that answers slot 0 as inside
+  (exit 1), and a claim round whose collection does not run within 120 s (exit
+  76).
 
 - **`bench/sweep_exercise.sh`'s widened trim-stress copies hold a sweep
   slice's listing window open, and their audits end the program where
