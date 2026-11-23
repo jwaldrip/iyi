@@ -17,12 +17,15 @@
 #   3. Caught, with a seed that reproduces: `iyi test --chaos=1
 #      --chaos-runs 100` fails each test at its pinned seed (6 for the
 #      claim, 42 for the join), naming the seed and the `--chaos=SEED` that
-#      runs it again; that line fails again; and the program built for
-#      chaos, run five times on the seed with IYI_CHAOS_TRACE, prints the
-#      same output and schedule hash five times, failing each.
-#   4. A drawn seed: `iyi test --chaos --chaos-runs 200` on a test that
-#      fails on every seed fails at run 1 of 200 whichever seed is drawn,
-#      names that seed, and the seed fails again.
+#      runs it again. That line, run as the CLI prints it, fails again with
+#      the same verdict. The same line under IYI_CHAOS_TRACE fails again too,
+#      and the program built for chaos, run five times on the seed with the
+#      trace, prints the same output and schedule hash five times, failing
+#      each.
+#   4. A drawn seed: `iyi test --chaos --chaos-runs 200` catches the claim
+#      under a seed it draws, names that seed, and that seed fails again with
+#      the same trace. A test that fails on every seed fails at run 1 of 200
+#      whichever seed is drawn, names that seed, and the seed fails again.
 #   5. One seed, one schedule; many seeds, many: bench/chaos_exercise.iyi
 #      under seeds 1 to 30, twice each, holds every property each time,
 #      each seed's two runs print the same lines and schedule, the 30 meet
@@ -32,12 +35,14 @@
 #   6. Broken copies of the scheduler, each caught at the check that names
 #      it: the stream ignored (every draw 0, which is the plain scheduler's
 #      choice everywhere) exits 0 at the healthy verdict at the known failing
-#      seed of each bug, 6 and 42; the seed consumed but both streams on the
-#      next seed runs seed 2's schedule, which seed 2's run must equal; units
-#      ignored (any task chosen, a unit-mate's included) runs a task between a
-#      unit-mate's operations or before its spawner parks; parallel tasks left
-#      in their spawner's unit do not start before it parks at seed 2, where
-#      the healthy seed 2 starts one; a `Unit`'s tasks given a chaos unit each
+#      seed of each bug, 6 and 42; the seed consumed (both streams on the
+#      next seed) runs seed 2's schedule at seed 1, and the claim at seed 5
+#      exits 1 at its verdict; the seed not honoured (the stream seeded from
+#      the clock) makes one seed's two runs differ; units ignored (any task
+#      chosen, a unit-mate's included) runs a task between a unit-mate's
+#      operations or before its spawner parks; parallel tasks left in their
+#      spawner's unit do not start before it parks at seed 2, where the
+#      healthy seed 2 starts one; a `Unit`'s tasks given a chaos unit each
 #      run between each other's operations; a `Unit`'s tasks left in their
 #      spawner's unit do not start before it parks at seed 2, where the
 #      healthy seed 2 has one; and a point left in a build without the flag
@@ -54,6 +59,10 @@ set -u
 # into its log, the pointleft check into its file) still shows the sentence of a
 # setup failure or a watchdog, so those write to 3 and not to 1.
 exec 3>&1
+
+# The gate sets the seed and the trace of each run itself. A variable exported by
+# the caller must not reach a run that is meant to be plain or traced.
+unset IYI_CHAOS IYI_CHAOS_TRACE
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="${IYI:-$REPO/bin/iyi}"
@@ -122,14 +131,17 @@ chaos_test() { # prelude, log, iyi test arguments...
   fi
 }
 
-# After the fixture's verdict the only child evidence must be its trace.
-# A death description, even one unknown to this gate, cannot be
-# mistaken for a normal exit. Build diagnostics before the verdict are
-# allowed, since the compiler may emit linker warnings.
-# The CLI prints its reproduce line only after the child's evidence ends.
-normal_failure() { # log, fixture verdict, source, seed, run, total
-  local log="$1" verdict="$2" source="$3" seed="$4" run="$5" total="$6"
-  CHAOS_SOURCE="$source" awk -v verdict="  $verdict" -v seed="$seed" -v run="$run" -v total="$total" -v windows="$PATH_WINDOWS" '
+# The failure report of one fixture, as the CLI prints it: its header naming
+# the source, seed and run; the fixture's exact verdict; then, when the run was
+# traced (7th argument 1, the default), the trace naming the seed; then the
+# reproduce line. Only that evidence may sit between the header and the
+# reproduce line, so a child that died after its verdict is not a normal exit.
+# Build diagnostics before the header are allowed, since the compiler may emit
+# linker warnings. The CLI prints its reproduce line only after the child's
+# evidence ends.
+normal_failure() { # log, fixture verdict, source, seed, run, total, traced
+  local log="$1" verdict="$2" source="$3" seed="$4" run="$5" total="$6" traced="${7-1}"
+  CHAOS_SOURCE="$source" awk -v verdict="  $verdict" -v seed="$seed" -v run="$run" -v total="$total" -v traced="$traced" -v windows="$PATH_WINDOWS" '
     BEGIN { source = ENVIRON["CHAOS_SOURCE"] }
     {
       line = $0
@@ -143,11 +155,12 @@ normal_failure() { # log, fixture verdict, source, seed, run, total
         stage = 1
         next
       }
-      if (stage == 1) {
+      if (stage == 1 && traced == 1) {
         if (line !~ ("^  iyi chaos: seed " seed ", .*schedule [0-9a-f]+$")) exit 1
         stage = 2
         next
       }
+      if (stage == 1) stage = 2
       if (stage == 2) {
         suffix = " test --chaos=" seed " " source
         if (line !~ /^  reproduce: / || substr(line, length(line) - length(suffix) + 1) != suffix) exit 1
@@ -161,23 +174,29 @@ normal_failure() { # log, fixture verdict, source, seed, run, total
 # The sweep checks CLI search behaviour, not mutant detection. Seeds 6 and
 # 42 are canaries for this build's scheduler, not compatibility promises.
 #
-# Step 3 for one test under one prelude: the search ends at the fixture's
-# exact verdict on its pinned seed (its run is that seed, of 100), the seed
-# fails again through `iyi test` with the same verdict, and five traced runs
-# of it are identical and exit 1 at the verdict. Prints why it did not hold
-# and answers 1.
+# Step 3 for one test under one prelude. The search, run as the CLI prints it,
+# ends at the fixture's exact verdict on its pinned seed (its run is that seed,
+# of 100). That seed's reproduce line, run as printed and without the trace,
+# fails again with the same verdict; the same seed under the trace fails again
+# too; and five traced runs of it are identical and exit 1 at the verdict.
+# Prints why it did not hold and answers 1.
 caught() { # prelude, label, source, expected seed, exact fixture verdict
   local prelude="$1" label="$2" source="$3" want_seed="$4" verdict="$5" code seed first got
-  IYI_CHAOS_TRACE=1 chaos_test "$prelude" "catch-$label.txt" --chaos=1 --chaos-runs 100 "$source"
+  chaos_test "$prelude" "catch-$label.txt" --chaos=1 --chaos-runs 100 "$source"
   code=$?
-  if [ "$code" -ne 1 ] || ! normal_failure "catch-$label.txt" "$verdict" "$source" "$want_seed" "$want_seed" 100; then
+  if [ "$code" -ne 1 ] || ! normal_failure "catch-$label.txt" "$verdict" "$source" "$want_seed" "$want_seed" 100 0; then
     echo "$label: search did not end at its fixture verdict (exit $code):"; tail -20 "catch-$label.txt"; return 1
   fi
   seed="$want_seed"
+  chaos_test "$prelude" "plain-again-$label.txt" "--chaos=$seed" "$source"
+  code=$?
+  if [ "$code" -ne 1 ] || ! normal_failure "plain-again-$label.txt" "$verdict" "$source" "$seed" 1 1 0; then
+    echo "$label: the plain --chaos=$seed did not fail again at its verdict (exit $code):"; tail -5 "plain-again-$label.txt"; return 1
+  fi
   IYI_CHAOS_TRACE=1 chaos_test "$prelude" "again-$label.txt" "--chaos=$seed" "$source"
   code=$?
-  if [ "$code" -ne 1 ] || ! normal_failure "again-$label.txt" "$verdict" "$source" "$seed" 1 1; then
-    echo "$label: --chaos=$seed did not fail again (exit $code):"; tail -5 "again-$label.txt"; return 1
+  if [ "$code" -ne 1 ] || ! normal_failure "again-$label.txt" "$verdict" "$source" "$seed" 1 1 1; then
+    echo "$label: --chaos=$seed did not fail again with its trace (exit $code):"; tail -5 "again-$label.txt"; return 1
   fi
   build "traced-$label" "$prelude" "$source" -Diyi_chaos
   first=""
@@ -193,7 +212,7 @@ caught() { # prelude, label, source, expected seed, exact fixture verdict
   done
   got="$(sed -n 's/.*schedule \([0-9a-f][0-9a-f]*\)$/\1/p' "$first" | head -1)"
   [ -n "$got" ] || { echo "$label: missing schedule hash"; return 1; }
-  echo "  $label: caught at seed $seed, again through --chaos=$seed, and five traced runs alike on schedule ${got:-none}:"
+  echo "  $label: caught at seed $seed, its reproduce line fails again as printed and traced, and five traced runs alike on schedule ${got:-none}:"
   sed 's/^/    /' "$first"
 }
 
@@ -274,6 +293,40 @@ caught "" join "$REPO/bench/chaos_join.iyi" 42 "the reader saw 0, before the wri
 
 # ── 4. A drawn seed ───────────────────────────────────────────────────────
 step "a seed drawn by iyi test, named and run again"
+# Master's check: the claim fails under the seeds the clock draws. Its header
+# names the seed and the run (of 200), the seed's report is the claim's exact
+# verdict, the seed fails again with the same trace.
+claim_verdict="two leaders: 2 tasks found the slot empty, and task 1 wrote last"
+IYI_CHAOS_TRACE=1 chaos_test "" claim-drawn.txt --chaos --chaos-runs 200 "$REPO/bench/chaos_claim.iyi"
+code=$?
+[ "$code" -eq 1 ] || die "200 drawn seeds did not catch chaos_claim (exit $code): $(tail -3 claim-drawn.txt)"
+claim_drawn="$(CHAOS_SOURCE="$REPO/bench/chaos_claim.iyi" awk -v windows="$PATH_WINDOWS" '
+  BEGIN { prefix = ENVIRON["CHAOS_SOURCE"] ": fail (chaos seed " }
+  {
+    line = $0
+    if (windows) gsub(/\\/, "/", line)
+    if (substr(line, 1, length(prefix)) != prefix) next
+    rest = substr(line, length(prefix) + 1)
+    if (rest !~ /^[0-9]+, run [0-9]+ of 200\)$/) next
+    sub(/\)$/, "", rest)
+    split(rest, part, ", run ")
+    split(part[2], tot, " of ")
+    count++
+    found = part[1] " " tot[1]
+  }
+  END { if (count != 1) exit 1; print found }
+' claim-drawn.txt)" || die "the drawn claim has no unique fixture header: $(tail -20 claim-drawn.txt)"
+read -r claim_seed claim_run <<< "$claim_drawn"
+normal_failure claim-drawn.txt "$claim_verdict" "$REPO/bench/chaos_claim.iyi" "$claim_seed" "$claim_run" 200 1 || die "the drawn claim did not end at its verdict under seed $claim_seed: $(tail -20 claim-drawn.txt)"
+IYI_CHAOS_TRACE=1 chaos_test "" claim-drawn-again.txt "--chaos=$claim_seed" "$REPO/bench/chaos_claim.iyi"
+code=$?
+[ "$code" -eq 1 ] || die "the drawn seed $claim_seed did not fail again (exit $code): $(tail -3 claim-drawn-again.txt)"
+normal_failure claim-drawn-again.txt "$claim_verdict" "$REPO/bench/chaos_claim.iyi" "$claim_seed" 1 1 1 || die "the replay of drawn seed $claim_seed did not end at its verdict: $(tail -20 claim-drawn-again.txt)"
+drawn_trace="$(grep -m1 '^  iyi chaos: seed ' claim-drawn.txt)"
+again_trace="$(grep -m1 '^  iyi chaos: seed ' claim-drawn-again.txt)"
+[ -n "$drawn_trace" ] && [ "$drawn_trace" = "$again_trace" ] || die "the drawn run's trace and its replay differ: '$drawn_trace' and '$again_trace'"
+echo "  drawn seed $claim_seed caught the claim at run $claim_run of 200, and --chaos=$claim_seed failed again with the same trace"
+
 # A test that fails on every seed: the drawn seed fails at run 1 of 200
 # whichever seed the clock draws, so what is checked is that the seed is
 # named and fails again.
@@ -315,8 +368,9 @@ seeds "" shipped || exit 1
 
 # ── 6. Broken copies of the scheduler ─────────────────────────────────────
 # Each a copy of src/iyi with one file changed by awk, built against
-# through IYI_PATH; nothing in the tree is touched. Every check above is
-# deterministic under the simulation, so each copy runs once.
+# through IYI_PATH; nothing in the tree is touched. Each copy's check is
+# deterministic under the simulation and runs once, except the clock-seeded
+# copy, whose check is that its two runs differ: master's expectation, kept.
 broken() { # name, file, awk program
   mkdir -p "$1/iyi"
   cp "$REPO"/src/iyi/*.iyi "$1/iyi/"
@@ -324,12 +378,6 @@ broken() { # name, file, awk program
   if cmp -s "$1/iyi/$2" "$REPO/src/iyi/$2"; then
     setup_fail "the awk for $1 found nothing to change in $2"
   fi
-}
-expect_caught() { # name, the sentence its check prints
-  if ! grep -qF "$2" "$1.txt"; then
-    echo "the broken copy $1 was not caught at \"$2\":"; tail -10 "$1.txt"; exit 1
-  fi
-  echo "  caught: $(grep -m1 -F "$2" "$1.txt")"
 }
 
 step "broken copy: the stream ignored, every choice the plain scheduler's"
@@ -359,10 +407,24 @@ sed 's/^iyi chaos: seed [0-9]*,/iyi chaos: seed,/' seed-shipped-1-a.txt > seed1-
 ! cmp -s seed1-normalized.txt seed2-normalized.txt || die "seedignored witness unarmed: healthy seeds 1 and 2 have identical schedules"
 cmp -s seedignored-normalized.txt seed2-normalized.txt || die "seedignored did not run seed 2's schedule: $(diff seed2-normalized.txt seedignored-normalized.txt)"
 echo "  seedignored consumed seed 1 and ran seed 2's schedule"
+# The copy's seed 5 streams seed 6, so the claim's search under the copy must
+# end at its verdict at run 5 of 100, where the pinned search ends at run 6.
+build claim-seedignored "$WORK/seedignored" "$REPO/bench/chaos_claim.iyi" -Diyi_chaos
+IYI_CHAOS=5 IYI_WORKERS=1 watched 120 "the seed-consumed claim" "./claim-seedignored$EXE" > seedignored-claim.txt 2>&1
+code=$?
+[ "$code" -eq 1 ] && grep -qxF "two leaders: 2 tasks found the slot empty, and task 1 wrote last" seedignored-claim.txt || die "seedignored: seed 5 did not exit 1 at the claim's verdict (exit $code): $(tail -20 seedignored-claim.txt)"
+echo "  seedignored: seed 5 runs schedule 6 and exits 1 at the claim's verdict"
 
 # Each copy runs one seed. The healthy seed 2 must witness both early starts.
 grep -qE '^left arms [0-3] of 3, parallel units started before the spawner parked: [1-9][0-9]*$' seed-shipped-2-a.txt || die "parallel early-start witness was not armed"
 grep -qE '^Unit tasks started before the spawner parked: [1-9][0-9]*$' seed-shipped-2-a.txt || die "Unit early-start witness was not armed"
+
+step "broken copy: the seed not honoured, the stream seeded from the clock"
+broken clockseed chaos.iyi '/^    IyiStat\.set\(IyiStat::CHAOS_STREAM, seed\)$/ { n++; print "    IyiStat.set(IyiStat::CHAOS_STREAM, __iyi_monotonic_ns.to_u64)"; next } { print } END { if (n != 1) exit 3 }'
+seeds "$WORK/clockseed" clockseed > clockseed.txt 2>&1
+code=$?
+[ "$code" -eq 1 ] && grep -qxE "clockseed: seed [0-9]+'s two runs differ:" clockseed.txt || die "the clock-seeded copy's two runs did not differ (exit $code): $(tail -10 clockseed.txt)"
+echo "  $(grep -m1 -xE "clockseed: seed [0-9]+'s two runs differ:" clockseed.txt)"
 
 # One broken copy's exercise, run once on one seed: it must exit with the
 # expected status and print the exact line, F for a whole-line match and E
@@ -434,6 +496,8 @@ awk '
   }
 ' "$REPO/src/iyi/concurrency.iyi" > pointleft/iyi/concurrency.iyi || setup_fail "the support anchors of the pointleft copy are missing or ambiguous"
 off_is_nothing "$WORK/pointleft" pointleft > pointleft.txt 2>&1
-expect_caught pointleft "a plain build names the chaos scheduler"
+code=$?
+[ "$code" -eq 1 ] && grep -qxE 'pointleft: a plain build names the chaos scheduler: [^ ]*IyiChaos[^ ]*' pointleft.txt || die "the broken copy pointleft was not caught at its sentence (exit $code): $(tail -10 pointleft.txt)"
+echo "  caught: $(grep -m1 -xE 'pointleft: a plain build names the chaos scheduler: [^ ]*IyiChaos[^ ]*' pointleft.txt)"
 
 echo "== the chaos scheduler: every check held"
