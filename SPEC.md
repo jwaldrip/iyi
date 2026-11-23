@@ -6145,8 +6145,8 @@ five rounds overlap: 45.4 to 53.1 before, 42.7 to 46.0 after.
 3. `iyi test --chaos=1 --chaos-runs 100` catches each. The `--chaos=SEED`
    line it prints fails again, and five traced runs of the seed print the
    same output and the same schedule hash.
-4. A seed drawn by `iyi test --chaos --chaos-runs 200` catches the claim,
-   and fails again when named.
+4. A seed drawn by `iyi test --chaos --chaos-runs 200` on a test that fails
+   on every seed fails at run 1 of 200, and fails again when named.
 5. `bench/chaos_exercise.iyi` runs under seeds 1 to 30, twice each. It
    has three parallel units, two unit-mates, a mutex, a `wait_for`, a
    buffered channel and a two-arm `select`. Every run holds the unit
@@ -6154,23 +6154,25 @@ five rounds overlap: 45.4 to 53.1 before, 42.7 to 46.0 after.
    seed's two runs are byte-identical, schedule hash included. The 30
    seeds meet at least 20 orders and both arms. Parallel units start
    before the spawner parks under some seeds and not under others.
-6. Five broken copies of the scheduler, each caught at the check that
-   names it:
+6. Seven broken copies of the scheduler, each caught at the check that
+   names it. Five come first:
    - the stream ignored, every draw 0, which is the plain scheduler's
-     choice everywhere: it catches neither bug in 100 seeds;
-   - the seed not honoured, the stream seeded from the clock: one seed's
-     two runs differ;
+     choice everywhere: at the known failing seed of each bug (6 for the
+     claim, 42 for the join) it exits 0 at that fixture's healthy verdict;
+   - the seed consumed but both streams use the next seed: seed 1 runs
+     seed 2's schedule, which seed 2's run must equal;
    - units ignored: a unit-mate runs before its spawner parks;
-   - parallel tasks left in their spawner's unit: no seed starts one
-     early;
+   - parallel tasks left in their spawner's unit: at seed 2 no parallel
+     task starts early, where the healthy seed 2 starts one;
    - the scheduler left in a plain build: the plain IR names it.
 
    III.4.18 added a `Unit` to the exercise, whose tasks must start before
    the spawner parks under some seeds and not others, and two broken
    copies: a `Unit`'s tasks each given a chaos unit of their own, caught
    when two of them run between each other's operations, and a `Unit`'s
-   tasks left in their spawner's unit, caught when no seed starts one
-   early. The table below was measured before them.
+   tasks left in their spawner's unit, caught when at seed 2 no Unit task
+   starts before the spawner parks, where the healthy seed 2 has one. The
+   table below was measured before them.
 
 | | Linux x86-64, 12 vCPUs, shared | macOS 26.6, Apple M2 Pro, 10 cores (the user's machine) | Windows 11, 12 logical processors (the user's machine) |
 |---|---|---|---|
