@@ -140,9 +140,11 @@ fi
 
 echo
 echo "== refused connection exits non-zero with diagnostic"
-"$WORK/socket-exercise" refused >"$WORK/refused.out" 2>&1
+run_bounded 60 "refused connection" "$WORK/refused.out" "$WORK/socket-exercise" refused
 exit_code=$?
-if [ "$exit_code" -eq 0 ]; then
+if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ]; then
+  status=1
+elif [ "$exit_code" -eq 0 ]; then
   echo "  refused connection unexpectedly succeeded"
   status=1
 elif ! grep -q "cannot connect to 127.0.0.1:" "$WORK/refused.out"; then
@@ -158,12 +160,16 @@ echo "== a negative count is refused by name"
 # `recv(-1)` died of "arithmetic overflow" on a `to_u64`, a sentence about
 # neither the count nor the call.
 printf 'module main\n\nimport std/socket::{IyiSocket}\n\nl = IyiSocket.listen(0)\nc = IyiSocket.connect("127.0.0.1", l.local_port).or_panic\nputs l.accept.or_panic.recv(-1).inspect\n' > "$WORK/negative.iyi"
-if "$IYI" run "$WORK/negative.iyi" > "$WORK/negative.out" 2>&1; then
+run_bounded 60 "a negative count" "$WORK/negative.out" "$IYI" run "$WORK/negative.iyi"
+code=$?
+if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+  status=1
+elif [ "$code" -eq 0 ]; then
   echo "  a negative count was taken"; status=1
 elif ! grep -q "negative count: -1" "$WORK/negative.out"; then
   echo "  a negative count was refused, but not by name:"; sed 's/^/    /' "$WORK/negative.out"; status=1
 else
-  echo "  recv(-1): exits 1 at \"$(grep -m1 'negative count' "$WORK/negative.out" | sed 's/^iyi: panic: //')\""
+  echo "  recv(-1): exits $code at \"$(grep -m1 'negative count' "$WORK/negative.out" | sed 's/^iyi: panic: //')\""
 fi
 
 echo "== two fibers reading one socket are refused"
@@ -185,12 +191,16 @@ group do |g|
 end
 puts "two readers were let in"
 IYI
-if timeout -k 5 60 "$IYI" run "$WORK/readers.iyi" > "$WORK/readers.out" 2>&1; then
+run_bounded 60 "two readers" "$WORK/readers.out" "$IYI" run "$WORK/readers.iyi"
+code=$?
+if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+  status=1
+elif [ "$code" -eq 0 ]; then
   echo "  two readers were let in"; status=1
 elif ! grep -q "two fibers reading one fd" "$WORK/readers.out"; then
   echo "  two readers were refused, but not by name:"; sed 's/^/    /' "$WORK/readers.out"; status=1
 else
-  echo "  two readers: exits 1 at \"$(grep -m1 'two fibers' "$WORK/readers.out" | sed 's/^iyi: panic: //')\""
+  echo "  two readers: exits $code at \"$(grep -m1 'two fibers' "$WORK/readers.out" | sed 's/^iyi: panic: //')\""
 fi
 
 echo
@@ -387,15 +397,21 @@ elif ! IYI_PATH="$WORK/onewaiter${PSEP}$REPO/src" "$IYI" build -o "$WORK/onewait
      "$REPO/bench/socket_exercise.iyi" >"$WORK/onewaiter/build.log" 2>&1; then
   echo "  one waiter per fd: the patched prelude did not build"
   status=1
-elif timeout 60 "$WORK/onewaiter/program" >"$WORK/onewaiter/out" 2>&1; then
-  echo "  one waiter per fd: the exercise still passed, so it does not test this"
-  status=1
-elif grep -q "two fibers waiting on one fd" "$WORK/onewaiter/out"; then
-  echo "  one waiter per fd: exits at \"two fibers waiting on one fd\""
 else
-  echo "  one waiter per fd: failed, but not at the second waiter"
-  tail -2 "$WORK/onewaiter/out" | sed 's/^/    /'
-  status=1
+  run_bounded 60 "one waiter per fd" "$WORK/onewaiter/out" "$WORK/onewaiter/program"
+  code=$?
+  if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+    status=1
+  elif [ "$code" -eq 0 ]; then
+    echo "  one waiter per fd: the exercise still passed, so it does not test this"
+    status=1
+  elif grep -q "two fibers waiting on one fd" "$WORK/onewaiter/out"; then
+    echo "  one waiter per fd: exits at \"two fibers waiting on one fd\""
+  else
+    echo "  one waiter per fd: failed, but not at the second waiter"
+    tail -2 "$WORK/onewaiter/out" | sed 's/^/    /'
+    status=1
+  fi
 fi ;;
 esac
 
@@ -419,9 +435,11 @@ elif ! IYI_PATH="$WORK/stale${PSEP}$REPO/src" "$IYI" build -o "$WORK/stale/progr
   echo "  a deadline left behind: the patched prelude did not build"
   status=1
 else
-  timeout 60 "$WORK/stale/program" >"$WORK/stale/out" 2>&1
+  run_bounded 60 "a deadline left behind" "$WORK/stale/out" "$WORK/stale/program"
   code=$?
-  if [ "$code" -eq 0 ] && ! grep -q "iyi: panic" "$WORK/stale/out"; then
+  if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+    status=1
+  elif [ "$code" -eq 0 ] && ! grep -q "iyi: panic" "$WORK/stale/out"; then
     echo "  a deadline left behind: the exercise still passed, so it does not test this"
     status=1
   elif ! grep -q -E "timeout: (a read with no deadline|the read's old deadline)" "$WORK/stale/out"; then
@@ -461,9 +479,11 @@ prove_port() { # prove_port <label> <dir> <phrase, a regex> <awk script>
     status=1
     return
   fi
-  timeout -k 5 120 "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1
+  run_bounded 120 "$label" "$WORK/$dir/out" "$WORK/$dir/program"
   local code=$?
-  if [ "$code" -eq 0 ] && ! grep -q "iyi: panic" "$WORK/$dir/out"; then
+  if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+    status=1
+  elif [ "$code" -eq 0 ] && ! grep -q "iyi: panic" "$WORK/$dir/out"; then
     echo "  $label: the exercise still passed, so it does not test this"
     status=1
   elif ! grep -q -E "$phrase" "$WORK/$dir/out"; then
@@ -562,9 +582,12 @@ refuses() { # refuses <label> <name> <phrase> <expression>
     status=1
     return
   fi
-  "$WORK/$name" > "$WORK/$name.out" 2>&1
+  run_bounded 60 "$label" "$WORK/$name.out" "$WORK/$name"
   local code=$?
-  if [ "$code" -eq 0 ]; then
+  if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+    status=1
+    return
+  elif [ "$code" -eq 0 ]; then
     echo "  $label: it answered instead of refusing"
     status=1
     return
@@ -660,9 +683,12 @@ refuses_after_close() { # refuses_after_close <label> <name> <statements on a cl
     status=1
     return
   fi
-  "$WORK/$name" > "$WORK/$name.out" 2>&1
+  run_bounded 60 "$label" "$WORK/$name.out" "$WORK/$name"
   local code=$?
-  if [ "$code" -eq 0 ]; then
+  if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+    status=1
+    return
+  elif [ "$code" -eq 0 ]; then
     echo "  $label: it answered instead of refusing: $(cat "$WORK/$name.out")"
     status=1
     return
