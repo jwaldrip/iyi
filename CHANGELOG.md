@@ -176,6 +176,15 @@
   still refused on Linux and Windows. `spec/compiler/iyimod_spec.cr`'s
   "does not ship the body" reads the artifact's symbols back unescaped the
   same way.
+- **The server_load and socket failure proofs run once, and their setup
+  failures exit 76 with their own sentence.** The poller's buffer proof is
+  one collection before any connection, where it ran up to three times at
+  2,000 rounds. A load that collects nothing exits 76, with a control built
+  with `-Dnocollect_force`. The Linux closed-peer SIGPIPE proof reads to the
+  peer's end before it writes and matches its marker as a whole line; the
+  darwin reset proof puts a connection barrier in place of its sleep and
+  retries. A socket run that hangs is a watchdog failure that names its last
+  stage, never a catch.
 
 ## 0.22.0 — 2026-11-22
 
