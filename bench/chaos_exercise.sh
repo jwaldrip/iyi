@@ -15,11 +15,11 @@
 #      built once and run PLAIN_RUNS times on the machine's own pool, fail
 #      at most once.
 #   3. Caught, with a seed that reproduces: `iyi test --chaos=1
-#      --chaos-runs 100` fails each test, naming the seed and the
-#      `--chaos=SEED` that runs it again; that line fails again; and the
-#      program built for chaos, run five times on the seed with
-#      IYI_CHAOS_TRACE, prints the same output and the same schedule five
-#      times, failing each.
+#      --chaos-runs 100` fails each test at its pinned seed (6 for the
+#      claim, 42 for the join), naming the seed and the `--chaos=SEED` that
+#      runs it again; that line fails again; and the program built for
+#      chaos, run five times on the seed with IYI_CHAOS_TRACE, prints the
+#      same output and schedule hash five times, failing each.
 #   4. A drawn seed: `iyi test --chaos --chaos-runs 200` on a test that
 #      fails on every seed fails at run 1 of 200 whichever seed is drawn,
 #      names that seed, and the seed fails again.
@@ -77,14 +77,14 @@ build() { # name, prelude, source, flags...
 }
 
 # `iyi test` over *source*, under *prelude*; its output in *log*, its exit
-# code answered.
+# code answered. A chaos seed names one schedule only with one worker.
 chaos_test() { # prelude, log, iyi test arguments...
   local prelude="$1" log="$2"
   shift 2
   if [ -n "$prelude" ]; then
-    IYI_PATH="$prelude${PSEP}$REPO/src" timeout -k 5 900 "$IYI" test "$@" > "$log" 2>&1
+    IYI_WORKERS=1 IYI_PATH="$prelude${PSEP}$REPO/src" timeout -k 5 900 "$IYI" test "$@" > "$log" 2>&1
   else
-    timeout -k 5 900 "$IYI" test "$@" > "$log" 2>&1
+    IYI_WORKERS=1 timeout -k 5 900 "$IYI" test "$@" > "$log" 2>&1
   fi
 }
 
@@ -124,22 +124,25 @@ normal_failure() { # log, fixture verdict, source, seed, run, total
   ' "$log"
 }
 
-# Step 3 for one test under one prelude: caught within 100 seeds from 1,
-# the named seed failing again through `iyi test`, and five traced runs of
-# it identical and failing. Prints why it did not hold and answers 1.
-caught() { # prelude, label, source
-  local prelude="$1" label="$2" source="$3" code seed first run
-  chaos_test "$prelude" "catch-$label.txt" --chaos=1 --chaos-runs 100 "$source"
+# The sweep checks CLI search behaviour, not mutant detection. Seeds 6 and
+# 42 are canaries for this build's scheduler, not compatibility promises.
+#
+# Step 3 for one test under one prelude: the search ends at the fixture's
+# exact verdict on its pinned seed (its run is that seed, of 100), the seed
+# fails again through `iyi test` with the same verdict, and five traced runs
+# of it are identical and exit 1 at the verdict. Prints why it did not hold
+# and answers 1.
+caught() { # prelude, label, source, expected seed, exact fixture verdict
+  local prelude="$1" label="$2" source="$3" want_seed="$4" verdict="$5" code seed first got
+  IYI_CHAOS_TRACE=1 chaos_test "$prelude" "catch-$label.txt" --chaos=1 --chaos-runs 100 "$source"
   code=$?
-  if [ "$code" -ne 1 ] || ! grep -q "reproduce: .* test --chaos=" "catch-$label.txt"; then
-    echo "$label: not caught in seeds 1 to 100 (exit $code):"; tail -5 "catch-$label.txt"; return 1
+  if [ "$code" -ne 1 ] || ! normal_failure "catch-$label.txt" "$verdict" "$source" "$want_seed" "$want_seed" 100; then
+    echo "$label: search did not end at its fixture verdict (exit $code):"; tail -20 "catch-$label.txt"; return 1
   fi
-  seed="$(sed -n 's/.*(chaos seed \([0-9][0-9]*\), run \([0-9][0-9]*\) of 100).*/\1/p' "catch-$label.txt" | head -1)"
-  run="$(sed -n 's/.*(chaos seed \([0-9][0-9]*\), run \([0-9][0-9]*\) of 100).*/\2/p' "catch-$label.txt" | head -1)"
-  [ -n "$seed" ] || { echo "$label: the failure names no seed:"; cat "catch-$label.txt"; return 1; }
-  chaos_test "$prelude" "again-$label.txt" "--chaos=$seed" "$source"
+  seed="$want_seed"
+  IYI_CHAOS_TRACE=1 chaos_test "$prelude" "again-$label.txt" "--chaos=$seed" "$source"
   code=$?
-  if [ "$code" -ne 1 ] || ! grep -q "(chaos seed $seed, run 1 of 1)" "again-$label.txt"; then
+  if [ "$code" -ne 1 ] || ! normal_failure "again-$label.txt" "$verdict" "$source" "$seed" 1 1; then
     echo "$label: --chaos=$seed did not fail again (exit $code):"; tail -5 "again-$label.txt"; return 1
   fi
   build "traced-$label" "$prelude" "$source" -Diyi_chaos || { echo "$label: the chaos build failed:"; tail -20 "build-traced-$label.log"; return 1; }
@@ -147,14 +150,16 @@ caught() { # prelude, label, source
   for attempt in 1 2 3 4 5; do
     IYI_CHAOS="$seed" IYI_CHAOS_TRACE=1 IYI_WORKERS=1 timeout -k 5 120 "./traced-$label$EXE" > "traced-$label-$attempt.txt" 2>&1
     code=$?
-    [ "$code" -eq 1 ] || { echo "$label: seed $seed's traced run $attempt passed (exit $code):"; cat "traced-$label-$attempt.txt"; return 1; }
+    { [ "$code" -eq 1 ] && grep -qxF "$verdict" "traced-$label-$attempt.txt"; } || { echo "$label: seed $seed did not exit 1 at its fixture verdict (exit $code):"; cat "traced-$label-$attempt.txt"; return 1; }
     if [ -z "$first" ]; then
       first="traced-$label-$attempt.txt"
     elif ! cmp -s "$first" "traced-$label-$attempt.txt"; then
       echo "$label: seed $seed ran two schedules:"; cat "$first" "traced-$label-$attempt.txt"; return 1
     fi
   done
-  echo "  $label: caught at seed $seed (run $run of 100), again through --chaos=$seed, and five traced runs alike:"
+  got="$(sed -n 's/.*schedule \([0-9a-f][0-9a-f]*\)$/\1/p' "$first" | head -1)"
+  [ -n "$got" ] || { echo "$label: missing schedule hash"; return 1; }
+  echo "  $label: caught at seed $seed, again through --chaos=$seed, and five traced runs alike on schedule ${got:-none}:"
   sed 's/^/    /' "$first"
 }
 
@@ -228,9 +233,9 @@ for test in claim join; do
 done
 
 # ── 3. Caught, with a seed that reproduces ────────────────────────────────
-step "iyi test --chaos catches each bug, and its seed runs the schedule again"
-caught "" claim "$REPO/bench/chaos_claim.iyi" || exit 1
-caught "" join "$REPO/bench/chaos_join.iyi" || exit 1
+step "iyi test --chaos catches each bug at its pinned seed, and that seed runs the schedule again"
+caught "" claim "$REPO/bench/chaos_claim.iyi" 6 "two leaders: 2 tasks found the slot empty, and task 1 wrote last" || exit 1
+caught "" join "$REPO/bench/chaos_join.iyi" 42 "the reader saw 0, before the writer that adds 42 had run (work 4)" || exit 1
 
 # ── 4. A drawn seed ───────────────────────────────────────────────────────
 step "a seed drawn by iyi test, named and run again"
@@ -280,7 +285,7 @@ seeds "" shipped || exit 1
 broken() { # name, file, awk program
   mkdir -p "$1/iyi"
   cp "$REPO"/src/iyi/*.iyi "$1/iyi/"
-  awk "$3" "$REPO/src/iyi/$2" > "$1/iyi/$2"
+  awk "$3" "$REPO/src/iyi/$2" > "$1/iyi/$2" || { echo "the awk for $1 failed"; exit 1; }
   if cmp -s "$1/iyi/$2" "$REPO/src/iyi/$2"; then
     echo "the awk for $1 found nothing to change"; exit 1
   fi
@@ -293,11 +298,18 @@ expect_caught() { # name, the sentence its check prints
 }
 
 step "broken copy: the stream ignored, every choice the plain scheduler's"
-broken prngignored chaos.iyi '/^  def self.draw : UInt64$/ { print; print "    return 0_u64"; next } { print }'
-caught "$WORK/prngignored" claim "$REPO/bench/chaos_claim.iyi" > prngignored.txt 2>&1
-expect_caught prngignored "claim: not caught in seeds 1 to 100"
-caught "$WORK/prngignored" join "$REPO/bench/chaos_join.iyi" > prngignored.txt 2>&1
-expect_caught prngignored "join: not caught in seeds 1 to 100"
+broken prngignored chaos.iyi '/^  def self.draw : UInt64$/ { n++; print; print "    return 0_u64"; next } { print } END { if (n != 1) exit 3 }' || die "prngignored anchor missing or ambiguous"
+for test in claim join; do
+  case "$test" in
+    claim) seed=6; verdict="one leader: task 1" ;;
+    join) seed=42; verdict="the reader saw 42 (work 4)" ;;
+  esac
+  build "prng-$test" "$WORK/prngignored" "$REPO/bench/chaos_$test.iyi" -Diyi_chaos || die "prngignored $test build failed: $(tail -20 "build-prng-$test.log")"
+  IYI_CHAOS="$seed" IYI_WORKERS=1 timeout -k 5 120 "./prng-$test$EXE" > "prng-$test.txt" 2>&1
+  code=$?
+  [ "$code" -eq 0 ] && grep -qxF "$verdict" "prng-$test.txt" || die "prngignored $test did not exit 0 at '$verdict' (exit $code): $(tail -20 "prng-$test.txt")"
+  echo "  prngignored $test: seed $seed exited 0 at $verdict"
+done
 
 step "broken copy: the seed not honoured, the stream seeded from the clock"
 broken seedignored chaos.iyi '/^    IyiStat\.set\(IyiStat::CHAOS_STREAM, seed\)$/ { print "    IyiStat.set(IyiStat::CHAOS_STREAM, __iyi_monotonic_ns.to_u64)"; next } { print }'
