@@ -222,12 +222,13 @@ prove_fails() {
   fi
   if [ "$exit_code" -eq 0 ]; then
     echo "  $label: the exercise still passed, so it does not test this"
+    sed 's/^/    /' "$WORK/$dir/out"
     status=1
     return
   fi
   if ! grep -q "$phrase" "$WORK/$dir/out"; then
     echo "  $label: failed, but not at the expected check"
-    sed -n '$p' "$WORK/$dir/out"
+    sed 's/^/    /' "$WORK/$dir/out"
     status=1
     return
   fi
