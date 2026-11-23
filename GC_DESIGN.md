@@ -607,35 +607,21 @@ with work in its pool is fatal at its stop, and a mark in flight past
 ten seconds is reported once per doubling of its age by an assist (every
 64th), a drain with nothing to do, or a `collect` waiting for it - the
 longest mark measured beside the server's shape was 42 ms.
-`bench/concurrent_mark.sh` runs `bench/mark_stall.iyi` at twelve
-workers with every helper and with one; its watchdog holds the tasks
-once the collections have stood still for 256 MiB of allocation and
-fails the run if none ends in five seconds. And it runs
-`bench/release_trigger.iyi`: one collection on each of the program
-thread's paths, then a second thread's slices past the budget, which
-must trigger the next. Its proofs put the store back, a retreat forced
-at every second stop and a window before the store held open until an
-assist has counted itself in, which the runtime's below-zero check
-catches at the first collection; the late generation read back with one
-helper, held until the next mark begins, which the overdue report and
-the watchdog both catch at the second; and each `@@collecting` after its
-release again, its thread held between the two - helper 0 ten seconds,
-past its unlock, the others a second - which the watchdog catches for
-helper 0 and `bench/release_trigger.iyi` names by round for the others.
-The first three were left to the machine once: the store's missed on
-four-core Windows and three-core darwin runners, the late read's on a
-four-core Windows one, and helper 0's held the tasks there at 287 and 289
-MiB against the watchdog's 256. Every proof is caught in every run now:
-12 of 12 each here held to three, four and twelve cores, and one run on
-each of three four-core Windows runners and a three-core darwin one,
-where `bench/concurrent_mark.sh` and `bench/parallel_mark.sh` passed
-whole. Helper 0's was held then until the count stood still for half a
-second, and beside #150's warm room it slipped through in 2 runs of 12 on
-twelve cores: a cache folds its allocation into the count a slice at a
-time, so the held tasks still allocated, and a slice collected once the
-flag fell. A fixed hold under the lock was worse, 2 of 36 caught; a
-fixed hold after the unlock is caught 36 of 36 on three, four and twelve
-cores.
+`bench/concurrent_mark.sh` runs `bench/mark_stall.iyi` at twelve workers with
+every helper and with one; its watchdog holds the tasks once the collections
+have stood still for 256 MiB of allocation and fails the run if none ends in
+five seconds. It also runs `bench/release_trigger.iyi`: one collection on each
+of the program thread's paths, then a second thread's slices past the budget,
+which must trigger the next. The failure proofs for the store, the late
+generation read and each `@@collecting` release are copies in which a hook holds
+one word of the runtime, and each broken copy exits 1 at its own sentence in a
+single run. Each has a control that runs the same hook on correct code and exits
+0. A hook releases on a word the program sets, not on a clock; the watchdog bounds
+only the setup, and its expiry exits 76 with the sentence that names the step.
+Before these holds, the same proofs were timed windows: the store was missed on
+four-core Windows and three-core darwin runners, the late read on a four-core
+Windows one, and helper 0's hold held the tasks at 287 and 289 MiB against the
+watchdog's 256.
 
 The budget is twice what survived, and what was allocated under the
 mark did not survive anything: born gray, so counted marked, but not
@@ -931,11 +917,13 @@ turns at the last. `bench/concurrent_mark.sh`'s bursts of frees free 64
 chunks the mark kept as soon as a slice of their arena is in flight: on
 four cores beside two busy loops the plain build faulted in 4 runs of
 1,000 and the release build in 108, and none of either after. The window
-is a few instructions, so the gate also runs the program on a copy of
-the prelude whose slice waits up to 100 us at each kept chunk of a
-kilobyte or more and exits by name if the entry changes under it; with
-the old free put back that copy failed by name in 200 runs of 200, plain
-and release alike.
+is a few instructions, so the gate also runs the program on a copy of the prelude
+whose slice waits up to 100 us at each kept chunk of a kilobyte or more and exits
+by name if the entry changes under it: ten runs on Linux and Windows, none on
+darwin. The failure proof does not depend on that window. An armed copy holds the
+sweep's look at one kept chunk by a word the program sets, until the program's free
+of that chunk announces itself, and a copy whose free takes no lock is caught
+inside that look.
 
 Two more levers on that garbage were tried in the second cycle and
 are not in the tree. A prefetch of a shaded object's line at its push:
