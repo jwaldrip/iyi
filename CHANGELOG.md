@@ -176,6 +176,17 @@
   still refused on Linux and Windows. `spec/compiler/iyimod_spec.cr`'s
   "does not ship the body" reads the artifact's symbols back unescaped the
   same way.
+- **The secure DNS gate reports where a stalled startup stopped, and bounds
+  each stage after it.** The scripted servers write the step they reached and
+  signal readiness last, and the gate's supervisor waits for that signal within
+  the same 20 s as before. A stall ends the run with its own named sentence and
+  status 76. Three things that used to skip now fail with status 76: a present
+  `h2` package that fails to import, a `dig -h` that fails or shows no usage
+  line, and a Python, `ssl` or `cryptography` that is present but broken (a
+  missing one still skips). The startup failure that prompted this (iyilang/iyi
+  run 44329905718, job 134891405059: "the scripted servers did not start", with
+  an empty server log) is unexplained: this change names and bounds that wait
+  and does not claim a cause.
 
 - **`bench/sweep_exercise.sh`'s widened trim-stress copies hold a sweep
   slice's listing window open, and their audits end the program where
