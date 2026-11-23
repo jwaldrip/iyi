@@ -42,11 +42,17 @@
 #      spawner's unit do not start before it parks at seed 2, where the
 #      healthy seed 2 has one; and a point left in a build without the flag
 #      names the scheduler in its IR.
+#
+# Exit status. A verdict exits 1. The gate's own setup (its work directory, a
+# build, an anchor that is missing or ambiguous) exits 76 with its own
+# sentence, and so does a run that hits its watchdog: 120 seconds for a
+# program, 900 for an iyi test. A hung plain run is still a failed plain run,
+# counted against the tolerance.
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="${IYI:-$REPO/bin/iyi}"
-WORK="$(mktemp -d)"
+WORK="$(mktemp -d)" && [ -d "$WORK" ] || { echo "FAIL: gate setup: cannot create the work directory"; exit 76; }
 EXE=""
 PLAIN_RUNS="${PLAIN_RUNS:-40}"
 
@@ -61,10 +67,23 @@ case "$(uname -s)" in
   *) PSEP=':'; PATH_WINDOWS=0 ;;
 esac
 
-cd "$WORK" || exit 1
+cd "$WORK" || { echo "FAIL: gate setup: cannot enter the work directory"; exit 76; }
 
 step() { echo "== $1"; }
 die() { echo "FAIL: $*"; exit 1; }
+setup_fail() { echo "FAIL: gate setup: $*"; exit 76; }
+# A run under its watchdog. timeout's 124, or 137 after its kill, means the run
+# hung: a setup failure that exits 76 at the watchdog's sentence, not a verdict.
+watched() { # seconds, label, command...
+  local secs="$1" label="$2" code
+  shift 2
+  timeout -k 5 "$secs" "$@"
+  code=$?
+  case "$code" in
+    124 | 137) echo "FAIL: gate watchdog: $label did not finish in $secs s"; exit 76 ;;
+  esac
+  return "$code"
+}
 
 # A build of *source* into *name*, under the prelude *prelude* (empty for
 # the repository's own), with the rest of the arguments.
@@ -75,7 +94,7 @@ build() { # name, prelude, source, flags...
     IYI_PATH="$prelude${PSEP}$REPO/src" "$IYI" build "$source" -o "$name" "$@" > "build-$name.log" 2>&1
   else
     "$IYI" build "$source" -o "$name" "$@" > "build-$name.log" 2>&1
-  fi
+  fi || { echo "FAIL: gate setup: the build of $name failed:"; tail -20 "build-$name.log"; exit 76; }
 }
 
 # `iyi test` over *source*, under *prelude*; its output in *log*, its exit
@@ -84,9 +103,9 @@ chaos_test() { # prelude, log, iyi test arguments...
   local prelude="$1" log="$2"
   shift 2
   if [ -n "$prelude" ]; then
-    IYI_WORKERS=1 IYI_PATH="$prelude${PSEP}$REPO/src" timeout -k 5 900 "$IYI" test "$@" > "$log" 2>&1
+    IYI_WORKERS=1 IYI_PATH="$prelude${PSEP}$REPO/src" watched 900 "iyi test into $log" "$IYI" test "$@" > "$log" 2>&1
   else
-    IYI_WORKERS=1 timeout -k 5 900 "$IYI" test "$@" > "$log" 2>&1
+    IYI_WORKERS=1 watched 900 "iyi test into $log" "$IYI" test "$@" > "$log" 2>&1
   fi
 }
 
@@ -147,10 +166,10 @@ caught() { # prelude, label, source, expected seed, exact fixture verdict
   if [ "$code" -ne 1 ] || ! normal_failure "again-$label.txt" "$verdict" "$source" "$seed" 1 1; then
     echo "$label: --chaos=$seed did not fail again (exit $code):"; tail -5 "again-$label.txt"; return 1
   fi
-  build "traced-$label" "$prelude" "$source" -Diyi_chaos || { echo "$label: the chaos build failed:"; tail -20 "build-traced-$label.log"; return 1; }
+  build "traced-$label" "$prelude" "$source" -Diyi_chaos
   first=""
   for attempt in 1 2 3 4 5; do
-    IYI_CHAOS="$seed" IYI_CHAOS_TRACE=1 IYI_WORKERS=1 timeout -k 5 120 "./traced-$label$EXE" > "traced-$label-$attempt.txt" 2>&1
+    IYI_CHAOS="$seed" IYI_CHAOS_TRACE=1 IYI_WORKERS=1 watched 120 "the traced run of $label" "./traced-$label$EXE" > "traced-$label-$attempt.txt" 2>&1
     code=$?
     { [ "$code" -eq 1 ] && grep -qxF "$verdict" "traced-$label-$attempt.txt"; } || { echo "$label: seed $seed did not exit 1 at its fixture verdict (exit $code):"; cat "traced-$label-$attempt.txt"; return 1; }
     if [ -z "$first" ]; then
@@ -168,7 +187,7 @@ caught() { # prelude, label, source, expected seed, exact fixture verdict
 # Step 5 under one prelude: answers 1, saying why, when a property fails.
 seeds() { # prelude, label
   local prelude="$1" label="$2" seed orders early late unit_early unit_late lefts rights code
-  build "exercise-$label" "$prelude" "$REPO/bench/chaos_exercise.iyi" -Diyi_chaos || { echo "$label: the exercise did not build:"; tail -20 "build-exercise-$label.log"; return 1; }
+  build "exercise-$label" "$prelude" "$REPO/bench/chaos_exercise.iyi" -Diyi_chaos
   : > "orders-$label.txt"
   early=0
   late=0
@@ -176,7 +195,7 @@ seeds() { # prelude, label
   unit_late=0
   for seed in $(seq 1 30); do
     for twice in a b; do
-      IYI_CHAOS="$seed" IYI_CHAOS_TRACE=1 IYI_WORKERS=1 timeout -k 5 120 "./exercise-$label$EXE" > "seed-$label-$seed-$twice.txt" 2>&1
+      IYI_CHAOS="$seed" IYI_CHAOS_TRACE=1 IYI_WORKERS=1 watched 120 "seed $seed of $label" "./exercise-$label$EXE" > "seed-$label-$seed-$twice.txt" 2>&1
       code=$?
       if [ "$code" -ne 0 ] || ! grep -qxF "every property held" "seed-$label-$seed-$twice.txt"; then
         echo "$label: seed $seed: $(grep -m1 FAIL "seed-$label-$seed-$twice.txt" || tail -3 "seed-$label-$seed-$twice.txt")"; return 1
@@ -213,11 +232,11 @@ seeds() { # prelude, label
 step "a build without -Diyi_chaos carries none of the scheduler"
 off_is_nothing() { # prelude, label
   local prelude="$1" label="$2"
-  build "off-$label" "$prelude" "$REPO/bench/chaos_claim.iyi" --emit llvm-ir || { echo "$label: the plain build failed:"; tail -20 "build-off-$label.log"; return 1; }
+  build "off-$label" "$prelude" "$REPO/bench/chaos_claim.iyi" --emit llvm-ir
   if grep -q "IyiChaos" "off-$label.ll"; then
     echo "$label: a plain build names the chaos scheduler: $(grep -m1 -o '[^ ]*IyiChaos[^ ]*' "off-$label.ll")"; return 1
   fi
-  build "on-$label" "$prelude" "$REPO/bench/chaos_claim.iyi" --emit llvm-ir -Diyi_chaos || { echo "$label: the chaos build failed:"; tail -20 "build-on-$label.log"; return 1; }
+  build "on-$label" "$prelude" "$REPO/bench/chaos_claim.iyi" --emit llvm-ir -Diyi_chaos
   grep -q "IyiChaos" "on-$label.ll" || { echo "$label: a chaos build names no chaos scheduler"; return 1; }
   echo "  $label: plain IR names nothing of it, the -Diyi_chaos IR does ($(grep -c 'IyiChaos' "on-$label.ll") lines)"
 }
@@ -226,7 +245,7 @@ off_is_nothing "" shipped || exit 1
 # ── 2. The bugs pass without it ───────────────────────────────────────────
 for test in claim join; do
   step "bench/chaos_$test.iyi passes without --chaos"
-  build "plain-$test" "" "$REPO/bench/chaos_$test.iyi" || die "the plain build failed: $(tail -20 "build-plain-$test.log")"
+  build "plain-$test" "" "$REPO/bench/chaos_$test.iyi"
   failed=0
   for run in $(seq 1 "$PLAIN_RUNS"); do
     timeout -k 5 120 "./plain-$test$EXE" > "plain-$test-$run.txt" 2>&1 || failed=$((failed + 1))
@@ -288,9 +307,9 @@ seeds "" shipped || exit 1
 broken() { # name, file, awk program
   mkdir -p "$1/iyi"
   cp "$REPO"/src/iyi/*.iyi "$1/iyi/"
-  awk "$3" "$REPO/src/iyi/$2" > "$1/iyi/$2" || { echo "the awk for $1 failed"; exit 1; }
+  awk "$3" "$REPO/src/iyi/$2" > "$1/iyi/$2" || setup_fail "the awk for $1 failed, or its anchor in $2 is missing or ambiguous"
   if cmp -s "$1/iyi/$2" "$REPO/src/iyi/$2"; then
-    echo "the awk for $1 found nothing to change"; exit 1
+    setup_fail "the awk for $1 found nothing to change in $2"
   fi
 }
 expect_caught() { # name, the sentence its check prints
@@ -301,23 +320,23 @@ expect_caught() { # name, the sentence its check prints
 }
 
 step "broken copy: the stream ignored, every choice the plain scheduler's"
-broken prngignored chaos.iyi '/^  def self.draw : UInt64$/ { n++; print; print "    return 0_u64"; next } { print } END { if (n != 1) exit 3 }' || die "prngignored anchor missing or ambiguous"
+broken prngignored chaos.iyi '/^  def self.draw : UInt64$/ { n++; print; print "    return 0_u64"; next } { print } END { if (n != 1) exit 3 }'
 for test in claim join; do
   case "$test" in
     claim) seed=6; verdict="one leader: task 1" ;;
     join) seed=42; verdict="the reader saw 42 (work 4)" ;;
   esac
-  build "prng-$test" "$WORK/prngignored" "$REPO/bench/chaos_$test.iyi" -Diyi_chaos || die "prngignored $test build failed: $(tail -20 "build-prng-$test.log")"
-  IYI_CHAOS="$seed" IYI_WORKERS=1 timeout -k 5 120 "./prng-$test$EXE" > "prng-$test.txt" 2>&1
+  build "prng-$test" "$WORK/prngignored" "$REPO/bench/chaos_$test.iyi" -Diyi_chaos
+  IYI_CHAOS="$seed" IYI_WORKERS=1 watched 120 "the stream-ignored $test" "./prng-$test$EXE" > "prng-$test.txt" 2>&1
   code=$?
   [ "$code" -eq 0 ] && grep -qxF "$verdict" "prng-$test.txt" || die "prngignored $test did not exit 0 at '$verdict' (exit $code): $(tail -20 "prng-$test.txt")"
   echo "  prngignored $test: seed $seed exited 0 at $verdict"
 done
 
 step "broken copy: the seed consumed but both streams use the next seed"
-broken seedignored chaos.iyi '/^    IyiStat\.set\(IyiStat::CHAOS_STREAM, seed\)$/ { n++; print "    IyiStat.set(IyiStat::CHAOS_STREAM, seed &+ 1_u64)"; next } /value = IyiStat.get\(IyiStat::CHAOS_SEED\) \^ mix/ { m++; sub(/IyiStat.get\(IyiStat::CHAOS_SEED\)/, "(IyiStat.get(IyiStat::CHAOS_SEED) \\&+ 1_u64)"); print; next } { print } END { if (n != 1 || m != 1) exit 3 }' || die "seedignored anchor missing or ambiguous"
-build exercise-seedignored "$WORK/seedignored" "$REPO/bench/chaos_exercise.iyi" -Diyi_chaos || die "seedignored build failed: $(tail -20 build-exercise-seedignored.log)"
-IYI_CHAOS=1 IYI_CHAOS_TRACE=1 IYI_WORKERS=1 timeout -k 5 120 "./exercise-seedignored$EXE" > seedignored.txt 2>&1
+broken seedignored chaos.iyi '/^    IyiStat\.set\(IyiStat::CHAOS_STREAM, seed\)$/ { n++; print "    IyiStat.set(IyiStat::CHAOS_STREAM, seed &+ 1_u64)"; next } /value = IyiStat.get\(IyiStat::CHAOS_SEED\) \^ mix/ { m++; sub(/IyiStat.get\(IyiStat::CHAOS_SEED\)/, "(IyiStat.get(IyiStat::CHAOS_SEED) \\&+ 1_u64)"); print; next } { print } END { if (n != 1 || m != 1) exit 3 }'
+build exercise-seedignored "$WORK/seedignored" "$REPO/bench/chaos_exercise.iyi" -Diyi_chaos
+IYI_CHAOS=1 IYI_CHAOS_TRACE=1 IYI_WORKERS=1 watched 120 "the seed-consumed copy" "./exercise-seedignored$EXE" > seedignored.txt 2>&1
 code=$?
 [ "$code" -eq 0 ] && grep -qxF "every property held" seedignored.txt || die "seedignored fixture verdict missing (exit $code): $(tail -20 seedignored.txt)"
 grep -q '^iyi chaos: seed 1, ' seedignored.txt || die "seedignored did not consume supplied seed 1"
@@ -337,8 +356,8 @@ grep -qE '^Unit tasks started before the spawner parked: [1-9][0-9]*$' seed-ship
 # for a whole-line extended regular expression.
 mutant_run() { # name, seed, expected exit, F or E, the line
   local name="$1" seed="$2" want_code="$3" mode="$4" verdict="$5" code
-  build "exercise-$name" "$WORK/$name" "$REPO/bench/chaos_exercise.iyi" -Diyi_chaos || die "$name build failed: $(tail -20 "build-exercise-$name.log")"
-  IYI_CHAOS="$seed" IYI_CHAOS_TRACE=1 IYI_WORKERS=1 timeout -k 5 120 "./exercise-$name$EXE" > "$name.txt" 2>&1
+  build "exercise-$name" "$WORK/$name" "$REPO/bench/chaos_exercise.iyi" -Diyi_chaos
+  IYI_CHAOS="$seed" IYI_CHAOS_TRACE=1 IYI_WORKERS=1 watched 120 "the $name copy" "./exercise-$name$EXE" > "$name.txt" 2>&1
   code=$?
   [ "$code" -eq "$want_code" ] && grep -qx"$mode" -e "$verdict" "$name.txt" || die "$name seed $seed did not exit $want_code at '$verdict' (exit $code): $(tail -20 "$name.txt")"
   echo "  $name seed $seed: $verdict"
@@ -400,7 +419,7 @@ awk '
     if (NR) print prev
     for (key in expected) if (found[key] != expected[key]) exit 3
   }
-' "$REPO/src/iyi/concurrency.iyi" > pointleft/iyi/concurrency.iyi || die "pointleft concurrency support anchor missing or ambiguous"
+' "$REPO/src/iyi/concurrency.iyi" > pointleft/iyi/concurrency.iyi || setup_fail "the support anchors of the pointleft copy are missing or ambiguous"
 off_is_nothing "$WORK/pointleft" pointleft > pointleft.txt 2>&1
 expect_caught pointleft "a plain build names the chaos scheduler"
 
