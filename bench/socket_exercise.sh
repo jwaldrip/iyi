@@ -63,6 +63,22 @@ esac
 
 status=0
 
+# Runs one program under a time limit of `limit` seconds, sending its output to
+# `output`, and returns its status. A run that does not finish (124, or 137
+# after the kill) fails the gate: its last three output lines are printed, and
+# no caller counts it as a catch.
+run_bounded() { # run_bounded <seconds> <label> <output> <program> [argument...]
+  local limit="$1" label="$2" output="$3" code
+  shift 3
+  timeout -k 5 "$limit" "$@" >"$output" 2>&1
+  code=$?
+  if [ "$code" -eq 124 ] || [ "$code" -eq 137 ]; then
+    echo "  $label: did not finish within $limit s (exit $code); the last three lines of its output:"
+    tail -n 3 "$output" | sed 's/^/    /'
+  fi
+  return "$code"
+}
+
 run_case() {
   local label="$1" name="$2"
   shift 2
@@ -73,7 +89,7 @@ run_case() {
     status=1
     return 1
   fi
-  "$WORK/$name" >"$WORK/$name.out" 2>&1
+  run_bounded 120 "$label" "$WORK/$name.out" "$WORK/$name"
   local exit_code=$?
   sed 's/^/  /' "$WORK/$name.out"
   if [ "$exit_code" -ne 0 ]; then
@@ -197,8 +213,13 @@ prove_fails() {
     status=1
     return
   fi
-  "$WORK/$dir/program" >"$WORK/$dir/out" 2>&1
+  run_bounded 120 "$label" "$WORK/$dir/out" "$WORK/$dir/program"
   local exit_code=$?
+  if [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ]; then
+    sed 's/^/    /' "$WORK/$dir/out"
+    status=1
+    return
+  fi
   if [ "$exit_code" -eq 0 ]; then
     echo "  $label: the exercise still passed, so it does not test this"
     status=1
@@ -291,21 +312,18 @@ case "$(uname -s)" in
       echo "  SIGPIPE on a gone peer: the patched library did not build"
       status=1
     else
-      # A write to a peer whose reset has already arrived answers
-      # ECONNRESET, which raises no signal, where one before it answers
-      # EPIPE and the signal: which comes first is the scheduler's timing,
-      # and a run on the work-stealing pool once answered the first and
-      # exited 0. The copy is run up to five times; one death by the
-      # signal is the proof.
-      for attempt in 1 2 3 4 5; do
-        "$WORK/sigpipe/program" >"$WORK/sigpipe/out" 2>&1
-        code=$?
-        [ "$code" -eq 141 ] && break
-      done
-      if [ "$code" -eq 141 ] && ! grep -q "disconnect: ok" "$WORK/sigpipe/out"; then
+      # One run. The program prints a marker just before its writes to the gone
+      # peer, and the signal counts only when it came after that marker and
+      # before "disconnect: ok". The program reads to the peer's end first, so
+      # the first write that fails meets the peer's reset as EPIPE in CLOSE_WAIT:
+      # the copy that drops MSG_NOSIGNAL raises SIGPIPE there.
+      run_bounded 120 "SIGPIPE on a gone peer" "$WORK/sigpipe/out" "$WORK/sigpipe/program"
+      code=$?
+      if [ "$code" -eq 141 ] && grep -qxF "disconnect: writing to a peer that has closed" "$WORK/sigpipe/out" && ! grep -q '^disconnect: ok' "$WORK/sigpipe/out"; then
         echo "  SIGPIPE on a gone peer: killed by the signal at the disconnect (exit 141)"
       else
         echo "  SIGPIPE on a gone peer: exited $code, so the check does not see it"
+        sed 's/^/    /' "$WORK/sigpipe/out"
         status=1
       fi
     fi ;;
