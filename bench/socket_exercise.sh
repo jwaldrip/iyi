@@ -334,7 +334,10 @@ case "$(uname -s)" in
     # process. With SIGPIPE at its default (above) this copy was killed
     # there in 10 runs of 10 on a macos-15 runner (debug job 126320045389)
     # and in 10 of 10 on macOS 26.6.2 (Apple M2 Pro, 10 cores, the user's
-    # machine).
+    # machine). Both counts were measured on the sleep-and-retry version of
+    # this proof, which the barrier below replaces, not on the barrier. The
+    # barrier version has run on darwin arm64 (this machine) in loops and
+    # whole-gate runs, and it has not run on a macos-15 runner.
     mkdir -p "$WORK/sigpipe/std"
     cp -R "$REPO/src/std/." "$WORK/sigpipe/std/"
     awk '{ sub(/LibC.send\(fd, buf.as\(Void\*\), len, 0x80000\)/, "LibC.send(fd, buf.as(Void*), len, 0)"); print }' \
@@ -347,12 +350,13 @@ case "$(uname -s)" in
       echo "  SIGPIPE on a connection reset before its accept: the patched library did not build"
       status=1
     else
-      "$WORK/sigpipe/program" >"$WORK/sigpipe/out" 2>&1
+      run_bounded 120 "SIGPIPE on a connection reset before its accept" "$WORK/sigpipe/out" "$WORK/sigpipe/program"
       code=$?
-      if [ "$code" -eq 141 ] && grep -q "disconnect: ok" "$WORK/sigpipe/out" && ! grep -q "reset_before_accept: ok" "$WORK/sigpipe/out"; then
+      if [ "$code" -eq 141 ] && grep -q '^disconnect: ok' "$WORK/sigpipe/out" && grep -qxF "reset_before_accept: writing to the reset peer" "$WORK/sigpipe/out" && ! grep -q '^reset_before_accept: ok' "$WORK/sigpipe/out"; then
         echo "  SIGPIPE on a connection reset before its accept: killed by the signal there (exit 141)"
       else
         echo "  SIGPIPE on a connection reset before its accept: exited $code, so the check does not see it"
+        sed 's/^/    /' "$WORK/sigpipe/out"
         status=1
       fi
     fi ;;
