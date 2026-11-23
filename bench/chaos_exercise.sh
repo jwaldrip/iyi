@@ -50,6 +50,11 @@
 # counted against the tolerance.
 set -u
 
+# Descriptor 3 is this gate's own stdout. A call that redirects its output (a run
+# into its log, the pointleft check into its file) still shows the sentence of a
+# setup failure or a watchdog, so those write to 3 and not to 1.
+exec 3>&1
+
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)" && [ -d "$WORK" ] || { echo "FAIL: gate setup: cannot create the work directory"; exit 76; }
@@ -71,7 +76,7 @@ cd "$WORK" || { echo "FAIL: gate setup: cannot enter the work directory"; exit 7
 
 step() { echo "== $1"; }
 die() { echo "FAIL: $*"; exit 1; }
-setup_fail() { echo "FAIL: gate setup: $*"; exit 76; }
+setup_fail() { echo "FAIL: gate setup: $*" >&3; exit 76; }
 # A run under its watchdog. timeout's 124, or 137 after its kill, means the run
 # hung: a setup failure that exits 76 at the watchdog's sentence, not a verdict.
 watched() { # seconds, label, command...
@@ -80,7 +85,7 @@ watched() { # seconds, label, command...
   timeout -k 5 "$secs" "$@"
   code=$?
   case "$code" in
-    124 | 137) echo "FAIL: gate watchdog: $label did not finish in $secs s"; exit 76 ;;
+    124 | 137) echo "FAIL: gate watchdog: $label did not finish in $secs s" >&3; exit 76 ;;
   esac
   return "$code"
 }
@@ -102,7 +107,7 @@ build() { # name, prelude, source, flags...
     IYI_PATH="$prelude${PSEP}$REPO/src" "$IYI" build "$source" -o "$name" "$@" > "build-$name.log" 2>&1
   else
     "$IYI" build "$source" -o "$name" "$@" > "build-$name.log" 2>&1
-  fi || { echo "FAIL: gate setup: the build of $name failed:"; tail -20 "build-$name.log"; exit 76; }
+  fi || { echo "FAIL: gate setup: the build of $name failed:" >&3; tail -20 "build-$name.log" >&3; exit 76; }
 }
 
 # `iyi test` over *source*, under *prelude*; its output in *log*, its exit
