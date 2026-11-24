@@ -25,6 +25,8 @@ jobs:
     timeout-minutes: 90
     env:
       SELFHOST_HOST: windows-x86_64
+      # A table-only run: the gate marks each mutation proof NOT RUN, so the 2c table lands in minutes.
+      MUTATION_SKIP: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

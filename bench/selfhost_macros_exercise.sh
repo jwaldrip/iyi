@@ -680,9 +680,60 @@ printf 'outside-secret\n' > "$CONF/layout/outside/secret.txt"
 : > "$CONF/layout/app/main.iyi"
 : > "$CONF/layout/dep/dep.iyi"
 : > "$CONF/layout/outside/outside.iyi"
-ln -s ../outside "$CONF/layout/app/escape"
-ln -s ../nowhere "$CONF/layout/app/dangling"
-CONF_L="$(cd "$CONF/layout" && pwd -P)"
+# A link the cases follow. On Windows it is a junction: any user may make one, and the native drivers follow it. Git bash's
+# ln -s copies the directory instead, so the escape cases would read a copy. Elsewhere it is the symlink it was.
+link_dir() { # <link> <target as a symlink writes it> <target, absolute>
+  if [ "$HOST_OS" = windows ]; then
+    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" cmd /c mklink /J "$(cygpath -w "$1")" "$(cygpath -w "$3")" > /dev/null
+  else
+    ln -s "$2" "$1"
+  fi
+}
+# The kind of link at a path as this host reports it: a junction or a symlink, or nothing for a plain directory.
+link_kind() {
+  if [ "$HOST_OS" = windows ]; then
+    powershell.exe -NoProfile -Command "(Get-Item -LiteralPath '$(cygpath -w "$1")' -Force).LinkType" | tr -d '\r'
+  elif [ -L "$1" ]; then
+    echo symlink
+  fi
+}
+link_dir "$CONF/layout/app/escape" ../outside "$CONF/layout/outside"
+if [ "$HOST_OS" = windows ]; then
+  # A junction to a directory that is made and then removed: it leads nowhere, as a symlink to a missing target does.
+  mkdir "$CONF/layout/nowhere"
+  link_dir "$CONF/layout/app/dangling" ../nowhere "$CONF/layout/nowhere"
+  rmdir "$CONF/layout/nowhere"
+else
+  ln -s ../nowhere "$CONF/layout/app/dangling"
+fi
+# A copy would pass every case, since a copy holds the same files, so the gate proves each link is a link on this host.
+for link in escape dangling; do
+  kind="$(link_kind "$CONF/layout/app/$link")" || kind=""
+  echo "  $link is a link on this host: ${kind:-none}"
+  case "$kind" in
+    Junction | symlink | SymbolicLink) ;;
+    *) echo "  THE $link LINK IS NOT A LINK ON THIS HOST: its cases would test a copy"; status=1 ;;
+  esac
+done
+CONF_L="$(native_path "$(cd "$CONF/layout" && pwd -P)")"
+# The spellings a host prints a directory in. On Windows: the mixed path the cases name, the long path the drivers resolve
+# to (long names, backslashes), its forward-slash twin, each with a lower-case drive letter, and the backslash forms that
+# an inspect (doubled) and an escaped inspect inside a printed message (quadrupled) write. confine_normal maps each one.
+spellings() {
+  local p="$1" native long fwd form
+  if [ "$HOST_OS" != windows ]; then
+    printf '%s\n' "$p"
+    return
+  fi
+  native="$(native_path "$p")"
+  long="$(cygpath -w -l "$p")"
+  fwd="${long//\\//}"
+  for form in "$native" "$long" "$fwd" "$(printf '%s' "$long" | sed 's/\\/\\\\/g')" "$(printf '%s' "$long" | sed 's/\\/\\\\\\\\/g')"; do
+    printf '%s\n' "$form" "$(printf '%s' "$form" | sed 's/^\(.\)/\L\1/')"
+  done
+}
+NORM_LAYOUT="$(spellings "$(cd "$CONF/layout" && pwd -P)")"
+NORM_REPO="$(spellings "$REPO")"
 export IYI_MACRO_CONFINE_SET=gate-value
 unset IYI_MACRO_CONFINE_UNSET
 cat <<'CONFINE_CASES' > "$CONF/cases.manifest"
@@ -906,9 +957,18 @@ body={{ system("echo hi") }}
 CONFINE_CASES
 sed -e "s#@L@#$CONF_L#g" -e "s#@REPO@#$REPO_NATIVE#g" "$CONF/cases.manifest" |
   awk -v dir="$CONF/cases" '/^case /{f=dir "/" $2 ".case"; next} {print > f}'
-# The layout and the repository print as <LAYOUT> and <REPO>, so the table reads the same on every run.
+# The printed tables show the layout and the repository as <LAYOUT> and <REPO>, in every spelling the drivers print them in:
+# on Windows a drive letter, a short name or a backslash can differ from the one the cases were written with.
 confine_normal() {
-  sed -e "s#$CONF_L#<LAYOUT>#g" -e "s#$REPO_NATIVE#<REPO>#g"
+  NORM_LAYOUT="$NORM_LAYOUT" NORM_REPO="$NORM_REPO" perl -pe '
+    BEGIN {
+      @P = ();
+      push @P, [$_, "<LAYOUT>"] for grep { length } split /\n/, $ENV{NORM_LAYOUT};
+      push @P, [$_, "<REPO>"] for grep { length } split /\n/, $ENV{NORM_REPO};
+      @P = sort { length($b->[0]) <=> length($a->[0]) } @P;
+    }
+    for my $p (@P) { my ($from, $to) = @$p; s/\Q$from\E/$to/g }
+  '
 }
 conf_cases=0
 conf_identical=0
@@ -1347,9 +1407,13 @@ prove_mutation "a dotdot after a link is applied before the link" "$CONFINEMENT"
   -- check_confinement_still_matches || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "relative paths ignore the base directory" "$CONFINEMENT" \
-  'File.join(@base_dir, path)' \
-  'path' \
+# The relative-path formula of the host: a join where it is POSIX, and Windows' own expansion on Windows.
+if [ "$HOST_OS" = windows ]; then
+  rel_old='File.expand_path(path, @base_dir)'; rel_new='File.expand_path(path)'
+else
+  rel_old='File.join(@base_dir, path)'; rel_new='path'
+fi
+prove_mutation "relative paths ignore the base directory" "$CONFINEMENT" "$rel_old" "$rel_new" \
   -- check_confinement_still_matches || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

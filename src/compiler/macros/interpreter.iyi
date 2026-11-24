@@ -451,6 +451,37 @@ pub class MacroInterpreter
     fail_at(node, "#{method} at #{confinement_site(node)} is not allowed in an .iyi macro: compile-time shell commands are forbidden")
   end
 
+  # The sentence a read of a missing file ends with, as the host's File.open
+  # words it. Windows names the directory when the directory is missing too,
+  # and only the file when just the file is.
+  def missing_read_message(resolved : String) : String
+    {% if flag?(:win32) %}
+      reason = File.directory?(File.dirname(resolved)) ? "The system cannot find the file specified." : "The system cannot find the path specified."
+      return windows_open_message(resolved, reason)
+    {% else %}
+      return "Error opening file with mode 'r': '#{resolved}': No such file or directory"
+    {% end %}
+  end
+
+  # A directory cannot be opened for reading on Windows, where CreateFileW
+  # refuses one without backup semantics, so Crystal's File.read names that
+  # refusal. On POSIX the same read fails in the read itself.
+  def directory_read_message(resolved : String) : String
+    {% if flag?(:win32) %}
+      return windows_open_message(resolved, "Access is denied.")
+    {% else %}
+      return "read (#{resolved}): Is a directory"
+    {% end %}
+  end
+
+  # Crystal's File::Error text on Windows: the path as `inspect_unquoted`
+  # writes it, between single quotes, then the system's sentence.
+  def windows_open_message(resolved : String, reason : String) : String
+    shown = resolved.inspect
+    inner = shown[1, shown.bytesize - 2]
+    "Error opening file with mode 'r': '#{inner}': #{reason}"
+  end
+
   # The macro methods a call with no receiver names. Nil for any other name,
   # which the caller reports. `system` and the backtick are refused with hosted's
   # sentence, and `run` by name: this engine runs no other program, and a macro
@@ -513,12 +544,12 @@ pub class MacroInterpreter
       end
       if !File.exists?(resolved)
         return NilLiteral.new if name == "read_file?"
-        fail_at(node, "Error opening file with mode 'r': '#{resolved}': No such file or directory")
+        fail_at(node, missing_read_message(resolved))
         return Nop.new
       end
       if File.directory?(resolved)
         return NilLiteral.new if name == "read_file?"
-        fail_at(node, "read (#{resolved}): Is a directory")
+        fail_at(node, directory_read_message(resolved))
         return Nop.new
       end
       return StringLiteral.new(File.read(resolved))
