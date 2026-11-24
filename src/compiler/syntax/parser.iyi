@@ -1392,6 +1392,8 @@ pub class Parser < Lexer
 
   def parse_var_or_call(location : Location, global : Bool = false, call_only : Bool = false) : ASTNode
     name = @token.value
+    # hosted parser.cr 6239-6241: a forced call on an operator token (`&.+(1)`) is named by the operator.
+    name = @token.type.to_s if call_only && name.empty?
     name_end = token_end_location
     is_var = !global && var?(name)
 
@@ -1533,13 +1535,7 @@ pub class Parser < Lexer
           amp_location = @token.location
           next_token_skip_space
           if @token.type == TokenKind::OP_PERIOD
-            next_token_skip_space
-            temp_arg = Var.new(temp_arg_name)
-            call = parse_var_or_call(@token.location, false, true)
-            if call.is_a?(Call)
-              call.obj = temp_arg
-            end
-            block = Block.new([temp_arg], call).at(amp_location)
+            block = parse_short_block(amp_location)
             skip_space_or_newline
             check(TokenKind::OP_RPAREN)
             break
@@ -1593,6 +1589,151 @@ pub class Parser < Lexer
     end
   end
 
+  # Hosted parse_call_block_arg (parser.cr 2204-2243), the `&.` branch: the block `&.name...` is a one-parameter block
+  # whose body is the chain that follows the dot, with the parameter as its first receiver. It is located at the `&`.
+  # The token is the period.
+  def parse_short_block(amp_location : Location) : Block
+    block_arg_name = temp_arg_name
+    obj = Var.new(block_arg_name)
+    @wants_regex = false
+    if current_char == '%'
+      next_char
+      @token.type = TokenKind::OP_PERCENT
+      @token.column_number = @token.column_number + 1
+      skip_space
+    else
+      next_token_skip_space
+    end
+    call = parse_call_block_arg_after_dot(obj)
+    Block.new([Var.new(block_arg_name)], call).at(amp_location)
+  end
+
+  # Hosted parse_call_block_arg_after_dot (parser.cr 2245-2336): what follows the dot of a short block. An instance
+  # variable read, an `is_a?`, `as`, `as?`, `responds_to?`, `nil?` (outside a macro expression) or `!` each take the
+  # special suffix; an index takes the full suffix and an optional `= value`; any other name is a forced call that may be
+  # assigned (`&.name = v`, `&.name=(v)`) or may start a chain.
+  def parse_call_block_arg_after_dot(obj : ASTNode) : ASTNode
+    location = @token.location
+
+    if @token.type == TokenKind::INSTANCE_VAR
+      ivar_end = token_end_location
+      ivar = ReadInstanceVar.new(obj, @token.value)
+      next_token_skip_space
+      ivar.end_location = ivar_end
+      return parse_atomic_method_suffix_special(ivar.at(location), location)
+    end
+
+    check_method_name_after_dot
+
+    if @token.keyword == Keyword::IS_A_QUESTION
+      return parse_atomic_method_suffix_special(parse_is_a(obj).at(location), location)
+    elsif @token.keyword == Keyword::AS
+      return parse_atomic_method_suffix_special(parse_as(obj, false).at(location), location)
+    elsif @token.keyword == Keyword::AS_QUESTION
+      return parse_atomic_method_suffix_special(parse_as(obj, true).at(location), location)
+    elsif @token.keyword == Keyword::RESPONDS_TO_QUESTION
+      return parse_atomic_method_suffix_special(parse_responds_to(obj).at(location), location)
+    elsif !@in_macro_expression && @token.keyword == Keyword::NIL_QUESTION
+      return parse_atomic_method_suffix_special(parse_nil_question(obj).at(location), location)
+    elsif @token.type == TokenKind::OP_BANG
+      return parse_atomic_method_suffix_special(parse_negation_suffix(obj).at(location), location)
+    elsif @token.type == TokenKind::OP_LSQUARE
+      indexed = parse_atomic_method_suffix(obj, location)
+      if @token.type == TokenKind::OP_EQ && indexed.is_a?(Call) && can_be_assigned?(indexed)
+        next_token_skip_space
+        exp = parse_op_assign
+        indexed.name = "#{indexed.name}="
+        indexed.args << exp
+        indexed.at_end(exp)
+      end
+      return indexed
+    end
+
+    # The `do` of a block belongs to the next call here.
+    old_stop_on_do = @stop_on_do
+    @stop_on_do = false
+    found = parse_var_or_call(location, false, true).at(location)
+    unless found.is_a?(Call)
+      raise "BUG: #{found} should be a call"
+    end
+    found.obj = obj
+    result : ASTNode = found
+
+    if @token.type == TokenKind::OP_EQ
+      unexpected_token unless can_be_assigned?(found)
+      next_token
+      if @token.type == TokenKind::OP_LPAREN
+        skip_space
+        next_token_skip_space
+        exp = parse_op_assign
+        check(TokenKind::OP_RPAREN)
+        next_token_skip_space
+        found.name = "#{found.name}="
+        found.args = [exp] of ASTNode
+        result = parse_atomic_method_suffix(found, location)
+      else
+        skip_space
+        exp = parse_op_assign
+        found.name = "#{found.name}="
+        found.args = [exp] of ASTNode
+      end
+      result.at_end(exp)
+    else
+      result = parse_atomic_method_suffix(found, location)
+      if @token.type == TokenKind::OP_EQ && result.is_a?(Call) && can_be_assigned?(result)
+        next_token_skip_space
+        exp = parse_op_assign
+        result.name = "#{result.name}="
+        result.args << exp
+        result.at_end(exp)
+      end
+    end
+
+    @stop_on_do = old_stop_on_do
+    result
+  end
+
+  # Hosted parse_atomic_method_suffix_special (parser.cr 1348-1355): the chain continues only at a period or a bracket.
+  def parse_atomic_method_suffix_special(call : ASTNode, location : Location) : ASTNode
+    case @token.type
+    when TokenKind::OP_PERIOD, TokenKind::OP_LSQUARE, TokenKind::OP_LSQUARE_RSQUARE
+      parse_atomic_method_suffix(call, location)
+    else
+      call
+    end
+  end
+
+  # Hosted parse_negation_suffix (parser.cr 1517-1529): `x.!` and `x.!()` are `!x`.
+  def parse_negation_suffix(atomic : ASTNode) : ASTNode
+    end_location = token_end_location
+    next_token
+    if @token.type == TokenKind::OP_LPAREN
+      next_token_skip_space_or_newline
+      check(TokenKind::OP_RPAREN)
+      end_location = token_end_location
+      next_token_skip_space
+    end
+    Not.new(atomic).at_end(end_location)
+  end
+
+  # Hosted iyi_check_name(AtomicWithMethodCheck, "a method name after '.'") (parser.cr 1099-1105, 8364-8368).
+  def check_method_name_after_dot : Nil
+    case @token.type
+    when TokenKind::IDENT, TokenKind::CONST, TokenKind::OP_PLUS, TokenKind::OP_MINUS, TokenKind::OP_STAR, TokenKind::OP_SLASH,
+         TokenKind::OP_SLASH_SLASH, TokenKind::OP_PERCENT, TokenKind::OP_BAR, TokenKind::OP_AMP, TokenKind::OP_CARET,
+         TokenKind::OP_TILDE, TokenKind::OP_BANG, TokenKind::OP_STAR_STAR, TokenKind::OP_LT_LT, TokenKind::OP_LT,
+         TokenKind::OP_LT_EQ, TokenKind::OP_EQ_EQ, TokenKind::OP_BANG_EQ, TokenKind::OP_EQ_TILDE, TokenKind::OP_BANG_TILDE,
+         TokenKind::OP_GT_GT, TokenKind::OP_GT, TokenKind::OP_GT_EQ, TokenKind::OP_LT_EQ_GT, TokenKind::OP_EQ_EQ_EQ,
+         TokenKind::OP_LSQUARE_RSQUARE, TokenKind::OP_LSQUARE_RSQUARE_EQ, TokenKind::OP_LSQUARE_RSQUARE_QUESTION,
+         TokenKind::OP_LSQUARE, TokenKind::OP_AMP_PLUS, TokenKind::OP_AMP_MINUS, TokenKind::OP_AMP_STAR,
+         TokenKind::OP_AMP_STAR_STAR
+      nil
+    else
+      not_what = @token.type == TokenKind::EOF ? "the end of the file" : "'#{@token.value.empty? ? @token.type.to_s : @token.value}'"
+      syntax_error("expecting a method name after '.', not #{not_what}", @token.location)
+    end
+  end
+
   def parse_call_args_space_consumed(allow_curly : Bool = false, allow_beginless_range : Bool = false, control : Bool = false) : CallArgs?
     if @token.keyword == Keyword::DO || (@token.keyword == Keyword::END && !next_comes_colon_space?) || @token.type == TokenKind::EOF
       return nil
@@ -1642,14 +1783,9 @@ pub class Parser < Lexer
         amp_location = @token.location
         next_token_skip_space
         if @token.type == TokenKind::OP_PERIOD
-          next_token_skip_space
-          temp_arg = Var.new(temp_arg_name)
-          call = parse_var_or_call(@token.location, false, true)
-          if call.is_a?(Call)
-            call.obj = temp_arg
-          end
-          block = Block.new([temp_arg], call).at(amp_location)
-          end_location = call.end_location
+          block = parse_short_block(amp_location)
+          end_location = block.body.end_location
+          skip_space
           break
         else
           block_arg = parse_op_assign_no_control

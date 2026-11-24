@@ -1,0 +1,38 @@
+# A short block `&.name...` is a one-parameter block whose body is the chain that follows the dot. The hosted parser reads
+# every form below (parser.cr 2204-2336); the port reads each the same, in the parenthesised and the bare argument position.
+# `nil?` after the dot, `x.@v` and the other special forms each take the special suffix; an index or a name may be assigned.
+
+x.each(&.verdict.ready?)
+x.map(&.a.b.c)
+x.map(&.[0])
+x.map(&.[0]?)
+x.map(&.[0] = 1)
+x.each(&.@v)
+x.select(&.is_a?(Int32))
+x.select(&.as(Int32).succ)
+x.map(&.as?(Int32))
+x.select(&.responds_to?(:foo))
+x.select(&.nil?)
+x.select(&.!)
+x.each(&.name = 1)
+x.each(&.name=(1))
+x.each(&.name=(1).foo)
+x.map(&.a[0].b)
+x.map(&.a[0] = 3)
+x.map(&.+(1))
+x.map(&.%(2))
+x.map(&.a { |y| y })
+x.map(&.a.b?.c!)
+x.each &.verdict.ready?
+x.each &.a.b
+x.each &.[0]
+x.each &.[0] = 1
+x.each &.@v
+x.each &.is_a?(Int32)
+x.each &.as(Int32).succ
+x.each &.nil?
+x.each &.name = 1
+x.each &.name=(1)
+x.foo(1, &.a.b)
+x.foo(a: 1, &.a.b)
+x.foo 1, &.a.b

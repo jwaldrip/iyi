@@ -999,6 +999,7 @@ parity_fixtures=(
   "$REPO"/bench/fixtures/syntax_call_arg_starts.iyi
   "$REPO"/bench/fixtures/syntax_string_keys.iyi
   "$REPO"/bench/fixtures/syntax_implicit_rescue.iyi
+  "$REPO"/bench/fixtures/syntax_short_block.iyi
 )
 for fixture in "${parity_fixtures[@]}"; do
   fixture_name="${fixture#"$REPO/"}"
@@ -1783,6 +1784,62 @@ else
   status=1
 fi
 
+echo "== Short blocks: \`&.name...\` takes the whole chain, index, assignment and special forms that follow the dot, as the hosted parser reads it"
+# Hosted parse_call_block_arg and parse_call_block_arg_after_dot (parser.cr 2204-2336). The tree and the locations of every
+# accepted form are compared above, through bench/fixtures/syntax_short_block.iyi; these rows are the verdicts of the forms
+# the formatter cannot keep in a tracked fixture, and the refusals. The expectations are hosted's: a refusal's message is
+# contained in both parsers' first error line (the port adds a label or omits the open-call note on three of them, as it does
+# outside a short block).
+sb_sources=(
+  $'x.each(&.@v.size)\n'
+  $'x.each &.@v.size\n'
+  $'x.map(&.a do |y| y end)\n'
+  $'x.each &.a do |y| y end\n'
+  $'x.each(&.a? = 1)\n'
+  $'x.each(&.)\n'
+  $'x.each &.\n'
+  $'x.each(&.1)\n'
+  $'x.each(&.a.1)\n'
+  $'x.each(&.a.b = )\n'
+  $'x.each(&.[0] = )\n'
+  $'x.each(&.@v = 1)\n'
+  $'x.each(&.is_a?)\n'
+)
+sb_expect=(
+  ACCEPT ACCEPT ACCEPT ACCEPT ACCEPT
+  "REFUSE 1 expecting a method name after '.', not ')'"
+  "REFUSE 1 expecting a method name after '.', not 'NEWLINE'"
+  "REFUSE 1 .1 style number literal is not supported, put 0 before dot"
+  "REFUSE 1 .1 style number literal is not supported, put 0 before dot"
+  "REFUSE 1 unexpected token: \")\""
+  "REFUSE 1 unexpected token: \")\""
+  "REFUSE 1 expecting token ')', not '='"
+  "REFUSE 1 unexpected token: \")\""
+)
+sb_dir="$WORK/shortblock"
+rm -rf "$sb_dir" && mkdir -p "$sb_dir"
+: > "$sb_dir/list.txt"
+for i in "${!sb_sources[@]}"; do
+  printf '%s\n' "${sb_sources[$i]}" > "$sb_dir/row_$i.iyi"
+  echo "$WORK_NATIVE/shortblock/row_$i.iyi" >> "$sb_dir/list.txt"
+done
+"$WORK/exercise-plain$EXE" --verdicts "$WORK_NATIVE/shortblock/list.txt" > "$sb_dir/port.all" 2> "$sb_dir/port.err" || true
+awk '/^(ACCEPT|REFUSE) /' "$sb_dir/port.all" > "$sb_dir/port.txt"
+"$WORK/dump_hosted$EXE" --verdicts "$WORK_NATIVE/shortblock/list.txt" > "$sb_dir/hosted.all" 2> "$sb_dir/hosted.err" || true
+awk '/^(ACCEPT|REFUSE) /' "$sb_dir/hosted.all" > "$sb_dir/hosted.txt"
+if verdict_rows_check "$sb_dir/port.txt" sb_sources sb_expect; then
+  echo "  port: each of ${#sb_sources[@]} short-block rows has its expected verdict and first error line"
+else
+  echo "  port short-block rows disagree with the expectations"
+  status=1
+fi
+if verdict_rows_check "$sb_dir/hosted.txt" sb_sources sb_expect; then
+  echo "  hosted: the same rows hold"
+else
+  echo "  hosted short-block rows do not hold: the expectations are wrong"
+  status=1
+fi
+
 echo "== Whole corpus: every tracked .iyi under src, samples and bench, by both parsers' verdicts (accepted or refused only)"
 # No other check in this gate runs the port's parser over the tracked corpus: the parity loops use a fixed list, and the
 # sample gates compile samples/iyi with the hosted compiler. One process per parser covers the whole list.
@@ -2360,6 +2417,69 @@ prove_mutation "mutation 69: an ordinary Nop, a modifier if's else, gains a loca
 prove_mutation "mutation 70: a range placeholder loses its location, so the rule's allowance covers nothing" "$PARSER" \
   'exp = Nop.new.at(location)' \
   'exp = Nop.new' -- check_location_rule || status=1
+# short_block_syntax_matches: a mutant's tree for syntax_short_block.iyi against hosted's. Caught (non-zero) when the mutant
+# refuses the fixture or prints a different tree.
+short_block_syntax_matches() {
+  local rc
+  if ! build_mutant_exercise; then
+    invalid_mutant "parser exercise failed to build"
+    return $?
+  fi
+  if ! "$WORK/dump_hosted$EXE" "$REPO_NATIVE/bench/fixtures/syntax_short_block.iyi" > "$WORK/short_block.hosted"; then
+    invalid_mutant "hosted parser failed on the short-block fixture"
+    return $?
+  fi
+  if ! "$WORK/mut-exercise$EXE" "$REPO_NATIVE/bench/fixtures/syntax_short_block.iyi" > "$WORK/short_block.port" 2> "$WORK/short_block.err"; then
+    if grep -qF "Syntax error" "$WORK/short_block.err"; then return 1; fi
+    cat "$WORK/short_block.err"
+    invalid_mutant "parser exercise failed without a syntax error"
+    return $?
+  fi
+  if diff -u "$WORK/short_block.hosted" "$WORK/short_block.port"; then
+    return 0
+  else
+    rc=$?
+    if [ "$rc" -eq 1 ]; then return 1; fi
+    invalid_mutant "could not compare short-block ASTs"
+    return $?
+  fi
+}
+# short_block_rows_hold: the short-block verdict rows, checked on a mutant's verdicts.
+short_block_rows_hold() {
+  if ! build_mutant_exercise; then
+    invalid_mutant "parser exercise failed to build"
+    return $?
+  fi
+  "$WORK/mut-exercise$EXE" --verdicts "$WORK_NATIVE/shortblock/list.txt" > "$WORK/shortblock-mut.all" 2> "$WORK/shortblock-mut.err" || true
+  awk '/^(ACCEPT|REFUSE) /' "$WORK/shortblock-mut.all" > "$WORK/shortblock-mut.txt"
+  verdict_rows_check "$WORK/shortblock-mut.txt" sb_sources sb_expect
+}
+# Mutations 71 to 78: the short block's chain, index, assignment, instance variable, negation, operator name, method-name
+# check and location (hosted parser.cr 2245-2336, 1517-1529, 6239-6241, 1099-1105).
+prove_mutation "mutation 71: the chain after a short block's first call is not parsed" "$PARSER" \
+  $'    else\n      result = parse_atomic_method_suffix(found, location)' \
+  $'    else\n      result = found' -- short_block_syntax_matches || status=1
+prove_mutation "mutation 72: a short block's index form is not read as an index" "$PARSER" \
+  $'    elsif @token.type == TokenKind::OP_LSQUARE\n      indexed = ' \
+  $'    elsif false\n      indexed = ' -- short_block_syntax_matches || status=1
+prove_mutation "mutation 73: a short block's name cannot be assigned" "$PARSER" \
+  $'    if @token.type == TokenKind::OP_EQ\n      unexpected_token unless can_be_assigned?(found)' \
+  $'    if false\n      unexpected_token unless can_be_assigned?(found)' -- short_block_syntax_matches || status=1
+prove_mutation "mutation 74: a short block cannot read an instance variable" "$PARSER" \
+  $'    if @token.type == TokenKind::INSTANCE_VAR\n      ivar_end' \
+  $'    if false\n      ivar_end' -- short_block_syntax_matches || status=1
+prove_mutation "mutation 75: a short block's negation is not read" "$PARSER" \
+  $'    elsif @token.type == TokenKind::OP_BANG\n      return parse_atomic_method_suffix_special(parse_negation_suffix' \
+  $'    elsif false\n      return parse_atomic_method_suffix_special(parse_negation_suffix' -- short_block_syntax_matches || status=1
+prove_mutation "mutation 76: a forced call on an operator is named by nothing" "$PARSER" \
+  '    name = @token.type.to_s if call_only && name.empty?' \
+  '    nil' -- short_block_syntax_matches || status=1
+prove_mutation "mutation 77: a short block's method name is not checked" "$PARSER" \
+  $'    check_method_name_after_dot\n\n    if @token.keyword == Keyword::IS_A_QUESTION' \
+  $'    nil\n\n    if @token.keyword == Keyword::IS_A_QUESTION' -- short_block_rows_hold || status=1
+prove_mutation "mutation 78: a short block takes no location from its ampersand" "$PARSER" \
+  'Block.new([Var.new(block_arg_name)], call).at(amp_location)' \
+  'Block.new([Var.new(block_arg_name)], call)' -- check_location_rule || status=1
 
 echo
 echo "== Rebuilding and running restored parser exercise"
