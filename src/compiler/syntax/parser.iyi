@@ -1654,7 +1654,7 @@ pub class Parser < Lexer
     @stop_on_do = false
     found = parse_var_or_call(location, false, true).at(location)
     unless found.is_a?(Call)
-      raise "BUG: #{found} should be a call"
+      syntax_error("BUG: #{found} should be a call", location)
     end
     found.obj = obj
     result : ASTNode = found
