@@ -3,6 +3,7 @@ module ra_a_accounting
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, Role}
 import compiler/native/target::{new_inst}
 import compiler/native/regalloc_linear::{rewrite_spills, spill_traffic}
+import compiler/native/driver::{dump_mfunction}
 
 fn = MFunction.new("traffic")
 entry = MBlock.new(0, "entry")
@@ -46,4 +47,7 @@ loop_body.insts << back
 exit_block.insts << MInst.new(MOp::Ret.value.to_i32)
 
 rewrite_spills(fn)
-puts spill_traffic(fn)
+dump = dump_mfunction(fn)
+tagged = dump.includes?("  MovImm/64 x9 #imm=7 remat\n")
+plain = dump.includes?("  MovImm/64 x1\n") && dump.includes?("  MovImm/64 x2\n")
+puts tagged && plain ? spill_traffic(fn) : 0_i64

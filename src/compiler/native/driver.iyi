@@ -304,6 +304,7 @@ def dump_inst(isa : Int32, inst : MInst) : String
   text = text + " target=#{inst.target}" if inst.target >= 0
   text = text + " table=#{inst.table}" if inst.table >= 0
   text = text + " sym=#{inst.sym}" if inst.sym >= 0
+  text = text + " remat" if inst.remat
   unless inst.clobbers.empty?
     names = [] of String
     inst.clobbers.each do |r|

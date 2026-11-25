@@ -242,8 +242,7 @@ def remat_inst(fn : MFunction, reg : Int32, v : Int32) : MInst
   m = MInst.new(MOp::MovImm.value.to_i32)
   m.defs << Operand.new(OperandKind::Physical, reg)
   m.imm = fn.vreg_remat[v]
-  # MovImm has no jump table; this marker distinguishes a rebuilt spill from an original constant.
-  m.table = -2
+  m.remat = true
   m
 end
 
@@ -751,7 +750,7 @@ pub def spill_traffic(fn : MFunction) : Int64
     end
     fn.blocks[b].insts.each do |inst|
       if is_role?(fn.isa, inst, Role::SlotLoad) || is_role?(fn.isa, inst, Role::SlotStore) ||
-         (inst.table == -2 && integer_literal?(fn.isa, inst))
+         inst.remat
         total = total + factor
       end
     end
@@ -1820,6 +1819,7 @@ pub def coalesce_copies(fn : MFunction) : Int32
 end
 
 # Allocates one function by linear scan, then writes the spill code.
+# IYI_NATIVE_TIME_RA reports linear allocation only; pin emits no timing line.
 pub def allocate_linear(fn : MFunction) : Nil
   if Program.env("IYI_NATIVE_TIME_RA") == "1"
     started = Time.monotonic

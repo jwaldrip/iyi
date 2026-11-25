@@ -448,9 +448,50 @@ check_traffic_accounting() {
   esac
 }
 
+check_ra_timing() {
+  local driver fixture
+  driver=$(native_path "$1") || return 2
+  fixture=$(native_path "$FIX_RA/ra_a_no_holes.ir") || return 2
+  "$PY" - "$driver" "$fixture" <<'PY'
+import os
+import re
+import subprocess
+import sys
+
+driver, fixture = sys.argv[1:]
+base = dict(os.environ)
+base.pop("IYI_NATIVE_TIME_RA", None)
+def run(allocator, timing):
+    env = dict(base, IYI_NATIVE_REGALLOC=allocator)
+    if timing:
+        env["IYI_NATIVE_TIME_RA"] = "1"
+    return subprocess.run([driver, "mir", fixture, "straight"], env=env, text=True, capture_output=True)
+plain, timed, pin = run("linear", False), run("linear", True), run("pin", True)
+if any(p.returncode != 0 for p in (plain, timed, pin)):
+    print("invalid timing fixture: driver failed")
+    sys.exit(2)
+if plain.stdout != timed.stdout or plain.stderr or pin.stderr:
+    print("timing changed MIR, was emitted without request, or was emitted for pin")
+    sys.exit(1)
+lines = timed.stderr.splitlines()
+if len(lines) != 1:
+    print(f"expected one linear timing line, got {len(lines)}")
+    sys.exit(1)
+parts = lines[0].split()
+if len(parts) != 10 or parts[:2] != ["ra-time", "straight"] or not all(re.fullmatch(r"\d+", p) for p in parts[2:]):
+    print("invalid linear timing line: " + lines[0])
+    sys.exit(1)
+if int(parts[2]) == 0 or int(parts[3]) == 0 or parts[8] != "0":
+    print("invalid vreg count, block count, or split timing: " + lines[0])
+    sys.exit(1)
+print("RA timing: one linear phase row; MIR unchanged; pin emits no row")
+PY
+}
+
 echo "== 5b. loop-weighted spill traffic"
 check_traffic "$DRV" || fail "traffic ceiling failed"
 check_traffic_accounting "$DRV" || fail "traffic accounting fixture failed"
+check_ra_timing "$DRV" || fail "linear allocator timing fixture failed"
 
 # A check returns 0 for a passing driver, 1 for a detected mutation, and 2 for
 # invalid setup. Each pristine predicate must pass before its mutant is built.
@@ -1567,8 +1608,16 @@ prove_mutation "traffic: retain dead spill stores" \
   '  nil'
 prove_mutation "traffic: count original constants as spill reloads" \
   src/compiler/native/regalloc_linear.iyi check_traffic_accounting \
-  '(inst.table == -2 && integer_literal?(fn.isa, inst))' \
-  '(integer_literal?(fn.isa, inst))'
+  '         inst.remat' \
+  '         integer_literal?(fn.isa, inst)'
+prove_mutation "traffic: omit rematerialized-instruction metadata" \
+  src/compiler/native/regalloc_linear.iyi check_traffic_accounting \
+  '  m.remat = true' \
+  '  m.remat = false'
+prove_mutation "RA timing: suppress the linear phase row" \
+  src/compiler/native/regalloc_linear.iyi check_ra_timing \
+  '  if Program.env("IYI_NATIVE_TIME_RA") == "1"' \
+  '  if false && Program.env("IYI_NATIVE_TIME_RA") == "1"'
 prove_mutation "ranges: ignore live-out words after the first" \
   src/compiler/native/regalloc_linear.iyi check_word_bits \
   '          bits = @live_out[b][w]' \
