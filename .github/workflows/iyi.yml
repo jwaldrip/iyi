@@ -130,7 +130,8 @@ jobs:
         name: Plan
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci_plan.py
+        run: |
+          echo 'jobs=["stale-windows","stale-windows-fresh"]' >> "$GITHUB_OUTPUT"
 
   # The gates that read only the tree, in a job of their own so that a
   # change to the docs answers in seconds and every tier runs them.
@@ -1269,6 +1270,12 @@ jobs:
         with:
           name: master-candidate-x86_64-windows-msvc.json
           path: stale-index
+      - name: "PROBE ONLY: extra PATH entry, as a runner image with other tool-cache paths gives"
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "probe-path-drift"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
       - name: "Producer receipts on a fresh runner: hit on an equal profile, refused on another"
         run: |
           mapfile -t tests < <(find samples/iyi -maxdepth 1 -type f -name '*.iyi' -print | sort)
