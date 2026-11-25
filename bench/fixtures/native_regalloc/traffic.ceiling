@@ -46,9 +46,14 @@ pressure_gpr work 0
 pressure_gpr main 0
 ra_a_cold_length checked 0
 ra_a_cold_length main 0
+ra_a_evict_hole evict 2
+ra_a_evict_hole main 0
 ra_a_hole_reuse holes 0
 ra_a_hole_reuse main 0
 ra_a_no_holes straight 0
 ra_a_no_holes main 0
+ra_a_reserved_range combine 0
+ra_a_reserved_range reserved 0
+ra_a_reserved_range main 0
 straight_line chain 0
 straight_line main 0

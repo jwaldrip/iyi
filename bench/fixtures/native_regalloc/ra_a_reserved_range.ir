@@ -1,0 +1,43 @@
+; iyi-ir 1
+module "ra_a_reserved_range"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+@observed = internal global i64 0
+
+define internal i64 @combine(i64 %first, i64 %second) {
+entry:
+  %x = mul i64 %first, 100
+  %r = add i64 %x, %second
+  ret i64 %r
+}
+
+define internal i64 @reserved(i64 %seed, i64 %choose) {
+entry:
+  br label %define_a
+early:
+  store i64 %a, ptr @observed, align 8
+  br label %done
+define_a:
+  %a = mul i64 %seed, 7
+  %choice = icmp sgt i64 %choose, 0
+  br i1 %choice, label %early, label %call
+call:
+  %r = call i64 (i64, i64) @combine(i64 5, i64 %a)
+  br label %done
+done:
+  %result = phi i64 [ 42, label %early ], [ %r, label %call ]
+  ret i64 %result
+}
+
+define i32 @main() {
+entry:
+  %a = call i64 (i64, i64) @reserved(i64 4, i64 0)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %a)
+  %b = call i64 (i64, i64) @reserved(i64 4, i64 1)
+  %q = load i64, ptr @observed, align 8
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %b)
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %q)
+  ret i32 0
+}

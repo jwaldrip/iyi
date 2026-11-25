@@ -741,12 +741,54 @@ check_hole_output() {
   check_fixture_output "$1" "$FIX_RA/ra_a_hole_reuse.ir"
 }
 
+check_interference_output() {
+  local drv=$1 fixture=$2 key result
+  key="native_regalloc.$fixture"
+  check_fixture_output "$drv" "$FIX_RA/$fixture.ir"
+  result=$?
+  if [ "$result" -eq 1 ] && [ -f "$WORK/mut.$key.out" ]; then
+    printf 'decisive: %s hosted=' "$fixture"
+    tr '\n' ',' <"$WORK/expect.$key.out"
+    printf ' mutant='
+    tr '\n' ',' <"$WORK/mut.$key.out"
+    printf '\n'
+  fi
+  return "$result"
+}
+
+check_evict_output() {
+  check_interference_output "$1" ra_a_evict_hole
+}
+
+check_reserved_output() {
+  check_interference_output "$1" ra_a_reserved_range
+}
+
+check_interference_slots() {
+  local drv=$1 fixture fn slots traffic spec expected out
+  for spec in 'ra_a_evict_hole evict 4 2' 'ra_a_reserved_range reserved 0 0'; do
+    read -r fixture fn slots traffic <<< "$spec"
+    out="$WORK/$fixture.mir"
+    if ! "$drv" mir "$FIX_RA/$fixture.ir" "$fn" >"$out" 2>&1; then
+      echo "invalid MIR for $fixture"
+      return 2
+    fi
+    expected="slots=$slots traffic=$traffic"
+    if ! grep -Eq "^  frame .* $expected$" "$out"; then
+      echo "$fixture: expected $expected"
+      return 1
+    fi
+    echo "$fixture: $expected"
+  done
+}
+
 echo "== 5c. lifetime range fixtures"
 check_cold_length "$DRV" || fail "cold-length fixture"
 check_hole_reuse "$DRV" || fail "hole-reuse fixture"
 check_no_holes "$DRV" || fail "straight-line fixture"
 check_range_cap "$DRV" || fail "range-cap fixture"
 check_word_bits "$DRV" || fail "liveness word-boundary fixture"
+check_interference_slots "$DRV" || fail "interference slot fixtures"
 
 # Preserve the complete combined corpus and both original pointer predicates.
 check_linear_outputs() {
@@ -1635,8 +1677,20 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
     src/compiler/native/regalloc_linear.iyi check_hole_output \
     '      return true if !@is_active[a] && intersects?(a, v) # inactive-interference' \
     '      return true if false && !@is_active[a] && intersects?(a, v) # inactive-interference'
+  prove_mutation "ranges: evict despite another intersecting occupant" \
+    src/compiler/native/regalloc_linear.iyi check_evict_output \
+    '      if member?(pool, reg) && cheaper && !reserved_over?(reg, iv) && !other_intersects?(reg, iv, a)' \
+    '      if member?(pool, reg) && cheaper && !reserved_over?(reg, iv)'
+  prove_mutation "ranges: check reservations only over the first range" \
+    src/compiler/native/regalloc_linear.iyi check_reserved_output \
+    '      return true if reserved?(reg, @range_start[i], @range_end[i])
+      i = i + 1' \
+    '      return true if reserved?(reg, @range_start[i], @range_end[i])
+      i = last'
 else
   host_limited "runtime mutation: inactive intervals interfere in a later block (macOS arm64)"
+  host_limited "runtime mutation: eviction with another intersecting occupant (macOS arm64)"
+  host_limited "runtime mutation: reservation in a later range (macOS arm64)"
 fi
 echo "mutation totals: $mutation_caught/$mutation_total detected"
 echo "a mutation that changes nothing is refused by the proof helper:"

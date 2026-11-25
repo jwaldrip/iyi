@@ -1,0 +1,25 @@
+module ra_a_evict_hole
+
+def evict(seed : Int64) : {Int64, Int64}
+  q = seed * 3_i64
+  b = seed + 11_i64
+  a = seed * 7_i64
+  h = 0_i64
+  k = 2_i64
+  while k <= 22_i64
+    h += seed * k
+    k += 1_i64
+  end
+  if seed < 0_i64
+    {a + 3_i64, q}
+  else
+    {a + 3_i64 * b + seed + 2_i64 * h, q}
+  end
+end
+
+positive = evict(4_i64)
+puts "#{positive[0]}"
+puts "#{positive[1]}"
+negative = evict(-2_i64)
+puts "#{negative[0]}"
+puts "#{negative[1]}"
