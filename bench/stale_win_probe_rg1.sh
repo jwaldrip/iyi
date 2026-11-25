@@ -12,10 +12,8 @@ echo "== the bootstrap package's lib"
 ls -la "$(cygpath -u "${CRYSTAL_LIBRARY_PATH:-/nonexistent}")" 2>&1 | head -40
 echo "== .build in the checkout"
 ls -la "$REPO/.build" | head -40
-echo "== every llvm*.lib on this machine"
-find /c /d -iname 'llvm*.lib' -not -path '*/node_modules/*' 2>/dev/null | head -10
-echo "== bin/crystal wrapper"
-ls -la "$REPO/bin" | head
+echo "== llvm*.lib in the places that hold libraries"
+find "$(cygpath -u "${CRYSTAL_LIBRARY_PATH:-/nonexistent}")" "/c/Program Files/LLVM" "/c/Program Files/Microsoft Visual Studio/18/Enterprise/VC/Tools/Llvm" -maxdepth 3 -iname 'llvm*.lib' 2>/dev/null | head -10
 sed -n 1,40p "$REPO/bin/crystal.ps1" 2>/dev/null | head -60
 
 WORK="$(cygpath -m "$(mktemp -d /tmp/rg1-probe.XXXXXX)")"

@@ -70,6 +70,7 @@ jobs:
       - name: Why the second compiler cannot find llvm's .lib
         id: probe
         continue-on-error: true
+        timeout-minutes: 25
         run: bash bench/stale_win_probe_rg1.sh
       - name: RG1 alone
         id: rg1
