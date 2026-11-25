@@ -56,6 +56,7 @@ printf 'Python: %s\n' "$(command -v "$PY")"
 
 failed=0
 fail() { echo "FAIL: $*"; failed=1; }
+. "$REPO/bench/lib/mutation.sh"
 
 echo "== 1. build the driver with the hosted compiler"
 if ! "$IYI" build -o "$(native_path "$DRV")" "$(native_path "$REPO/src/compiler/tools/native_cg.iyi")" >"$WORK/build.log" 2>&1 || [ ! -f "$DRV" ]; then
@@ -104,6 +105,8 @@ madd x0, x1, x2, x3
 neg x0, x1
 ldp x1, x3, [x2, #-16]
 ldp w1, w3, [x2, #8]
+ldpsw x1, x3, [x2, #-256]
+ldpsw x1, x3, [x2, #252]
 ldp d1, d3, [x2, #16]
 ldp s1, s3, [x2]
 stp x1, x3, [x2, #-16]
@@ -114,6 +117,12 @@ adds x0, x1, x2
 subs x0, x1, x2
 adds w0, w1, w2
 subs w0, w1, w2
+adds x0, x1, #4095
+subs x0, x1, #42
+adds w0, w1, #42
+subs w0, w1, #4095
+movn x0, #0
+movn x0, #1 ; movk x0, #0xfffe, lsl #16
 FORMS
 
 echo "== 3. the oracle: every form in one naked function, built by the hosted compiler"
@@ -211,6 +220,28 @@ print(f"compared {compared} of {len(rows)} forms against the oracle")
 if bad or not rows or compared != len(rows):
     sys.exit(1)
 PY
+
+echo "== 5. mutation: movn choice changes the assembler-checked bytes"
+check_movn_mutant() {
+  local mutant="$WORK/native_cg.movn$EXE" expected actual
+  if ! "$IYI" build -o "$(native_path "$mutant")" "$(native_path "$REPO/src/compiler/tools/native_cg.iyi")" >"$WORK/movn-mutant.log" 2>&1; then
+    cat "$WORK/movn-mutant.log"
+    return 2
+  fi
+  "$mutant" forms >"$WORK/movn-mutant.tsv" || return 2
+  expected=$(awk -F '\t' '$1 == "movz x0, #0x1234" { print $2; exit }' "$WORK/forms.tsv")
+  actual=$(awk -F '\t' '$1 == "movz x0, #0x1234" { print $2; exit }' "$WORK/movn-mutant.tsv")
+  [ -n "$expected" ] && [ -n "$actual" ] || return 2
+  if [ "$expected" != "$actual" ]; then
+    echo "decisive: positive movz form no longer matches the hosted assembler"
+    return 1
+  fi
+  return 0
+}
+if ! prove_mutation "n1 movn: choose the less common fill" src/compiler/native/aarch64/encode.iyi \
+  '    use_movn = ones > zeros # n1-movn-choice' '    use_movn = ones < zeros # n1-movn-choice' -- check_movn_mutant; then
+  fail "movn choice mutation was not caught"
+fi
 
 echo
 if [ "$failed" -eq 0 ]; then

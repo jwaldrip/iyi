@@ -1,0 +1,86 @@
+; iyi-ir 1
+module "n1_pow2"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+
+define internal i64 @div2(i64 %a) {
+entry:
+  %r = sdiv i64 %a, 2
+  ret i64 %r
+}
+define internal i64 @rem2(i64 %a) {
+entry:
+  %r = srem i64 %a, 2
+  ret i64 %r
+}
+define internal i64 @negative_divisor(i64 %a) {
+entry:
+  %r = sdiv i64 %a, -2
+  ret i64 %r
+}
+define internal i64 @mul4(i64 %a) {
+entry:
+  %pair = intrinsic llvm.smul.with.overflow.i64(i64 %a, i64 4)
+  %value = extractvalue { i64, i1 } %pair, 0
+  %flag = extractvalue { i64, i1 } %pair, 1
+  br i1 %flag, label %overflow, label %ok
+overflow:
+  ret i64 -110
+ok:
+  ret i64 %value
+}
+define internal i64 @umul4(i64 %a) {
+entry:
+  %pair = intrinsic llvm.umul.with.overflow.i64(i64 %a, i64 4)
+  %value = extractvalue { i64, i1 } %pair, 0
+  %flag = extractvalue { i64, i1 } %pair, 1
+  %early = add i64 %value, 0
+  br i1 %flag, label %overflow, label %ok
+overflow:
+  ret i64 -111
+ok:
+  ret i64 %early
+}
+define internal i64 @mul3(i64 %a) {
+entry:
+  %pair = intrinsic llvm.smul.with.overflow.i64(i64 %a, i64 3)
+  %value = extractvalue { i64, i1 } %pair, 0
+  %flag = extractvalue { i64, i1 } %pair, 1
+  br i1 %flag, label %overflow, label %ok
+overflow:
+  ret i64 -112
+ok:
+  ret i64 %value
+}
+define i32 @main() {
+entry:
+  %a = call i64 (i64) @div2(i64 -7)
+  %b = call i64 (i64) @div2(i64 -8)
+  %c = call i64 (i64) @div2(i64 -9223372036854775808)
+  %d = call i64 (i64) @rem2(i64 -7)
+  %e = call i64 (i64) @rem2(i64 -8)
+  %f = call i64 (i64) @negative_divisor(i64 -7)
+  %g = call i64 (i64) @mul4(i64 2305843009213693951)
+  %h = call i64 (i64) @mul4(i64 2305843009213693952)
+  %i = call i64 (i64) @mul4(i64 -2305843009213693952)
+  %j = call i64 (i64) @mul4(i64 -2305843009213693953)
+  %k = call i64 (i64) @umul4(i64 -1)
+  %l = call i64 (i64) @umul4(i64 3)
+  %m = call i64 (i64) @mul3(i64 -7)
+  %p0 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %a)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %b)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %c)
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %d)
+  %p4 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %e)
+  %p5 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %f)
+  %p6 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %g)
+  %p7 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %h)
+  %p8 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %i)
+  %p9 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %j)
+  %p10 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %k)
+  %p11 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %l)
+  %p12 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %m)
+  ret i32 0
+}

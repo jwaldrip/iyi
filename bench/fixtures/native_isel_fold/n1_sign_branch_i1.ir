@@ -1,0 +1,37 @@
+; iyi-ir 1
+module "n1_sign_branch_i1"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+
+define internal i64 @slt_i1(i1 %x) {
+entry:
+  %c = icmp slt i1 %x, false
+  br i1 %c, label %yes, label %no
+yes:
+  ret i64 1
+no:
+  ret i64 0
+}
+define internal i64 @sge_i1(i1 %x) {
+entry:
+  %c = icmp sge i1 %x, false
+  br i1 %c, label %yes, label %no
+yes:
+  ret i64 1
+no:
+  ret i64 0
+}
+define i32 @main() {
+entry:
+  %a = call i64 (i1) @slt_i1(i1 false)
+  %b = call i64 (i1) @slt_i1(i1 true)
+  %c = call i64 (i1) @sge_i1(i1 false)
+  %d = call i64 (i1) @sge_i1(i1 true)
+  %p0 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %a)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %b)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %c)
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %d)
+  ret i32 0
+}

@@ -316,6 +316,33 @@ for clean in (0, 1):
     expect("narrow", "urem7", [r"^  Msub/64"], [r"^  Msub/64[\s\S]*^  Sbfm/"], clean)
     expect("narrow", "udiv3", [r"^  Umulh/64"], [r"^  Umulh/64[\s\S]*^  Sbfm/"], clean)
     expect("narrow", "udiv1", [r"^  Ubfm/64[\s\S]*^  Sbfm/"], [], clean)
+# N1: selection changes and their refused forms, before and after MIR cleanup.
+for clean in (0, 1):
+    expect("n1_imm_checked", "sadd", [r"^  AddsImm/64 .*#imm=1", op("Bcond")], [r"^  MovImm/64 .*#imm=1$"], clean)
+    expect("n1_imm_checked", "sneg", [r"^  AddsImm/32 .*#imm=1", op("Cset")], [r"^  SubsImm/"], clean)
+    expect("n1_imm_checked", "uadd", [r"^  AddsImm/32 .*#imm=1", op("Bcond")], [r"^  MovImm/64 .*#imm=1$"], clean)
+    expect("n1_imm_checked", "usub", [r"^  SubsImm/64 .*#imm=1", op("Bcond")], [r"^  MovImm/64 .*#imm=1$"], clean)
+    expect("n1_imm_checked", "outside", [op("Adds"), r"^  MovImm/64 .*#imm=4096"], [op("AddsImm")], clean)
+    expect("n1_imm_checked", "unsigned_negative", [op("Subs"), r"^  MovImm/64 .*#imm=-1"], [op("SubsImm")], clean)
+    for fn, instruction in (("nsw_add", "AddImm"), ("nsw_sub", "SubImm"), ("nsw_shift", "LslImm")):
+        expect("n1_nsw_imm", fn, [op(instruction)], [op(instruction) + r"[\s\S]*^  Sbfm/"], clean)
+    for fn, instruction in (("wrap_add", "AddImm"), ("wrap_shift", "LslImm")):
+        expect("n1_nsw_imm", fn, [op(instruction) + r"[\s\S]*^  Sbfm/"], [], clean)
+    expect("n1_ldpsw", "load_signed_pair", [r"^  Ldp/32 "], [r"^  Ldp/32 [\s\S]*^  Sbfm/"], clean)
+    expect("n1_ldpsw", "load_64_pair", [r"^  Ldp/64 "], [op("Ldr")], clean)
+    expect("n1_movn", "negative_constant", [r"^  MovImm/64 .*#imm=-65538"], [], clean)
+    expect("n1_movn", "positive_constant", [r"^  MovImm/64 .*#imm=4660"], [], clean)
+    expect("n1_pow2", "div2", [op("AsrImm"), op("LsrImm"), op("Add")], [op("Sdiv"), op("Umulh"), op("Eor")], clean)
+    expect("n1_pow2", "rem2", [op("AsrImm"), op("LsrImm"), op("LslImm"), op("Sub")], [op("Sdiv"), op("Msub")], clean)
+    expect("n1_pow2", "negative_divisor", [op("Eor")], [], clean)
+    expect("n1_pow2", "mul4", [op("LslImm"), op("AsrImm"), op("Cmp")], [op("Mul"), op("Smulh")], clean)
+    expect("n1_pow2", "umul4", [op("LslImm"), op("LsrImm"), op("Cset")], [op("Mul"), op("Umulh")], clean)
+    expect("n1_pow2", "mul3", [op("Mul"), op("Smulh")], [op("LslImm")], clean)
+    for fn in ("slt_zero", "sge_zero", "sgt_negative_one", "sle_negative_one", "slt_narrow"):
+        expect("n1_sign_branch", fn, [r"^  Tb(n)?z/64 .*#imm=63"], [op("Cset"), op("Cmp"), op("CmpImm"), op("CmnImm")], clean)
+    expect("n1_sign_branch", "shared_sign", [op("Cset")], [op("Tbz"), op("Tbnz")], clean)
+    for fn in ("slt_i1", "sge_i1"):
+        expect("n1_sign_branch_i1", fn, [op("Bcond")], [op("Tbz"), op("Tbnz")], clean)
 for problem in errors:
     print("INVALID: " + problem)
 for problem in defects:
@@ -341,7 +368,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       exit 1
     fi
   done
-  for key in branches memory immediates overflow deferred indexed division mulacc select pairs leaf; do
+  for key in branches memory immediates overflow deferred indexed division mulacc select pairs leaf n1_imm_checked n1_nsw_imm n1_ldpsw n1_movn n1_pow2 n1_sign_branch n1_sign_branch_i1; do
     source="$FIX/$key.iyi"
     [ "$key" != division ] || source="$WORK/division.iyi"
     if ! ./bin/iyi build -o "$(native_path "$WORK/$key.hosted$EXE")" "$(native_path "$source")" >"$WORK/$key.hosted.log" 2>&1; then
@@ -353,7 +380,9 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       fail "$key: hosted twin could not be observed"
       continue
     fi
-    if [ "$(cat "$WORK/expected.$key.status")" != 0 ]; then
+    expected_status=0
+    [ "$key" != n1_imm_checked ] || expected_status=77
+    if [ "$(cat "$WORK/expected.$key.status")" != "$expected_status" ]; then
       fail "$key: hosted twin exited nonzero"
       continue
     fi
@@ -444,6 +473,12 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_fold_mutation "pair: accept the wrong second offset" src/compiler/native/aarch64/isel.iyi '    return false unless high == low + scale # pair-adjacent-offset' '    return false unless high == low + scale * 2_i64 # pair-adjacent-offset' pairs
   prove_fold_mutation "narrow overflow: branch on the wrong flag" src/compiler/native/aarch64/isel.iyi 'cond = cond_vs # narrow-overflow-cond' 'cond = cond_vc # narrow-overflow-cond' narrow
   prove_fold_mutation "narrow wrap: skip the extension of a plain add" src/compiler/native/aarch64/isel.iyi 'if (op == Op::Add || op == Op::Sub || op == Op::Mul) && i.aux_int & 2_i64 != 0_i64 && t.int? && (t.bits == 8 || t.bits == 16 || t.bits == 32) # nsw-skip-canon' 'if (op == Op::Add || op == Op::Sub || op == Op::Mul) # nsw-skip-canon' narrow
+  prove_fold_mutation "n1 checked immediate: exchange unsigned direction" src/compiler/native/aarch64/isel.iyi '    subtract = sub != (signed && value < 0_i64) # n1-unsigned-direction' '    subtract = (sub != (signed && value < 0_i64)) != !signed # n1-unsigned-direction' n1_imm_checked
+  prove_fold_mutation "n1 immediate nsw: accept wrapping arithmetic" src/compiler/native/aarch64/isel.iyi ' && i.aux_int & 2_i64 != 0_i64 && i.type.int?' ' && i.type.int?' n1_nsw_imm
+  prove_fold_mutation "n1 ldpsw: lose sign extension" src/compiler/native/aarch64/encode.iyi '      base = if load && inst.size == 32 && inst.signed' '      base = if false' n1_ldpsw
+  prove_fold_mutation "n1 signed division: drop bias" src/compiler/native/aarch64/isel.iyi '        adjusted = binop(MOp::Add, dividend, bias) # n1-div-bias' '        adjusted = dividend # n1-div-bias' n1_pow2
+  prove_fold_mutation "n1 sign branch: test bit 31" src/compiler/native/aarch64/isel.iyi '            bc.imm = 63_i64 # n1-sign-bit' '            bc.imm = 31_i64 # n1-sign-bit' n1_sign_branch
+  prove_fold_mutation "n1 sign branch: accept i1" src/compiler/native/aarch64/isel.iyi 'cmp.args[0].type.bits > 1 # n1-sign-width' 'cmp.args[0].type.bits > 0 # n1-sign-width' n1_sign_branch_i1
   prove_fold_mutation "leaf: discard a required slot frame" src/compiler/native/frame.iyi '  return false unless f.slots.empty? # frameless-no-slots' '  return false unless true # frameless-no-slots' leaf
 else
   host_limited "runtime selector mutation proofs (macOS arm64)"

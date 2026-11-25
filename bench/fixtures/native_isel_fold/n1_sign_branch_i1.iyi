@@ -1,0 +1,14 @@
+module n1_sign_branch_i1
+
+def slt_i1(x : Bool) : Int64
+  x ? 1_i64 : 0_i64
+end
+
+def sge_i1(x : Bool) : Int64
+  x ? 0_i64 : 1_i64
+end
+
+puts "#{slt_i1(false)}"
+puts "#{slt_i1(true)}"
+puts "#{sge_i1(false)}"
+puts "#{sge_i1(true)}"

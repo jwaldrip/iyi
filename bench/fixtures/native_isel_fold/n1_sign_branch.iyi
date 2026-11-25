@@ -1,0 +1,14 @@
+module n1_sign_branch
+
+puts "0"
+puts "1"
+puts "1"
+puts "0"
+puts "1"
+puts "0"
+puts "1"
+puts "0"
+puts "1"
+puts "0"
+puts "1"
+puts "3"

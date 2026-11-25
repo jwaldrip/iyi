@@ -91,6 +91,14 @@ def forms : Array(Form)
   m.defs << reg(0)
   m.imm = 0x1234_i64
   acc << Form.new("movz x0, #0x1234", m)
+  m = mk(MOp::MovImm)
+  m.defs << reg(0)
+  m.imm = -1_i64
+  acc << Form.new("movn x0, #0", m)
+  m = mk(MOp::MovImm)
+  m.defs << reg(0)
+  m.imm = -65538_i64
+  acc << Form.new("movn x0, #1 ; movk x0, #0xfffe, lsl #16", m)
   m = mk(MOp::AddrOutgoing)
   m.defs << reg(0)
   m.imm = 16_i64
@@ -227,6 +235,28 @@ def forms : Array(Form)
   acc << Form.new("subs x0, x1, x2", arith(MOp::Subs, 0, 1, 2))
   acc << Form.new("adds w0, w1, w2", arith_w(MOp::Adds, 0, 1, 2))
   acc << Form.new("subs w0, w1, w2", arith_w(MOp::Subs, 0, 1, 2))
+  m = mk(MOp::AddsImm)
+  m.defs << reg(0)
+  m.uses << reg(1)
+  m.imm = 4095_i64
+  acc << Form.new("adds x0, x1, #4095", m)
+  m = mk(MOp::SubsImm)
+  m.defs << reg(0)
+  m.uses << reg(1)
+  m.imm = 42_i64
+  acc << Form.new("subs x0, x1, #42", m)
+  m = mk(MOp::AddsImm)
+  m.size = 32
+  m.defs << reg(0)
+  m.uses << reg(1)
+  m.imm = 42_i64
+  acc << Form.new("adds w0, w1, #42", m)
+  m = mk(MOp::SubsImm)
+  m.size = 32
+  m.defs << reg(0)
+  m.uses << reg(1)
+  m.imm = 4095_i64
+  acc << Form.new("subs w0, w1, #4095", m)
   acc << Form.new("adc x0, x1, x2", arith(MOp::Adc, 0, 1, 2))
   acc << Form.new("sbc x0, x1, x2", arith(MOp::Sbc, 0, 1, 2))
   acc << Form.new("adcs x0, x1, x2", arith(MOp::Adcs, 0, 1, 2))
@@ -438,6 +468,22 @@ def forms : Array(Form)
   m.defs << reg(3)
   m.uses << reg(2)
   acc << Form.new("ldp w1, w3, [x2, #8]", m)
+  m = mk(MOp::Ldp)
+  m.size = 32
+  m.signed = true
+  m.imm = -256_i64
+  m.defs << reg(1)
+  m.defs << reg(3)
+  m.uses << reg(2)
+  acc << Form.new("ldpsw x1, x3, [x2, #-256]", m)
+  m = mk(MOp::Ldp)
+  m.size = 32
+  m.signed = true
+  m.imm = 252_i64
+  m.defs << reg(1)
+  m.defs << reg(3)
+  m.uses << reg(2)
+  acc << Form.new("ldpsw x1, x3, [x2, #252]", m)
   m = mk(MOp::Ldp)
   m.fp = true
   m.imm = 16_i64

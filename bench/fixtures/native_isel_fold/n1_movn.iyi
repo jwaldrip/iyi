@@ -1,0 +1,4 @@
+module n1_movn
+
+puts "-65538"
+puts "4660"

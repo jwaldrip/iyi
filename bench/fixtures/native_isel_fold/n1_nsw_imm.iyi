@@ -1,0 +1,10 @@
+module n1_nsw_imm
+
+import std/int
+
+puts "#{(-2_i32 &+ 1_i32).to_i64}"
+puts "#{(2147483646_i32 &+ 1_i32).to_i64}"
+puts "#{(-32767_i16 &- 1_i16).to_i64}"
+puts "#{(-31_i8 &* 4_i8).to_i64}"
+puts "#{(2147483647_i32 &+ 1_i32).to_i64}"
+puts "#{(64_i8 &* 4_i8).to_i64}"

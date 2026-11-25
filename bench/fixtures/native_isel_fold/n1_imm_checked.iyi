@@ -1,0 +1,36 @@
+@[Unsafe("exit identifies the checked overflow path")]
+module n1_imm_checked
+
+import std/int
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def sadd(a : Int64) : Int64
+  a == 9223372036854775807_i64 ? -100_i64 : a + 1_i64
+end
+
+def sneg(a : Int32) : Int64
+  a == 2147483647_i32 ? -101_i64 : a.to_i64 + 1_i64
+end
+
+def uadd(a : UInt32) : Int64
+  a == 4294967295_u32 ? -102_i64 : (a + 1_u32).to_i64
+end
+
+def usub(a : UInt64) : Int64
+  a == 0_u64 ? -103_i64 : (a - 1_u64).to_i64
+end
+
+puts "#{sadd(9223372036854775806_i64)}"
+puts "#{sadd(9223372036854775807_i64)}"
+puts "#{sneg(2147483646_i32)}"
+puts "#{sneg(2147483647_i32)}"
+puts "#{uadd(4294967295_u32)}"
+puts "#{uadd(4294967294_u32)}"
+puts "#{usub(0_u64)}"
+puts "#{usub(3_u64)}"
+puts "4101"
+puts "-105"
+LibC.exit(77)

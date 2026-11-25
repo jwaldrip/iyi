@@ -1317,6 +1317,7 @@ class Isel
     m = mop(load ? MOp::Ldp : MOp::Stp)
     m.size = mem_bits(ta)
     m.fp = ta.float?
+    m.signed = load && ta.int? && tb.int? && ta.bits == 32 && tb.bits == 32 # n1-ldpsw
     m.imm = offset
     if load
       a = @mf.new_vreg(leaf_class(ta))
@@ -1325,8 +1326,8 @@ class Isel
       m.defs << vop(b)
       m.uses << vop(base)
       emit(m)
-      a = canon(a, ta) if ta.int?
-      b = canon(b, tb) if tb.int?
+      a = canon(a, ta) if ta.int? && !m.signed
+      b = canon(b, tb) if tb.int? && !m.signed
       bind_result(lo, [a])
       bind_result(hi, [b])
     else
@@ -1485,7 +1486,8 @@ class Isel
     m.defs << vop(d)
     m.uses << vop(a)
     emit(m)
-    bind_result(i, [canon(d, i.type)])
+    narrow_nsw = (op == Op::Add || op == Op::Sub || op == Op::Shl) && i.aux_int & 2_i64 != 0_i64 && i.type.int? && (i.type.bits == 8 || i.type.bits == 16 || i.type.bits == 32) # n1-immediate-nsw
+    bind_result(i, [narrow_nsw ? d : canon(d, i.type)])
     true
   end
 
@@ -1498,6 +1500,84 @@ class Isel
     m.uses << vop(value)
     emit(m)
     result
+  end
+
+  # Checked add/sub by an encodable constant. Unsigned negative constants are
+  # not exchanged, because doing so changes carry/borrow semantics.
+  def overflow_immediate(i : Inst, signed : Bool, sub : Bool) : {Int32, Int32}?
+    operand = i.args[0]
+    constant = integer_constant(i.args[1])
+    if constant.nil? && !sub
+      constant = integer_constant(operand)
+      operand = i.args[1] unless constant.nil?
+    end
+    return nil if constant.nil?
+    value = constant.as(Int64)
+    return nil unless add_immediate?(value)
+    return nil if !signed && value < 0_i64
+    subtract = sub != (signed && value < 0_i64) # n1-unsigned-direction
+    t = i.args[0].type
+    a = first_leaf(operand)
+    a = zext(a, t) if !signed && t.bits != 32
+    raw = gpr
+    m = mop(subtract ? MOp::SubsImm : MOp::AddsImm)
+    m.imm = value < 0_i64 ? -value : value
+    m.size = t.bits == 32 ? 32 : 64
+    m.defs << vop(raw)
+    m.uses << vop(a)
+    emit(m)
+    if t.bits == 64 || t.bits == 32
+      cond = signed ? cond_vs : (sub ? cond_cc : cond_cs)
+      return {t.bits == 32 ? canon(raw, t) : raw, cond}
+    end
+    norm = signed ? canon(raw, t) : zext(raw, t)
+    result = signed ? norm : canon(raw, t)
+    compare(raw, norm)
+    {result, cond_ne}
+  end
+
+  # Return the shift of a positive power-of-two constant, excluding one.
+  def checked_mul_shift(value : Value, signed : Bool) : Int32
+    constant = integer_constant(value)
+    return -1 if constant.nil?
+    raw = constant.as(Int64)
+    return -1 if signed && raw <= 0_i64
+    shift = single_bit(raw, value.type.bits)
+    shift >= 1 ? shift : -1
+  end
+
+  # For multiply, the constant may be on either side. A negative shift denotes
+  # the original register form; otherwise b is not materialized.
+  def overflow_operands(i : Inst, signed : Bool, mul : Bool) : {Int32, Int32, Int32}
+    left = i.args[0]
+    right = i.args[1]
+    shift = mul ? checked_mul_shift(right, signed) : -1
+    if mul && shift < 0
+      shift = checked_mul_shift(left, signed)
+      if shift >= 0
+        left = i.args[1]
+        right = i.args[0]
+      end
+    end
+    a = first_leaf(left)
+    a = zext(a, left.type) unless signed
+    b = -1
+    if shift < 0
+      b = first_leaf(right)
+      b = zext(b, right.type) unless signed
+    end
+    {a, b, shift}
+  end
+
+  def overflow_product(a : Int32, b : Int32, shift : Int32) : Int32
+    shift >= 0 ? immediate_shift(MOp::LslImm, a, shift) : binop(MOp::Mul, a, b)
+  end
+
+  def overflow_product_high(a : Int32, b : Int32, shift : Int32, signed : Bool) : Int32
+    if shift >= 0
+      return immediate_shift(signed ? MOp::AsrImm : MOp::LsrImm, a, 64 - shift)
+    end
+    binop(signed ? MOp::Smulh : MOp::Umulh, a, b)
   end
 
   # Use an unsigned reciprocal on the magnitude, then restore the sign. This
@@ -1515,8 +1595,20 @@ class Isel
     divisor = divisor & 0xFFFFFFFFFFFFFFFF_u64.unsafe_shr((64 - bits).to_i64) if !signed && bits < 64
     divisor = (~divisor) &+ 1_u64 if signed && raw < 0_i64
     return false if divisor == 0_u64
-    magic = division_magic(divisor)
     dividend = first_leaf(i.args[0])
+    if signed && raw > 1_i64
+      shift = single_bit(raw, bits)
+      if shift >= 1
+        sign = immediate_shift(MOp::AsrImm, dividend, 63)
+        bias = immediate_shift(MOp::LsrImm, sign, 64 - shift)
+        adjusted = binop(MOp::Add, dividend, bias) # n1-div-bias
+        quotient = immediate_shift(MOp::AsrImm, adjusted, shift)
+        result = op == Op::SRem ? binop(MOp::Sub, dividend, immediate_shift(MOp::LslImm, quotient, shift)) : quotient
+        bind_result(i, [result])
+        return true
+      end
+    end
+    magic = division_magic(divisor)
     dividend = zext(dividend, i.type) unless signed
     magnitude = dividend
     sign = -1
@@ -2363,12 +2455,15 @@ class Isel
   def fused_overflow(i : Inst) : Int32
     form = overflow_form(i.aux.as(IntrinsicAux).id)
     t = i.args[0].type
-    a = first_leaf(i.args[0])
-    b = first_leaf(i.args[1])
-    unless form.signed
-      a = zext(a, t)
-      b = zext(b, t)
+    unless form.mul
+      if immediate = overflow_immediate(i, form.signed, form.sub)
+        if leaf = @overflow_value[i]?
+          bind_result(leaf, [immediate[0]])
+        end
+        return immediate[1]
+      end
     end
+    a, b, shift = overflow_operands(i, form.signed, form.mul)
     cond = cond_ne
     value = 0
     flags32 = false
@@ -2376,8 +2471,8 @@ class Isel
       value = binop(form.sub ? MOp::Subs : MOp::Adds, a, b)
       cond = form.signed ? cond_vs : (form.sub ? cond_cc : cond_cs)
     elsif t.bits == 64
-      value = binop(MOp::Mul, a, b)
-      hi = binop(form.signed ? MOp::Smulh : MOp::Umulh, a, b)
+      value = overflow_product(a, b, shift)
+      hi = overflow_product_high(a, b, shift, form.signed)
       if form.signed
         sign = binop(MOp::Asr, value, const_gpr(63_i64))
         compare(hi, sign)
@@ -2391,7 +2486,7 @@ class Isel
       flags32 = true
       cond = cond_vs # narrow-overflow-cond
     else
-      raw = binop(form.mul ? MOp::Mul : (form.sub ? MOp::Sub : MOp::Add), a, b)
+      raw = form.mul ? overflow_product(a, b, shift) : binop(form.sub ? MOp::Sub : MOp::Add, a, b)
       norm = form.signed ? canon(raw, t) : zext(raw, t)
       value = form.signed ? norm : canon(raw, t) # narrow-overflow-value
       compare(raw, norm)
@@ -2434,6 +2529,21 @@ class Isel
           emit(bc)
           emit(branch(f_dest))
           return
+        end
+        # i1 is 0/1, so bit 63 is not its sign.
+        if cmp.args[0].type.int? && cmp.args[0].type.bits > 1 # n1-sign-width
+          constant = integer_constant(cmp.args[1])
+          negative = (cmp.aux_int == 8_i64 && constant == 0_i64) || (cmp.aux_int == 9_i64 && constant == -1_i64)
+          nonnegative = (cmp.aux_int == 7_i64 && constant == 0_i64) || (cmp.aux_int == 6_i64 && constant == -1_i64)
+          if negative || nonnegative
+            bc = mop(negative ? MOp::Tbnz : MOp::Tbz)
+            bc.imm = 63_i64 # n1-sign-bit
+            bc.uses << vop(first_leaf(cmp.args[0]))
+            bc.target = t_dest
+            emit(bc)
+            emit(branch(f_dest))
+            return
+          end
         end
         emit_icmp(cmp)
         bc = mop(MOp::Bcond)
@@ -3376,16 +3486,17 @@ class Isel
     wide = i.args[0].type.bits == 64
     t = i.args[0].type
     bits = t.bits
-    a = first_leaf(i.args[0])
-    b = first_leaf(i.args[1])
-    unless signed
-      a = zext(a, t)
-      b = zext(b, t)
+    unless mul
+      if immediate = overflow_immediate(i, signed, sub)
+        bind_result(i, [immediate[0], set_flag(immediate[1])])
+        return
+      end
     end
+    a, b, shift = overflow_operands(i, signed, mul)
     if mul
       if wide
-        lo = binop(MOp::Mul, a, b)
-        hi = binop(signed ? MOp::Smulh : MOp::Umulh, a, b)
+        lo = overflow_product(a, b, shift)
+        hi = overflow_product_high(a, b, shift, signed)
         if signed
           sign = binop(MOp::Asr, lo, const_gpr(63_i64))
           compare(hi, sign)
@@ -3395,7 +3506,7 @@ class Isel
         bind_result(i, [lo, set_flag(cond_ne)])
         return
       end
-      prod = binop(MOp::Mul, a, b)
+      prod = overflow_product(a, b, shift)
       norm = signed ? canon(prod, t) : zext(prod, t)
       compare(prod, norm)
       bind_result(i, [signed ? norm : canon(prod, t), set_flag(cond_ne)])

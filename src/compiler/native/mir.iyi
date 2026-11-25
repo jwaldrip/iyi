@@ -158,6 +158,8 @@ pub enum MOp
   Neg        # dst <- -uses[0]
   Ldp        # two defs <- [uses[0] + imm], then the adjacent element
   Stp        # [uses[2] + imm] <- uses[0], then uses[1]
+  AddsImm    # dst <- a + imm, sets flags; size 32 or 64
+  SubsImm    # dst <- a - imm, sets flags; size 32 or 64
 end
 
 pub class Operand
