@@ -35,11 +35,11 @@ entry:
   ret i64 %r
 }
 
-; Pin records x19 from both the asm clobber and the first parameter. The
-; second x19 can still pair with x20 after the first x19 is saved singly.
+; Pin sees x21 before x19, then records x19 again for the first parameter.
+; After sorting, the first x19 is single and the second pairs with x20.
 define void @f1_duplicates(i64 %a, i64 %b) {
 entry:
-  call void () asm sideeffect "mov x19, #99", "~{x19}"()
+  call void () asm sideeffect "mov x21, #97; mov x19, #99", "~{x21},~{x19}"()
   ret void
 }
 

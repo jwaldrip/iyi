@@ -955,7 +955,10 @@ text = Path(sys.argv[1]).read_text()
 if not text.startswith("function sum_to\n"):
     print("invalid MIR for the dead-call fixture")
     sys.exit(2)
-bad = re.findall(r"^  (?:SpStore|SpLoad|StrFrame|LdrFrame)/", text, re.M)
+frames = re.findall(r"^  StpFpLr/[^\n]*\n(?:  (?:MovFp|SpAdjust|ZeroSp|Stp|SpStore)/[^\n]*\n)*|(?:^  (?:Ldp|SpLoad|SpAdjust|LdpFpLr)/[^\n]*\n)+(?=  Ret/)", text, re.M)
+bad = re.findall(r"^  (?:SpStore|SpLoad|StrFrame|LdrFrame)/", text, re.M) + [
+    line for frame in frames for line in re.findall(
+        r"^  (?:Stp|Ldp)/64f? (?:x(?:19|2[0-8])|d(?:8|9|1[0-5])), (?:x(?:19|2[0-8])|d(?:8|9|1[0-5])), (?:sp|x29)(?: #imm=-?\d+)?$", frame, re.M)]
 if bad:
     print(f"a value crosses a call that never returns: {len(bad)} callee-saved or frame operation(s)")
     sys.exit(1)
