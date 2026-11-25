@@ -893,7 +893,15 @@ def run(n, verified, repeats=1, tier='default', shape='calls'):
     else:
         path = os.path.join(work, 'scale-%d.ir' % n)
         generate(n, path)
-    cmd = [binary, 'run', '--verify-each' if verified else '--no-verify', tier, path]
+    passes = tier
+    if tier == 'release' and shape in ('allocations', 'callbacks'):
+        # Measure escape before the late inliner replaces retained allocation calls with their bodies.
+        passes = ('cfg-simplify,sroa,simplify,cse,dce,cfg-simplify,inline,'
+                  'cfg-simplify,sroa,simplify,cse,dce,cfg-simplify,'
+                  'cfg-simplify,sroa,simplify,dce,cfg-simplify,'
+                  'escape,barrier-stack,sroa,simplify,dce,'
+                  'prove,simplify,dce,cfg-simplify,licm,cse,barrier')
+    cmd = [binary, 'run', '--verify-each' if verified else '--no-verify', passes, path]
     least = None
     for _ in range(repeats):
         before = child_cpu() if resource else 0.0
@@ -1314,7 +1322,7 @@ prove_mutation 'R1K: no inlining into a raise path' src/compiler/ir/opt/inline.i
   -- mutation_check R1K inline cold_site || fail 'R1K was not caught'
 mutation_result R1K
 prove_mutation 'R1R: a recursive callee is copied in round 0 only' src/compiler/ir/opt/inline.iyi \
-  '  return false if budget.round > 0 && graph.recursive?(callee)' \
+  '  return false if budget.round > 0 && !budget.late && graph.recursive?(callee)' \
   '  return false if false # mutation R1R: recursive callees are copied in round 1 too' \
   -- mutation_check R1R inline recursive_outside || fail 'R1R was not caught'
 mutation_result R1R
