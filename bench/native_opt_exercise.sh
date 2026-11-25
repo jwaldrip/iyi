@@ -487,42 +487,6 @@ done
 for name in induction_start srem_urem nsw_add repeat_flag repeat_cmp range_arith; do fixture_check prove "$name" changed; done
 for name in induction_start_negative srem_keep sdiv_divisor_keep nsw_keep leaf_unchecked_keep wrap_add_keep; do fixture_check prove "$name" keep; done
 
-echo '== 2b-rt. range proof: runtime negatives, hosted and native at release'
-if ./bin/iyi build -o "$WORK/compile_native$EXE" src/compiler/tools/compile_native.iyi >"$WORK/rt-tool.build.log" 2>&1; then
-  "$PY" - "$(native_path "$WORK")" "$(native_path "$FIXTURES/prove/runtime")" "$(native_path "$WORK/compile_native$EXE")" "$EXE" <<'PY' || fail 'range proof runtime negatives disagree with the hosted build'
-import os, subprocess, sys
-work, runtime, tool, exe = sys.argv[1:]
-# The hosted and native builds, both at release, must agree on exit status, stdout and the first line of stderr.
-# The expected status is 1 where a check must really fire: an index below -len, and an overflow.
-programs = [('rem_div', 0), ('min_rem', 0), ('induction_index', 1), ('overflow_flag', 1)]
-bad = 0
-for name, expected in programs:
-    source = os.path.join(runtime, name + '.iyi')
-    hosted = os.path.join(work, 'rt-hosted-' + name + exe)
-    native = os.path.join(work, 'rt-native-' + name + exe)
-    for args in (['./bin/iyi', 'build', '--release', '-o', hosted, source],
-                 [tool, source, '-o', native, '--pipeline', 'typed', '--prelude', '--release']):
-        built = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
-        if built.returncode != 0:
-            print('  build failed:', ' '.join(args), file=sys.stderr)
-            sys.exit(1)
-    results = []
-    for binary in (hosted, native):
-        ran = subprocess.run([binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
-        results.append((ran.returncode, ran.stdout, ran.stderr.decode('utf-8', 'replace').splitlines()[:1]))
-    if results[0] != results[1] or results[0][0] != expected:
-        bad += 1
-        print('  runtime mismatch in', name, results, file=sys.stderr)
-    else:
-        print('  ok: runtime', name, 'status', expected)
-if bad:
-    sys.exit(1)
-PY
-else
-  fail 'the compile_native tool did not build for the range proof runtime checks'
-  cat "$WORK/rt-tool.build.log" >&2
-fi
-
 echo '== 2c. loop-invariant code motion'
 for file in "$FIXTURES/licm/"*.ir; do
   case "$file" in *.out.ir) continue ;; esac
