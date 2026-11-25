@@ -105,12 +105,12 @@ def observed(env, trace):
     return out
 
 
-def build(label, overlay, source):
+def build(label, overlay, source, flags=("-Diyi_observe",)):
     test = project / f"{label}.iyi"
     test.write_text(source, encoding="utf-8")
     exe = work / f"{label}.exe"
     env = environment(overlay)
-    result = subprocess.run([iyi, "build", "-Diyi_observe", "-o", str(exe), str(test)], cwd=project, env=env,
+    result = subprocess.run([iyi, "build", *flags, "-o", str(exe), str(test)], cwd=project, env=env,
                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     if result.returncode:
         say(f"== {label}: build failed, exit {result.returncode}\n{clip(result.stdout)}\n{clip(result.stderr)}")
@@ -118,17 +118,19 @@ def build(label, overlay, source):
     return exe, env
 
 
-def runs(label, exe, env, count, use_observe=True):
+def runs(label, exe, env, count, use_observe=True, extra=None):
     tally = collections.Counter()
     for index in range(count):
         trace = work / f"{label}-{index}.trace"
         trace.unlink(missing_ok=True)
-        run_env = observed(env, trace) if use_observe else env
+        run_env = observed(env, trace) if use_observe else env.copy()
+        if extra:
+            run_env.update(extra)
         result = subprocess.run([str(exe)], cwd=project, env=run_env, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=180)
         head = (result.stderr.strip().splitlines() or [""])[0][:110]
         tally[(result.returncode, head)] += 1
-    mode = "observed" if use_observe else "unobserved"
+    mode = ("observed" if use_observe else "unobserved") + (f" {extra}" if extra else "")
     for (code, head), count_ in sorted(tally.items(), key=lambda item: -item[1]):
         say(f"   {label} {mode}: {count_} x exit {code}: {head}")
 
