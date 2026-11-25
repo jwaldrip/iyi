@@ -67,20 +67,10 @@ jobs:
           make -f Makefile.win iyi
       - name: Set producer compiler path
         run: echo "IYI=$(cygpath -m "$PWD/.build/iyi.exe")" >> "$GITHUB_ENV"
-      - name: Where two builds of one program differ
+      - name: Why the second compiler cannot find llvm's .lib
         id: probe
         continue-on-error: true
-        run: |
-          WORK="$(cygpath -m "$(mktemp -d "${TMPDIR:-/tmp}/rg7-probe.XXXXXX")")"
-          python3 bench/stale_win_probe_rg7.py "$(cygpath -m "$PWD")" "$IYI" "$WORK" hello.iyi
-      - name: The RG7 loop for one program, with cmp's account
-        id: replica
-        continue-on-error: true
-        run: bash bench/stale_win_probe_rg7.sh hello.iyi
-      - name: RG7 alone, as the fresh job runs it
-        id: rg7
-        continue-on-error: true
-        run: bash bench/stale_reproducible.sh rg7
+        run: bash bench/stale_win_probe_rg1.sh
       - name: RG1 alone
         id: rg1
         continue-on-error: true
@@ -88,7 +78,7 @@ jobs:
       - name: Every step's outcome
         if: always()
         run: |
-          echo "probe=${{ steps.probe.outcome }} replica=${{ steps.replica.outcome }} rg7=${{ steps.rg7.outcome }} rg1=${{ steps.rg1.outcome }}"
-          case "${{ steps.probe.outcome }}${{ steps.replica.outcome }}${{ steps.rg7.outcome }}${{ steps.rg1.outcome }}" in
+          echo "probe=${{ steps.probe.outcome }} rg1=${{ steps.rg1.outcome }}"
+          case "${{ steps.probe.outcome }}${{ steps.rg1.outcome }}" in
             *failure*) exit 1 ;;
           esac
