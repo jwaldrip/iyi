@@ -24,7 +24,7 @@ iyi = sys.argv[2]
 work = Path(sys.argv[3])
 work.mkdir(parents=True, exist_ok=True)
 
-RUNS = int(os.environ.get("CHMOD_PROBE_RUNS", "20"))
+RUNS = int(os.environ.get("CHMOD_PROBE_RUNS", "50"))
 
 
 def say(text=""):
@@ -154,29 +154,40 @@ g
 """
 
 
-def under_debugger(label, exe, env, count=1):
+def under_debugger(label, exe, env, count=1, show=2):
+    """Runs of the program under cdb: how many ended in each event, and the first few in full."""
     cdb = find_cdb()
     if cdb is None:
         say(f"== {label}: no cdb on this machine")
         return
     script = work / "cdb-commands.txt"
     script.write_text(CDB_SCRIPT, encoding="utf-8")
+    seen = collections.Counter()
+    shown = 0
     for index in range(count):
         trace = work / f"{label}-cdb-{index}.trace"
         trace.unlink(missing_ok=True)
         run_env = observed(env, trace)
-        say(f"== {label} under cdb, run {index}")
         try:
             result = subprocess.run([str(cdb), "-G", "-cf", str(script), "-y", str(work), str(exe)], cwd=project,
                                     env=run_env, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                     timeout=240)
-            lines = [line for line in result.stdout.replace("\r", "").splitlines() if not line.startswith("ModLoad")]
-            say(f"   cdb exit {result.returncode}")
-            say(clip("\n".join(lines), 14000))
-            if result.stderr.strip():
-                say("   cdb stderr: " + clip(result.stderr, 2000))
         except subprocess.TimeoutExpired:
-            say("   cdb timed out")
+            seen["timed out"] += 1
+            continue
+        text = result.stdout.replace("\r", "")
+        events = tuple(sorted({name for name in ("STACK OVERFLOW", "GUARD PAGE", "ACCESS VIOLATION") if f"==== {name}" in text}))
+        seen[(result.returncode, events)] += 1
+        if events and shown < show:
+            shown += 1
+            noise = ("ModLoad", "NatVis", "Debugger Extensions", "ExtensionRepository", "UseExperimental", "AllowNuget",
+                     "NonInteractive", "AllowParallel", "EnableRedirect", "----> Repository", "-- Configuring")
+            lines = [line for line in text.splitlines() if line.strip() and not line.startswith(noise) and "Preparing the environment" not in line]
+            say(f"== {label} under cdb, run {index}, events {events}")
+            say(clip("\n".join(lines), 12000))
+            if result.stderr.strip():
+                say("   debuggee stderr: " + clip(result.stderr, 1000))
+    say(f"== {label} under cdb, {count} runs: {dict(seen)}")
 
 
 # ---- the fault handler's own account, written without allocating -----------
@@ -204,13 +215,31 @@ HELPERS = '''
     LibC.WriteFile(handle, bytes.as(Void*), 19, pointerof(written), nil)
   end
 
-  def __iyi_dbg_overflow(info : Void*, record : UInt64, handle : Void*) : Nil
-    __iyi_dbg_say(handle, "DUMP stack overflow\\n")
+  class IyiDbg
+    @@main_thread : UInt64 = 0_u64
+
+    def self.main_thread : UInt64
+      @@main_thread
+    end
+
+    def self.main_thread=(value : UInt64) : UInt64
+      @@main_thread = value
+    end
+  end
+
+  def __iyi_dbg_fault(info : Void*, record : UInt64, handle : Void*, code : Int32) : Nil
+    return unless code == IYI_WIN_STACK_OVERFLOW || code == IYI_WIN_GUARD_PAGE || code == IYI_WIN_ACCESS_VIOLATION
+    faulting = Pointer(UInt64).new(record + 40_u64).value
+    hit = IyiScheduler.fiber_guard_hit?(faulting)
+    return unless code == IYI_WIN_STACK_OVERFLOW || hit
+    __iyi_dbg_say(handle, "DUMP ----\\n")
+    __iyi_dbg_hex(handle, "DUMP code               ", (code.to_i64 & 0xFFFFFFFF_i64).to_u64)
+    __iyi_dbg_hex(handle, "DUMP param1 (fault addr)", faulting)
+    __iyi_dbg_hex(handle, "DUMP fault in a fiber   ", hit ? 1_u64 : 0_u64)
     __iyi_dbg_hex(handle, "DUMP record flags       ", Pointer(Int32).new(record + 4_u64).value.to_u64)
     __iyi_dbg_hex(handle, "DUMP record address     ", Pointer(UInt64).new(record + 16_u64).value)
     __iyi_dbg_hex(handle, "DUMP record nparams     ", Pointer(UInt64).new(record + 24_u64).value)
     __iyi_dbg_hex(handle, "DUMP record param0      ", Pointer(UInt64).new(record + 32_u64).value)
-    __iyi_dbg_hex(handle, "DUMP record param1      ", Pointer(UInt64).new(record + 40_u64).value)
     context = Pointer(UInt64).new(info.address + 8_u64).value
     rsp = Pointer(UInt64).new(context + 0x98_u64).value
     __iyi_dbg_hex(handle, "DUMP context rsp        ", rsp)
@@ -230,10 +259,11 @@ HELPERS = '''
     __iyi_dbg_hex(handle, "DUMP teb guarantee      ", guarantee & 0xFFFFFFFF_u64)
     thread = uninitialized UInt64
     asm("movq %gs:0x48, $0" : "=r"(thread) :: : "volatile")
-    __iyi_dbg_hex(handle, "DUMP teb thread         ", thread)
+    __iyi_dbg_hex(handle, "DUMP teb thread id      ", thread)
+    __iyi_dbg_hex(handle, "DUMP main thread id     ", IyiDbg.main_thread)
+    __iyi_dbg_hex(handle, "DUMP workers launched   ", IyiWorkers.launched.to_u64)
     top = IyiScheduler.current_stack_top
     __iyi_dbg_hex(handle, "DUMP fiber stack top    ", top)
-    __iyi_dbg_hex(handle, "DUMP handler rsp        ", rsp)
     if top != 0_u64 && rsp < top && rsp + 512_u64 < top && rsp > top - 1048576_u64
       index = 0_u64
       while index < 24_u64
@@ -249,10 +279,16 @@ HELPERS = '''
 def dump_patch(source):
     anchor = "  fun __iyi_win_fault(info : Void*) : Int32\n"
     entry = "    if code == IYI_WIN_STACK_OVERFLOW\n"
-    if source.count(anchor) != 1 or source.count(entry) != 1:
-        raise AssertionError("fault handler anchors changed")
+    install = "    LibC.SetThreadStackGuarantee(pointerof(guarantee))\n    # A proc's first word"
+    for text in (anchor, entry, install):
+        if source.count(text) != 1:
+            raise AssertionError(f"fault handler anchor changed: {text!r}")
     source = source.replace(anchor, HELPERS + anchor, 1)
-    return source.replace(entry, entry + "      __iyi_dbg_overflow(info, record, handle)\n", 1)
+    source = source.replace(entry, "    __iyi_dbg_fault(info, record, handle, code)\n" + entry, 1)
+    return source.replace(install, install.replace(
+        "    # A proc's first word",
+        '    mine = uninitialized UInt64\n    asm("movq %gs:0x48, $0" : "=r"(mine) :: : "volatile")\n'
+        "    IyiDbg.main_thread = mine\n    # A proc's first word"), 1)
 
 
 def with_stack(bytes_):
@@ -264,25 +300,32 @@ path = Program.env("IYI_CHMOD_FAILURE_PATH") || raise "missing path"
 File.chmod(path, 0o600)
 '''
 
-
-def nested(depth):
-    return f'''import std/file::{{File}}
-def deep(n : Int32, path : String) : Int32
-  if n == 0
-    File.chmod(path, 0o600)
-    0
-  else
-    deep(n - 1, path) + 1
-  end
-end
-path = Program.env("IYI_CHMOD_FAILURE_PATH") || raise "missing path"
-group do |g|
+# A task that does nothing at all: no chmod, no panic.
+SPAWN_TEST = '''group do |g|
   task = g.spawn do
-    deep({depth}, path)
+    0
   end
-  assert task.value.is_a?(Panicked)
+  assert task.value.is_a?(Int32)
 end
 '''
+
+
+def tally_runs(label, exe, env, count, show=3, use_observe=True):
+    """Runs whose stderr is shown in full when they fail."""
+    tally = collections.Counter()
+    shown = 0
+    for index in range(count):
+        trace = work / f"{label}-{index}.trace"
+        trace.unlink(missing_ok=True)
+        run_env = observed(env, trace) if use_observe else env.copy()
+        result = subprocess.run([str(exe)], cwd=project, env=run_env, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=180)
+        tally[result.returncode] += 1
+        if result.returncode and "stack overflow" in result.stderr and shown < show:
+            shown += 1
+            say(f"   {label} run {index}: exit {result.returncode}")
+            say(clip(result.stderr, 5000))
+    say(f"   {label}: {count} runs, exits {dict(tally)}")
 
 
 say(f"== probe host: {os.environ.get('OS')}, cdb: {find_cdb()}")
@@ -292,34 +335,30 @@ say(f"   {version}")
 base_overlay = make_overlay("overlay")
 exe, env = build("chmod", base_overlay, ORIGINAL_TEST)
 if exe:
-    say(f"== chmod: {RUNS} observed runs, then 5 unobserved")
+    say("== chmod, the program as the regression builds it")
     runs("chmod", exe, env, RUNS)
-    runs("chmod", exe, env, 5, use_observe=False)
-    under_debugger("chmod", exe, env)
+    runs("chmod", exe, env, 30, use_observe=False)
+    runs("chmod", exe, env, 40, extra={"IYI_WORKERS": "1"})
+    under_debugger("chmod", exe, env, count=int(os.environ.get("CHMOD_PROBE_CDB_RUNS", "60")))
 
-for label, source in (
-    ("big8m", with_stack(8388608)),
-    ("big1m", with_stack(1048576)),
-    ("mainfiber", MAIN_TEST),
-    ("deep100", nested(100)),
-    ("deep1000", nested(1000)),
-    ("deep3000", nested(3000)),
-):
-    exe, env = build(label, base_overlay, source)
-    if exe:
-        say(f"== {label}: 10 observed runs, 3 unobserved")
-        runs(label, exe, env, 10)
-        runs(label, exe, env, 3, use_observe=False)
+say("== a task that does nothing, built without and with the observer")
+exe, env = build("spawn_plain", base_overlay, SPAWN_TEST, flags=())
+if exe:
+    tally_runs("spawn_plain", exe, env, 100, use_observe=False)
+exe, env = build("spawn_obs", base_overlay, SPAWN_TEST)
+if exe:
+    tally_runs("spawn_obs", exe, env, 100)
+
+say("== the chmod program on one thread (-Dsingle_thread), and on the main fiber")
+exe, env = build("single", base_overlay, ORIGINAL_TEST, flags=("-Diyi_observe", "-Dsingle_thread"))
+if exe:
+    runs("single", exe, env, 60)
+exe, env = build("mainfiber", base_overlay, MAIN_TEST)
+if exe:
+    runs("mainfiber", exe, env, 20)
 
 say("== the fault handler's own account")
 dump_overlay = make_overlay("overlay-dump", dump_patch)
 exe, env = build("dump", dump_overlay, ORIGINAL_TEST)
 if exe:
-    for index in range(10):
-        trace = work / f"dump-{index}.trace"
-        trace.unlink(missing_ok=True)
-        result = subprocess.run([str(exe)], cwd=project, env=observed(env, trace), capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=180)
-        say(f"   dump run {index}: exit {result.returncode}")
-        if "DUMP" in result.stderr or result.returncode:
-            say(clip(result.stderr, 4000))
+    tally_runs("dump", exe, env, RUNS * 3, show=4)
