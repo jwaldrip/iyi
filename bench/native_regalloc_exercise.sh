@@ -890,50 +890,62 @@ else
   fail "MIR constants fixture"
 fi
 
-# Run-time parity: a loop with twelve 64-bit constants and sixteen live values, built by the native compiler and by the
-# hosted compiler, must print the same checksums.
+# const_pressure.ir is const_pressure.iyi written out by hand: a loop that reads constants too wide for an immediate
+# field while sixteen values are live. Sections 3 and 3b emit it under both allocators and compare its checksums with
+# the hosted twin. This check keeps the fixture decisive: the modulus must be built once in the preheader and not in
+# the loop, and a spilled one-instruction constant must be rebuilt at a use.
 check_const_pressure() {
-  local tool hosted native want got sep=:
-  [ "$HOST_OS" = windows ] && sep=';'
-  tool="$WORK/compile_native$EXE"
-  hosted="$WORK/const_pressure.hosted$EXE"
-  native="$WORK/const_pressure.native$EXE"
-  if ! ./bin/iyi build -o "$(native_path "$tool")" "$(native_path src/compiler/tools/compile_native.iyi)" >"$WORK/const_pressure.tool.log" 2>&1; then
-    cat "$WORK/const_pressure.tool.log"
+  local drv=$1 out="$WORK/const_pressure.mir"
+  [ -x "$drv" ] || return 2
+  if ! "$drv" mir "$FIX_RA/const_pressure.ir" churn >"$out" 2>&1; then
+    echo "could not emit the const pressure fixture"
     return 2
   fi
-  if ! ./bin/iyi build -o "$(native_path "$hosted")" "$(native_path "$FIX_RA/const_pressure.iyi")" >"$WORK/const_pressure.hosted.log" 2>&1; then
-    cat "$WORK/const_pressure.hosted.log"
-    return 2
-  fi
-  if ! want=$("$hosted"); then
-    echo "const pressure: the hosted twin could not run"
-    return 2
-  fi
-  if ! IYI_PATH="$(native_path "$PWD/src")${sep}$(native_path "$PWD/samples/iyi")" "$tool" "$(native_path "$FIX_RA/const_pressure.iyi")" -o "$(native_path "$native")" --pipeline typed --prelude >"$WORK/const_pressure.native.log" 2>&1; then
-    cat "$WORK/const_pressure.native.log"
-    echo "const pressure: the native compiler refused the program"
-    return 1
-  fi
-  if ! got=$("$native"); then
-    echo "const pressure: the native program could not run"
-    return 1
-  fi
-  if [ "$got" != "$want" ]; then
-    printf 'hosted:\n%s\nnative:\n%s\n' "$want" "$got"
-    return 1
-  fi
-  echo "const pressure: native and hosted checksums match"
+  "$PY" - "$out" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+blocks = {}
+name = None
+for line in Path(sys.argv[1]).read_text().splitlines():
+    match = re.match(r"block \d+ (\S+)$", line)
+    if match:
+        name = match.group(1)
+        blocks[name] = []
+    elif name is not None:
+        blocks[name].append(line)
+if "entry" not in blocks or "body" not in blocks:
+    print("const pressure: invalid MIR for churn")
+    sys.exit(2)
+
+def moves(block, imm=None):
+    found = []
+    for line in blocks[block]:
+        match = re.match(r"\s+MovImm/64 (\S+) #imm=(-?\d+)$", line)
+        if match and (imm is None or int(match.group(2)) == imm):
+            found.append(match.group(1))
+    return found
+
+modulus = 1000000007
+if len(moves("entry", modulus)) != 1:
+    print("const pressure: the modulus is not built once in the preheader")
+    sys.exit(1)
+if moves("body", modulus):
+    print("const pressure: the modulus is rebuilt inside the loop")
+    sys.exit(1)
+scratch = {"x9", "x10", "x11", "x12", "x13", "x14", "x15"}
+if not any(reg in scratch for reg in moves("body")):
+    print("const pressure: no spilled constant is rebuilt at a use inside the loop")
+    sys.exit(1)
+print("const pressure: the modulus is built once in the preheader; spilled constants are rebuilt at their uses")
+PY
 }
-if [ "$HOST_ID" = darwin-arm64 ]; then
-  if check_const_pressure >"$WORK/const_pressure.pristine.log" 2>&1; then
-    cat "$WORK/const_pressure.pristine.log"
-  else
-    cat "$WORK/const_pressure.pristine.log"
-    fail "const pressure run-time parity"
-  fi
+if check_const_pressure "$DRV" >"$WORK/const_pressure.pristine.log" 2>&1; then
+  cat "$WORK/const_pressure.pristine.log"
 else
-  host_limited "runtime parity: const_pressure native execution (macOS arm64)"
+  cat "$WORK/const_pressure.pristine.log"
+  fail "const pressure MIR"
 fi
 
 echo "== 6. mutation proofs"

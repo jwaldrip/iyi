@@ -1,0 +1,138 @@
+; iyi-ir 1
+module "const_pressure"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+
+; The hosted twin const_pressure.iyi, written out by hand: every value stays below one billion, so no operation
+; overflows and srem agrees with the twin's floored remainder.
+define internal i64 @step(i64 %x) {
+entry:
+  %m = mul i64 %x, 1103515245
+  %s = add i64 %m, 12345
+  %r = srem i64 %s, 1000000007
+  ret i64 %r
+}
+
+; Sixteen values are live around the loop, and its body reads constants too wide for an immediate field.
+define internal i64 @churn(i64 %n) {
+entry:
+  br label %head
+head:
+  %a = phi i64 [ 1, label %entry ], [ %a2, label %body ]
+  %b = phi i64 [ 2, label %entry ], [ %b2, label %body ]
+  %c = phi i64 [ 3, label %entry ], [ %c2, label %body ]
+  %d = phi i64 [ 4, label %entry ], [ %d2, label %body ]
+  %e = phi i64 [ 5, label %entry ], [ %e2, label %body ]
+  %f = phi i64 [ 6, label %entry ], [ %f2, label %body ]
+  %g = phi i64 [ 7, label %entry ], [ %g2, label %body ]
+  %h = phi i64 [ 8, label %entry ], [ %h2, label %body ]
+  %i = phi i64 [ 9, label %entry ], [ %i2, label %body ]
+  %j = phi i64 [ 10, label %entry ], [ %j2, label %body ]
+  %k = phi i64 [ 11, label %entry ], [ %k2, label %body ]
+  %l = phi i64 [ 12, label %entry ], [ %l2, label %body ]
+  %m = phi i64 [ 13, label %entry ], [ %m2, label %body ]
+  %o = phi i64 [ 14, label %entry ], [ %o2, label %body ]
+  %p = phi i64 [ 15, label %entry ], [ %p2, label %body ]
+  %q = phi i64 [ 16, label %entry ], [ %q2, label %body ]
+  %count = phi i64 [ 0, label %entry ], [ %count2, label %body ]
+  %more = icmp slt i64 %count, %n
+  br i1 %more, label %body, label %done
+body:
+  %a.s = call i64 (i64) @step(i64 %a)
+  %a.t = add i64 %a.s, 636413622
+  %a2 = srem i64 %a.t, 1000000007
+  %b.m = mul i64 %b, 3
+  %b.r = srem i64 %a2, 1000003
+  %b.u = add i64 %b.m, %b.r
+  %b.t = add i64 %b.u, 265443576
+  %b2 = srem i64 %b.t, 1000000007
+  %c.r = srem i64 %b2, 999983
+  %c.u = add i64 %c, %c.r
+  %c.t = add i64 %c.u, 40503
+  %c2 = srem i64 %c.t, 1000000007
+  %d.m = mul i64 %d, 31
+  %d.u = add i64 %d.m, %c2
+  %d.t = add i64 %d.u, 123456789
+  %d2 = srem i64 %d.t, 1000000007
+  %e.r = srem i64 %d2, 65537
+  %e.u = add i64 %e, %e.r
+  %e.t = add i64 %e.u, 99991
+  %e2 = srem i64 %e.t, 1000000007
+  %f.m = mul i64 %f, 7
+  %f.r = srem i64 %e2, 524287
+  %f.t = add i64 %f.m, %f.r
+  %f2 = srem i64 %f.t, 1000000007
+  %g.r = srem i64 %f2, 131071
+  %g.u = add i64 %g, %g.r
+  %g.t = add i64 %g.u, 100000007
+  %g2 = srem i64 %g.t, 1000000007
+  %h.r = srem i64 %g2, 8191
+  %h.m = mul i64 %h.r, 5
+  %h.u = add i64 %h, %h.m
+  %h.s = call i64 (i64) @step(i64 %h)
+  %h.t = add i64 %h.u, %h.s
+  %h2 = srem i64 %h.t, 1000000007
+  %i.r = srem i64 %h2, 127
+  %i.u = add i64 %i, %i.r
+  %i.t = add i64 %i.u, 777777
+  %i2 = srem i64 %i.t, 1000000007
+  %j.r = srem i64 %i2, 101
+  %j.u = add i64 %j, %j.r
+  %j.t = add i64 %j.u, 333333333
+  %j2 = srem i64 %j.t, 1000000007
+  %k.r = srem i64 %j2, 97
+  %k.u = add i64 %k, %k.r
+  %k.t = add i64 %k.u, 44444
+  %k2 = srem i64 %k.t, 1000000007
+  %l.r = srem i64 %k2, 89
+  %l.u = add i64 %l, %l.r
+  %l.t = add i64 %l.u, 5555555
+  %l2 = srem i64 %l.t, 1000000007
+  %m.r = srem i64 %l2, 83
+  %m.u = add i64 %m, %m.r
+  %m.t = add i64 %m.u, 66666666
+  %m2 = srem i64 %m.t, 1000000007
+  %o.r = srem i64 %m2, 79
+  %o.u = add i64 %o, %o.r
+  %o.t = add i64 %o.u, 7777777
+  %o2 = srem i64 %o.t, 1000000007
+  %p.r = srem i64 %o2, 73
+  %p.u = add i64 %p, %p.r
+  %p.t = add i64 %p.u, 88888888
+  %p2 = srem i64 %p.t, 1000000007
+  %q.r = srem i64 %p2, 71
+  %q.u = add i64 %q, %q.r
+  %q.t = add i64 %q.u, 9999999
+  %q2 = srem i64 %q.t, 1000000007
+  %count2 = add i64 %count, 1
+  br label %head
+done:
+  %sum0 = add i64 %a, %b
+  %sum1 = add i64 %sum0, %c
+  %sum2 = add i64 %sum1, %d
+  %sum3 = add i64 %sum2, %e
+  %sum4 = add i64 %sum3, %f
+  %sum5 = add i64 %sum4, %g
+  %sum6 = add i64 %sum5, %h
+  %sum7 = add i64 %sum6, %i
+  %sum8 = add i64 %sum7, %j
+  %sum9 = add i64 %sum8, %k
+  %sum10 = add i64 %sum9, %l
+  %sum11 = add i64 %sum10, %m
+  %sum12 = add i64 %sum11, %o
+  %sum13 = add i64 %sum12, %p
+  %sum14 = add i64 %sum13, %q
+  %total = srem i64 %sum14, 1000000007
+  ret i64 %total
+}
+
+define i32 @main() {
+entry:
+  %r1 = call i64 (i64) @churn(i64 300)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %r1)
+  %r2 = call i64 (i64) @churn(i64 7)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %r2)
+  ret i32 0
+}
