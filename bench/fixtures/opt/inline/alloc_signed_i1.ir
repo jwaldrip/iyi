@@ -1,0 +1,35 @@
+; iyi-ir 1
+; True is -1 as a signed i1, both when widened and when compared.
+source_filename = "alloc_signed_i1"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external ptr @__iyi_new(i64 %size, i64 %type_id, i64 %flags) {
+entry:
+  %flag = trunc i64 %flags to i1
+  %wide = sext i1 %flag to i64
+  %negative = icmp slt i1 %flag, false
+  %chosen = select i1 %negative, i64 %wide, i64 %size
+  %p = inttoptr i64 %chosen to ptr
+  ret ptr %p
+}
+define external i64 @padding(i64 %x) {
+entry:
+  %a0 = add i64 %x, 1
+  %a1 = add i64 %a0, 2
+  %a2 = add i64 %a1, 3
+  %a3 = add i64 %a2, 4
+  %a4 = add i64 %a3, 5
+  %a5 = add i64 %a4, 6
+  %a6 = add i64 %a5, 7
+  %a7 = add i64 %a6, 8
+  %a8 = add i64 %a7, 9
+  %a9 = add i64 %a8, 10
+  %a10 = add i64 %a9, 11
+  %a11 = add i64 %a10, 12
+  ret i64 %a11
+}
+define external ptr @signed_use(i64 %size) {
+entry:
+  %p = call ptr (i64, i64, i64) @__iyi_new(i64 %size, i64 1, i64 1)
+  ret ptr %p
+}

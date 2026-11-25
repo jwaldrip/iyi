@@ -1,0 +1,95 @@
+; iyi-ir 1
+source_filename = "alloc_recursive"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external void @sink(i64)
+
+define internal i64 @recursive(i64 %n) {
+entry:
+  %done = icmp eq i64 %n, 0
+  br i1 %done, label %base, label %step
+base:
+  ret i64 1
+step:
+  %next = sub i64 %n, 1
+  %result = call i64 (i64) @recursive(i64 %next)
+  ret i64 %result
+}
+
+define external ptr @__iyi_new(i64 %size, i64 %type_id, i64 %flags) {
+entry:
+  %value = call i64 (i64) @recursive(i64 %size)
+  %p = inttoptr i64 %value to ptr
+  ret ptr %p
+}
+
+define external void @padding(i64 %x) {
+entry:
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  ret void
+}
+
+define external ptr @recursive_use(i64 %size) {
+entry:
+  %0 = icmp eq i64 %size, 0
+  br i1 %0, label %base, label %step
+base:
+  br label %inline.cont3
+step:
+  %1 = sub i64 %size, 1
+  %2 = icmp eq i64 %1, 0
+  br i1 %2, label %base5, label %step6
+inline.cont3:
+  %3 = phi i64 [ 1, label %base ], [ %7, label %inline.cont7 ]
+  %4 = inttoptr i64 %3 to ptr
+  ret ptr %4
+base5:
+  br label %inline.cont7
+step6:
+  %5 = sub i64 %1, 1
+  %6 = call i64 (i64) @recursive(i64 %5)
+  br label %inline.cont7
+inline.cont7:
+  %7 = phi i64 [ 1, label %base5 ], [ %6, label %step6 ]
+  br label %inline.cont3
+}
+

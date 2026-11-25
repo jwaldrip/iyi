@@ -309,6 +309,12 @@ for name in fields mixed_union single_union memset memcpy whole; do fixture_chec
 for name in escaping dynamic volatile volatile_memset; do fixture_check sroa "$name" keep; done
 for name in leaf_two returns bottom_up top_level runtime_marking; do fixture_check inline "$name" changed; done
 for name in tls_keep always_runtime_keep; do fixture_check inline "$name" keep; done
+R9_PASSES='escape,inline-alloc,simplify,cfg-simplify,cse,dce'
+fixture_check inline-alloc alloc_entry_keep keep inline
+for name in alloc_entry_chain fold_gate noinline_cold alloc_signed_i1 alloc_phi_keep alloc_selective alloc_recursive alloc_flagged alloc_i1_overflow; do
+  fixture_check "$R9_PASSES" "$name" changed inline
+done
+fixture_check release alloc_promote changed inline
 fixture_check release budget_cold_init changed inline
 fixture_check inline cold_edge_scc changed
 fixture_check inline cold_site changed
@@ -1326,6 +1332,95 @@ prove_mutation 'R1R: a recursive callee is copied in round 0 only' src/compiler/
   '  return false if false # mutation R1R: recursive callees are copied in round 1 too' \
   -- mutation_check R1R inline recursive_outside || fail 'R1R was not caught'
 mutation_result R1R
+prove_mutation 'R9E: early inlining keeps allocation entries opaque' src/compiler/ir/opt/inline.iyi \
+  '  return false if runtime_entry?(fn) && !(entries_ok && alloc_entry?(fn))' \
+  '  return false if runtime_entry?(fn) && !alloc_entry?(fn)' \
+  -- mutation_check R9E inline always_runtime_keep || fail 'R9E was not caught'
+mutation_result R9E
+prove_mutation 'R9A: allocation entries require an earlier escape pass' src/compiler/ir/opt/pipeline.iyi \
+  '    entries_ok = late && passes[0, begin_at].any? { |id| id == PassId::Escape }' \
+  '    entries_ok = late' \
+  -- mutation_check R9A inline-alloc alloc_entry_keep inline || fail 'R9A was not caught'
+mutation_result R9A
+prove_mutation 'R9P: release promotes before inlining allocations' src/compiler/ir/opt/pipeline.iyi \
+  '            PassId::Escape, PassId::BarrierStack, PassId::Sroa, PassId::Simplify, PassId::Dce,' \
+  '            PassId::InlineAlloc, PassId::BarrierStack, PassId::Sroa, PassId::Simplify, PassId::Dce,' \
+  -- mutation_check R9P release alloc_promote inline || fail 'R9P was not caught'
+mutation_result R9P
+prove_mutation 'R9C: the late group considers only allocation-funnel calls' src/compiler/ir/opt/inline.iyi \
+  '      block.insts.each { |inst| sites << inst if inst.op == Op::Call && (!budget.late || alloc_candidate?(inst, budget)) }' \
+  '      block.insts.each { |inst| sites << inst if inst.op == Op::Call }' \
+  -- mutation_check R9C "$R9_PASSES" alloc_entry_chain inline || fail 'R9C was not caught'
+mutation_result R9C
+prove_mutation 'R9X: calls exposed by an allocation entry join the funnel' src/compiler/ir/opt/inline.iyi \
+  '    clones.each { |copy| budget.mark_exposed(copy) if copy.op == Op::Call }' \
+  '    nil' \
+  -- mutation_check R9X "$R9_PASSES" alloc_entry_chain inline || fail 'R9X was not caught'
+mutation_result R9X
+prove_mutation 'R9G: the late funnel has its wider cost gate' src/compiler/ir/opt/inline.iyi \
+  '    @late ? 120 : 40' \
+  '    @late ? 40 : 40' \
+  -- mutation_check R9G "$R9_PASSES" alloc_entry_chain inline || fail 'R9G was not caught'
+mutation_result R9G
+prove_mutation 'R9R: late recursive expansion is bounded by its rounds' src/compiler/ir/opt/inline.iyi \
+  '    @late ? 3 : 2' \
+  '    @late ? 4 : 2' \
+  -- mutation_check R9R "$R9_PASSES" alloc_recursive inline || fail 'R9R was not caught'
+mutation_result R9R
+prove_mutation 'R9F: call cost folds arguments and drops unreachable paths' src/compiler/ir/opt/inline.iyi \
+  '    cost = folded_cost(callee, args)' \
+  '    cost = callee_cost(callee)' \
+  -- mutation_check R9F "$R9_PASSES" fold_gate inline || fail 'R9F was not caught'
+mutation_result R9F
+prove_mutation 'R9N: blocks calling noinline functions are cold' src/compiler/ir/opt/inline.iyi \
+  '    cold_live << (live[k] && (cold[k] || calls_noinline?(callee.blocks[k])))' \
+  '    cold_live << (live[k] && cold[k])' \
+  -- mutation_check R9N "$R9_PASSES" noinline_cold inline || fail 'R9N was not caught'
+mutation_result R9N
+prove_mutation 'R9V: fixed non-phi values are substituted into the clone' src/compiler/ir/opt/inline.iyi \
+  '          values[inst] = const_int(inst.type, constant)' \
+  '          nil' \
+  -- mutation_check R9V "$R9_PASSES" fold_gate inline || fail 'R9V was not caught'
+mutation_result R9V
+prove_mutation 'R9H: a path-dependent phi is not a constant' src/compiler/ir/opt/inline.iyi \
+  '        next if inst.op == Op::Phi || known.has_key?(inst)
+        value = fold_inst(inst, known, pairs)' \
+  '        next if known.has_key?(inst)
+        value = inst.op == Op::Phi && !inst.args.empty? ? known_of(inst.args[0], known) : fold_inst(inst, known, pairs)' \
+  -- mutation_check R9H "$R9_PASSES" alloc_phi_keep inline || fail 'R9H was not caught'
+mutation_result R9H
+prove_mutation 'R9S: late cleanup leaves unchanged functions alone' src/compiler/ir/opt/pipeline.iyi \
+  '    selective = selective_escape || late' \
+  '    selective = selective_escape' \
+  -- mutation_check R9S "$R9_PASSES" alloc_selective inline || fail 'R9S was not caught'
+mutation_result R9S
+prove_mutation 'R9Z: a constant sizeof argument is folded' src/compiler/ir/opt/inline.iyi \
+  '  sizeof_value(mod, value)' \
+  '  nil' \
+  -- mutation_check R9Z "$R9_PASSES" alloc_entry_chain inline || fail 'R9Z was not caught'
+mutation_result R9Z
+prove_mutation 'R9I: signed i1 extension uses signed value' src/compiler/ir/opt/fold.iyi \
+  '             signed_value(source_bits, v)' \
+  '             canonical(source_bits, v)' \
+  -- mutation_check R9I "$R9_PASSES" alloc_signed_i1 inline || fail 'R9I was not caught'
+mutation_result R9I
+prove_mutation 'R9J: signed i1 predicates use signed values' src/compiler/ir/opt/fold.iyi \
+  '             signed_compare(predicate, signed_value(bits, a), signed_value(bits, c))' \
+  '             signed_compare(predicate, canonical(bits, a), canonical(bits, c))' \
+  -- mutation_check R9J "$R9_PASSES" alloc_signed_i1 inline || fail 'R9J was not caught'
+mutation_result R9J
+prove_mutation 'R9O: overflow flags are canonical i1 values' src/compiler/ir/opt/inline.iyi \
+  '  pairs[inst] = [canonical(bits, u64_as_i64(value)), overflow ? 1_i64 : 0_i64]' \
+  '  pairs[inst] = [canonical(bits, u64_as_i64(value)), overflow ? 0_i64 : 1_i64]' \
+  -- mutation_check R9O "$R9_PASSES" alloc_i1_overflow inline || fail 'R9O was not caught'
+mutation_result R9O
+prove_mutation 'R9Q: flagged integer operations do not fold' src/compiler/ir/opt/fold.iyi \
+  '  return nil unless flags == 0_i64
+  value = case op' \
+  '  nil
+  value = case op' \
+  -- mutation_check R9Q "$R9_PASSES" alloc_flagged inline || fail 'R9Q was not caught'
+mutation_result R9Q
 prove_mutation 'S9B2: early barrier never removes a heap destination' src/compiler/ir/opt/barrier.iyi \
   '    return stack if stack_only # mutation S9B2: early pass must not remove a heap barrier' \
   '    return true if stack_only # mutation S9B2: early pass must not remove a heap barrier' \

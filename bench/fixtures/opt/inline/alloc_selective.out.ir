@@ -1,0 +1,22 @@
+; iyi-ir 1
+source_filename = "alloc_selective"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external ptr @__iyi_new(i64 %size, i64 %type_id, i64 %flags) {
+entry:
+  %p = inttoptr i64 %size to ptr
+  ret ptr %p
+}
+
+define external i64 @untouched(i64 %value) {
+entry:
+  %same = add i64 %value, 0
+  ret i64 %same
+}
+
+define external ptr @alloc_use(i64 %size) {
+entry:
+  %0 = inttoptr i64 %size to ptr
+  ret ptr %0
+}
+
