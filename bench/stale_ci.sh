@@ -179,6 +179,7 @@ assert_hits() {
   local snapshot_file=""
   local expected_ns=""
   local allow_profile_refusal="false"
+  local allow_link_refusal="false"
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -186,6 +187,7 @@ assert_hits() {
       --snapshot) snapshot_file="$2"; shift 2 ;;
       --namespace) expected_ns="$2"; shift 2 ;;
       --allow-profile-refusal) allow_profile_refusal="true"; shift ;;
+      --allow-link-refusal) allow_link_refusal="true"; shift ;;
       *) echo "Unknown option: $1" >&2; return 1 ;;
     esac
   done
@@ -196,15 +198,47 @@ assert_hits() {
   fi
 
   "$PY" -c "
-import json, sys, os
+import json, sys, os, re
 
 json_file = sys.argv[1]
 snapshot_file = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else ''
 expected_ns = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else ''
 allow_profile_refusal = sys.argv[4] == 'true'
+allow_link_refusal = len(sys.argv) > 5 and sys.argv[5] == 'true'
 
-with open(json_file) as f:
-    data = json.load(f)
+def load_results(path, label):
+    # One results object, or the --explain reasons with that object: the
+    # reasons come before it as lines like: file: miss: reason
+    text = open(path, encoding='utf-8', errors='replace').read()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+        for raw_line in text.splitlines():
+            candidate_text = raw_line.strip()
+            if not candidate_text.startswith('{'):
+                continue
+            try:
+                candidate = json.loads(candidate_text)
+            except ValueError:
+                continue
+            if isinstance(candidate, dict) and 'tests' in candidate:
+                data = candidate
+                break
+        if data is None:
+            print(label + ' FAILED: no results object in ' + path, file=sys.stderr)
+            sys.exit(1)
+    reasons = {}
+    for raw_line in text.splitlines():
+        candidate_text = raw_line.strip()
+        if candidate_text.startswith('{'):
+            continue
+        match = re.match(r'^(.+): miss: (.*)', candidate_text)
+        if match:
+            reasons[match.group(1)] = match.group(2).strip()
+    return data, reasons
+
+data, explain_reasons = load_results(json_file, 'assert-hits')
 
 tests = data.get('tests', [])
 if not tests:
@@ -258,6 +292,7 @@ if snapshot_file and os.path.exists(snapshot_file):
 non_hits = []
 excused = []
 refused = {}
+link_refused = {}
 hit_ids = set()
 
 for t in tests:
@@ -286,6 +321,9 @@ for t in tests:
     if differs and allow_profile_refusal:
         refused[tid] = (r_fp, t_fp)
         continue
+    if allow_link_refusal and not differs and exported_ids is not None and reuse == 'miss' and not cached and explain_reasons.get(t.get('file', ''), '') == 'link changed' and tid in exported_ids:
+        link_refused[tid] = t.get('file', '')
+        continue
 
     if exported_ids is not None and reuse == 'not reusable' and tid not in exported_ids:
         excused.append((tid, t.get('reason', '')))
@@ -300,10 +338,12 @@ if non_hits:
     print(f'assert-hits FAILED: {len(non_hits)} tests did not hit from cache:', file=sys.stderr)
     for tid, r, reason in non_hits:
         print(f'  {tid[0]}:{tid[1]}: reuse={r} reason={reason}', file=sys.stderr)
+    if not explain_reasons:
+        print('  no --explain reasons in these results: run the test with --explain to name each miss', file=sys.stderr)
     sys.exit(1)
 
 if exported_ids is not None:
-    missing = exported_ids - hit_ids - set(refused)
+    missing = exported_ids - hit_ids - set(refused) - set(link_refused)
     unexpected = hit_ids - exported_ids
     if missing or unexpected:
         print('assert-hits FAILED: hit identity set does not match snapshot identity set:', file=sys.stderr)
@@ -323,7 +363,11 @@ if refused:
     print(f\"  {len(refused)} imported receipts refused: their profile differs from this runner's, so their hits are not exercised here; shadow-audit compares them with fresh execution.\")
     for tid, (r_fp, t_fp) in sorted(refused.items()):
         print(f'  {tid[0]}:{tid[1]}: receipt {r_fp}, runner {t_fp}')
-" "$json_file" "$snapshot_file" "$expected_ns" "$allow_profile_refusal"
+if link_refused:
+    print(f'  {len(link_refused)} imported receipts refused for a link difference: the link environment (CHILD_ENV) differs from the producer on this runner, so their hits are not exercised here; shadow-audit checks each against fresh execution.')
+    for tid in sorted(link_refused):
+        print(f'  {tid[0]}:{tid[1]}')
+" "$json_file" "$snapshot_file" "$expected_ns" "$allow_profile_refusal" "$allow_link_refusal"
 }
 
 # 4. shadow-audit: compares cached hits and profile-refused receipts with fresh
@@ -335,6 +379,7 @@ shadow_audit() {
   local cached_snapshot=""
   local fresh_snapshot=""
   local expected_ns=""
+  local allow_link_refusal="false"
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -343,6 +388,7 @@ shadow_audit() {
       --cached-snapshot) cached_snapshot="$2"; shift 2 ;;
       --fresh-snapshot) fresh_snapshot="$2"; shift 2 ;;
       --namespace) expected_ns="$2"; shift 2 ;;
+      --allow-link-refusal) allow_link_refusal="true"; shift ;;
       *) echo "Unknown option: $1" >&2; return 1 ;;
     esac
   done
@@ -353,13 +399,45 @@ shadow_audit() {
   fi
 
   "$PY" -c "
-import json, sys, os
+import json, sys, os, re
 
 cached_file, fresh_file, cached_snapshot_file, fresh_snapshot_file = sys.argv[1:5]
 expected_ns = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else ''
+allow_link_refusal = len(sys.argv) > 6 and sys.argv[6] == 'true'
 
-with open(cached_file) as f:
-    cached_data = json.load(f)
+def load_results(path, label):
+    # One results object, or the --explain reasons with that object: the
+    # reasons come before it as lines like: file: miss: reason
+    text = open(path, encoding='utf-8', errors='replace').read()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+        for raw_line in text.splitlines():
+            candidate_text = raw_line.strip()
+            if not candidate_text.startswith('{'):
+                continue
+            try:
+                candidate = json.loads(candidate_text)
+            except ValueError:
+                continue
+            if isinstance(candidate, dict) and 'tests' in candidate:
+                data = candidate
+                break
+        if data is None:
+            print(label + ' FAILED: no results object in ' + path, file=sys.stderr)
+            sys.exit(1)
+    reasons = {}
+    for raw_line in text.splitlines():
+        candidate_text = raw_line.strip()
+        if candidate_text.startswith('{'):
+            continue
+        match = re.match(r'^(.+): miss: (.*)', candidate_text)
+        if match:
+            reasons[match.group(1)] = match.group(2).strip()
+    return data, reasons
+
+cached_data, explain_reasons = load_results(cached_file, 'shadow-audit')
 with open(fresh_file) as f:
     fresh_data = json.load(f)
 
@@ -439,6 +517,7 @@ refused_checked = 0
 parity_fields = {'kernel', 'rlimits', 'cgroup_mem', 'loader_vars'}
 differences = set()
 kernel_pairs = set()
+link_checked = 0
 
 for tid, c_test in cached_tests.items():
     tid_str = f\"{tid[0]}:{tid[1]}\"
@@ -448,6 +527,36 @@ for tid, c_test in cached_tests.items():
     differs = bool(producer_fp and runner_fp and producer_fp != runner_fp)
     hit = bool(c_test.get('cached') and c_test.get('reuse') == 'hit')
     refused = bool(not hit and c_record and differs)
+    if not hit and not refused and allow_link_refusal and c_record and not differs and explain_reasons.get(c_test.get('file', ''), '') == 'link changed':
+        link_checked += 1
+        f_test = fresh_tests.get(tid)
+        f_record = fresh_records.get(tid)
+        if not f_test or not f_record:
+            disagreements.append(f'{tid_str}: link refusal has no fresh execution and fresh audit receipt')
+            continue
+        c_status = c_test.get('status')
+        f_status = f_test.get('status')
+        if c_status != f_status or f_status != 'pass':
+            disagreements.append(f'{tid_str}: link refusal verdict mismatch (cached={c_status}, fresh={f_status})')
+        c_pb = c_test.get('portable_build')
+        f_pb = f_test.get('portable_build')
+        if not c_pb or c_pb != f_pb:
+            disagreements.append(f'{tid_str}: link refusal, but the cached and fresh runs built different Builds ({c_pb} != {f_pb})')
+        c_parts = c_record.get('build')
+        f_parts = f_record.get('build')
+        if not isinstance(c_parts, dict) or not isinstance(f_parts, dict):
+            disagreements.append(f'{tid_str}: link refusal has no Build parts in a snapshot')
+            continue
+        for part in ('toolchain', 'behavior', 'callpath', 'cenv'):
+            if c_parts.get(part) != f_parts.get(part):
+                disagreements.append(f'{tid_str}: link refusal, but {part} differs from the producer (only the link may differ)')
+        if c_parts.get('link') == f_parts.get('link'):
+            disagreements.append(f'{tid_str}: link refusal not reproduced: the link digest on this runner equals the producer digest')
+        c_obs = c_record.get('trace', {}).get('observations')
+        f_obs = f_record.get('trace', {}).get('observations')
+        if c_obs != f_obs:
+            disagreements.append(f'{tid_str}: ordered trace observation mismatch')
+        continue
     if not hit and not refused:
         continue
 
@@ -533,7 +642,7 @@ for tid, c_test in cached_tests.items():
         if c_obs != f_obs or (refused and (not isinstance(c_obs, list) or not isinstance(f_obs, list))):
             disagreements.append(f\"{tid_str}: ordered trace observation mismatch\")
 
-if hits_checked + refused_checked == 0:
+if hits_checked + refused_checked + link_checked == 0:
     disagreements.append('nothing audited')
 
 if disagreements:
@@ -546,12 +655,16 @@ if disagreements:
 
 detail = f\" (differs: {'; '.join(sorted(differences))})\" if differences else ''
 print(f\"shadow-audit PASSED: {hits_checked} cached hits verified against fresh execution; {refused_checked} receipts refused for this runner's profile matched fresh execution in verdict, Build and ordered observations{detail}.\")
+if link_checked:
+    print(f'  {link_checked} receipts refused for a link difference matched fresh execution in verdict, in the other Build parts and in ordered observations: the link environment differs from the producer here, so these hits are not exercised on this runner.')
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        print(f'::notice title=Link environment differs::{link_checked} imported receipts refused for a link difference were audited against fresh execution.')
 if refused_checked and os.environ.get('GITHUB_ACTIONS') == 'true':
     kernels = '; '.join(f'{before} -> {after}' for before, after in sorted(kernel_pairs)) or '<unknown> -> <unknown>'
     notice = f'Producer kernel -> auditor kernel: {kernels}. Hits on profile-refused producer receipts were not exercised on this runner.'
     notice = notice.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
     print(f'::notice title=Cross-machine hits not exercised::{notice}')
-" "$cached_json" "$fresh_json" "$cached_snapshot" "$fresh_snapshot" "$expected_ns"
+" "$cached_json" "$fresh_json" "$cached_snapshot" "$fresh_snapshot" "$expected_ns" "$allow_link_refusal"
 }
 
 # 5. test-planted-hidden-read: proves row 24 with real isolated copied runtime fixture
@@ -1548,6 +1661,66 @@ shadow_negative('refused_blocked', [changed(refusal_test, blocked=True)], [fresh
 same_parts = changed(audit_record, profile=changed(profile_a, fp='pB'))
 shadow_negative('refused_same_parts', [refusal_test], [fresh_test], [producer_record], [same_parts],
                 'profile fp differs but no recorded component does')
+
+# Link refusals: an environment that changes only the link digest refuses an
+# import, and --explain names it. assert-hits accepts that only when asked, and
+# shadow-audit checks each one against fresh execution.
+link_file = 'samples/a.iyi'
+link_producer_parts = {'build': 'hashL1', 'toolchain': 'T1', 'behavior': 'B1', 'callpath': 'C1', 'link': 'LINK1', 'cenv': 'E1'}
+link_fresh_parts = changed(link_producer_parts, build='hashL2', link='LINK2')
+link_producer_record = {'test': identity, 'profile': profile_a, 'build': link_producer_parts,
+                        'trace': {'observations': observations}}
+link_audit_record = changed(link_producer_record, build=link_fresh_parts)
+link_test = {'test': identity, 'file': link_file, 'status': 'pass', 'cached': False, 'reuse': 'miss',
+             'profile': 'pA', 'portable_build': 'hashL2'}
+link_snapshot = write_fixture('link_producer', {'namespace': 'run:100', 'records': [link_producer_record]})
+link_audit = write_fixture('link_audit', {'records': [link_audit_record]})
+
+def write_raw(name, reason_lines, tests):
+    # The shape `iyi test --cached --json --explain` prints: reasons, then the object.
+    path = os.path.join(work, name + '.out')
+    with open(path, 'w') as f:
+        for line in reason_lines:
+            f.write(line + '\n')
+        f.write(json.dumps({'tests': tests}) + '\n')
+    return path
+
+link_raw = write_raw('link_raw', [link_file + ': miss: link changed'], [link_test])
+link_args = ['--json', link_raw, '--snapshot', link_snapshot, '--allow-profile-refusal']
+assert_positive('assert-hits', link_args + ['--allow-link-refusal'])
+assert_negative('assert-hits', link_args, 'did not hit')
+for reason in ['toolchain changed', 'compiler environment changed']:
+    other_raw = write_raw('link_other_raw', [link_file + ': miss: ' + reason], [link_test])
+    assert_negative('assert-hits', ['--json', other_raw, '--snapshot', link_snapshot, '--allow-link-refusal'], 'did not hit')
+profile_raw = write_raw('link_profile_raw', [link_file + ': miss: link changed'], [changed(link_test, profile='pB')])
+assert_negative('assert-hits', ['--json', profile_raw, '--snapshot', link_snapshot, '--allow-link-refusal'], 'did not hit')
+bare_raw = write_raw('link_bare_raw', [], [link_test])
+assert_negative('assert-hits', ['--json', bare_raw, '--snapshot', link_snapshot, '--allow-link-refusal'], 'did not hit')
+
+def link_shadow_args(name, cached_path, fresh_tests, audit_records):
+    return ['--cached-json', cached_path,
+            '--fresh-json', write_fixture(name + '_fresh', {'tests': fresh_tests}),
+            '--cached-snapshot', link_snapshot,
+            '--fresh-snapshot', write_fixture(name + '_audit', {'records': audit_records}),
+            '--allow-link-refusal']
+
+link_ok = run_cmd('shadow-audit', link_shadow_args('link_ok', link_raw, [changed(link_test)], [link_audit_record]), cwd=sa_dir)
+link_ok_output = link_ok.stdout + link_ok.stderr
+assert link_ok.returncode == 0, link_ok_output
+assert '1 receipts refused for a link difference' in link_ok_output, link_ok_output
+
+def link_shadow_negative(name, cached_tests, fresh_tests, audit_records, message):
+    raw = write_raw(name + '_raw', [link_file + ': miss: link changed'], cached_tests)
+    assert_negative('shadow-audit', link_shadow_args(name, raw, fresh_tests, audit_records), message, cwd=sa_dir)
+    assert os.path.exists(marker), f'shadow-audit {name} must write .disagreement_marker'
+    os.remove(marker)
+
+link_shadow_negative('link_equal_digest', [link_test], [changed(link_test)], [changed(link_producer_record)], 'link refusal not reproduced')
+link_shadow_negative('link_other_part', [link_test], [changed(link_test)], [changed(link_audit_record, build=changed(link_fresh_parts, toolchain='T2'))], 'toolchain differs from the producer')
+link_shadow_negative('link_build_split', [link_test], [changed(link_test, portable_build='hashX')], [link_audit_record], 'built different Builds')
+link_shadow_negative('link_verdict', [link_test], [changed(link_test, status='fail')], [link_audit_record], 'link refusal verdict mismatch')
+link_shadow_negative('link_observations', [link_test], [changed(link_test)], [changed(link_audit_record, trace={'observations': list(reversed(observations))})], 'ordered trace observation mismatch')
+link_shadow_negative('link_no_fresh', [link_test], [changed(link_test)], [], 'has no fresh execution and fresh audit receipt')
 different_argv = changed(audit_record, profile=changed(profile_a, fp='pB', argv=['other']))
 shadow_negative('refused_argv', [refusal_test], [fresh_test], [producer_record], [different_argv],
                 'profile differs outside runner parity: argv')
@@ -2673,7 +2846,7 @@ case "$COMMAND" in
     echo "Commands:"
     echo "  fetch-master                Download master snapshot through Actions API"
     echo "  assert-export-env           Verify export step environment has no secrets"
-    echo "  assert-hits                 Require cache hits, or explicit profile refusals"
+    echo "  assert-hits                 Require cache hits, or explicit profile and link refusals"
   echo "  test-comparator-negatives   Verify negative comparator fixtures for CI checks"
   echo "  test-planted-hidden-read    Prove shadow audit detects unobserved reads (row 24)"
   echo "  git-diff-check              Verify run observations against git diff"

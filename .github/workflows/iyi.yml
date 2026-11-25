@@ -1272,12 +1272,16 @@ jobs:
       - name: "Producer receipts on a fresh runner: hit on an equal profile, refused on another"
         run: |
           mapfile -t tests < <(find samples/iyi -maxdepth 1 -type f -name '*.iyi' -print | sort)
-          "$IYI" test --cached --json \
+          # --explain names each miss. A runner whose link environment (CHILD_ENV,
+          # such as PATH) differs from the producer's misses on the link digest
+          # alone: assert-hits accepts that only for the shadow audit below, which
+          # checks each such refusal against fresh execution.
+          "$IYI" test --cached --json --explain \
             --import-index "run:${GITHUB_RUN_ID}=stale-index/run-${GITHUB_RUN_ID}-${STALE_TARGET}.json" \
-            "${tests[@]}" > stale-index/cached.json
-          bash bench/stale_ci.sh assert-hits --json stale-index/cached.json \
+            "${tests[@]}" > stale-index/cached.out
+          bash bench/stale_ci.sh assert-hits --json stale-index/cached.out \
             --snapshot "stale-index/run-${GITHUB_RUN_ID}-${STALE_TARGET}.json" \
-            --allow-profile-refusal
+            --allow-profile-refusal --allow-link-refusal
       - name: Shadow audit fresh execution and export
         id: shadow_audit
         env:
@@ -1296,10 +1300,11 @@ jobs:
             --export-index "audit:${GITHUB_RUN_ID}=stale-index/audit-${GITHUB_RUN_ID}-${STALE_TARGET}.json" \
             "${tests[@]}" > stale-index/fresh.json
           bash bench/stale_ci.sh shadow-audit \
-            --cached-json stale-index/cached.json \
+            --cached-json stale-index/cached.out \
             --fresh-json stale-index/fresh.json \
             --cached-snapshot "stale-index/run-${GITHUB_RUN_ID}-${STALE_TARGET}.json" \
-            --fresh-snapshot "stale-index/audit-${GITHUB_RUN_ID}-${STALE_TARGET}.json"
+            --fresh-snapshot "stale-index/audit-${GITHUB_RUN_ID}-${STALE_TARGET}.json" \
+            --allow-link-refusal
       - name: "The runner's own receipts hit on an emptied store"
         run: |
           cache_dir="$("$IYI" env IYI_CACHE_DIR | tr -d '\r')"
