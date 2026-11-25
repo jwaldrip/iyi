@@ -174,6 +174,35 @@ mutation_result() {
   fi
 }
 
+# A stopped release run must still contain the escaping allocation call.
+# A compiler error is not evidence that the stop was honored.
+stop_count_check() {
+  local binary="$1"
+  if ! "$binary" run --verify-each --stop-before inline-alloc release \
+    "$(native_path "$FIXTURES/inline/alloc_entry_chain.ir")" >"$WORK/stop-count.ir" 2>"$WORK/stop-count.err"; then
+    cat "$WORK/stop-count.err" >&2
+    return 2
+  fi
+  awk '/call .*@__iyi_new\(/ { found = 1 } END { exit !found }' "$WORK/stop-count.ir"
+}
+
+stop_mutation_check() {
+  local status="$WORK/R9STOP.status" rc=0
+  printf '2\n' >"$status"
+  if ! build_driver "$MUTANT"; then
+    echo 'stop-before mutant did not build' >&2; cat "$WORK/build.log" >&2; return 2
+  fi
+  stop_count_check "$MUTANT" || rc=$?
+  if [ "$rc" -eq 1 ]; then
+    printf '1\n' >"$status"; return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    return 2
+  fi
+  printf '0\n' >"$status"
+  return 0
+}
+
 # Return 1 only when the entry-frame behavior differs; 2 means the proof could
 # not run, so a compiler failure cannot be counted as a caught mutation.
 entry_chain_check() {
@@ -595,7 +624,7 @@ else
 fi
 
 echo '== 4. CLI contract'
-printf 'cfg-simplify\tdefault,release\nmem2reg\tdefault,release\nsimplify\tdefault,release\ndce\tdefault,release\nsroa\trelease\ninline\trelease\ndeadfn\trelease\ncse\trelease\nprove\trelease\nlicm\trelease\nlayout\trelease\nescape\trelease\nbarrier\trelease\nbarrier-stack\trelease\n' >"$WORK/passes.expected"
+printf 'cfg-simplify\tdefault,release\nmem2reg\tdefault,release\nsimplify\tdefault,release\ndce\tdefault,release\nsroa\trelease\ninline\trelease\ndeadfn\trelease\ncse\trelease\nprove\trelease\nlicm\trelease\nlayout\trelease\nescape\trelease\nbarrier\trelease\nbarrier-stack\trelease\ninline-alloc\trelease\n' >"$WORK/passes.expected"
 if ! "$DRV" passes >"$WORK/passes.actual" 2>"$WORK/cli.err" || ! cmp -s "$WORK/passes.expected" "$WORK/passes.actual"; then
   fail 'passes did not list the expected names and tiers'
 fi
@@ -603,6 +632,17 @@ expect_status 2 'missing arguments' "$DRV" run || true
 expect_status 2 'extra arguments' "$DRV" passes extra || true
 expect_status 2 'unknown pass' "$DRV" run nosuch "$(native_path "$FIXTURES/dce/keep_store.ir")" || true
 expect_status 2 'empty pass name' "$DRV" run 'dce,,simplify' "$(native_path "$FIXTURES/dce/keep_store.ir")" || true
+expect_status 2 'unknown stop-before pass' "$DRV" run --stop-before nosuch release "$(native_path "$FIXTURES/inline/alloc_entry_chain.ir")" || true
+expect_status 2 'missing stop-before pass' "$DRV" run --stop-before || true
+expect_status 2 'duplicate stop-before pass' "$DRV" run --stop-before escape --stop-before inline-alloc release "$(native_path "$FIXTURES/inline/alloc_entry_chain.ir")" || true
+expect_status 1 'stop-before is not a release group boundary' "$DRV" run --stop-before barrier-stack release "$(native_path "$FIXTURES/inline/alloc_entry_chain.ir")" || true
+expect_status 1 'stats stop-before is not a release group boundary' "$DRV" stats --stop-before barrier-stack release "$(native_path "$FIXTURES/inline/alloc_entry_chain.ir")" || true
+expect_status 0 'stats accepts a release group boundary' "$DRV" stats --stop-before inline-alloc release "$(native_path "$FIXTURES/inline/alloc_entry_chain.ir")" || true
+if stop_count_check "$DRV"; then
+  echo '  ok: release stop-before preserves escaping allocation calls'
+else
+  fail 'release stop-before did not preserve escaping allocation calls'
+fi
 expect_status 2 'unreadable input' "$DRV" print "$(native_path "$WORK/no-such-file.ir")" || true
 expect_status 2 'directory input' "$DRV" print "$(native_path "$WORK")" || true
 printf 'not ir\n' >"$WORK/invalid.ir"
@@ -883,7 +923,7 @@ def child_cpu():
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     return usage.ru_utime + usage.ru_stime
 
-def run(n, verified, repeats=1, tier='default', shape='calls'):
+def run(n, verified, repeats=1, tier='default', shape='calls', stop_before_alloc=False):
     if tier == 'release':
         path = os.path.join(work, '%s-%d.ir' % (shape, n))
         if shape == 'calls':
@@ -899,15 +939,10 @@ def run(n, verified, repeats=1, tier='default', shape='calls'):
     else:
         path = os.path.join(work, 'scale-%d.ir' % n)
         generate(n, path)
-    passes = tier
-    if tier == 'release' and shape in ('allocations', 'callbacks'):
-        # Measure escape before the late inliner replaces retained allocation calls with their bodies.
-        passes = ('cfg-simplify,sroa,simplify,cse,dce,cfg-simplify,inline,'
-                  'cfg-simplify,sroa,simplify,cse,dce,cfg-simplify,'
-                  'cfg-simplify,sroa,simplify,dce,cfg-simplify,'
-                  'escape,barrier-stack,sroa,simplify,dce,'
-                  'prove,simplify,dce,cfg-simplify,licm,cse,barrier')
-    cmd = [binary, 'run', '--verify-each' if verified else '--no-verify', passes, path]
+    cmd = [binary, 'run', '--verify-each' if verified else '--no-verify']
+    if stop_before_alloc:
+        cmd += ['--stop-before', 'inline-alloc']
+    cmd += [tier, path]
     least = None
     for _ in range(repeats):
         before = child_cpu() if resource else 0.0
@@ -924,7 +959,7 @@ def run(n, verified, repeats=1, tier='default', shape='calls'):
         if verified and tier == 'release' and shape in ('sequential-loops', 'nested-loops'):
             if completed.stdout.count(b' = phi ') < n:
                 raise RuntimeError('%s scale input lost loop headers' % shape)
-        if verified and tier == 'release' and shape == 'allocations':
+        if verified and stop_before_alloc and tier == 'release' and shape == 'allocations':
             kept = sum(1 for line in completed.stdout.splitlines()
                        if b'call ' in line and b'@__iyi_new(' in line)
             if kept < n // 2 or kept >= n:
@@ -932,7 +967,7 @@ def run(n, verified, repeats=1, tier='default', shape='calls'):
         if verified and tier == 'release' and shape == 'high-indegree':
             if b'@caller0(' not in completed.stdout or b'@cb0(' not in completed.stdout:
                 raise RuntimeError('high-indegree scale lost caller or callback functions')
-        if verified and tier == 'release' and shape == 'callbacks':
+        if verified and stop_before_alloc and tier == 'release' and shape == 'callbacks':
             kept = sum(1 for line in completed.stdout.splitlines()
                        if b'call ' in line and b'@__iyi_new(' in line)
             if kept != n:
@@ -990,6 +1025,7 @@ for shape in ('sequential-loops', 'nested-loops'):
         failed = True
 print('== 6. release allocation-site scaling')
 try:
+    run(max(8, alloc_k // 8), True, tier='release', shape='allocations', stop_before_alloc=True)
     run(max(8, alloc_k // 8), True, tier='release', shape='allocations')
     small = run(alloc_k, False, 3, 'release', 'allocations')
     large = run(2 * alloc_k, False, 3, 'release', 'allocations')
@@ -1043,6 +1079,7 @@ except RuntimeError as exc:
     failed = True
 print('== 6. release callback scaling')
 try:
+    run(max(8, callback_k // 8), True, tier='release', shape='callbacks', stop_before_alloc=True)
     run(max(8, callback_k // 8), True, tier='release', shape='callbacks')
     small = run(callback_k, False, 3, 'release', 'callbacks')
     large = run(2 * callback_k, False, 3, 'release', 'callbacks')
@@ -1441,6 +1478,11 @@ prove_mutation 'R9K: folded cost caching distinguishes the call arguments' src/c
   '      key = key + "?,"' \
   -- mutation_check R9K "$R9_PASSES" fold_gate inline || fail 'R9K was not caught'
 mutation_result R9K
+prove_mutation 'R9STOP: stopping before the late group preserves allocation calls' src/compiler/ir/opt/pipeline.iyi \
+  '  stop_before = options.stop_before # mutation R9-stop: honor the requested group boundary' \
+  '  stop_before = nil.as(PassId?) # mutation R9-stop: honor the requested group boundary' \
+  -- stop_mutation_check || fail 'R9STOP was not caught'
+mutation_result R9STOP
 prove_mutation 'S9B2: early barrier never removes a heap destination' src/compiler/ir/opt/barrier.iyi \
   '    return stack if stack_only # mutation S9B2: early pass must not remove a heap barrier' \
   '    return true if stack_only # mutation S9B2: early pass must not remove a heap barrier' \
