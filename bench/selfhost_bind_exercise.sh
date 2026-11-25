@@ -2,8 +2,8 @@
 # Fails when the iyi bind tool stops agreeing with the front end it replaces.
 #
 # The oracle is the hosted compiler's `Iyi.print_bind` (`src/compiler/iyi/tools/bind.cr`),
-# built with `-Di_know_what_im_doing` and `LLVM_CONFIG` set, driven over the full
-# eleven-fixture corpus. Each fixture is bound by both implementations and required
+# built with `-Di_know_what_im_doing` and `LLVM_CONFIG` set, driven over the
+# fixture corpus. Each fixture is bound by both implementations and required
 # byte-identical in its summary counts, method classifications, instantiation
 # statistics, and draft module declarations.
 #
@@ -138,6 +138,8 @@ FIXTURES=(
   "bench/fixtures/decl_visibility_and_annotations.iyi"
   "bench/fixtures/bind_shard.iyi"
   "bench/fixtures/bind_generics.iyi"
+  "bench/fixtures/bind_renamed_shard.iyi"
+  "bench/fixtures/bind_varied_shard.iyi"
 )
 
 # Every fixture, both implementations, byte for byte.

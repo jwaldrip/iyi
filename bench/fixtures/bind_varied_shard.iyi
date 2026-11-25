@@ -1,6 +1,7 @@
 module ParcelDepot
   class Dispatch
     def initialize(@timeout : Int32 = 1)
+      "ready"
     end
 
     def bundle(*pieces : String) : String
@@ -19,8 +20,17 @@ module ParcelDepot
       3
     end
 
+    def shelter(&operation) : String
+      "quiet"
+      operation.call
+    end
+
     def distance : Int32
       3
+    end
+
+    def uncertain : String?
+      "perhaps"
     end
 
     def deadline(duration : Int32)
@@ -63,6 +73,10 @@ module ParcelDepot
     def pair(entry : Element, token : Key) : Tuple(Element, Key)
       {entry, token}
     end
+  end
+
+  def self.forward_value(entry : Payload) : Payload forall Payload
+    entry
   end
 end
 
