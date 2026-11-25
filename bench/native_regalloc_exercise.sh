@@ -1178,20 +1178,34 @@ prove_mutation "reload reuse: retain scratch cache across blocks" \
   '  cache = int_row(64, -1)
   gprs = scratch_gprs' \
   '  gprs = scratch_gprs'
-prove_mutation "floating-point frame: remove one matched d9 save and restore" \
+prove_mutation "floating-point frame: remove the matched single d10 save and restore" \
   src/compiler/native/frame.iyi check_fpr_frame \
   '    acc << m
     i = i + 1' \
-  '    acc << m unless m.fp && f.callee_saved[i] == 41
+  '    acc << m unless m.fp && !paired && f.callee_saved[i] == 42
     i = i + 1' \
   '        acc << m
         i = i + 1' \
-  '        acc << m unless m.fp && f.callee_saved[i] == 41
+  '        acc << m unless m.fp && !paired && f.callee_saved[i] == 42
         i = i + 1'
-prove_mutation "floating-point frame: restore FPRs from the wrong offsets" \
+prove_mutation "floating-point frame: remove the matched d8/d9 pair" \
+  src/compiler/native/frame.iyi check_fpr_frame \
+  '    acc << m
+    i = i + 1' \
+  '    acc << m unless m.fp && paired && f.callee_saved[i] == 40
+    i = i + 1' \
+  '        acc << m
+        i = i + 1' \
+  '        acc << m unless m.fp && paired && f.callee_saved[i] == 40
+        i = i + 1'
+prove_mutation "floating-point frame: restore a single FPR from the wrong offset" \
   src/compiler/native/frame.iyi check_fpr_frame \
   '        m.imm = f.saves_offset + 8_i64 * i.to_i64' \
-  '        m.imm = f.saves_offset + 8_i64 * i.to_i64 + 8_i64'
+  '        m.imm = f.saves_offset + 8_i64 * i.to_i64 + (paired ? 0_i64 : 8_i64)'
+prove_mutation "floating-point frame: restore an FPR pair from the wrong offsets" \
+  src/compiler/native/frame.iyi check_fpr_frame \
+  '        m.imm = f.saves_offset + 8_i64 * i.to_i64' \
+  '        m.imm = f.saves_offset + 8_i64 * i.to_i64 + (paired ? 8_i64 : 0_i64)'
 prove_mutation "floating-point frame: omit alignment for an odd save" \
   src/compiler/native/frame.iyi check_odd_fpr_frame \
   '  f.frame_size = round_up(offset, stack_align)' \
@@ -1238,17 +1252,29 @@ prove_mutation "spill weights: mistake irreducible edges for natural backedges" 
   src/compiler/native/regalloc_linear.iyi check_spill_weights \
   '      if dfs_ancestor?(number, last, s, b) && dfs_ancestor?(dom[0], dom[1], s, b)' \
   '      if dfs_ancestor?(number, last, s, b)'
-prove_mutation "floating-point frame: omit callee-saved FPR stores" \
+prove_mutation "floating-point frame: omit single callee-saved FPR stores" \
   src/compiler/native/frame.iyi check_fpr_frame \
   '    acc << m
     i = i + 1' \
-  '    acc << m unless m.fp
+  '    acc << m unless m.fp && !paired
     i = i + 1'
-prove_mutation "floating-point frame: omit the FPR restore on the early return" \
+prove_mutation "floating-point frame: omit paired callee-saved FPR stores" \
+  src/compiler/native/frame.iyi check_fpr_frame \
+  '    acc << m
+    i = i + 1' \
+  '    acc << m unless m.fp && paired
+    i = i + 1'
+prove_mutation "floating-point frame: omit the single FPR restore on the early return" \
   src/compiler/native/frame.iyi check_fpr_frame \
   '        acc << m
         i = i + 1' \
-  '        acc << m unless m.fp && block.name == "negative"
+  '        acc << m unless m.fp && !paired && block.name == "negative"
+        i = i + 1'
+prove_mutation "floating-point frame: omit the paired FPR restore on the early return" \
+  src/compiler/native/frame.iyi check_fpr_frame \
+  '        acc << m
+        i = i + 1' \
+  '        acc << m unless m.fp && paired && block.name == "negative"
         i = i + 1'
 prove_mutation "coalescing: ignore virtual-register copy hints" \
   src/compiler/native/regalloc_linear.iyi check_copy_hint \

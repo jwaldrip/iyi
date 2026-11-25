@@ -189,7 +189,7 @@ record_executable() {
 
 # Emit the complete corpus before any runtime-only branch.
 echo "== 3. emit every Darwin-target fixture"
-for base in narrow_signext narrow_argext narrow_asm narrow_cmpxchg narrow_switch narrow_call narrow_i1 narrow_param; do
+for base in narrow_signext narrow_argext narrow_asm narrow_cmpxchg narrow_switch narrow_call narrow_i1 narrow_param f1_pairs f1_one_save f1_far_offsets; do
   [ -f "$FIX/$base.ir" ] && [ -f "$FIX/$base.iyi" ] || fail "$base: required fixture pair is missing"
 done
 fixture_total=0
@@ -409,6 +409,92 @@ if "$DRV" mir "$(native_path "$FIX/frame64k.ir")" big >"$WORK/frame64k.mir" 2>"$
 else
   cat "$WORK/frame64k.mir.err"
   fail "the frame MIR could not be produced"
+fi
+
+# F1 checks physical registers and offsets in every return block, including
+# the last encodable pair and the first out-of-range save.
+echo "== 4a. paired callee saves, odd saves, and pair-offset boundaries"
+f1_mir_ok=1
+for spec in f1_pairs:f1_probe f1_one_save:f1_one f1_far_offsets:f1_far f1_far_offsets:f1_boundary; do
+  base=${spec%%:*}
+  fn=${spec#*:}
+  if ! "$DRV" mir "$(native_path "$FIX/$base.ir")" "$fn" >"$WORK/$fn.mir" 2>"$WORK/$fn.mir.err"; then
+    cat "$WORK/$fn.mir.err"
+    fail "$base/$fn: could not produce MIR"
+    f1_mir_ok=0
+  fi
+done
+for fn in f1_boundary f1_duplicates; do
+  if ! IYI_NATIVE_REGALLOC=pin "$DRV" mir "$(native_path "$FIX/f1_far_offsets.ir")" "$fn" >"$WORK/$fn.pin.mir" 2>"$WORK/$fn.pin.mir.err"; then
+    cat "$WORK/$fn.pin.mir.err"
+    fail "f1_far_offsets/$fn: could not produce reference-allocator MIR"
+    f1_mir_ok=0
+  fi
+done
+if [ "$f1_mir_ok" -eq 1 ]; then
+  if ! "$PY" - "$(native_path "$WORK")" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+work = Path(sys.argv[1])
+def load(name):
+    text = (work / (name + ".mir")).read_text()
+    blocks = {}
+    for chunk in text.split("\nblock ")[1:]:
+        heading, _, body = chunk.partition("\n")
+        blocks[heading.split(" ", 1)[1]] = body.splitlines()
+    return text, blocks
+
+def instructions(lines):
+    return [line.strip() for line in lines
+            if line.strip().startswith(("Stp/", "Ldp/", "SpStore/", "SpLoad/"))]
+
+def verify(name, header, saves, restores, returns):
+    text, blocks = load(name)
+    assert header in text, (name, "frame", text.splitlines()[:2])
+    assert instructions(blocks["entry"])[:len(saves)] == saves, (name, "saves", instructions(blocks["entry"]))
+    exits = [instructions(lines) for lines in blocks.values()
+             if any(line.strip().startswith("Ret/") for line in lines)]
+    assert len(exits) == returns, (name, "return count", len(exits))
+    assert all(exit[-len(restores):] == restores for exit in exits), (name, "restores", exits)
+    print(f"{name}: {len(saves)} save instructions, {len(restores)} restores at each of {returns} returns")
+
+pair_saves = ["Stp/64 x19, x20, sp", "Stp/64 x21, x22, sp #imm=16",
+              "SpStore/64 x23 #imm=32", "Stp/64f d8, d9, sp #imm=40",
+              "SpStore/64f d10 #imm=56"]
+pair_restores = ["Ldp/64 x19, x20, sp", "Ldp/64 x21, x22, sp #imm=16",
+                 "SpLoad/64 x23 #imm=32", "Ldp/64f d8, d9, sp #imm=40",
+                 "SpLoad/64f d10 #imm=56"]
+verify("f1_probe", "frame size=64 outgoing=0 saves=0 slots=0", pair_saves, pair_restores, 2)
+verify("f1_one", "frame size=16 outgoing=0 saves=0 slots=0",
+       ["SpStore/64 x19"], ["SpLoad/64 x19"], 1)
+verify("f1_far", "frame size=624 outgoing=600 saves=600 slots=0",
+       [f"SpStore/64 x{reg} #imm={offset}" for reg, offset in ((19, 600), (20, 608), (21, 616))],
+       [f"SpLoad/64 x{reg} #imm={offset}" for reg, offset in ((19, 600), (20, 608), (21, 616))], 1)
+verify("f1_boundary", "frame size=528 outgoing=504 saves=504 slots=0",
+       ["Stp/64 x19, x20, sp #imm=504", "SpStore/64 x21 #imm=520"],
+       ["Ldp/64 x19, x20, sp #imm=504", "SpLoad/64 x21 #imm=520"], 1)
+import re
+pin_boundary = (work / "f1_boundary.pin.mir").read_text()
+assert "SpStore/64 x19 #imm=504" in pin_boundary and "SpStore/64 x19 #imm=512" in pin_boundary, \
+       "the reference allocator did not exercise duplicate x19 saves at the boundary"
+pin_duplicates = (work / "f1_duplicates.pin.mir").read_text()
+for needle in ("SpStore/64 x19\n", "Stp/64 x19, x20, sp #imm=8",
+               "SpLoad/64 x19\n", "Ldp/64 x19, x20, sp #imm=8"):
+    assert needle in pin_duplicates, ("duplicate followed by a different neighbour", needle)
+for pin in (pin_boundary, pin_duplicates):
+    for kind, left, right in re.findall(r"^\s+(Stp|Ldp)/64 (x\d+|d\d+), (x\d+|d\d+), sp", pin, re.M):
+        assert left != right, ("reference allocator paired a register with itself", kind, left)
+print("pin: duplicate x19 saves stay single; the next x19 pairs with x20; no pair repeats a register")
+digest = hashlib.sha256((work / "f1_one_save.o").read_bytes()).hexdigest()
+expected = "867a1cc06ed54457f025a7c325399e92cb7affdb35b601aba161626af55c8d51"
+assert digest == expected, ("f1_one_save: object differs from R10", digest, expected)
+print("f1_one_save: object matches the R10 SHA-256 " + digest)
+PY
+  then
+    fail "F1 frame layout or unchanged single-save object differs"
+  fi
 fi
 
 # ---- 4b. each ordering selects its own exclusive pair: acquire on the load for acquire and seq_cst, release on
@@ -767,6 +853,8 @@ check_narrow_param() { check_fixture "$1" narrow_param; }
 check_narrow_asm() { check_fixture "$1" narrow_asm; }
 check_narrow_argext() { check_fixture "$1" narrow_argext; }
 check_narrow_signext() { check_fixture "$1" narrow_signext; }
+check_f1_pairs() { check_fixture "$1" f1_pairs; }
+check_f1_far_pin() { IYI_NATIVE_REGALLOC=pin check_fixture "$1" f1_far_offsets; }
 
 echo "== 6. mutations are each caught"
 prove_mutation "call: do not sign-extend an attributed i1 argument" \
@@ -818,9 +906,27 @@ prove_mutation "isel: the subtraction's operands swap" \
   check_arith
 prove_mutation "frame: callee-saved registers are not saved in the prologue" \
   src/compiler/native/frame.iyi \
-  '    m = new_inst(fn.isa, Role::SaveReg)' \
-  '    m = MInst.new(MOp::Label.value.to_i32)' \
+  '    acc << m
+    i = i + 1' \
+  '    acc << MInst.new(MOp::Label.value.to_i32)
+    i = i + 1' \
   check_recursion
+prove_mutation "frame: the paired epilogue restores registers in exchanged order" \
+  src/compiler/native/frame.iyi \
+  '        m.defs << Operand.new(OperandKind::Physical, f.callee_saved[i])
+        if paired
+          m.opcode = MOp::Ldp.value.to_i32
+          m.defs << Operand.new(OperandKind::Physical, f.callee_saved[i + 1])' \
+  '        m.defs << Operand.new(OperandKind::Physical, f.callee_saved[paired ? i + 1 : i])
+        if paired
+          m.opcode = MOp::Ldp.value.to_i32
+          m.defs << Operand.new(OperandKind::Physical, f.callee_saved[i])' \
+  check_f1_pairs
+prove_mutation "frame: the paired epilogue allows duplicate destination registers" \
+  src/compiler/native/frame.iyi \
+  '                 f.callee_saved[i] != f.callee_saved[i + 1] &&' \
+  '                 true &&' \
+  check_f1_far_pin
 prove_mutation "frame: the stack probe is dropped" \
   src/compiler/native/frame.iyi \
   '    acc << new_inst(fn.isa, Role::Probe)' \
@@ -955,15 +1061,15 @@ else
   fail "the proof helper accepted a mutation that changes nothing"
 fi
 if [ "$HOST_ID" = darwin-arm64 ]; then
-  expected_checked=32
+  expected_checked=34
   expected_limited=0
 else
   expected_checked=6
-  expected_limited=26
+  expected_limited=28
 fi
 printf 'mutations: %s total, %s checked, %s caught, %s host-limited\n' \
   "$mutation_total" "$mutation_checked" "$mutation_caught" "$mutation_limited"
-[ "$mutation_total" -eq 32 ] || fail "the mutation inventory is not 32"
+[ "$mutation_total" -eq 34 ] || fail "the mutation inventory is not 34"
 [ "$mutation_checked" -eq "$expected_checked" ] || fail "the expected mutations were not all checked"
 [ "$mutation_caught" -eq "$expected_checked" ] || fail "not every checked mutation was caught"
 [ "$mutation_limited" -eq "$expected_limited" ] || fail "the host-limited mutation inventory is incomplete"

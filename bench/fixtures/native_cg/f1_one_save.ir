@@ -1,0 +1,19 @@
+; iyi-ir 1
+module "f1_one_save"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+
+define void @f1_one() {
+entry:
+  call void () asm sideeffect "mov x19, #99", "~{x19}"()
+  ret void
+}
+
+define i32 @main() {
+entry:
+  call void () @f1_one()
+  %printed = call i32 (ptr, ...) @printf(ptr @fmt, i64 7)
+  ret i32 0
+}
