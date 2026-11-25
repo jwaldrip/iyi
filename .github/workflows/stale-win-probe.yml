@@ -2,9 +2,9 @@ name: Windows stale probe
 
 # A probe, not a gate: it runs on pushes to probe/stale-win-* branches only, so
 # it never runs for a pull request or master, and it must never be merged into
-# plan/native-stale-testing. This branch's job runs every step that follows the
-# acceptance suite in iyi.yml's "Stale acceptance and receipt producer, on
-# Windows", each with continue-on-error, so one run shows every failure.
+# plan/native-stale-testing. This branch's job builds one program several ways
+# and says where the builds differ (bench/stale_win_probe_rg7.py), and runs the
+# gates that follow from it.
 
 on:
   push:
@@ -25,206 +25,10 @@ env:
   STALE_TARGET: x86_64-windows-msvc
 
 jobs:
-  tail:
-    name: the tail of the Windows acceptance job
+  rg7:
+    name: RG7 and RG1 on Windows
     runs-on: windows-2025
     timeout-minutes: 120
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1.9.5
-        with:
-          crystal: 1.21.0
-      - name: What this machine has
-        shell: pwsh
-        run: |
-          if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
-            choco install make --version 4.4.1 --no-progress -y
-            if ($LASTEXITCODE -ne 0) { throw "choco could not install make 4.4.1" }
-            $make = Join-Path $env:ChocolateyInstall 'lib\make\tools\install\bin\make.exe'
-            $hash = (Get-FileHash -Algorithm SHA256 $make).Hash.ToLower()
-            if ($hash -ne 'cc6dc291113dcbcc7735835acbfc23c52ed037e4e124ff2d7a0aeae6df563a9f') {
-              throw "Chocolatey's make.exe is not the one pinned here: $hash"
-            }
-          }
-          $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
-          $llvm = (Get-Content "$lib\llvm_VERSION")[0].Trim()
-          "CRYSTAL_LIBRARY_PATH=$lib" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          "LLVM_VERSION=$llvm" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.14"
-      - name: Build the compiler and `iyi`
-        shell: cmd
-        run: |
-          make -f Makefile.win crystal || exit /b 1
-          make -f Makefile.win iyi
-      - name: Set producer compiler path
-        run: echo "IYI=$(cygpath -m "$PWD/.build/iyi.exe")" >> "$GITHUB_ENV"
-
-      # ---- the tail, as iyi.yml has it ----
-      - name: Receipt digest
-        id: sha256
-        continue-on-error: true
-        run: bash bench/stale_sha256.sh
-      - name: RG8 oracle
-        id: irnorm
-        continue-on-error: true
-        run: bash bench/stale_ir_normalize_selftest.sh
-      - name: Evidence self-test
-        id: evidence
-        continue-on-error: true
-        run: bash bench/stale_evidence_test.sh
-      - name: FAT32 refuses change-time reuse
-        id: fat32
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $id = [guid]::NewGuid().ToString('N')
-          $vhd = Join-Path $env:RUNNER_TEMP "stale-fat32-$id.vhd"
-          $script = Join-Path $env:RUNNER_TEMP "stale-fat32-$id.txt"
-          $used = @((Get-CimInstance Win32_LogicalDisk | ForEach-Object { $_.DeviceID.TrimEnd(':') }) +
-                    (Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Name }))
-          $drive = [char[]]'ZYXWVUTSRQPONMLKJIHGFED' | Where-Object { "$_" -notin $used } | Select-Object -First 1
-          if (-not $drive) { throw "No free drive letter for the FAT32 VHD" }
-          $pushed = $false
-          try {
-            $commands = @(
-              "create vdisk file=`"$vhd`" maximum=256 type=expandable",
-              "select vdisk file=`"$vhd`"",
-              "attach vdisk",
-              "create partition primary",
-              "format fs=fat32 quick label=STALE",
-              "assign letter=$drive"
-            )
-            [IO.File]::WriteAllLines($script, $commands, [Text.Encoding]::ASCII)
-            & diskpart.exe /s $script
-            if ($LASTEXITCODE -ne 0) { throw "diskpart failed to create the FAT32 VHD" }
-            $volume = Get-Volume -DriveLetter $drive
-            if ($volume.FileSystem -ne 'FAT32') { throw "The VHD volume is not FAT32" }
-            $root = "${drive}:\stale-fixture"
-            New-Item -ItemType Directory -Path $root | Out-Null
-            [IO.File]::WriteAllText((Join-Path $root 'fixture_test.iyi'), "assert 1 + 1 == 2`n")
-            $env:IYI_CACHE_DIR = Join-Path $env:RUNNER_TEMP "stale-fat32-cache-$id"
-            Push-Location $root
-            $pushed = $true
-            $first = (& $env:IYI test --cached --json fixture_test.iyi | Out-String)
-            if ($LASTEXITCODE -ne 0) { throw "FAT32 recording run failed: $first" }
-            $firstDoc = $first | ConvertFrom-Json
-            if ($firstDoc.builds -ne 1 -or $firstDoc.failed -ne 0) {
-              throw "FAT32 recording run did not build one passing test: $first"
-            }
-            $second = (& $env:IYI test --cached --json fixture_test.iyi | Out-String)
-            if ($LASTEXITCODE -ne 0) { throw "FAT32 second run failed: $second" }
-            $secondDoc = $second | ConvertFrom-Json
-            if ($secondDoc.builds -ne 1 -or $secondDoc.failed -ne 0 -or
-                $secondDoc.tests.Count -ne 1 -or
-                $secondDoc.tests[0].check_reason -notlike '*no trusted change time*') {
-              throw "FAT32 second run did not name the change-time refusal with one build: $second"
-            }
-            Write-Output "FAT32 second run: $second"
-          } finally {
-            if ($pushed) { Pop-Location }
-            if (Test-Path -LiteralPath $vhd) {
-              [IO.File]::WriteAllLines($script, @("select vdisk file=`"$vhd`"", "detach vdisk"), [Text.Encoding]::ASCII)
-              & diskpart.exe /s $script
-              if ($LASTEXITCODE -ne 0) { throw "Could not detach $vhd" }
-              Remove-Item -LiteralPath $vhd -Force
-            }
-            Remove-Item -LiteralPath $script -Force -ErrorAction SilentlyContinue
-          }
-      - name: Export fresh run receipts
-        id: export
-        continue-on-error: true
-        env:
-          IYI_CI_PRODUCER: "1"
-        run: |
-          unset PGPASSWORD
-          bash bench/stale_ci.sh assert-export-env
-          mkdir -p stale-index
-          args=(
-            --fresh
-            --export-index "run:${GITHUB_RUN_ID}=stale-index/run-${GITHUB_RUN_ID}-${STALE_TARGET}.json"
-          )
-          mapfile -t tests < <(find samples/iyi -maxdepth 1 -type f -name '*.iyi' -print | sort)
-          "$IYI" test "${args[@]}" "${tests[@]}"
-      - name: Export the master candidate as a push to master would
-        id: master
-        continue-on-error: true
-        env:
-          IYI_CI_PRODUCER: "1"
-        run: |
-          # The real step adds this export only on a push to master. Same
-          # command, run here so a failure in it shows before master has one.
-          mkdir -p stale-index
-          mapfile -t tests < <(find samples/iyi -maxdepth 1 -type f -name '*.iyi' -print | sort)
-          "$IYI" test --fresh --export-index "master=stale-index/master-candidate-${STALE_TARGET}.json" "${tests[@]}"
-          test -f "stale-index/master-candidate-${STALE_TARGET}.json"
-      - name: Check the producer compiler and LLVM DLL
-        id: dll
-        continue-on-error: true
-        run: |
-          test -f .build/iyi.exe
-          test -f .build/LLVM-C.dll
-      - name: Upload producer compiler
-        id: upload_compiler
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: iyi-x86_64-windows-msvc
-          path: |
-            .build/iyi.exe
-            .build/LLVM-C.dll
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 1
-      - name: Upload run receipt snapshot
-        id: upload_run
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: run-${{ github.run_id }}-x86_64-windows-msvc.json
-          path: stale-index/run-${{ github.run_id }}-x86_64-windows-msvc.json
-          archive: false
-          if-no-files-found: error
-          retention-days: 1
-      - name: Upload master candidate receipt snapshot
-        id: upload_master
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: master-candidate-x86_64-windows-msvc.json
-          path: stale-index/master-candidate-x86_64-windows-msvc.json
-          archive: false
-          if-no-files-found: error
-          retention-days: 1
-      - name: Every step's outcome
-        if: always()
-        run: |
-          echo "sha256=${{ steps.sha256.outcome }} irnorm=${{ steps.irnorm.outcome }} evidence=${{ steps.evidence.outcome }}"
-          echo "fat32=${{ steps.fat32.outcome }} export=${{ steps.export.outcome }} master=${{ steps.master.outcome }} dll=${{ steps.dll.outcome }}"
-          echo "upload_compiler=${{ steps.upload_compiler.outcome }} upload_run=${{ steps.upload_run.outcome }} upload_master=${{ steps.upload_master.outcome }}"
-          case "${{ steps.sha256.outcome }}${{ steps.irnorm.outcome }}${{ steps.evidence.outcome }}${{ steps.fat32.outcome }}${{ steps.export.outcome }}${{ steps.master.outcome }}${{ steps.dll.outcome }}${{ steps.upload_compiler.outcome }}${{ steps.upload_run.outcome }}${{ steps.upload_master.outcome }}" in
-            *failure*) exit 1 ;;
-          esac
-
-  fresh:
-    name: the fresh runner receipt audit
-    # The consumer of `tail`, as iyi.yml's stale-windows-fresh runs after
-    # stale-windows. It runs whether or not `tail` passed: its downloads are
-    # steps of their own, and every step reports its own outcome.
-    needs: [tail]
-    if: ${{ always() && needs.tail.result != 'cancelled' }}
-    runs-on: windows-2025
-    timeout-minutes: 180
-    permissions:
-      actions: read
-      contents: read
     defaults:
       run:
         shell: bash
@@ -256,151 +60,27 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
-      - name: Build the fork's compiler
+      - name: Build the compiler and `iyi`
         shell: cmd
-        run: make -f Makefile.win crystal
-      - name: Download producer compiler
-        id: dl_compiler
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: iyi-x86_64-windows-msvc
-          path: .build
+        run: |
+          make -f Makefile.win crystal || exit /b 1
+          make -f Makefile.win iyi
       - name: Set producer compiler path
         run: echo "IYI=$(cygpath -m "$PWD/.build/iyi.exe")" >> "$GITHUB_ENV"
-      - name: Download producer receipt snapshot
-        id: dl_run
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: run-${{ github.run_id }}-x86_64-windows-msvc.json
-          path: stale-index
-      - name: Download master candidate receipt snapshot
-        id: dl_master
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: master-candidate-x86_64-windows-msvc.json
-          path: stale-index
-      - name: "Producer receipts on a fresh runner: hit on an equal profile, refused on another"
-        id: hits
+      - name: Where two builds of one program differ
+        id: probe
         continue-on-error: true
         run: |
-          mapfile -t tests < <(find samples/iyi -maxdepth 1 -type f -name '*.iyi' -print | sort)
-          "$IYI" test --cached --json \
-            --import-index "run:${GITHUB_RUN_ID}=stale-index/run-${GITHUB_RUN_ID}-${STALE_TARGET}.json" \
-            "${tests[@]}" > stale-index/cached.json
-          bash bench/stale_ci.sh assert-hits --json stale-index/cached.json \
-            --snapshot "stale-index/run-${GITHUB_RUN_ID}-${STALE_TARGET}.json" \
-            --allow-profile-refusal
-      - name: Shadow audit fresh execution and export
-        id: shadow_audit
-        continue-on-error: true
-        env:
-          IYI_CI_PRODUCER: "1"
-        run: |
-          unset PGPASSWORD
-          bash bench/stale_ci.sh assert-export-env
-          mapfile -t tests < <(find samples/iyi -maxdepth 1 -type f -name '*.iyi' -print | sort)
-          "$IYI" test --fresh --json \
-            --export-index "audit:${GITHUB_RUN_ID}=stale-index/audit-${GITHUB_RUN_ID}-${STALE_TARGET}.json" \
-            "${tests[@]}" > stale-index/fresh.json
-          bash bench/stale_ci.sh shadow-audit \
-            --cached-json stale-index/cached.json \
-            --fresh-json stale-index/fresh.json \
-            --cached-snapshot "stale-index/run-${GITHUB_RUN_ID}-${STALE_TARGET}.json" \
-            --fresh-snapshot "stale-index/audit-${GITHUB_RUN_ID}-${STALE_TARGET}.json"
-      - name: "The runner's own receipts hit on an emptied store"
-        id: emptied
-        continue-on-error: true
-        run: |
-          cache_dir="$("$IYI" env IYI_CACHE_DIR | tr -d '\r')"
-          if [ -z "$cache_dir" ]; then
-            echo "iyi env IYI_CACHE_DIR returned an empty path" >&2
-            exit 1
-          fi
-          if [ "$RUNNER_OS" = "Windows" ]; then cache_dir="$(cygpath -u "$cache_dir")"; fi
-          rm -rf "$cache_dir/tests-v1"
-          mapfile -t tests < <(find samples/iyi -maxdepth 1 -type f -name '*.iyi' -print | sort)
-          "$IYI" test --cached --json \
-            --import-index "audit:${GITHUB_RUN_ID}=stale-index/audit-${GITHUB_RUN_ID}-${STALE_TARGET}.json" \
-            "${tests[@]}" > stale-index/audit-cached.json
-          bash bench/stale_ci.sh assert-hits --json stale-index/audit-cached.json \
-            --snapshot "stale-index/audit-${GITHUB_RUN_ID}-${STALE_TARGET}.json"
-      - name: Planted hidden-read shadow-audit proof
-        id: planted
-        continue-on-error: true
-        run: bash bench/stale_ci.sh test-planted-hidden-read
-      - name: Master snapshot path and Actions API proof
-        id: masterpath
-        continue-on-error: true
-        run: bash bench/stale_ci.sh test-master-path
-      - name: RG1 and RG7 with the producer compiler
-        id: rg17
+          WORK="$(cygpath -m "$(mktemp -d "${TMPDIR:-/tmp}/rg7-probe.XXXXXX")")"
+          python3 bench/stale_win_probe_rg7.py "$(cygpath -m "$PWD")" "$IYI" "$WORK" hello.iyi
+      - name: RG1 and RG7, as the fresh job runs them
+        id: gate
         continue-on-error: true
         run: bash bench/stale_reproducible.sh
-      - name: RG9 CallPathFp on the fresh runner
-        id: rg9
-        continue-on-error: true
-        run: bash bench/stale_ci.sh rg9
-      - name: Download master snapshot for git-diff audit
-        id: fetch
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          bash bench/stale_ci.sh fetch-master \
-            --out "stale-index/master-${STALE_TARGET}.json" \
-            --target "$STALE_TARGET"
-      - name: Master snapshot git-diff self-check
-        id: selfcheck
-        continue-on-error: true
-        run: |
-          bash bench/stale_ci.sh master-self-check \
-            --snapshot "stale-index/master-${STALE_TARGET}.json" \
-            --out-json stale-index/master-cached.json
-      - name: Census and overhead measurements
-        id: census
-        continue-on-error: true
-        run: bash bench/stale_census.sh
-      # What a push to master does after the audit, run here whatever the
-      # ref: the candidate becomes the master snapshot, which the git-diff
-      # self-check then imports (no master snapshot exists in a fork to
-      # fetch, so the two steps above have nothing to import).
-      - name: Prepare audited master receipt snapshot
-        id: prepare
-        continue-on-error: true
-        run: cp -f "stale-index/master-candidate-${STALE_TARGET}.json" "stale-index/master-${STALE_TARGET}.json"
-      - name: Git-diff self-check of the prepared master snapshot
-        id: selfcheck2
-        continue-on-error: true
-        run: |
-          bash bench/stale_ci.sh master-self-check \
-            --snapshot "stale-index/master-${STALE_TARGET}.json" \
-            --out-json stale-index/master-cached.json
-      - name: Publish audited master receipt snapshot
-        id: publish
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: master-x86_64-windows-msvc.json
-          path: stale-index/master-x86_64-windows-msvc.json
-          archive: false
-          retention-days: 1
-      - name: Prepare empty master snapshot after disagreement
-        id: empty_snapshot
-        continue-on-error: true
-        run: |
-          bash bench/stale_ci.sh empty-snapshot \
-            --from "stale-index/master-candidate-${STALE_TARGET}.json" \
-            --out "stale-index/master-empty-${STALE_TARGET}.json"
       - name: Every step's outcome
         if: always()
         run: |
-          echo "dl_compiler=${{ steps.dl_compiler.outcome }} dl_run=${{ steps.dl_run.outcome }} dl_master=${{ steps.dl_master.outcome }}"
-          echo "hits=${{ steps.hits.outcome }} shadow_audit=${{ steps.shadow_audit.outcome }} emptied=${{ steps.emptied.outcome }} planted=${{ steps.planted.outcome }}"
-          echo "masterpath=${{ steps.masterpath.outcome }} rg17=${{ steps.rg17.outcome }} rg9=${{ steps.rg9.outcome }} fetch=${{ steps.fetch.outcome }} selfcheck=${{ steps.selfcheck.outcome }}"
-          echo "census=${{ steps.census.outcome }} prepare=${{ steps.prepare.outcome }} selfcheck2=${{ steps.selfcheck2.outcome }} publish=${{ steps.publish.outcome }} empty_snapshot=${{ steps.empty_snapshot.outcome }}"
-          case "${{ steps.dl_compiler.outcome }}${{ steps.dl_run.outcome }}${{ steps.dl_master.outcome }}${{ steps.hits.outcome }}${{ steps.shadow_audit.outcome }}${{ steps.emptied.outcome }}${{ steps.planted.outcome }}${{ steps.masterpath.outcome }}${{ steps.rg17.outcome }}${{ steps.rg9.outcome }}${{ steps.fetch.outcome }}${{ steps.selfcheck.outcome }}${{ steps.census.outcome }}${{ steps.prepare.outcome }}${{ steps.selfcheck2.outcome }}${{ steps.publish.outcome }}${{ steps.empty_snapshot.outcome }}" in
+          echo "probe=${{ steps.probe.outcome }} gate=${{ steps.gate.outcome }}"
+          case "${{ steps.probe.outcome }}${{ steps.gate.outcome }}" in
             *failure*) exit 1 ;;
           esac
