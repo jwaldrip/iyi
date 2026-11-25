@@ -34,6 +34,7 @@ BASH = os.environ.get("PROBE_BASH", "bash")
 
 COMPILER = WORK = CACHE = DUMP = ""
 DUMP_OFFSET = 0
+PREVIOUS_COUNTED: dict | None = None
 STEP = 0
 
 
@@ -114,17 +115,17 @@ def show_receipts() -> None:
 
 
 def show_dump() -> None:
-    blocks = new_dump_blocks()
-    for block in blocks:
+    global PREVIOUS_COUNTED
+    for block in new_dump_blocks():
         if block["kind"] == "runner":
             say("   dump " + block["header"])
-        else:
-            say("   dump %s counted=%d %s" % (block["header"].replace(WORK, "<work>"), len(block["counted"]), block["info"]))
-    builds = [block for block in blocks if block["kind"] == "build"]
-    for left, right in zip(builds, builds[1:]):
-        for name in sorted(set(left["counted"]) | set(right["counted"])):
-            if left["counted"].get(name) != right["counted"].get(name):
-                say("   dump counted differs between consecutive builds: %s: %r vs %r" % (name, left["counted"].get(name), right["counted"].get(name)))
+            continue
+        say("   dump %s counted=%d %s" % (block["header"].replace(WORK, "<work>"), len(block["counted"]), block["info"]))
+        before, PREVIOUS_COUNTED = PREVIOUS_COUNTED, block["counted"]
+        if before is not None:
+            for name in sorted(set(before) | set(block["counted"])):
+                if before.get(name) != block["counted"].get(name):
+                    say("   dump counted differs from the build before: %s: %r vs %r" % (name, before.get(name), block["counted"].get(name)))
 
 
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -285,7 +286,7 @@ def scenario_loader() -> None:
     d = p(WORK, "r28")
     write(p(d, "loader_test.iyi"), LOADER_TEST)
     t = CHECKED + ["loader_test.iyi"]
-    for second in ("RunAsInvoker 256Color", "256Color", "IyiRowLayer"):
+    for second in ("RunAsInvoker 256Color", "RunAsInvoker HighDpiAware", "256Color"):
         say("")
         say("== row 28 with %r as the changed layer" % second)
         shutil.rmtree(p(CACHE, "tests-v1"), ignore_errors=True)
