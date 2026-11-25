@@ -17,6 +17,7 @@ require_test_host || exit 1
 . "$REPO/bench/lib/mutation.sh" || exit 1
 export IYI_PATH="$(native_path "$REPO/src")"
 unset IYI_OPTS IYI_NATIVE_REGALLOC
+export LC_ALL=C
 if [ "$HOST_OS" = darwin ]; then
   export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:"$PATH"
   export LIBRARY_PATH=${LIBRARY_PATH:-/opt/homebrew/opt/bdw-gc/lib}
@@ -62,6 +63,24 @@ check_judge_fixtures() {
   done
   return 0
 }
+
+# Keep this fixture in WORK: it must prove an instruction failure even when
+# the primary cycles row passes, and the mutation below removes that row.
+check_instruction_judge() {
+  local fixture="$WORK/instructions-fixture.json" rc=0
+  cat >"$fixture" <<'JSON'
+{"ceiling":"noise cycles 0.05\nnoise instructions 0.02\nprobe default cycles 1.20\nprobe default instructions 1.10\n",
+ "measurements":{"rows":[{"workload":"probe","mode":"default",
+   "hosted":[{"cycles":100,"instructions":100,"footprint":1048576,"result":"42"}],
+   "native":[{"cycles":100,"instructions":120,"footprint":1048576,"result":"42"}]}]},
+ "scale":1,"target":false,"expect":"FAIL"}
+JSON
+  "$PY" "$(native_path "$HELPER")" judge --fixture "$(native_path "$fixture")" >"$WORK/instructions-fixture.log" 2>&1 || rc=$?
+  if [ "$rc" -eq 1 ]; then cat "$WORK/instructions-fixture.log"; return 1; fi
+  if [ "$rc" -ne 0 ]; then cat "$WORK/instructions-fixture.log"; return 2; fi
+  return 0
+}
+
 
 check_writer() {
   local fixture="$FIX/judge/writer_raise.json"
@@ -177,7 +196,10 @@ if [ "$fixture_rc" -ne 0 ]; then fail "judge fixtures failed (exit $fixture_rc)"
 writer_rc=0
 check_writer || writer_rc=$?
 if [ "$writer_rc" -ne 0 ]; then fail "ceiling writer failed (exit $writer_rc)"; fi
-if [ "$fixture_rc" -eq 0 ] && [ "$writer_rc" -eq 0 ]; then echo "  judge and writer fixtures passed"; fi
+instruction_rc=0
+check_instruction_judge || instruction_rc=$?
+if [ "$instruction_rc" -ne 0 ]; then fail "instruction judge fixture failed (exit $instruction_rc)"; fi
+if [ "$fixture_rc" -eq 0 ] && [ "$writer_rc" -eq 0 ] && [ "$instruction_rc" -eq 0 ]; then echo "  judge and writer fixtures passed"; fi
 
 echo "== 2. build the self-hosted compiler"
 stage1_ok=0
@@ -199,8 +221,9 @@ native_release=unknown
 if [ "$HOST_ID" = darwin-arm64 ] && [ "$stage1_ok" -eq 1 ]; then
   builds_ok=1
   : >"$WORK/pairs.tsv"
-  for name in arith nbody fannkuch trees escape hash append; do
-    src="$FIX/workloads/$name.iyi"
+  for src in "$FIX"/workloads/*.iyi; do
+    [ -f "$src" ] || { fail "no speed workloads found"; builds_ok=0; break; }
+    name="$(basename "$src" .iyi)"
     hdefault="$WORK/hosted-default/$name/a.out"
     hrelease="$WORK/hosted-release/$name/a.out"
     ndefault="$WORK/native-default/$name/a.out"
@@ -238,6 +261,7 @@ if [ "$HOST_ID" = darwin-arm64 ] && [ "$builds_ok" -eq 1 ] && [ "$failed" -eq 0 
     "$PY" "$HELPER" judge --ceiling "$CEILING" --measurements "$WORK/runtime.json" --scale "$SCALE" \
       --tsv "$WORK/runtime.tsv" || fail "runtime verdicts failed"
     cp "$WORK/runtime.tsv" "$LOGDIR/native_speed.tsv" || fail "could not write native_speed.tsv"
+    cp "$WORK/runtime.json" "$LOGDIR/native_speed.json" || fail "could not write native_speed.json"
   else
     fail "runtime measurement failed"
   fi
@@ -328,6 +352,10 @@ else
   host_limited "allocator and wrong-code mutation proofs require macOS arm64"
 fi
 prove_mutation "judge detects an exceeded ceiling" "$HELPER" 'if ratio > bound:' 'if False:' -- check_judge_fixtures || fail "judge mutation was not proven"
+prove_mutation "judge detects an exceeded instruction ceiling" "$HELPER" \
+  '        for metric in metrics_for(row, ceilings, lowering):' \
+  $'        for metric in metrics_for(row, ceilings, lowering):\n            if metric == "instructions":\n                continue' \
+  -- check_instruction_judge || fail "instruction judge mutation was not proven"
 prove_mutation "writer cannot raise a ceiling" "$HELPER" 'kept = min(old, measured)' 'kept = measured' -- check_writer || fail "writer mutation was not proven"
 
 echo "== 8. ceiling ratchet"

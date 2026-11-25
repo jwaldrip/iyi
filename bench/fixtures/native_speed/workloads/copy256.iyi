@@ -1,0 +1,25 @@
+@[Unsafe("measures pointer copies between two separate buffers")]
+module native_speed_copy256
+
+def run(seed : Int32) : Int64
+  source = Pointer(UInt8).malloc(256_u64)
+  target = Pointer(UInt8).malloc(256_u64)
+  i = 0
+  while i < 256
+    source[i] = (i & 255).to_u8
+    target[i] = 0_u8
+    i = i + 1
+  end
+  sum = 0_i64
+  i = 0
+  while i < 1_000_000
+    index = (i + seed) & 255
+    source[index] = (i & 255).to_u8
+    target.copy_from(source, 256)
+    sum = sum + target[index].to_i64
+    i = i + 1
+  end
+  sum
+end
+
+puts "result=#{run(ARGC_UNSAFE)}"

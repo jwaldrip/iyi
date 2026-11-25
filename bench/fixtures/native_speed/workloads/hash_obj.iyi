@@ -1,0 +1,40 @@
+class HashNode
+  def initialize(@value : Int32)
+  end
+end
+
+def run(seed : Int32) : Int64
+  keys = [] of HashNode
+  missing = [] of HashNode
+  table = {} of HashNode => Int32
+  i = 0
+  while i < 200_000
+    node = HashNode.new(i + seed)
+    keys << node
+    table[node] = i
+    i = i + 1
+  end
+  i = 0
+  while i < 50_000
+    missing << HashNode.new(i + seed)
+    i = i + 1
+  end
+  sum = 0_i64
+  pass = 0
+  while pass < 20
+    i = 0
+    while i < keys.size
+      sum = sum + table[keys[i]].to_i64
+      i = i + 1
+    end
+    i = 0
+    while i < missing.size
+      sum = sum + 1_i64 if table.has_key?(missing[i])
+      i = i + 1
+    end
+    pass = pass + 1
+  end
+  sum
+end
+
+puts "result=#{run(ARGC_UNSAFE)}"

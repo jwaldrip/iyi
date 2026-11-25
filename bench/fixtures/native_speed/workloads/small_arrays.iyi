@@ -1,0 +1,21 @@
+def run(seed : Int32) : Int64
+  sum = 0_i64
+  i = 0
+  while i < 2_000_000
+    items = Array(Int32).new(8)
+    j = 0
+    while j < 6
+      items << ((i + j + seed) & 255)
+      j = j + 1
+    end
+    j = 0
+    while j < items.size
+      sum = sum + items[j].to_i64
+      j = j + 1
+    end
+    i = i + 1
+  end
+  sum
+end
+
+puts "result=#{run(ARGC_UNSAFE)}"

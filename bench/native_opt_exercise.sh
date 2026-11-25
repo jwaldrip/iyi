@@ -1869,6 +1869,39 @@ prove_mutation 'S9R5h: a second candidate in a shared set is poisoned' src/compi
       nil # mutation S9-poison-candidate: the second candidate of a shared set stays promotable' \
   -- mutation_check S9R5h escape mixed_candidates || fail 'S9R5h was not caught'
 mutation_result S9R5h
+# BEGIN W0 INCLUDE HOOK
+run_slice_includes() {
+  local LC_ALL=C slice
+  NATIVE_OPT_SENTINEL=0
+  for slice in "$REPO"/bench/native_opt.d/*.sh; do
+    [ -f "$slice" ] || continue
+    . "$slice" || fail "could not source $slice"
+  done
+  [ "$NATIVE_OPT_SENTINEL" = 1 ] || fail 'native optimizer include sentinel missing'
+}
+# END W0 INCLUDE HOOK
+
+run_slice_includes
+
+# Exercise the same hook and verdict check with the sourcing loop removed.
+# An unrelated shell or extraction error must not count as a caught mutation.
+check_include_mutation() {
+  local fragment="$WORK/w0-include-hook.sh" failed=0
+  awk '/^# BEGIN W0 INCLUDE HOOK$/ { copy=1 } copy { print } /^# END W0 INCLUDE HOOK$/ { exit }' \
+    "$REPO/bench/native_opt_exercise.sh" >"$fragment" || return 2
+  [ -s "$fragment" ] || return 2
+  . "$fragment" || return 2
+  run_slice_includes
+  if [ "$failed" -eq 1 ]; then
+    echo 'decisive: removing the include loop leaves the sentinel unset'
+    return 1
+  fi
+  return 0
+}
+prove_mutation 'W0: include hook sources the sentinel' "$REPO/bench/native_opt_exercise.sh" \
+  $'  for slice in "$REPO"/bench/native_opt.d/*.sh; do\n    [ -f "$slice" ] || continue\n    . "$slice" || fail "could not source $slice"\n  done' \
+  '  : # mutation: do not source slice hooks' -- check_include_mutation || fail 'W0 include mutation was not caught'
+
 echo '== 8. verdict'
 if [ "$failed" -eq 0 ]; then
   echo 'ALL NATIVE OPT CHECKS PASSED!'

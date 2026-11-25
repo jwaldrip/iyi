@@ -3,6 +3,7 @@
 # adds missing rows; nothing raises one. A row passes while ratio <= ceiling * (1 + scale * noise[metric]).
 noise cycles 0.05
 noise cpu 0.10
+noise instructions 0.02
 noise wall 0.10
 noise footprint 0.10
 arith default cycles 1.42

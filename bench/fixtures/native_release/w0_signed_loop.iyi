@@ -1,0 +1,11 @@
+def sum_before(limit : Int32) : Int64
+  index = 0
+  total = 0_i64
+  while index < limit
+    total = total + index.to_i64 + 3_i64
+    index = index + 1
+  end
+  total
+end
+
+puts "result=#{sum_before(11)}"

@@ -1,0 +1,40 @@
+def bit?(row : Array(UInt64), value : Int32) : Bool
+  (row[value // 64] & (1_u64 << (value % 64))) != 0_u64
+end
+
+def run(seed : UInt64) : Int64
+  rows = [] of Array(UInt64)
+  state = seed
+  r = 0
+  while r < 512
+    row = [] of UInt64
+    word = 0
+    while word < 64
+      state = (state &* 6364136223846793005_u64) &+ 1442695040888963407_u64
+      row << state
+      word = word + 1
+    end
+    rows << row
+    r = r + 1
+  end
+  sum = 0_i64
+  pass = 0
+  while pass < 4
+    r = 0
+    while r < rows.size
+      row = rows[r]
+      value = 0
+      while value < 4096
+        sum = sum + 1_i64 if bit?(row, value)
+        sum = sum + 1_i64 if bit?(row, (value + 17) & 4095)
+        sum = sum + 1_i64 if bit?(row, (value + 257) & 4095)
+        value = value + 1
+      end
+      r = r + 1
+    end
+    pass = pass + 1
+  end
+  sum
+end
+
+puts "result=#{run(ARGC_UNSAFE.to_u64)}"

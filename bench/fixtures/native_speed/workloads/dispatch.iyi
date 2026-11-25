@@ -1,0 +1,200 @@
+abstract class DispatchBase
+  abstract def value : Int32
+end
+
+class Dispatch00 < DispatchBase
+  def value : Int32
+    0
+  end
+end
+
+class Dispatch01 < DispatchBase
+  def value : Int32
+    1
+  end
+end
+
+class Dispatch02 < DispatchBase
+  def value : Int32
+    2
+  end
+end
+
+class Dispatch03 < DispatchBase
+  def value : Int32
+    3
+  end
+end
+
+class Dispatch04 < DispatchBase
+  def value : Int32
+    4
+  end
+end
+
+class Dispatch05 < DispatchBase
+  def value : Int32
+    5
+  end
+end
+
+class Dispatch06 < DispatchBase
+  def value : Int32
+    6
+  end
+end
+
+class Dispatch07 < DispatchBase
+  def value : Int32
+    7
+  end
+end
+
+class Dispatch08 < DispatchBase
+  def value : Int32
+    8
+  end
+end
+
+class Dispatch09 < DispatchBase
+  def value : Int32
+    9
+  end
+end
+
+class Dispatch10 < DispatchBase
+  def value : Int32
+    10
+  end
+end
+
+class Dispatch11 < DispatchBase
+  def value : Int32
+    11
+  end
+end
+
+class Dispatch12 < DispatchBase
+  def value : Int32
+    12
+  end
+end
+
+class Dispatch13 < DispatchBase
+  def value : Int32
+    13
+  end
+end
+
+class Dispatch14 < DispatchBase
+  def value : Int32
+    14
+  end
+end
+
+class Dispatch15 < DispatchBase
+  def value : Int32
+    15
+  end
+end
+
+class Dispatch16 < DispatchBase
+  def value : Int32
+    16
+  end
+end
+
+class Dispatch17 < DispatchBase
+  def value : Int32
+    17
+  end
+end
+
+class Dispatch18 < DispatchBase
+  def value : Int32
+    18
+  end
+end
+
+class Dispatch19 < DispatchBase
+  def value : Int32
+    19
+  end
+end
+
+class Dispatch20 < DispatchBase
+  def value : Int32
+    20
+  end
+end
+
+class Dispatch21 < DispatchBase
+  def value : Int32
+    21
+  end
+end
+
+class Dispatch22 < DispatchBase
+  def value : Int32
+    22
+  end
+end
+
+class Dispatch23 < DispatchBase
+  def value : Int32
+    23
+  end
+end
+
+def make_dispatch(kind : Int32) : DispatchBase
+  case kind
+  when  0 then Dispatch00.new
+  when  1 then Dispatch01.new
+  when  2 then Dispatch02.new
+  when  3 then Dispatch03.new
+  when  4 then Dispatch04.new
+  when  5 then Dispatch05.new
+  when  6 then Dispatch06.new
+  when  7 then Dispatch07.new
+  when  8 then Dispatch08.new
+  when  9 then Dispatch09.new
+  when 10 then Dispatch10.new
+  when 11 then Dispatch11.new
+  when 12 then Dispatch12.new
+  when 13 then Dispatch13.new
+  when 14 then Dispatch14.new
+  when 15 then Dispatch15.new
+  when 16 then Dispatch16.new
+  when 17 then Dispatch17.new
+  when 18 then Dispatch18.new
+  when 19 then Dispatch19.new
+  when 20 then Dispatch20.new
+  when 21 then Dispatch21.new
+  when 22 then Dispatch22.new
+  else         Dispatch23.new
+  end
+end
+
+def run(seed : UInt32) : Int64
+  entries = [] of DispatchBase
+  state = seed
+  index = 0
+  while index < 4096
+    state = (state &* 1664525_u32) &+ 1013904223_u32
+    entries << make_dispatch((state.unsafe_shr(16) % 24_u32).to_i32)
+    index = index + 1
+  end
+  sum = 0_i64
+  pass = 0
+  while pass < 2000
+    index = 0
+    while index < entries.size
+      sum = sum + entries[index].value.to_i64
+      index = index + 1
+    end
+    pass = pass + 1
+  end
+  sum
+end
+
+puts "result=#{run(ARGC_UNSAFE.to_u32)}"

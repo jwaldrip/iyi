@@ -177,6 +177,26 @@ def values(row, metric):
     result["ratio"] = result["native"] / result["hosted"]
     return result
 
+def metrics_for(row, ceilings, lowering):
+    if "metric" in row:
+        return [row["metric"]]
+    metrics = [metric_of(row)]
+    samples = row["hosted"] + row["native"]
+    for metric in ("cycles", "cpu", "instructions"):
+        if metric in metrics:
+            continue
+        key = (row["workload"], row["mode"], metric)
+        include = key in ceilings
+        if lowering and metric in ("cycles", "cpu") and not include:
+            include = all(number(sample.get(metric, 0), metric, zero=True) > 0 for sample in samples)
+        if lowering and metric == "instructions" and not include:
+            if len(row["hosted"]) >= 5 and len(row["native"]) >= 5:
+                include = all(number(sample.get(metric, 0), metric, zero=True) > 0 for sample in samples)
+        if include:
+            metrics.append(metric)
+    return metrics
+
+
 
 def needs_retry(row, noise):
     metric = metric_of(row)
@@ -291,32 +311,34 @@ def evaluate(data, noise, ceilings, scale, target=False, lowering=False):
                     references.setdefault(name, result)
     evaluated = []
     for row in rows:
-        metric = metric_of(row)
-        key = (row["workload"], row["mode"], metric)
-        if key in keys:
-            raise GateError("duplicate measurement " + " ".join(key))
-        keys.add(key)
-        if metric not in noise:
-            raise GateError("missing noise for " + metric)
-        stats = values(row, metric)
-        ratio = stats["ratio"]
-        ceiling = 1.0 if target else ceilings.get(key)
-        bound = None if ceiling is None else ceiling * (1 + scale * noise[metric])
-        verdict = "PASS"
-        if ceiling is None:
-            verdict = "NO CEILING"
-        else:
-            if ratio > bound:
-                verdict = "FAIL"
-        if max(stats["spread_native"], stats["spread_hosted"]) > 1 + 2 * noise[metric]:
-            verdict = "NOISY"
-        if row.get("cosmetic", False):
-            verdict = "COSMETIC"
-        if key[0] in mismatch:
-            verdict = "RESULT"
-        failure = verdict != "PASS" and not (verdict == "NO CEILING" and lowering)
-        evaluated.append(dict(row= row, key=key, metric=metric, noise=noise[metric], scale=scale,
-                              ceiling=ceiling, bound=bound, verdict=verdict, failure=failure, **stats))
+        for metric in metrics_for(row, ceilings, lowering):
+            key = (row["workload"], row["mode"], metric)
+            if key in keys:
+                raise GateError("duplicate measurement " + " ".join(key))
+            keys.add(key)
+            if metric not in noise:
+                raise GateError("missing noise for " + metric)
+            stats = values(row, metric)
+            ratio = stats["ratio"]
+            ceiling = 1.0 if target else ceilings.get(key)
+            bound = None if ceiling is None else ceiling * (1 + scale * noise[metric])
+            verdict = "PASS"
+            if ceiling is None:
+                verdict = "NO CEILING"
+            else:
+                if ratio > bound:
+                    verdict = "FAIL"
+            spread_limit = 1 + noise[metric] * (1 if metric == "instructions" else 2)
+            noisy = max(stats["spread_native"], stats["spread_hosted"]) > spread_limit
+            if verdict != "FAIL" and noisy:
+                verdict = "NOISY"
+            if row.get("cosmetic", False):
+                verdict = "COSMETIC"
+            if key[0] in mismatch:
+                verdict = "RESULT"
+            failure = verdict != "PASS" and not (verdict == "NO CEILING" and lowering)
+            evaluated.append(dict(row=row, key=key, metric=metric, noise=noise[metric], scale=scale,
+                                  ceiling=ceiling, bound=bound, verdict=verdict, failure=failure, noisy=noisy, **stats))
     return evaluated
 
 
@@ -384,9 +406,12 @@ def lower(args):
     text = Path(args.ceiling).read_text(encoding="utf-8")
     noise, ceilings = parse_ceiling(text)
     rows = evaluate(read_json(args.measurements), noise, ceilings, 1, lowering=True)
-    if any(item["verdict"] in ("RESULT", "NOISY", "COSMETIC") for item in rows):
-        raise GateError("cannot lower a ceiling from invalid or noisy measurements")
-    updates = {item["key"]: upward(item["ratio"]) for item in rows}
+    if any(item["verdict"] in ("RESULT", "COSMETIC") for item in rows):
+        raise GateError("cannot lower a ceiling from invalid measurements")
+    for item in rows:
+        if item["noisy"]:
+            print("  not lowering noisy row: %s" % " ".join(item["key"]))
+    updates = {item["key"]: upward(item["ratio"]) for item in rows if not item["noisy"]}
     output = []
     for line in text.splitlines():
         fields = line.split()

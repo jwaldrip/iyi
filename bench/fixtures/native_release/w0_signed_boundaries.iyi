@@ -1,0 +1,20 @@
+def below(a : Int32, b : Int32) : Int32
+  a < b ? 1 : 0
+end
+
+def classify : Int32
+  values = [-2, -1, 0, 1, 2]
+  total = 0
+  left = 0
+  while left < values.size
+    right = 0
+    while right < values.size
+      total = total + below(values[left], values[right])
+      right = right + 1
+    end
+    left = left + 1
+  end
+  total
+end
+
+puts "result=#{classify}"
