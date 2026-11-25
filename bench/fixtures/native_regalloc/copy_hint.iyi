@@ -2,12 +2,17 @@ module copy_hint
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
 import compiler/native/regalloc_linear::{allocate_linear}
 
+# A chain of two copies. The first is renamed away before the scan (its source dies at the copy), and a register takes
+# part in one renaming only, so the second copy reaches the scan. A lower-numbered register is free there (cold is dead),
+# so only the scan's copy preference gives the copy its source's register, which makes it an identity move that is removed.
+
 fn = MFunction.new("hint")
 b = MBlock.new(0, "entry")
 fn.blocks << b
 cold = fn.new_vreg(RegClass::Gpr)
 source = fn.new_vreg(RegClass::Gpr)
 dead = fn.new_vreg(RegClass::Gpr)
+mid = fn.new_vreg(RegClass::Gpr)
 copy = fn.new_vreg(RegClass::Gpr)
 result = fn.new_vreg(RegClass::Gpr)
 first = MInst.new(MOp::MovImm.value.to_i32)
@@ -20,13 +25,17 @@ use_cold = MInst.new(MOp::AddImm.value.to_i32)
 use_cold.defs << Operand.new(OperandKind::Virtual, dead)
 use_cold.uses << Operand.new(OperandKind::Virtual, cold)
 b.insts << use_cold
+first_move = MInst.new(MOp::Mov.value.to_i32)
+first_move.defs << Operand.new(OperandKind::Virtual, mid)
+first_move.uses << Operand.new(OperandKind::Virtual, source)
+b.insts << first_move
 move = MInst.new(MOp::Mov.value.to_i32)
 move.defs << Operand.new(OperandKind::Virtual, copy)
-move.uses << Operand.new(OperandKind::Virtual, source)
+move.uses << Operand.new(OperandKind::Virtual, mid)
 b.insts << move
 use_copy = MInst.new(MOp::AddImm.value.to_i32)
 use_copy.defs << Operand.new(OperandKind::Virtual, result)
 use_copy.uses << Operand.new(OperandKind::Virtual, copy)
 b.insts << use_copy
 allocate_linear(fn)
-puts "#{fn.vreg_home[source]} #{fn.vreg_home[copy]} #{b.insts.size}"
+puts "#{fn.vreg_home[mid]} #{fn.vreg_home[copy]} #{b.insts.size}"
