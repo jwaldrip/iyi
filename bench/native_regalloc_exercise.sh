@@ -1260,8 +1260,10 @@ prove_mutation "coalescing: keep uses live through every definition" \
   '        use_end = pos + 1'
 prove_mutation "coalescing: retain identity copies" \
   src/compiler/native/regalloc_linear.iyi check_coalescing \
-  '    acc << inst unless identity' \
-  '    acc << inst'
+  '    identity = true if dropped
+    acc << inst unless identity' \
+  '    identity = true if dropped
+    acc << inst'
 if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_mutation "linear: a register is given to an interval that overlaps an active one" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
