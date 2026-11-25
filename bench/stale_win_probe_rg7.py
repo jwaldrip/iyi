@@ -37,7 +37,10 @@ def build(label, *flags):
     if cache.exists():
         shutil.rmtree(cache)
     cache.mkdir()
-    out = work / f"{label}.exe"
+    # The same file name in a directory per label, as stale_reproducible.sh
+    # builds (`prog_out.exe` twice): the PDB's name is in the executable.
+    (work / label).mkdir(exist_ok=True)
+    out = work / label / "prog_out.exe"
     result = subprocess.run([iyi, "build", *flags, "-o", str(out), str(source)], env=env, capture_output=True,
                             text=True, encoding="utf-8", errors="replace")
     if result.returncode:
@@ -90,8 +93,10 @@ def compare(label, left, right):
         name = where(begin, table)
         per_section[name] = per_section.get(name, 0) + (end - begin)
     print(f"{label}: DIFFER, sizes {len(left)} vs {len(right)}, {len(ranges)} ranges, {total} bytes, by section {per_section}")
-    for begin, end in ranges[:12]:
+    for begin, end in ranges[:14]:
         print(f"   {begin:#x}-{end:#x} ({where(begin, table)}): {left[begin:min(end, begin + 24)].hex()} vs {right[begin:min(end, begin + 24)].hex()}")
+        print(f"      left  context {left[max(0, begin - 40):end + 40]!r}")
+        print(f"      right context {right[max(0, begin - 40):end + 40]!r}")
 
 
 a1 = build("t1a", "--threads", "1")
