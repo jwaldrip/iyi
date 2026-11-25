@@ -176,12 +176,23 @@ jobs:
         id: gate
         continue-on-error: true
         run: bash bench/stale_chmod_failure.sh
-      - name: The chmod probe, repeated runs and a debugger
+      - name: The chmod regression nine more times, each a fresh build and run
+        id: again
+        continue-on-error: true
+        run: |
+          failed=0
+          for run in 2 3 4 5 6 7 8 9 10; do
+            echo "##### regression run $run"
+            bash bench/stale_chmod_failure.sh || failed=$((failed + 1))
+          done
+          echo "##### $failed of 9 repeated runs failed"
+          [ "$failed" -eq 0 ]
+      - name: The chmod probe, three layouts and two programs
         if: always()
         run: |
           REPO="$(cygpath -m "$PWD")"
           WORK="$(cygpath -m "$(mktemp -d "$(dirname "$PWD")/chmod-probe.XXXXXX")")"
           python3 bench/stale_win_probe_chmod.py "$REPO" "$IYI" "$WORK" || true
       - name: The verdict of the regression
-        if: steps.gate.outcome == 'failure'
+        if: steps.gate.outcome == 'failure' || steps.again.outcome == 'failure'
         run: exit 1
