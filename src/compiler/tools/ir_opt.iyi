@@ -15,7 +15,7 @@ end
 
 module IrOpt
   def self.usage : NoReturn
-    STDERR.puts "iyi-opt: usage: run [--verify-each] [--no-verify] PASSES FILE | print FILE | passes | stats PASSES FILE | call-edges FILE"
+    STDERR.puts "iyi-opt: usage: run [--verify-each] [--no-verify] [--stop-before PASS] PASSES FILE | print FILE | passes | stats [--stop-before PASS] PASSES FILE | call-edges FILE"
     LibC.exit(2)
   end
 
@@ -94,7 +94,7 @@ module IrOpt
     command = args[0]
     if command == "passes"
       usage unless args.size == 1
-      passes = [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::Sroa, PassId::Inline, PassId::DeadFn, PassId::Cse, PassId::Prove, PassId::Licm, PassId::Layout, PassId::Escape, PassId::Barrier, PassId::BarrierStack]
+      passes = [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::Sroa, PassId::Inline, PassId::DeadFn, PassId::Cse, PassId::Prove, PassId::Licm, PassId::Layout, PassId::Escape, PassId::Barrier, PassId::BarrierStack, PassId::InlineAlloc]
       k = 0
       while k < passes.size
         tiers = k < 4 ? "default,release" : "release"
@@ -119,12 +119,21 @@ module IrOpt
 
     verify_each = false
     no_verify = command == "stats"
+    stop_before = nil.as(PassId?)
     index = 1
     while index < args.size
       if command == "run" && args[index] == "--verify-each"
         verify_each = true
       elsif command == "run" && args[index] == "--no-verify"
         no_verify = true
+      elsif args[index] == "--stop-before"
+        usage if stop_before || index + 1 >= args.size
+        index = index + 1
+        stop_before = pass_named(args[index])
+        unless stop_before
+          STDERR.puts "iyi-opt: unknown stop-before pass: #{args[index]}"
+          LibC.exit(2)
+        end
       else
         break
       end
@@ -150,7 +159,7 @@ module IrOpt
       end
     end
     env_options = PassOptions.from_env
-    options = PassOptions.new(!no_verify && (verify_each || env_options.verify_each), env_options.time_passes)
+    options = PassOptions.new(!no_verify && (verify_each || env_options.verify_each), env_options.time_passes, stop_before)
     if reason = run_passes(mod, passes, options)
       STDERR.puts "iyi-opt: #{reason}"
       LibC.exit(1)

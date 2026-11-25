@@ -46,8 +46,9 @@ end
 pub class PassOptions
   getter verify_each : Bool
   getter time_passes : Bool
+  getter stop_before : PassId?
 
-  def initialize(@verify_each : Bool = false, @time_passes : Bool = false)
+  def initialize(@verify_each : Bool = false, @time_passes : Bool = false, @stop_before : PassId? = nil)
   end
 
   def self.from_env : PassOptions
@@ -126,8 +127,8 @@ pub def run_function_pass(mod : Module, fn : Function, id : PassId) : Bool
     changed = run_sroa(mod, fn)
     changed = run_mem2reg(mod, fn) unless changed
     changed
-  when PassId::Inline       then run_inline(mod, fn, CallGraph.new(mod), InlineBudget.new(mod))
-  # Run alone, no escape has run, so the allocation entries stay opaque: only the pipeline below grants them.
+  when PassId::Inline then run_inline(mod, fn, CallGraph.new(mod), InlineBudget.new(mod))
+    # Run alone, no escape has run, so the allocation entries stay opaque: only the pipeline below grants them.
   when PassId::InlineAlloc  then run_inline(mod, fn, CallGraph.new(mod), InlineBudget.new(mod, true, false))
   when PassId::DeadFn       then run_deadfn(mod)
   when PassId::Cse          then run_cse(mod, fn)
@@ -194,8 +195,15 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
   passes.each { |id| uses_s9 = true if id == PassId::Escape || id == PassId::Barrier || id == PassId::BarrierStack }
   release = uses_s9 && passes == tier_passes(OptTier::Release)
   partitioned = uses_s9 ? partitioned_heap?(mod) : false
+  stop_before = options.stop_before # mutation R9-stop: honor the requested group boundary
   begin_at = 0
   while begin_at < passes.size
+    if stop_before == passes[begin_at]
+      if clock = timings
+        clock.report(passes)
+      end
+      return nil
+    end
     if passes[begin_at] == PassId::DeadFn
       if clock = timings
         started = Time.monotonic
@@ -294,6 +302,9 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
       f = f + 1
     end
     begin_at = end_at
+  end
+  if requested = stop_before
+    return "no pass group begins with #{pass_name(requested)}"
   end
   if clock = timings
     clock.report(passes)
