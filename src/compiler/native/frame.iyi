@@ -107,6 +107,17 @@ def sp_adjust(isa : Int32, insts : Array(MInst), by : Int64) : Nil
   insts << m
 end
 
+# Odd, out-of-range and equal-register neighbours stay single. Pin can
+# record a register twice; both slots hold its entry value, so a later
+# duplicate may pair with a different neighbour and either restore is safe.
+def pairs_with_next?(fn : MFunction, i : Int32) : Bool
+  f = fn.frame
+  fn.isa == isa_aarch64 && i + 1 < f.callee_saved.size &&
+    f.callee_saved[i] != f.callee_saved[i + 1] &&
+    is_fpr?(f.callee_saved[i]) == is_fpr?(f.callee_saved[i + 1]) &&
+    f.saves_offset + 8_i64 * i.to_i64 <= 504_i64
+end
+
 # The prologue: the frame record, the frame, the probes, and the saves.
 def prologue_insts(fn : MFunction) : Array(MInst)
   f = fn.frame
@@ -122,15 +133,9 @@ def prologue_insts(fn : MFunction) : Array(MInst)
   if remaining > 0_i64
     sp_adjust(fn.isa, acc, -remaining)
   end
-  # Odd, out-of-range and equal-register neighbours stay single. Pin can
-  # record a register twice; both slots hold its entry value, so a later
-  # duplicate may pair with a different neighbour and either restore is safe.
   i = 0
   while i < f.callee_saved.size
-    paired = fn.isa == isa_aarch64 && i + 1 < f.callee_saved.size &&
-             f.callee_saved[i] != f.callee_saved[i + 1] &&
-             is_fpr?(f.callee_saved[i]) == is_fpr?(f.callee_saved[i + 1]) &&
-             f.saves_offset + 8_i64 * i.to_i64 <= 504_i64
+    paired = pairs_with_next?(fn, i)
     m = new_inst(fn.isa, Role::SaveReg)
     m.size = 64
     m.fp = is_fpr?(f.callee_saved[i])
@@ -162,10 +167,7 @@ def insert_epilogues(fn : MFunction, block : MBlock) : Nil
     if is_role?(fn.isa, inst, Role::Return)
       i = 0
       while i < f.callee_saved.size
-        paired = fn.isa == isa_aarch64 && i + 1 < f.callee_saved.size &&
-                 f.callee_saved[i] != f.callee_saved[i + 1] &&
-                 is_fpr?(f.callee_saved[i]) == is_fpr?(f.callee_saved[i + 1]) &&
-                 f.saves_offset + 8_i64 * i.to_i64 <= 504_i64
+        paired = pairs_with_next?(fn, i)
         m = new_inst(fn.isa, Role::RestoreReg)
         m.size = 64
         m.fp = is_fpr?(f.callee_saved[i])

@@ -922,10 +922,10 @@ prove_mutation "frame: the paired epilogue restores registers in exchanged order
           m.opcode = MOp::Ldp.value.to_i32
           m.defs << Operand.new(OperandKind::Physical, f.callee_saved[i])' \
   check_f1_pairs
-prove_mutation "frame: the paired epilogue allows duplicate destination registers" \
+prove_mutation "frame: paired saves and restores allow duplicate registers" \
   src/compiler/native/frame.iyi \
-  '                 f.callee_saved[i] != f.callee_saved[i + 1] &&' \
-  '                 true &&' \
+  'f.callee_saved[i] != f.callee_saved[i + 1]' \
+  'true' \
   check_f1_far_pin
 prove_mutation "frame: the stack probe is dropped" \
   src/compiler/native/frame.iyi \
