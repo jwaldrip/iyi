@@ -9,10 +9,12 @@ import compiler/ir/values::{Value, canonical_words}
 import compiler/ir/inst::{Op, Inst, GepAux, IntrinsicAux, terminator_op?}
 import compiler/ir/function::{Function, Global}
 import compiler/ir/module::{Module}
+import compiler/ir/intrinsics::{IntrinsicId}
+import compiler/ir/layout::{DataLayout}
 import compiler/ir/opt/analysis::{Cfg, DomTree, DefUse}
 import compiler/ir/opt/edit::{Editor}
-import compiler/ir/opt/effects::{opaque?, pure?, writes_memory?}
-import compiler/ir/opt/fold::{canonical}
+import compiler/ir/opt/effects::{opaque?, pure?, reads_memory?, writes_memory?, has_side_effects?}
+import compiler/ir/opt/fold::{canonical, int_value}
 
 class CseFrame
   getter block : Int32
@@ -26,16 +28,177 @@ class CseFrame
   end
 end
 
-# Constant expressions may hide a reference to the marking flag. Treat them
-# conservatively without recursively rescanning shared constant graphs.
-def marking_root?(value : Value) : Bool
-  return value.as(Global).name == "__iyi_marking" if value.is_a?(Global)
+# The stack frame of the walk over constant operands in reaches_flag?.
+class ConstWalk
+  getter node : Inst
+  property child : Int32
+
+  def initialize(@node : Inst)
+    @child = 0
+  end
+end
+
+# Memsets longer than this stay: the zeroing rule holds one flag per byte of the range.
+ZEROING_LIMIT = 4096_i64
+
+# The marking flag is the one global whose address the write barrier reads.
+def flag_global?(value : Value) : Bool
+  value.is_a?(Global) && value.as(Global).name == "__iyi_marking"
+end
+
+# The flag's address as an instruction: a GlobalAddr of the flag.
+def flag_address?(value : Value) : Bool
   return false unless value.is_a?(Inst)
   inst = value.as(Inst)
-  if inst.op == Op::GlobalAddr && inst.args.size == 1 && inst.args[0].is_a?(Global)
-    return inst.args[0].as(Global).name == "__iyi_marking"
+  inst.op == Op::GlobalAddr && inst.args.size == 1 && flag_global?(inst.args[0])
+end
+
+# Constants can hold the flag's address in their operands. Plain instructions cannot: they carry it only through the
+# derivations that find_marking_derivations follows.
+def constant_node?(value : Value) : Bool
+  return false unless value.is_a?(Inst)
+  op = value.as(Inst).op
+  op == Op::ConstExpr || op == Op::ConstAggregate || op == Op::GlobalAddr
+end
+
+# A getelementptr, as an instruction or as a constant expression.
+def gep_form?(inst : Inst) : Bool
+  is_gep = inst.op == Op::Gep || (inst.op == Op::ConstExpr && inst.aux_int == Op::Gep.value.to_i64)
+  is_gep && inst.aux.is_a?(GepAux) && !inst.args.empty?
+end
+
+# Operations whose result is a function of their operands: an address that reaches an operand reaches the result.
+def derives_result?(inst : Inst) : Bool
+  case inst.op
+  when Op::Gep, Op::PtrToInt, Op::IntToPtr, Op::BitCast, Op::AddrSpaceCast, Op::Trunc, Op::ZExt, Op::SExt,
+       Op::Add, Op::Sub, Op::Mul, Op::SDiv, Op::UDiv, Op::SRem, Op::URem, Op::Shl, Op::LShr, Op::AShr,
+       Op::And, Op::Or, Op::Xor, Op::ICmp, Op::Select, Op::Phi, Op::Freeze
+    true
+  when Op::Intrinsic
+    inst.aux.is_a?(IntrinsicAux) && inst.aux.as(IntrinsicAux).id == IntrinsicId::ExpectI1
+  else
+    false
   end
-  inst.op == Op::ConstExpr || inst.op == Op::ConstAggregate
+end
+
+# How operand `index` of `user` takes a value that may carry the flag's address.
+#   0: an address (a load's pointer, a store's destination). Memory is read or written; nothing is derived.
+#   1: a derivation. The result may carry the address.
+#   2: a leak. The address may reach memory, a call, a return, an aggregate, a branch, or an operation not listed.
+def flow_kind(user : Inst, index : Int32) : Int32
+  if user.op == Op::Load
+    0
+  elsif user.op == Op::Store
+    index == 1 ? 0 : 2
+  elsif user.op == Op::Select && index == 0
+    2
+  elsif derives_result?(user)
+    1
+  else
+    2
+  end
+end
+
+# Results that memory or a call can supply. Once the address has escaped, it can come back through one of them.
+def returned_source?(inst : Inst) : Bool
+  case inst.op
+  when Op::Load, Op::Call, Op::Invoke, Op::ExtractValue, Op::AtomicRmw, Op::CmpXchg, Op::VaArg, Op::LandingPad
+    true
+  when Op::Intrinsic
+    !derives_result?(inst)
+  else
+    false
+  end
+end
+
+# The byte offset that a getelementptr with constant indices adds to its base, through the data layout.
+def gep_delta(layout : DataLayout, gep : Inst) : Int64?
+  delta = 0_i64
+  current = gep.aux.as(GepAux).source_type
+  k = 1
+  while k < gep.args.size
+    index = constant_index(gep.args[k])
+    return nil if index.nil?
+    n = index.as(Int64)
+    if k == 1
+      delta = delta + n * layout.alloc_size(current)
+    elsif current.struct?
+      fields = current.struct_element_types
+      return nil if n < 0_i64 || n >= fields.size.to_i64
+      delta = delta + layout.offset_of(current, n.to_i32)
+      current = fields[n.to_i32]
+    elsif current.array?
+      delta = delta + n * layout.alloc_size(current.element_type)
+      current = current.element_type
+    else
+      return nil
+    end
+    k = k + 1
+  end
+  delta
+end
+
+# A constant getelementptr index. An i1 index is signed (true is -1), so it is not read as a constant.
+def constant_index(value : Value) : Int64?
+  return nil unless value.type.int? && value.type.bits > 1
+  int_value(value)
+end
+
+def plain_scalar?(type : IrType) : Bool
+  type.int? || type.float? || type.pointer?
+end
+
+# A pointer's root and its byte offset from that root. `exact` is false when a getelementptr index is not constant.
+class CseAddress
+  getter base : Value
+  getter offset : Int64
+  getter exact : Bool
+
+  def initialize(@base : Value, @offset : Int64, @exact : Bool)
+  end
+end
+
+# Peels bitcasts and getelementptrs off a pointer. The root is always found; the offset is exact only when every index
+# is constant.
+def split_pointer(layout : DataLayout, value : Value) : CseAddress
+  offset = 0_i64
+  exact = true
+  current = value
+  moving = true
+  while moving
+    moving = false
+    if current.is_a?(Inst)
+      inst = current.as(Inst)
+      if inst.op == Op::BitCast && inst.args.size == 1 && inst.args[0].type.pointer?
+        current = inst.args[0]
+        moving = true
+      elsif gep_form?(inst)
+        delta = gep_delta(layout, inst)
+        if delta.nil?
+          exact = false
+        else
+          offset = offset + delta.as(Int64)
+        end
+        current = inst.args[0]
+        moving = true
+      end
+    end
+  end
+  CseAddress.new(current, offset, exact)
+end
+
+# The byte count of a memset length: an integer constant, or the sizeof form ptrtoint (gep T, null, 1) read through the
+# data layout, the same size codegen emits for that form. nil for anything else.
+def length_value(layout : DataLayout, value : Value) : Int64?
+  constant = int_value(value)
+  return constant unless constant.nil?
+  return nil unless value.is_a?(Inst)
+  cast = value.as(Inst)
+  return nil unless cast.args.size == 1 && (cast.op == Op::PtrToInt || (cast.op == Op::ConstExpr && cast.aux_int == Op::PtrToInt.value.to_i64))
+  address = split_pointer(layout, cast.args[0])
+  return nil unless address.exact && address.base.type.pointer? && address.base.type.address_space == 0
+  return nil unless address.base.is_a?(Inst) && address.base.as(Inst).op == Op::ConstNull
+  address.offset
 end
 
 # An undef use may choose a new value each time. Do not key operations on it,
@@ -51,7 +214,7 @@ def stable_operand?(value : Value) : Bool
 end
 
 class Cse
-  def initialize(@fn : Function)
+  def initialize(@mod : Module, @fn : Function)
     @cfg = Cfg.new(@fn)
     @dom = DomTree.new(@cfg)
     @du = DefUse.new(@fn)
@@ -62,6 +225,8 @@ class Cse
     @next_number = 1
     @next_type_number = 1
     @marking_derived = Hash(Inst, Bool).new
+    @flag_reach = Hash(Inst, Bool).new
+    @escaped = false
     @boundaries = Hash(Inst, Int32).new
     @last_boundary = [] of Int32
     @entry_version = [] of Int32
@@ -73,44 +238,92 @@ class Cse
     number_memory_versions
   end
 
-  # A derived address of the flag is just as opaque as the direct load.
-  # Follow all SSA users so casts, selects and loop phis cannot hide it.
+  # The flag, its address, and a constant whose operand graph reaches either.
+  def marking_root?(value : Value) : Bool
+    return flag_global?(value) if value.is_a?(Global)
+    return false unless value.is_a?(Inst)
+    return true if flag_address?(value)
+    return false unless constant_node?(value) # mutation R2-root: only a constant that reaches the flag is a root
+    reaches_flag?(value.as(Inst))
+  end
+
+  # Walks the constant operand graph below `root` with an explicit stack. Each node is memoized when it finishes, so a
+  # constant shared by several uses is walked once per function.
+  def reaches_flag?(root : Inst) : Bool
+    return known_reach?(root) if @flag_reach.has_key?(root)
+    frames = [ConstWalk.new(root)]
+    while !frames.empty?
+      frame = frames.last
+      if frame.child >= frame.node.args.size
+        @flag_reach[frame.node] = false
+        frames.pop
+      else
+        arg = frame.node.args[frame.child]
+        frame.child = frame.child + 1
+        if flag_global?(arg) || flag_address?(arg) || known_reach?(arg)
+          frames.each { |walk| @flag_reach[walk.node] = true }
+          return true
+        end
+        if constant_node?(arg) && !@flag_reach.has_key?(arg.as(Inst))
+          frames << ConstWalk.new(arg.as(Inst))
+        end
+      end
+    end
+    false
+  end
+
+  def known_reach?(value : Value) : Bool
+    return false unless value.is_a?(Inst) && @flag_reach.has_key?(value.as(Inst))
+    @flag_reach[value.as(Inst)]
+  end
+
+  # Records one use of a value that may carry the flag's address. A derivation spreads the mark; a leak marks the
+  # function as escaping.
+  def note_use(user : Inst, index : Int32, work : Array(Inst)) : Nil
+    kind = flow_kind(user, index)
+    if kind == 2
+      @escaped = true
+    elsif kind == 1 && !@marking_derived.has_key?(user)
+      @marking_derived[user] = true
+      work << user
+    end
+  end
+
+  # Follows the derivations in `work` from position `head` through their users.
+  def propagate(work : Array(Inst), head : Int32) : Nil
+    cursor = head
+    while cursor < work.size
+      inst = work[cursor]
+      cursor = cursor + 1
+      @du.uses(inst).each do |usage|
+        note_use(usage.user, usage.index, work)
+      end
+    end
+  end
+
+  # A derived address of the flag is just as opaque as the direct load. Its derivations follow their users. When the
+  # address escapes the function's own values, every value that memory or a call can return is marked too, since the
+  # address may come back through it.
   def find_marking_derivations : Nil
     work = [] of Inst
     @fn.blocks.each do |block|
       block.insts.each do |inst|
-        derived = false
-        inst.args.each { |arg| derived = true if marking_root?(arg) }
-        if derived && !@marking_derived.has_key?(inst)
-          @marking_derived[inst] = true
-          work << inst
+        inst.args.each_with_index do |arg, index|
+          note_use(inst, index, work) if marking_root?(arg)
         end
       end
     end
-    # The flag address can be stored and reloaded before reaching a use. If
-    # this function mentions it, conservatively treat pointer-valued loads as
-    # potential aliases too; this also survives store-to-load forwarding.
-    unless work.empty?
-      @fn.blocks.each do |block|
-        block.insts.each do |inst|
-          if inst.op == Op::Load && inst.type.pointer? && !@marking_derived.has_key?(inst)
-            @marking_derived[inst] = true
-            work << inst
-          end
-        end
+    propagate(work, 0)
+    return unless @escaped # mutation R2-escape: the fallback runs only when the address escapes
+    mark = work.size
+    @fn.blocks.each do |block|
+      block.insts.each do |inst|
+        next unless returned_source?(inst) && !@marking_derived.has_key?(inst)
+        @marking_derived[inst] = true
+        work << inst
       end
     end
-    head = 0
-    while head < work.size
-      inst = work[head]
-      head = head + 1
-      @du.users(inst).each do |user|
-        unless @marking_derived.has_key?(user)
-          @marking_derived[user] = true
-          work << user
-        end
-      end
-    end
+    propagate(work, mark)
   end
 
   def marking_read?(inst : Inst) : Bool
@@ -355,6 +568,100 @@ class Cse
     @changed = true
   end
 
+  # Codegen zeroes an atomic object before its fields are stored (collector fact G5). A zeroing memset is dead when the
+  # stores after it in its block overwrite all of its bytes before anything reads them.
+  def erase_dead_zeroing : Nil
+    block = 0
+    while block < @cfg.size
+      insts = @cfg.block(block).insts
+      index = 0
+      while index < insts.size
+        length = zeroing_length(insts[index])
+        if length
+          target = split_pointer(@mod.layout, insts[index].args[0])
+          if target.exact && zeroed_then_overwritten?(insts, index, target, length.as(Int64))
+            @editor.erase(insts[index])
+            @changed = true
+          end
+        end
+        index = index + 1
+      end
+      block = block + 1
+    end
+  end
+
+  # The byte count of a memset that zeroes its destination: a constant or sizeof length, zero fill, not volatile.
+  def zeroing_length(inst : Inst) : Int64?
+    return nil unless inst.op == Op::Intrinsic && inst.aux.is_a?(IntrinsicAux) && inst.args.size == 4
+    return nil unless inst.aux.as(IntrinsicAux).id == IntrinsicId::Memset
+    return nil unless int_value(inst.args[1]) == 0_i64 && int_value(inst.args[3]) == 0_i64
+    length = length_value(@mod.layout, inst.args[2])
+    return nil if length.nil?
+    count = length.as(Int64)
+    return nil if count <= 0_i64 || count > ZEROING_LIMIT
+    count
+  end
+
+  # Whether `inst` may sit between a zeroing memset and the stores that overwrite it. A store may write anywhere but
+  # must not carry the pointer. Any other instruction must not read or write memory or have effects, and may use the
+  # pointer only as an address.
+  def window_ok?(inst : Inst, base : Value) : Bool
+    if inst.op == Op::Store
+      return !opaque?(inst) && split_pointer(@mod.layout, inst.args[0]).base != base
+    end
+    return false if opaque?(inst) || writes_memory?(inst) || has_side_effects?(inst)
+    return false if reads_memory?(inst) # mutation R2-read: a read of the zeroed object ends the window
+    return true if inst.op == Op::BitCast || gep_form?(inst)
+    index = 0
+    while index < inst.args.size
+      if split_pointer(@mod.layout, inst.args[index]).base == base && flow_kind(inst, index) != 0
+        return false
+      end
+      index = index + 1
+    end
+    true
+  end
+
+  # True when the stores after `start` in its block overwrite each of the `length` bytes at `target` with plain scalars,
+  # and no instruction before the last of them reads memory or uses the pointer other than as an address.
+  def zeroed_then_overwritten?(insts : Array(Inst), start : Int32, target : CseAddress, length : Int64) : Bool
+    covered = [] of Bool
+    count = length.to_i32
+    k = 0
+    while k < count
+      covered << false
+      k = k + 1
+    end
+    remaining = count
+    index = start + 1
+    while index < insts.size
+      inst = insts[index]
+      if inst.op == Op::Store
+        return false unless window_ok?(inst, target.base)
+        address = split_pointer(@mod.layout, inst.args[1])
+        if address.exact && address.base == target.base && plain_scalar?(inst.args[0].type)
+          first = address.offset - target.offset
+          last = first + @mod.layout.store_size(inst.args[0].type)
+          first = 0_i64 if first < 0_i64
+          last = length if last > length
+          position = first
+          while position < last
+            if !covered[position.to_i32]
+              covered[position.to_i32] = true
+              remaining = remaining - 1
+            end
+            position = position + 1_i64
+          end
+          return true if remaining == 0
+        end
+      elsif !window_ok?(inst, target.base)
+        return false
+      end
+      index = index + 1
+    end
+    false
+  end
+
   def visit_block(block : Int32) : Nil
     version = @entry_version[block]
     @cfg.block(block).insts.each do |inst|
@@ -394,6 +701,7 @@ class Cse
   end
 
   def run : Bool
+    erase_dead_zeroing
     frames = [CseFrame.new(0, 0)]
     while !frames.empty?
       frame = frames.last
@@ -420,5 +728,5 @@ end
 
 pub def run_cse(mod : Module, fn : Function) : Bool
   return false if fn.declaration?
-  Cse.new(fn).run
+  Cse.new(mod, fn).run
 end
