@@ -103,3 +103,39 @@ jobs:
             if [ -s "$d/hosted/$name.err" ]; then echo "-- hosted stderr:"; cat "$d/hosted/$name.err"; fi
             if [ -s "$d/port/$name.err" ]; then echo "-- port stderr:"; cat "$d/port/$name.err"; fi
           done
+
+      # Probe only, not part of the gate. Whether a `..` after a junction is applied before the junction is followed
+      # (lexically, as Win32 normalises a plain path) or after it (as POSIX does). The first run of `app/link/../inside.txt`
+      # answers true only when the `..` was applied before the junction was followed.
+      - name: Dotdot after a junction, as Win32 and the port's std answer it
+        if: always()
+        shell: bash
+        run: |
+          REPO="$(pwd)"
+          D="$(mktemp -d)"
+          mkdir -p "$D/app" "$D/outside"
+          printf 'inside\n' > "$D/app/inside.txt"
+          MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" cmd /c mklink /J "$(cygpath -w "$D/app/link")" "$(cygpath -w "$D/outside")" > /dev/null
+          DN="$(cygpath -m "$D")"
+          cat > "$D/probe.cr" <<'CRYSTAL'
+          path = ARGV[0]
+          puts "crystal File.exists?(#{path}) = #{File.exists?(path)}"
+          CRYSTAL
+          cat > "$D/probe.iyi" <<'IYI'
+          module main
+
+          import std/file::{File}
+
+          puts "iyi File.exists?(#{Program.args[0]}) = #{File.exists?(Program.args[0])}"
+          IYI
+          crystal build -o "$DN/cr.exe" "$DN/probe.cr" > "$D/cr.log" 2>&1 || cat "$D/cr.log"
+          IYI_PATH="$(cygpath -m "$REPO/src")" "$REPO/bin/iyi" build -o "$DN/iy.exe" "$DN/probe.iyi" > "$D/iy.log" 2>&1 || cat "$D/iy.log"
+          echo "control, before the junction (expect true):"
+          "$DN/cr.exe" "$DN/app/inside.txt"
+          "$DN/iy.exe" "$DN/app/inside.txt"
+          echo "through the junction, .. before it (true only if lexical):"
+          "$DN/cr.exe" "$DN/app/link/../inside.txt"
+          "$DN/iy.exe" "$DN/app/link/../inside.txt"
+          echo "control, a real directory then .. (expect false):"
+          "$DN/cr.exe" "$DN/outside/../inside.txt"
+          "$DN/iy.exe" "$DN/outside/../inside.txt"
