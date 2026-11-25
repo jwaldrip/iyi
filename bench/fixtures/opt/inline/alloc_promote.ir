@@ -1,0 +1,34 @@
+; iyi-ir 1
+source_filename = "alloc_promote"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+%Point = type { i64, i64 }
+define internal i64 @take(i64 %size, i1 %headed) {
+entry:
+  %s = add i64 %size, 8
+  %h = select i1 %headed, i64 %s, i64 %size
+  ret i64 %h
+}
+define internal ptr @new_object(i64 %size, i64 %type_id, i1 %headed) {
+entry:
+  %q = call i64 (i64, i1) @take(i64 %size, i1 %headed)
+  %p = inttoptr i64 %q to ptr
+  ret ptr %p
+}
+define external ptr @__iyi_new(i64 %size, i64 %type_id, i64 %flags) {
+entry:
+  %a = and i64 %flags, 1
+  %headed = icmp ne i64 %a, 0
+  %p = call ptr (i64, i64, i1) @new_object(i64 %size, i64 %type_id, i1 %headed)
+  ret ptr %p
+}
+define external i64 @local_point(i64 %x) {
+entry:
+  %p = call ptr (i64, i64, i64) @__iyi_new(i64 16, i64 69, i64 2)
+  %f0 = getelementptr %Point, ptr %p, i32 0, i32 0
+  store i64 %x, ptr %f0, align 8
+  %f1 = getelementptr %Point, ptr %p, i32 0, i32 1
+  store i64 1, ptr %f1, align 8
+  %v = load i64, ptr %f0, align 8
+  ret i64 %v
+}

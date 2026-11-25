@@ -1,0 +1,105 @@
+; iyi-ir 1
+; pad_unused gives the module a size for the module-wide inline budget (1.5 x the module); DeadFn removes it.
+source_filename = "fold_gate"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external void @sink(i64)
+define internal i64 @pad_unused(i64 %x) {
+entry:
+  %p0 = add i64 %x, 1
+  %p1 = add i64 %p0, 2
+  %p2 = add i64 %p1, 3
+  %p3 = add i64 %p2, 4
+  %p4 = add i64 %p3, 5
+  %p5 = add i64 %p4, 6
+  %p6 = add i64 %p5, 7
+  %p7 = add i64 %p6, 8
+  %p8 = add i64 %p7, 9
+  %p9 = add i64 %p8, 10
+  %p10 = add i64 %p9, 11
+  %p11 = add i64 %p10, 12
+  %p12 = add i64 %p11, 13
+  %p13 = add i64 %p12, 14
+  %p14 = add i64 %p13, 15
+  %p15 = add i64 %p14, 16
+  %p16 = add i64 %p15, 17
+  %p17 = add i64 %p16, 18
+  %p18 = add i64 %p17, 19
+  %p19 = add i64 %p18, 20
+  %p20 = add i64 %p19, 21
+  %p21 = add i64 %p20, 22
+  %p22 = add i64 %p21, 23
+  %p23 = add i64 %p22, 24
+  %p24 = add i64 %p23, 25
+  %p25 = add i64 %p24, 26
+  %p26 = add i64 %p25, 27
+  %p27 = add i64 %p26, 28
+  %p28 = add i64 %p27, 29
+  %p29 = add i64 %p28, 30
+  %p30 = add i64 %p29, 31
+  %p31 = add i64 %p30, 32
+  %p32 = add i64 %p31, 33
+  %p33 = add i64 %p32, 34
+  %p34 = add i64 %p33, 35
+  %p35 = add i64 %p34, 36
+  %p36 = add i64 %p35, 37
+  %p37 = add i64 %p36, 38
+  %p38 = add i64 %p37, 39
+  %p39 = add i64 %p38, 40
+  %p40 = add i64 %p39, 41
+  %p41 = add i64 %p40, 42
+  %p42 = add i64 %p41, 43
+  %p43 = add i64 %p42, 44
+  %p44 = add i64 %p43, 45
+  %p45 = add i64 %p44, 46
+  %p46 = add i64 %p45, 47
+  %p47 = add i64 %p46, 48
+  %p48 = add i64 %p47, 49
+  %p49 = add i64 %p48, 50
+  %p50 = add i64 %p49, 51
+  %p51 = add i64 %p50, 52
+  %p52 = add i64 %p51, 53
+  %p53 = add i64 %p52, 54
+  %p54 = add i64 %p53, 55
+  %p55 = add i64 %p54, 56
+  %p56 = add i64 %p55, 57
+  %p57 = add i64 %p56, 58
+  %p58 = add i64 %p57, 59
+  %p59 = add i64 %p58, 60
+  ret i64 %p59
+}
+define external i64 @gate_big(i64 %x, i1 %fast) {
+entry:
+  br i1 %fast, label %quick, label %slow
+quick:
+  ret i64 %x
+slow:
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  call void (i64) @sink(i64 %x)
+  ret i64 %x
+}
+define external ptr @__iyi_new(i64 %size, i64 %type_id, i64 %flags) {
+entry:
+  %a = and i64 %flags, 2
+  %fast = icmp ne i64 %a, 0
+  %r = call i64 (i64, i1) @gate_big(i64 %size, i1 %fast)
+  %p = inttoptr i64 %r to ptr
+  ret ptr %p
+}
+define external i64 @fold_use(i64 %x) {
+entry:
+  %p = call ptr (i64, i64, i64) @__iyi_new(i64 %x, i64 69, i64 2)
+  %v = ptrtoint ptr %p to i64
+  ret i64 %v
+}

@@ -1,7 +1,8 @@
 module compiler/ir/opt/inline
 
-import compiler/ir/values::{Value}
-import compiler/ir/inst::{Op, Inst, Block, Attribute, CallAux, AsmAux, IntrinsicAux}
+import compiler/ir/values::{Value, u64_as_i64}
+import compiler/ir/types::{IrType}
+import compiler/ir/inst::{Op, Inst, Block, Attribute, CallAux, AsmAux, IntrinsicAux, IntPredicate}
 import compiler/ir/function::{Function, Linkage}
 import compiler/ir/module::{Module}
 import compiler/ir/intrinsics::{IntrinsicId}
@@ -9,23 +10,34 @@ import compiler/ir/opt/analysis::{Cfg, DomTree, LoopInfo}
 import compiler/ir/opt/callgraph::{CallGraph, cold_blocks}
 import compiler/ir/opt/effects::{runtime_entry?, returns_twice_call?}
 import compiler/ir/opt/edit::{new_inst, new_phi}
+import compiler/ir/opt/fold::{int_value, canonical}
+import compiler/ir/opt/escape::{sizeof_value}
 
 pub class InlineBudget
   getter limit : Int32
   property used : Int32
   # The round of run_inline in progress. A recursive callee is copied only in round 0.
   property round : Int32
+  # The late group (R9) considers only the allocation entries, when entries_ok, and the calls those entries
+  # expose. Its calls are costed with their constant arguments folded in, and its gate is wider.
+  getter late : Bool
+  getter entries_ok : Bool
 
-  def initialize(mod : Module)
+  def initialize(mod : Module, late : Bool = false, entries_ok : Bool = false)
     total = 0
     mod.functions.each do |fn|
       fn.blocks.each { |block| total = total + block.insts.size }
     end
+    @mod = mod
     @used = total
     @limit = total + total // 2
     @round = 0
+    @late = late
+    @entries_ok = entries_ok
     @eligible = Hash(Function, Int32).new
     @costs = Hash(Function, Int32).new
+    @folded = Hash(Function, Hash(String, Int32)).new
+    @exposed = Hash(Inst, Bool).new
   end
 
   # Functions can still change while their own pipeline is running. The
@@ -34,7 +46,7 @@ pub class InlineBudget
     if cached = @eligible[fn]?
       return cached == 1
     end
-    allowed = callee_allowed?(fn)
+    allowed = callee_allowed?(fn, @entries_ok)
     @eligible[fn] = allowed ? 1 : 0
     allowed
   end
@@ -48,9 +60,53 @@ pub class InlineBudget
     cost
   end
 
+  # The cost the gate weighs for one call. In the late group it is what the callee keeps once the call's
+  # constant arguments are folded in; elsewhere it is the callee's whole cost.
+  def call_cost(callee : Function, call : Inst) : Int32
+    return callee_cost(callee) unless @late
+    args = [] of Int64?
+    k = 1
+    while k < call.args.size
+      args << constant_argument(@mod, call.args[k])
+      k = k + 1
+    end
+    key = ""
+    args.each do |value|
+      key = key + (value ? "#{value}" : "?") + ","
+    end
+    table = @folded[callee]? || Hash(String, Int32).new
+    @folded[callee] = table
+    if cached = table[key]?
+      return cached
+    end
+    cost = folded_cost(callee, args)
+    table[key] = cost
+    cost
+  end
+
+  # The gate for one call's cost. The late group is wider: a folded allocation body is kept only once its
+  # constants have removed the paths they do not take.
+  def gate : Int32
+    @late ? 120 : 40
+  end
+
+  def rounds : Int32
+    @late ? 3 : 2
+  end
+
+  def mark_exposed(inst : Inst) : Nil
+    @exposed[inst] = true
+    nil
+  end
+
+  def exposed?(inst : Inst) : Bool
+    @exposed.has_key?(inst)
+  end
+
   def invalidate(fn : Function) : Nil
     @eligible.delete(fn)
     @costs.delete(fn)
+    @folded.delete(fn)
     nil
   end
 
@@ -90,9 +146,20 @@ def caller_allowed?(fn : Function) : Bool
   true
 end
 
-# Refuse shapes whose control flow or calling convention cannot be cloned here.
-def callee_allowed?(fn : Function) : Bool
-  return false if fn.declaration? || fn.fn_type.varargs? || runtime_entry?(fn)
+# The allocation entries: the only runtime entries the late group may inline, and only after escape has run
+# (invariant I10c, spec 3.4).
+def alloc_entry?(fn : Function) : Bool
+  case fn.name
+  when "__iyi_new", "__iyi_malloc64", "__iyi_malloc_atomic64" then true
+  else false
+  end
+end
+
+# Refuse shapes whose control flow or calling convention cannot be cloned here. A runtime entry is refused
+# unless it is an allocation entry the late group may inline.
+def callee_allowed?(fn : Function, entries_ok : Bool) : Bool
+  return false if fn.declaration? || fn.fn_type.varargs?
+  return false if runtime_entry?(fn) && !(entries_ok && alloc_entry?(fn))
   # Keep the program-lifetime frame and the runtime's stack-clearing wrappers
   # distinct even if a producer omits their noinline attributes.
   return false if top_level?(fn) || fn.name == "__iyi_program" || fn.name == "__iyi_enter" # mutation entry-frame: preserve entry identities
@@ -199,6 +266,21 @@ def in_loop?(fn : Function, block : Block) : Bool
   loops.depth(id) > 0
 end
 
+# Per block of the current function: whether it sits in a loop. Computed once per round of the late group.
+def loop_blocks(fn : Function) : Array(Bool)
+  fn.relink
+  cfg = Cfg.new(fn)
+  dom = DomTree.new(cfg)
+  loops = LoopInfo.new(cfg, dom)
+  flags = [] of Bool
+  k = 0
+  while k < cfg.size
+    flags << (loops.depth(k) > 0)
+    k = k + 1
+  end
+  flags
+end
+
 # A dispatch link has exactly one conditional successor continuing the chain,
 # and one arm containing exactly one call. The original classifier counts
 # only chains whose continuing edge eventually reaches unreachable.
@@ -267,7 +349,15 @@ def dispatch_over_four?(target : Block) : Bool
   false
 end
 
-def call_allowed?(fn : Function, block : Block, call : Inst, callee : Function, graph : CallGraph, budget : InlineBudget) : Bool
+# A late-group call is a candidate when it calls an allocation entry, and the entries may be inlined, or when
+# an earlier inline of an allocation entry in this group exposed it.
+def alloc_candidate?(site : Inst, budget : InlineBudget) : Bool
+  return false if site.args.empty? || !site.args[0].is_a?(Function)
+  return true if budget.exposed?(site)
+  budget.entries_ok && alloc_entry?(site.args[0].as(Function))
+end
+
+def call_allowed?(fn : Function, block : Block, call : Inst, callee : Function, graph : CallGraph, budget : InlineBudget, loop_ok : Bool) : Bool
   return false unless call.aux.is_a?(CallAux)
   aux = call.aux.as(CallAux)
   return false unless aux.fn_type == callee.fn_type && aux.cc == callee.cc
@@ -281,17 +371,19 @@ def call_allowed?(fn : Function, block : Block, call : Inst, callee : Function, 
   end
   return false unless budget.callee_allowed(callee)
   return false if callee == fn || graph.same_component?(fn, callee)
-  # A recursive callee may be copied once into an outside caller, in round 0 only.
-  return false if budget.round > 0 && graph.recursive?(callee)
+  # A recursive callee may be copied once into an outside caller, in round 0 only. The late group's calls
+  # are its own allocation funnel, bounded by its rounds instead.
+  return false if budget.round > 0 && !budget.late && graph.recursive?(callee)
   always = source_mandated?(callee, call)
   return false if top_level?(fn) && !always && !in_loop?(fn, block)
+  return false unless loop_ok || always
   # Source-mandated inlining is exempt from the cost-model size limits.
   # inline_one still charges its growth, so later ordinary calls see it.
   return true if always
-  cost = budget.callee_cost(callee)
+  cost = budget.call_cost(callee, call)
   match_helper = callee.name.includes?("~match<")
   return false if !match_helper && cost > 10 && dispatch_over_four?(block)
-  unless match_helper || cost <= 40 || (callee.linkage == Linkage::Internal && graph.call_sites(callee) == 1 && cost <= 400)
+  unless match_helper || cost <= budget.gate || (callee.linkage == Linkage::Internal && graph.call_sites(callee) == 1 && cost <= 400)
     return false
   end
   # Removing the call and adding the entry branch cancel; cloning preserves
@@ -309,7 +401,7 @@ end
 
 # Clone the entire callee at one call site. Phis are filled only after every
 # instruction has an identity, so backedges and forward references are safe.
-def inline_one(mod : Module, fn : Function, block : Block, at : Int32, call : Inst, callee : Function) : Int32
+def inline_one(mod : Module, fn : Function, block : Block, at : Int32, call : Inst, callee : Function, budget : InlineBudget) : Int32
   values = Hash(Value, Value).new
   k = 0
   while k < callee.params.size
@@ -338,6 +430,29 @@ def inline_one(mod : Module, fn : Function, block : Block, at : Int32, call : In
         allocas << copy
       else
         dest.insts << copy
+      end
+    end
+  end
+  # Calls copied out of an allocation entry's body are the funnel the late group considers next.
+  if budget.late
+    clones.each { |copy| budget.mark_exposed(copy) if copy.op == Op::Call }
+  end
+  # Late group: the values the call's constants fix in the callee stand in for their instructions, so the cleanup
+  # passes fold the clone. Those values hold on every path, so the substitution is sound.
+  if budget.late
+    constants = late_constants(mod, callee, call)
+    k = 0
+    while k < callee.params.size
+      if constant = constants[callee.params[k]]?
+        values[callee.params[k]] = const_int(callee.params[k].type, constant)
+      end
+      k = k + 1
+    end
+    callee.blocks.each do |source|
+      source.insts.each do |inst|
+        if constant = constants[inst]?
+          values[inst] = const_int(inst.type, constant)
+        end
       end
     end
   end
@@ -399,14 +514,17 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
   return false if fn.declaration? || !caller_allowed?(fn)
   changed = false
   round = 0
-  while round < 2
+  while round < budget.rounds
     budget.round = round
     sites = [] of Inst
     fn.blocks.each do |block|
-      block.insts.each { |inst| sites << inst if inst.op == Op::Call }
+      block.insts.each { |inst| sites << inst if inst.op == Op::Call && (!budget.late || alloc_candidate?(inst, budget)) }
     end
+    # The late group does no work in a function with no candidate call.
+    break if sites.empty?
     # Raise paths are cold. Blocks an inline creates later in this round have no entry and count as hot.
     cold = cold_blocks(fn)
+    in_loops = budget.late && late_loops_only? ? loop_blocks(fn) : [] of Bool
     round_changed = false
     sites.each do |site|
       next if site.args.empty? || !site.args[0].is_a?(Function)
@@ -440,8 +558,9 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
         next if after_alloca
         # A raise path is cold: only source-mandated inlining may copy into it.
         next if owner_index < cold.size && cold[owner_index] && !source_mandated?(callee, site)
-        next unless call_allowed?(fn, block, site, callee, graph, budget)
-        budget.used = budget.used + inline_one(mod, fn, block, position, site, callee)
+        loop_ok = !budget.late || !late_loops_only? || (owner_index < in_loops.size && in_loops[owner_index])
+        next unless call_allowed?(fn, block, site, callee, graph, budget, loop_ok)
+        budget.used = budget.used + inline_one(mod, fn, block, position, site, callee, budget)
         changed = true
         round_changed = true
       end
@@ -451,4 +570,321 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
   end
   budget.invalidate(fn) if changed
   changed
+end
+
+# Whether the late group also keeps only calls inside loops.
+def late_loops_only? : Bool
+  false
+end
+
+# ---- Constant-argument costing (late group). ----------------------------------------------------------------
+
+# A call argument's constant: an integer constant, or the size of a type (the sizeof form the escape pass reads).
+def constant_argument(mod : Module, value : Value) : Int64?
+  if constant = int_value(value)
+    return constant
+  end
+  sizeof_value(mod, value)
+end
+
+# The constant an operand holds under the folded parameters: a value this walk folded, or an integer constant.
+def known_of(value : Value, known : Hash(Value, Int64)) : Int64?
+  found = known[value]?
+  return found if found
+  int_value(value)
+end
+
+# Whether a block calls a noinline callee: its path is a slow path, costed as a cold region.
+def calls_noinline?(block : Block) : Bool
+  block.insts.any? { |inst| inst.op == Op::Call && !inst.args.empty? && inst.args[0].is_a?(Function) && has_attr?(inst.args[0].as(Function).attrs, "noinline") }
+end
+
+def zero_of(bits : Int32, value : Int64) : UInt64
+  result = value.unsafe_to_u64
+  result &= 0xFFFFFFFFFFFFFFFF_u64.unsafe_shr(64 - bits) if bits < 64
+  result
+end
+
+def fold_arith(op : Op, bits : Int32, a : Int64, c : Int64) : Int64?
+  value = case op
+          when Op::Add then a &+ c
+          when Op::Sub then a &- c
+          when Op::Mul then a &* c
+          when Op::And then a & c
+          when Op::Or then a | c
+          when Op::Xor then a ^ c
+          when Op::Shl
+            return nil unless c >= 0_i64 && c < bits
+            a.unsafe_shl(c.to_i32)
+          when Op::LShr
+            return nil unless c >= 0_i64 && c < bits
+            u64_as_i64(zero_of(bits, a).unsafe_shr(c.to_i32))
+          when Op::AShr
+            return nil unless c >= 0_i64 && c < bits
+            canonical(bits, a).unsafe_shr(c.to_i32)
+          else
+            return nil
+          end
+  canonical(bits, value)
+end
+
+def fold_compare(predicate : Int64, bits : Int32, a : Int64, c : Int64) : Int64?
+  au = zero_of(bits, a)
+  cu = zero_of(bits, c)
+  as_signed = canonical(bits, a)
+  cs = canonical(bits, c)
+  result = if predicate == IntPredicate::EQ.value.to_i64
+             au == cu
+           elsif predicate == IntPredicate::NE.value.to_i64
+             au != cu
+           elsif predicate == IntPredicate::ULT.value.to_i64
+             au < cu
+           elsif predicate == IntPredicate::ULE.value.to_i64
+             au <= cu
+           elsif predicate == IntPredicate::UGT.value.to_i64
+             au > cu
+           elsif predicate == IntPredicate::UGE.value.to_i64
+             au >= cu
+           elsif predicate == IntPredicate::SLT.value.to_i64
+             as_signed < cs
+           elsif predicate == IntPredicate::SLE.value.to_i64
+             as_signed <= cs
+           elsif predicate == IntPredicate::SGT.value.to_i64
+             as_signed > cs
+           elsif predicate == IntPredicate::SGE.value.to_i64
+             as_signed >= cs
+           else
+             return nil
+           end
+  result ? 1_i64 : 0_i64
+end
+
+def fold_cast(op : Op, source : Int32, dest : Int32, a : Int64) : Int64?
+  result = if op == Op::ZExt
+             u64_as_i64(zero_of(source, a))
+           elsif op == Op::SExt
+             canonical(source, a)
+           else
+             a
+           end
+  canonical(dest, result)
+end
+
+# usub.with.overflow and uadd.with.overflow over known operands leave [value, overflow] for their extractvalues.
+def overflow_pair(inst : Inst, known : Hash(Value, Int64), pairs : Hash(Value, Array(Int64))) : Nil
+  return nil unless inst.aux.is_a?(IntrinsicAux) && inst.args.size == 2 && inst.args[0].type.int? && inst.args[0].type.bits <= 64
+  id = inst.aux.as(IntrinsicAux).id
+  return nil unless id == IntrinsicId::USubOverflow || id == IntrinsicId::UAddOverflow
+  bits = inst.args[0].type.bits
+  a = known_of(inst.args[0], known)
+  c = known_of(inst.args[1], known)
+  return nil if a.nil? || c.nil?
+  au = zero_of(bits, a)
+  cu = zero_of(bits, c)
+  mask = bits < 64 ? 0xFFFFFFFFFFFFFFFF_u64.unsafe_shr(64 - bits) : 0xFFFFFFFFFFFFFFFF_u64
+  if id == IntrinsicId::USubOverflow
+    value = (au &- cu) & mask
+    overflow = au < cu
+  else
+    total = au &+ cu
+    value = total & mask
+    overflow = bits < 64 ? total > mask : total < au
+  end
+  pairs[inst] = [canonical(bits, u64_as_i64(value)), overflow ? 1_i64 : 0_i64]
+  nil
+end
+
+# The value an instruction takes when its operands are known, or nil. Overflow intrinsics record their pair.
+def fold_inst(inst : Inst, known : Hash(Value, Int64), pairs : Hash(Value, Array(Int64))) : Int64?
+  case inst.op
+  when Op::Add, Op::Sub, Op::Mul, Op::And, Op::Or, Op::Xor, Op::Shl, Op::LShr, Op::AShr
+    return nil unless inst.type.int? && inst.type.bits <= 64
+    a = known_of(inst.args[0], known)
+    c = known_of(inst.args[1], known)
+    return nil if a.nil? || c.nil?
+    fold_arith(inst.op, inst.type.bits, a, c)
+  when Op::ICmp
+    return nil unless inst.args[0].type.int? && inst.args[0].type.bits <= 64
+    a = known_of(inst.args[0], known)
+    c = known_of(inst.args[1], known)
+    return nil if a.nil? || c.nil?
+    fold_compare(inst.aux_int, inst.args[0].type.bits, a, c)
+  when Op::Select
+    condition = known_of(inst.args[0], known)
+    return nil if condition.nil?
+    known_of(condition == 0_i64 ? inst.args[2] : inst.args[1], known)
+  when Op::Trunc, Op::ZExt, Op::SExt
+    return nil unless inst.type.int? && inst.type.bits <= 64 && inst.args[0].type.int? && inst.args[0].type.bits <= 64
+    a = known_of(inst.args[0], known)
+    return nil if a.nil?
+    fold_cast(inst.op, inst.args[0].type.bits, inst.type.bits, a)
+  when Op::ExtractValue
+    agg = inst.args[0]
+    return nil unless agg.is_a?(Inst)
+    pair = pairs[agg]?
+    return nil if pair.nil?
+    pair[inst.aux_int.to_i32]
+  when Op::Intrinsic
+    overflow_pair(inst, known, pairs)
+    nil
+  else
+    nil
+  end
+end
+
+# The cost of what the callee keeps once its parameters are the given constants (nil: unknown). Only blocks
+# the constants reach count. An instruction they fix is free, and so is a branch they decide. A raise path or
+# a block calling a noinline callee is cold: its instructions are free and each region costs five.
+def folded_cost(callee : Function, args : Array(Int64?)) : Int32
+  known = Hash(Value, Int64).new
+  pairs = Hash(Value, Array(Int64)).new
+  decided = Hash(Inst, Bool).new
+  k = 0
+  while k < callee.params.size
+    if constant = args[k]
+      known[callee.params[k]] = constant
+    end
+    k = k + 1
+  end
+  cfg = Cfg.new(callee)
+  cold = cold_blocks(callee)
+  n = cfg.size
+  live = [] of Bool
+  came = [] of Int32
+  k = 0
+  while k < n
+    live << false
+    came << -1
+    k = k + 1
+  end
+  live[0] = true
+  work = [0] of Int32
+  while !work.empty?
+    b = work.pop
+    block = callee.blocks[b]
+    block.insts.each do |inst|
+      if inst.op == Op::Phi
+        from = came[b]
+        k2 = 0
+        while from >= 0 && k2 < inst.targets.size
+          if inst.targets[k2] == callee.blocks[from]
+            if value = known_of(inst.args[k2], known)
+              known[inst] = value
+            end
+          end
+          k2 = k2 + 1
+        end
+      else
+        value = fold_inst(inst, known, pairs)
+        known[inst] = value if value
+      end
+    end
+    term = block.terminator
+    targets = [] of Int32
+    if term.op == Op::CondBr
+      decided_by = known_of(term.args[0], known)
+      if condition = decided_by
+        decided[term] = true
+        targets << cfg.index(term.targets[condition == 0_i64 ? 1 : 0])
+      else
+        targets << cfg.index(term.targets[0])
+        targets << cfg.index(term.targets[1])
+      end
+    elsif term.op == Op::Br
+      targets << cfg.index(term.targets[0])
+    elsif term.op == Op::Switch
+      term.targets.each { |target| targets << cfg.index(target) }
+    end
+    targets.each do |s|
+      next if live[s]
+      live[s] = true
+      came[s] = b
+      work << s
+    end
+  end
+  cold_live = [] of Bool
+  k = 0
+  while k < n
+    cold_live << (live[k] && (cold[k] || calls_noinline?(callee.blocks[k])))
+    k = k + 1
+  end
+  cost = 0
+  k = 0
+  while k < n
+    if live[k] && !cold_live[k]
+      callee.blocks[k].insts.each do |inst|
+        next if known.has_key?(inst) || decided.has_key?(inst)
+        if inst.op == Op::Call
+          cost = cost + 10
+        elsif inst.op == Op::Alloca || inst.op == Op::Phi
+          # Free in the cost model.
+        elsif inst.op == Op::Intrinsic && inst.aux.is_a?(IntrinsicAux) && inst.aux.as(IntrinsicAux).id == IntrinsicId::ExpectI1
+          # A branch hint has no machine cost.
+        elsif inst.op == Op::BitCast && inst.type.pointer? && !inst.args.empty? && inst.args[0].type.pointer?
+          # A pointer-to-pointer cast has no machine cost.
+        else
+          cost = cost + 1
+        end
+      end
+    end
+    k = k + 1
+  end
+  visited = [] of Bool
+  k = 0
+  while k < n
+    visited << false
+    k = k + 1
+  end
+  k = 0
+  while k < n
+    if cold_live[k] && !visited[k]
+      cost = cost + 5
+      visited[k] = true
+      region = [k] of Int32
+      while !region.empty?
+        node = region.pop
+        neighbors = cfg.succs(node) + cfg.preds(node)
+        neighbors.each do |other|
+          if cold_live[other] && !visited[other]
+            visited[other] = true
+            region << other
+          end
+        end
+      end
+    end
+    k = k + 1
+  end
+  cost
+end
+
+# The constants a call fixes in its callee: the parameters it passes constants to, and every non-phi instruction
+# whose value they determine. Such a value holds on every path, so a clone may use its constant in place of the
+# instruction. Phis are left out, because their value depends on the path taken.
+def late_constants(mod : Module, callee : Function, call : Inst) : Hash(Value, Int64)
+  known = Hash(Value, Int64).new
+  pairs = Hash(Value, Array(Int64)).new
+  k = 0
+  while k < callee.params.size
+    if constant = constant_argument(mod, call.args[k + 1])
+      known[callee.params[k]] = constant
+    end
+    k = k + 1
+  end
+  rounds = 0
+  while rounds < 4
+    callee.blocks.each do |block|
+      block.insts.each do |inst|
+        next if inst.op == Op::Phi || known.has_key?(inst)
+        value = fold_inst(inst, known, pairs)
+        known[inst] = value if value
+      end
+    end
+    rounds = rounds + 1
+  end
+  known
+end
+
+# An integer constant for a clone to use in place of a folded instruction, canonical for its type.
+def const_int(type : IrType, value : Int64) : Inst
+  Inst.new(Op::ConstInt, type, [] of Value, canonical(type.bits, value), nil, [] of Block, [] of Int64, "")
 end

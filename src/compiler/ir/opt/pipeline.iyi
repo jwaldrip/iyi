@@ -34,6 +34,7 @@ pub enum PassId
   Escape
   Barrier
   BarrierStack
+  InlineAlloc
 end
 
 pub enum OptTier
@@ -70,6 +71,7 @@ pub def pass_name(id : PassId) : String
   when PassId::Escape       then "escape"
   when PassId::Barrier      then "barrier"
   when PassId::BarrierStack then "barrier-stack"
+  when PassId::InlineAlloc  then "inline-alloc"
   else
     raise "BUG: unknown IR pass"
   end
@@ -91,6 +93,7 @@ pub def pass_named(name : String) : PassId?
   when "escape"        then PassId::Escape
   when "barrier"       then PassId::Barrier
   when "barrier-stack" then PassId::BarrierStack
+  when "inline-alloc"  then PassId::InlineAlloc
   else
     nil
   end
@@ -105,7 +108,9 @@ pub def tier_passes(tier : OptTier) : Array(PassId)
             PassId::CfgSimplify, PassId::Sroa, PassId::Simplify, PassId::Dce, PassId::CfgSimplify,
             PassId::Escape, PassId::BarrierStack, PassId::Sroa, PassId::Simplify, PassId::Dce,
             PassId::Prove, PassId::Simplify, PassId::Dce, PassId::CfgSimplify,
-            PassId::Licm, PassId::Cse, PassId::Barrier, PassId::Layout, PassId::DeadFn]
+            PassId::Licm, PassId::Cse, PassId::Barrier,
+            PassId::InlineAlloc, PassId::Simplify, PassId::CfgSimplify, PassId::Cse, PassId::Dce,
+            PassId::Layout, PassId::DeadFn]
   end
   [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::CfgSimplify]
 end
@@ -122,6 +127,8 @@ pub def run_function_pass(mod : Module, fn : Function, id : PassId) : Bool
     changed = run_mem2reg(mod, fn) unless changed
     changed
   when PassId::Inline       then run_inline(mod, fn, CallGraph.new(mod), InlineBudget.new(mod))
+  # Run alone, no escape has run, so the allocation entries stay opaque: only the pipeline below grants them.
+  when PassId::InlineAlloc  then run_inline(mod, fn, CallGraph.new(mod), InlineBudget.new(mod, true, false))
   when PassId::DeadFn       then run_deadfn(mod)
   when PassId::Cse          then run_cse(mod, fn)
   when PassId::Prove        then run_prove(mod, fn)
@@ -139,7 +146,7 @@ end
 # rebuilt for every function. The early barrier is restricted to stack writes.
 def run_scheduled_pass(mod : Module, fn : Function, id : PassId, graph : CallGraph?, budget : InlineBudget?, escape : EscapeInfo?, partitioned : Bool) : Bool
   case id
-  when PassId::Inline
+  when PassId::Inline, PassId::InlineAlloc
     run_inline(mod, fn, graph.as(CallGraph), budget.as(InlineBudget))
   when PassId::Escape
     escape.as(EscapeInfo).run(fn)
@@ -217,17 +224,23 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
     while end_at < passes.size && passes[end_at] != PassId::DeadFn
       if end_at > begin_at
         id = passes[end_at]
-        break if id == PassId::Prove || id == PassId::Licm || id == PassId::Layout || id == PassId::Escape
+        break if id == PassId::Prove || id == PassId::Licm || id == PassId::Layout || id == PassId::Escape || id == PassId::InlineAlloc
         break if id == PassId::Barrier || (id == PassId::BarrierStack && (!release || passes[begin_at] != PassId::Escape))
         break if id == PassId::Inline && passes[begin_at] == PassId::Escape
       end
-      has_inline = true if passes[end_at] == PassId::Inline
+      has_inline = true if passes[end_at] == PassId::Inline || passes[end_at] == PassId::InlineAlloc
       end_at = end_at + 1
     end
     graph = has_inline ? CallGraph.new(mod) : nil
-    budget = has_inline ? InlineBudget.new(mod) : nil
+    # The late group may inline the allocation entries only after an escape pass has run (invariant I10c).
+    late = passes[begin_at] == PassId::InlineAlloc
+    entries_ok = late && passes[0, begin_at].any? { |id| id == PassId::Escape }
+    budget = has_inline ? InlineBudget.new(mod, late, entries_ok) : nil
     escape = passes[begin_at] == PassId::Escape ? EscapeInfo.new(mod, partitioned) : nil
     selective_escape = release && passes[begin_at] == PassId::Escape
+    # A selective group stops after its first pass unless that pass changed the function. The escape group repeats
+    # from there; the late group cleans up only a function its inline changed, so other functions keep their output.
+    selective = selective_escape || late
     functions = graph ? graph.order : mod.functions
     f = 0
     while f < functions.size
@@ -243,7 +256,7 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
           start_size = instruction_count(fn)
         end
         while k < end_at
-          break if k > begin_at && selective_escape && !gate_changed
+          break if k > begin_at && selective && !gate_changed
           if clock = timings
             started = Time.monotonic
             changed = run_scheduled_pass(mod, fn, passes[k], graph, budget, escape, partitioned)
@@ -252,7 +265,7 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
             changed = run_scheduled_pass(mod, fn, passes[k], graph, budget, escape, partitioned)
           end
           group_changed = true if changed
-          gate_changed = changed if k == begin_at && selective_escape
+          gate_changed = changed if k == begin_at && selective
           if changed && options.verify_each
             errors = verify_function(mod, fn)
             unless errors.empty?
