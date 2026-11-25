@@ -73,14 +73,22 @@ jobs:
         run: |
           WORK="$(cygpath -m "$(mktemp -d "${TMPDIR:-/tmp}/rg7-probe.XXXXXX")")"
           python3 bench/stale_win_probe_rg7.py "$(cygpath -m "$PWD")" "$IYI" "$WORK" hello.iyi
-      - name: RG1 and RG7, as the fresh job runs them
-        id: gate
+      - name: The RG7 loop for one program, with cmp's account
+        id: replica
         continue-on-error: true
-        run: bash bench/stale_reproducible.sh
+        run: bash bench/stale_win_probe_rg7.sh hello.iyi
+      - name: RG7 alone, as the fresh job runs it
+        id: rg7
+        continue-on-error: true
+        run: bash bench/stale_reproducible.sh rg7
+      - name: RG1 alone
+        id: rg1
+        continue-on-error: true
+        run: bash bench/stale_reproducible.sh rg1
       - name: Every step's outcome
         if: always()
         run: |
-          echo "probe=${{ steps.probe.outcome }} gate=${{ steps.gate.outcome }}"
-          case "${{ steps.probe.outcome }}${{ steps.gate.outcome }}" in
+          echo "probe=${{ steps.probe.outcome }} replica=${{ steps.replica.outcome }} rg7=${{ steps.rg7.outcome }} rg1=${{ steps.rg1.outcome }}"
+          case "${{ steps.probe.outcome }}${{ steps.replica.outcome }}${{ steps.rg7.outcome }}${{ steps.rg1.outcome }}" in
             *failure*) exit 1 ;;
           esac
