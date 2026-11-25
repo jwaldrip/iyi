@@ -449,6 +449,15 @@ prove_mutation "win64: a floating-point argument takes the integer slot" src/com
   "  if is_float
     return win64_integer_args[index]" check_abi
 
+prove_mutation "baseline: +127 excludes the compact ALU immediate" src/compiler/native/amd64/encode.iyi \
+  "  if imm >= -128 && imm <= 127
+    return with_imm(op_digit(0x83, size, sub, rm), imm, 1)" \
+  "  if imm >= -128 && imm < 127
+    return with_imm(op_digit(0x83, size, sub, rm), imm, 1)" check_encoder
+prove_mutation "baseline: Win64 caller-saved omits r11" src/compiler/native/amd64/abi.iyi \
+  "return [rax, rcx, rdx, r8, r9, r10, r11, xmm(0), xmm(1), xmm(2), xmm(3), xmm(4), xmm(5)]" \
+  "return [rax, rcx, rdx, r8, r9, r10, xmm(0), xmm(1), xmm(2), xmm(3), xmm(4), xmm(5)]" check_abi
+
 if [ "$failed" -eq 0 ]; then
   echo "== ALL X86_64 CHECKS PASSED"
   exit 0

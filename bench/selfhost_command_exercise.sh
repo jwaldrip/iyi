@@ -487,6 +487,15 @@ prove_mutation "mod subcommand dispatch fails to recognize dump" "$DRIVER" \
   -- check_command_mutant || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "baseline: -Oz is refused" "$DRIVER" \
+  'if level == "0" || level == "1" || level == "2" || level == "3" || level == "s" || level == "z"' \
+  'if level == "0" || level == "1" || level == "2" || level == "3" || level == "s"' \
+  -- check_command_mutant || status=1
+prove_mutation "baseline: --threads is incremented" "$DRIVER" \
+  '          opts.n_threads = n' \
+  '          opts.n_threads = n + 1' \
+  -- check_command_mutant || status=1
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 if [ -e "$WORK/invalid-mutant" ]; then
   status=1

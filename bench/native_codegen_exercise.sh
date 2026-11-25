@@ -771,6 +771,30 @@ check_narrow_asm() { check_fixture "$1" narrow_asm; }
 check_narrow_argext() { check_fixture "$1" narrow_argext; }
 check_narrow_signext() { check_fixture "$1" narrow_signext; }
 
+check_linux_encode_wide() {
+  "$1" obj "$(native_path "$WORK/wide.linux.ir")" "$(native_path "$WORK/baseline-wide.o")" >"$WORK/baseline-wide.log" 2>&1 &&
+    grep -q 'not written: the ELF writer is a later slice' "$WORK/baseline-wide.log"
+}
+check_linux_encode_frame() {
+  "$1" obj "$(native_path "$WORK/asm_memclob.linux.ir")" "$(native_path "$WORK/baseline-frame.o")" >"$WORK/baseline-frame.log" 2>&1 &&
+    grep -q 'not written: the ELF writer is a later slice' "$WORK/baseline-frame.log"
+}
+
+prove_mutation "baseline: Linux encode accepts swapped unsigned conditions" \
+  src/compiler/native/aarch64/isel.iyi \
+  '  elsif ordinal == 4_i64
+    return cond_cc
+  elsif ordinal == 5_i64
+    return cond_ls' \
+  '  elsif ordinal == 4_i64
+    return cond_ls
+  elsif ordinal == 5_i64
+    return cond_cc' check_linux_encode_wide
+prove_mutation "baseline: Linux encode accepts an eight-aligned frame" \
+  src/compiler/native/frame.iyi \
+  '  f.frame_size = round_up(offset, stack_align)' \
+  '  f.frame_size = round_up(offset, 8_i64)' check_linux_encode_frame
+
 echo "== 6. mutations are each caught"
 prove_mutation "call: do not sign-extend an attributed i1 argument" \
   src/compiler/native/aarch64/isel.iyi \
