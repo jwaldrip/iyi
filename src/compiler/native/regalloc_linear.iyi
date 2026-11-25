@@ -287,19 +287,12 @@ def fixed_live_before(block : MBlock) : Array(UInt64)
 end
 
 # Rewrite virtual operands, retaining spilled values in scratch registers
-# within a block. Stack slots remain current after every definition.
+# within a block. Every definition of a spilled value is stored to its slot;
+# drop_dead_spill_stores then removes the stores that no reload reads.
 pub def rewrite_spills(fn : MFunction) : Nil
   fn.spill_count = spill_scratch_count(fn)
-  has_use = bool_row(fn.vreg_count)
   fn.blocks.each do |block|
-    block.insts.each do |inst|
-      inst.uses.each do |op|
-        has_use[op.reg] = true if op.kind == OperandKind::Virtual
-      end
-    end
-  end
-  fn.blocks.each do |block|
-    rewrite_block(fn, block, has_use)
+    rewrite_block(fn, block)
   end
   drop_dead_spill_stores(fn)
 end
@@ -345,7 +338,7 @@ def spilled_gpr?(fn : MFunction, v : Int32) : Bool
   fn.vreg_home[v] < 0 && fn.vreg_classes[v] == RegClass::Gpr
 end
 
-def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
+def rewrite_block(fn : MFunction, block : MBlock) : Nil
   acc = [] of MInst
   cache = int_row(64, -1)
   gprs = scratch_gprs
@@ -357,7 +350,7 @@ def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
     blocked = fixed[index] # protect-staged-physical
     index = index + 1
     # A copy between a spilled general-purpose value and a fixed register moves in one instruction: a reload into the
-    # fixed register, or a store from it. A copy into a spilled value that nothing reads is dead and is dropped.
+    # fixed register, or a store from it.
     if is_role?(fn.isa, inst, Role::Copy) && inst.size == 64 && !inst.fp && inst.defs.size == 1 && inst.uses.size == 1
       d = inst.defs[0]
       s = inst.uses[0]
@@ -369,7 +362,7 @@ def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
       if s.kind == OperandKind::Physical && s.reg >= 0 && s.reg < 31 && d.kind == OperandKind::Virtual && spilled_gpr?(fn, d.reg) && !fn.vreg_rematerializable[d.reg]
         # The value is redefined, so a scratch register that still holds its old value must not serve a later read.
         gprs.each { |r| cache[r] = -1 if cache[r] == d.reg } # fixed-store-invalidates-reload
-        acc << slot_access(fn.isa, false, s.reg, fn.vreg_slot[d.reg], false) if has_use[d.reg]
+        acc << slot_access(fn.isa, false, s.reg, fn.vreg_slot[d.reg], false)
         next
       end
     end
@@ -423,7 +416,7 @@ def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
         end
         cache[reg] = v
         used = used | (1_u64 << reg)
-        stores << slot_access(fn.isa, false, reg, fn.vreg_slot[v], fp) if has_use[v] # skip-unused-spill-store
+        stores << slot_access(fn.isa, false, reg, fn.vreg_slot[v], fp)
         inst.defs[k] = Operand.new(OperandKind::Physical, reg)
       end
     end

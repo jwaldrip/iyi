@@ -1174,19 +1174,19 @@ prove_mutation "collector: ignore inline asm as a collector boundary" \
   src/compiler/native/regalloc_linear.iyi check_asm_boundary \
   '        if inst.call || !inst.asm.nil? # collector-boundary' \
   '        if inst.call # collector-boundary'
-prove_mutation "spill: store values with no virtual uses" \
+prove_mutation "spill: a definition that nothing reads keeps its spill store" \
   src/compiler/native/regalloc_linear.iyi check_dead_spills \
-  '        stores << slot_access(fn.isa, false, reg, fn.vreg_slot[v], fp) if has_use[v] # skip-unused-spill-store' \
-  '        stores << slot_access(fn.isa, false, reg, fn.vreg_slot[v], fp) # skip-unused-spill-store'
+  '  drop_dead_spill_stores(fn)' \
+  '  nil'
 prove_mutation "reload reuse: retain scratch cache across blocks" \
   src/compiler/native/regalloc_linear.iyi check_reload_reuse \
   '  fn.blocks.each do |block|
-    rewrite_block(fn, block, has_use)' \
+    rewrite_block(fn, block)' \
   '  cache = int_row(64, -1)
   fn.blocks.each do |block|
-    rewrite_block(fn, block, has_use, cache)' \
-  'def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil' \
-  'def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool), cache : Array(Int32)) : Nil' \
+    rewrite_block(fn, block, cache)' \
+  'def rewrite_block(fn : MFunction, block : MBlock) : Nil' \
+  'def rewrite_block(fn : MFunction, block : MBlock, cache : Array(Int32)) : Nil' \
   '  cache = int_row(64, -1)
   gprs = scratch_gprs' \
   '  gprs = scratch_gprs'
