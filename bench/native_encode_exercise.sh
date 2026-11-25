@@ -70,6 +70,47 @@ if ! "$DRV" forms >"$WORK/forms.tsv" || [ ! -s "$WORK/forms.tsv" ]; then
   exit 1
 fi
 echo "forms: $(wc -l <"$WORK/forms.tsv" | tr -d ' ')"
+while IFS= read -r form; do
+  if ! awk -F '\t' -v form="$form" '$1 == form { found = 1 } END { exit !found }' "$WORK/forms.tsv"; then
+    fail "missing encoder form: $form"
+  fi
+done <<'FORMS'
+cmn x1, #42
+orr x0, x1, #0xf0
+eor x0, x1, #0x5555555555555555
+lsl x0, x1, #7
+lsr x0, x1, #17
+asr x0, x1, #63
+cbz x1, .
+cbnz x1, .
+tbz x1, #5, .
+tbnz x1, #63, .
+ldr x1, [x2, x3, lsl #3]
+ldr w1, [x2, x3, lsl #2]
+ldrh w1, [x2, x3, lsl #1]
+ldrb w1, [x2, x3]
+ldrsw x1, [x2, x3, lsl #2]
+ldrsh x1, [x2, x3, lsl #1]
+ldrsb x1, [x2, x3]
+ldr d1, [x2, x3, lsl #3]
+ldr s1, [x2, x3, lsl #2]
+str x1, [x2, x3, lsl #3]
+str w1, [x2, x3, lsl #2]
+strh w1, [x2, x3, lsl #1]
+strb w1, [x2, x3]
+str d1, [x2, x3, lsl #3]
+str s1, [x2, x3, lsl #2]
+madd x0, x1, x2, x3
+neg x0, x1
+ldp x1, x3, [x2, #-16]
+ldp w1, w3, [x2, #8]
+ldp d1, d3, [x2, #16]
+ldp s1, s3, [x2]
+stp x1, x3, [x2, #-16]
+stp w1, w3, [x2, #8]
+stp d1, d3, [x2, #16]
+stp s1, s3, [x2]
+FORMS
 
 echo "== 3. the oracle: every form in one naked function, built by the hosted compiler"
 if ! "$PY" - "$(native_path "$WORK")" <<'PY'

@@ -1,0 +1,77 @@
+; iyi-ir 1
+module "mulacc"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+
+define internal i64 @add_left(i64 %a, i64 %b, i64 %c) {
+entry:
+  %p = mul i64 %a, %b
+  %r = add i64 %p, %c
+  ret i64 %r
+}
+define internal i64 @add_right(i64 %a, i64 %b, i64 %c) {
+entry:
+  %p = mul i64 %a, %b
+  %r = add i64 %c, %p
+  ret i64 %r
+}
+define internal i64 @sub_left(i64 %a, i64 %b, i64 %c) {
+entry:
+  %p = mul i64 %a, %b
+  %r = sub i64 %p, %c
+  ret i64 %r
+}
+define internal i64 @sub_right(i64 %a, i64 %b, i64 %c) {
+entry:
+  %p = mul i64 %a, %b
+  %r = sub i64 %c, %p
+  ret i64 %r
+}
+define internal i64 @shared_mul(i64 %a, i64 %b, i64 %c) {
+entry:
+  %p = mul i64 %a, %b
+  %x = add i64 %p, %c
+  %r = sub i64 %x, %p
+  ret i64 %r
+}
+define internal i64 @narrow(i8 %a, i8 %b, i8 %c) {
+entry:
+  %p = mul i8 %a, %b
+  %r = add i8 %p, %c
+  %w = sext i8 %r to i64
+  ret i64 %w
+}
+define internal i64 @constant_add(i64 %a, i64 %b) {
+entry:
+  %p = mul i64 %a, %b
+  %r = add i64 %p, 1
+  ret i64 %r
+}
+define internal i64 @constant_sub(i64 %a, i64 %b) {
+entry:
+  %p = mul i64 %a, %b
+  %r = sub i64 %p, 1
+  ret i64 %r
+}
+define i32 @main() {
+entry:
+  %a = call i64 (i64, i64, i64) @add_left(i64 3, i64 -5, i64 20)
+  %b = call i64 (i64, i64, i64) @add_right(i64 3, i64 -5, i64 20)
+  %c = call i64 (i64, i64, i64) @sub_left(i64 3, i64 -5, i64 20)
+  %d = call i64 (i64, i64, i64) @sub_right(i64 3, i64 5, i64 20)
+  %e = call i64 (i64, i64, i64) @shared_mul(i64 3, i64 5, i64 20)
+  %f = call i64 (i8, i8, i8) @narrow(i8 100, i8 2, i8 30)
+  %g = call i64 (i64, i64) @constant_add(i64 3, i64 5)
+  %h = call i64 (i64, i64) @constant_sub(i64 3, i64 5)
+  %p0 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %a)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %b)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %c)
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %d)
+  %p4 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %e)
+  %p5 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %f)
+  %p6 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %g)
+  %p7 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %h)
+  ret i32 0
+}

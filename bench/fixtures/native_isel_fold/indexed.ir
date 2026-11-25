@@ -1,0 +1,111 @@
+; iyi-ir 1
+module "indexed"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+
+define internal i64 @load64(ptr %base, i64 %index) {
+entry:
+  %p = getelementptr i64, ptr %base, i64 %index
+  %v = load i64, ptr %p, align 8
+  ret i64 %v
+}
+
+define internal void @store64(ptr %base, i64 %index, i64 %value) {
+entry:
+  %p = getelementptr i64, ptr %base, i64 %index
+  store i64 %value, ptr %p, align 8
+  ret void
+}
+
+define internal i64 @load32(ptr %base, i64 %index) {
+entry:
+  %p = getelementptr i32, ptr %base, i64 %index
+  %v = load i32, ptr %p, align 4
+  %wide = sext i32 %v to i64
+  ret i64 %wide
+}
+
+define internal void @store32(ptr %base, i64 %index, i32 %value) {
+entry:
+  %p = getelementptr i32, ptr %base, i64 %index
+  store i32 %value, ptr %p, align 4
+  ret void
+}
+
+define internal i64 @load16(ptr %base, i64 %index) {
+entry:
+  %p = getelementptr i16, ptr %base, i64 %index
+  %v = load i16, ptr %p, align 2
+  %wide = sext i16 %v to i64
+  ret i64 %wide
+}
+
+define internal void @store16(ptr %base, i64 %index, i16 %value) {
+entry:
+  %p = getelementptr i16, ptr %base, i64 %index
+  store i16 %value, ptr %p, align 2
+  ret void
+}
+
+define internal i64 @load8(ptr %base, i64 %index) {
+entry:
+  %p = getelementptr i8, ptr %base, i64 %index
+  %v = load i8, ptr %p, align 1
+  %wide = sext i8 %v to i64
+  ret i64 %wide
+}
+
+define internal void @store8(ptr %base, i64 %index, i8 %value) {
+entry:
+  %p = getelementptr i8, ptr %base, i64 %index
+  store i8 %value, ptr %p, align 1
+  ret void
+}
+
+define internal i64 @wrong_scale(ptr %base, i64 %index) {
+entry:
+  %p = getelementptr i32, ptr %base, i64 %index
+  %v = load i64, ptr %p, align 8
+  ret i64 %v
+}
+
+define internal i64 @shared_address(ptr %base, i64 %index) {
+entry:
+  %p = getelementptr i64, ptr %base, i64 %index
+  %v = load i64, ptr %p, align 8
+  store i64 %v, ptr %p, align 8
+  ret i64 %v
+}
+
+define i32 @main() {
+entry:
+  %a64 = alloca [4 x i64], align 8
+  %a32 = alloca [4 x i32], align 4
+  %a16 = alloca [4 x i16], align 2
+  %a8 = alloca [4 x i8], align 1
+  call void (ptr, i64, i64) @store64(ptr %a64, i64 1, i64 257)
+  call void (ptr, i64, i64) @store64(ptr %a64, i64 2, i64 513)
+  call void (ptr, i64, i32) @store32(ptr %a32, i64 2, i32 -301)
+  call void (ptr, i64, i16) @store16(ptr %a16, i64 2, i16 -123)
+  call void (ptr, i64, i8) @store8(ptr %a8, i64 2, i8 -13)
+  %a = call i64 (ptr, i64) @load64(ptr %a64, i64 1)
+  %b = call i64 (ptr, i64) @load64(ptr %a64, i64 2)
+  %c = call i64 (ptr, i64) @load32(ptr %a32, i64 2)
+  %d = call i64 (ptr, i64) @load16(ptr %a16, i64 2)
+  %e = call i64 (ptr, i64) @load8(ptr %a8, i64 2)
+  %f = call i64 (ptr, i64) @wrong_scale(ptr %a64, i64 2)
+  %g = call i64 (ptr, i64) @shared_address(ptr %a64, i64 2)
+  %at2 = getelementptr i64, ptr %a64, i64 2
+  %h = call i64 (ptr, i64) @load64(ptr %at2, i64 -1)
+  %p0 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %a)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %b)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %c)
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %d)
+  %p4 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %e)
+  %p5 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %f)
+  %p6 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %g)
+  %p7 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %h)
+  ret i32 0
+}
