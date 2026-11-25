@@ -50,6 +50,23 @@ case "$RUNS" in
     if [ -z "$RUNS" ]; then fail "NATIVE_SPEED_RUNS must be a positive integer"; RUNS=5; fi
     ;;
 esac
+# Glob discovery must not silently retire a workload named by the ceiling.
+check_ceiling_workloads() {
+  local ceiling="$1" directory="$2" names="$WORK/ceiling-workloads.list" name missing=0
+  if ! awk 'NF == 4 && $1 !~ /^#/ && $1 != "noise" && $1 != "latency" && !seen[$1]++ { print $1 }' \
+    "$ceiling" >"$names"; then
+    fail "cannot read speed ceiling $ceiling"
+    return 1
+  fi
+  while IFS= read -r name; do
+    if [ ! -f "$directory/$name.iyi" ]; then
+      fail "speed ceiling workload $name has no source"
+      missing=1
+    fi
+  done <"$names"
+  return "$missing"
+}
+
 
 # Fixture checks return 1 only for a wrong verdict; setup failures return 2.
 check_judge_fixtures() {
@@ -238,6 +255,25 @@ instruction_writer_rc=0
 check_instruction_writer || instruction_writer_rc=$?
 if [ "$instruction_writer_rc" -ne 0 ]; then fail "instruction writer fixture failed (exit $instruction_writer_rc)"; fi
 if [ "$fixture_rc" -eq 0 ] && [ "$writer_rc" -eq 0 ] && [ "$instruction_rc" -eq 0 ] && [ "$instruction_writer_rc" -eq 0 ]; then echo "  judge and writer fixtures passed"; fi
+echo "== 1b. ceiling workload inventory"
+mkdir -p "$WORK/inventory" || { fail "cannot create inventory fixture"; exit 1; }
+: >"$WORK/inventory/w0_present.iyi"
+printf '# inventory fixture\nnoise cycles 0.05\nw0_present default cycles 1.00\nw0_missing release cpu 1.00\nlatency selfbuild wall 1.00\n' >"$WORK/inventory.ceiling"
+inventory_rc=0
+( check_ceiling_workloads "$WORK/inventory.ceiling" "$WORK/inventory" ) >"$WORK/inventory.log" 2>&1 || inventory_rc=$?
+if [ "$inventory_rc" -ne 1 ] || [ "$(cat "$WORK/inventory.log")" != 'FAIL: speed ceiling workload w0_missing has no source' ]; then
+  fail "ceiling workload inventory did not reject a missing source"
+  cat "$WORK/inventory.log"
+  echo "SOME NATIVE SPEED CHECKS FAILED"
+  exit 1
+fi
+echo "  source-inventory proof: $(cat "$WORK/inventory.log")"
+if ! check_ceiling_workloads "$CEILING" "$FIX/workloads"; then
+  echo "SOME NATIVE SPEED CHECKS FAILED"
+  exit 1
+fi
+echo "  all ceiling workload sources present"
+
 
 echo "== 2. build the self-hosted compiler"
 stage1_ok=0
