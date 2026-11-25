@@ -144,6 +144,7 @@ jobs:
         env:
           IYI_CI_PRODUCER: "1"
         run: |
+          unset PGPASSWORD
           bash bench/stale_ci.sh assert-export-env
           mkdir -p stale-index
           args=(
