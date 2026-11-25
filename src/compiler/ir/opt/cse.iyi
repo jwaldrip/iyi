@@ -568,8 +568,10 @@ class Cse
     @changed = true
   end
 
-  # Codegen zeroes an atomic object before its fields are stored (collector fact G5). A zeroing memset is dead when the
-  # stores after it in its block overwrite all of its bytes before anything reads them.
+  # A zeroing memset is dead when the stores after it in its block overwrite all of its bytes before anything reads
+  # them. Codegen emits that shape for an atomic object, which the allocator does not clear. Removing it shows the
+  # collector nothing new: the mark never opens atomic memory, and memory it does open is cleared at allocation
+  # (GC_DESIGN.md, ATOMIC_FLAG; the prelude's take(size, !atomic, ...)), so the bytes are zeros or stored values.
   def erase_dead_zeroing : Nil
     block = 0
     while block < @cfg.size
