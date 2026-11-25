@@ -32,7 +32,8 @@ define_a:
   br label %late
 late:
   %r0 = add i64 %a, %b
-  %r1 = add i64 %r0, %h1
+  %with_seed = add i64 %r0, %seed
+  %r1 = add i64 %with_seed, %h1
   %r2 = add i64 %r1, %h2
   %r3 = add i64 %r2, %h3
   %r4 = add i64 %r3, %h4

@@ -1,0 +1,34 @@
+module ra_a_word_bits
+
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/regalloc_linear::{allocate_linear}
+
+fn = MFunction.new("word-bits")
+entry = MBlock.new(0, "entry")
+exit_block = MBlock.new(1, "exit")
+fn.blocks << entry
+fn.blocks << exit_block
+selected = [] of Int32
+i = 0
+while i < 130
+  v = fn.new_vreg(RegClass::Gpr)
+  if i == 0 || i == 63 || i == 64 || i == 127 || i == 128 || i == 129
+    selected << v
+    definition = MInst.new(MOp::MovImm.value.to_i32)
+    definition.defs << Operand.new(OperandKind::Virtual, v)
+    entry.insts << definition
+    use = MInst.new(MOp::CmpImm.value.to_i32)
+    use.uses << Operand.new(OperandKind::Virtual, v)
+    exit_block.insts << use
+  end
+  i = i + 1
+end
+temporary = fn.new_vreg(RegClass::Gpr)
+definition = MInst.new(MOp::MovImm.value.to_i32)
+definition.defs << Operand.new(OperandKind::Virtual, temporary)
+entry.insts << definition
+use = MInst.new(MOp::CmpImm.value.to_i32)
+use.uses << Operand.new(OperandKind::Virtual, temporary)
+entry.insts << use
+allocate_linear(fn)
+puts "#{fn.vreg_home[selected[0]]} #{fn.vreg_home[selected[1]]} #{fn.vreg_home[selected[2]]} #{fn.vreg_home[selected[3]]} #{fn.vreg_home[selected[4]]} #{fn.vreg_home[selected[5]]} #{fn.vreg_home[temporary]}"

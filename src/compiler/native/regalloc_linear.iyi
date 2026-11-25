@@ -1825,12 +1825,14 @@ pub def allocate_linear(fn : MFunction) : Nil
     started = Time.monotonic
     coalesce_copies(fn)
     coalesce = (Time.monotonic - started).total_nanoseconds.to_i64
+    started = Time.monotonic
     scan = LinearScan.new(fn)
+    setup = (Time.monotonic - started).total_nanoseconds.to_i64
     times = scan.run_timed
     started = Time.monotonic
     rewrite_spills(fn)
     rewrite = (Time.monotonic - started).total_nanoseconds.to_i64
-    STDERR.puts "ra-time #{fn.name} #{fn.vreg_count} #{fn.blocks.size} #{times[0]} #{times[1]} #{coalesce} #{times[2]} 0 #{rewrite}"
+    STDERR.puts "ra-time #{fn.name} #{fn.vreg_count} #{fn.blocks.size} #{times[0]} #{times[1]} #{coalesce} #{times[2] + setup} 0 #{rewrite}"
   else
     coalesce_copies(fn)
     scan = LinearScan.new(fn)

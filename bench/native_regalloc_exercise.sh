@@ -681,6 +681,21 @@ check_range_cap() {
   esac
 }
 
+# Values live across a block edge at both ends of three consecutive bitset words.
+check_word_bits() {
+  local ignored=$1 exe="$WORK/word-bits-$RANDOM$EXE" result
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/ra_a_word_bits.iyi")" >"$WORK/word-bits.log" 2>&1; then
+    cat "$WORK/word-bits.log"
+    return 2
+  fi
+  result=$("$exe") || return 2
+  case "$result" in
+    "0 1 2 3 4 5 6") echo "liveness bits: six values and a predecessor temporary retain distinct homes"; return 0 ;;
+    *[!0-9\ ]*|'') echo "invalid word-boundary result"; return 2 ;;
+    *) echo "liveness bits: expected 0 1 2 3 4 5 6, got $result"; return 1 ;;
+  esac
+}
+
 check_hole_output() {
   check_fixture_output "$1" "$FIX_RA/ra_a_hole_reuse.ir"
 }
@@ -690,6 +705,7 @@ check_cold_length "$DRV" || fail "cold-length fixture"
 check_hole_reuse "$DRV" || fail "hole-reuse fixture"
 check_no_holes "$DRV" || fail "straight-line fixture"
 check_range_cap "$DRV" || fail "range-cap fixture"
+check_word_bits "$DRV" || fail "liveness word-boundary fixture"
 
 # Preserve the complete combined corpus and both original pointer predicates.
 check_linear_outputs() {
@@ -1553,6 +1569,10 @@ prove_mutation "traffic: count original constants as spill reloads" \
   src/compiler/native/regalloc_linear.iyi check_traffic_accounting \
   '(inst.table == -2 && integer_literal?(fn.isa, inst))' \
   '(integer_literal?(fn.isa, inst))'
+prove_mutation "ranges: ignore live-out words after the first" \
+  src/compiler/native/regalloc_linear.iyi check_word_bits \
+  '          bits = @live_out[b][w]' \
+  '          bits = w == 0 ? @live_out[b][w] : 0_u64'
 prove_mutation "ranges: allow 65 ranges instead of collapsing" \
   src/compiler/native/regalloc_linear.iyi check_range_cap \
   '        if counts[v] > 64 # collapse-pathological-ranges' \

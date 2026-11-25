@@ -14,7 +14,7 @@ def holes(seed : Int64) : {Int64, Int64}
   q = seed * 3_i64
   b = seed + 11_i64
   a = seed * 7_i64
-  result = a + b + h1 + h2 + h3 + h4 + h5 + h6 + h7 + h8 + h9 + h10
+  result = a + b + seed + h1 + h2 + h3 + h4 + h5 + h6 + h7 + h8 + h9 + h10
   if seed < 0_i64
     {a + 3_i64, q}
   else
