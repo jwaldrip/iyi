@@ -103,3 +103,9 @@ entry:
   %v = ptrtoint ptr %p to i64
   ret i64 %v
 }
+define external i64 @fold_use_slow(i64 %x) {
+entry:
+  %p = call ptr (i64, i64, i64) @__iyi_new(i64 %x, i64 69, i64 0)
+  %v = ptrtoint ptr %p to i64
+  ret i64 %v
+}

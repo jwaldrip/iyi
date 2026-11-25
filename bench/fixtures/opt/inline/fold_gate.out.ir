@@ -107,3 +107,11 @@ entry:
   ret i64 %v
 }
 
+define external i64 @fold_use_slow(i64 %x) {
+entry:
+  %0 = call i64 (i64, i1) @gate_big(i64 %x, i1 false)
+  %1 = inttoptr i64 %0 to ptr
+  %v = ptrtoint ptr %1 to i64
+  ret i64 %v
+}
+

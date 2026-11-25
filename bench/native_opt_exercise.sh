@@ -311,7 +311,7 @@ for name in leaf_two returns bottom_up top_level runtime_marking; do fixture_che
 for name in tls_keep always_runtime_keep; do fixture_check inline "$name" keep; done
 R9_PASSES='escape,inline-alloc,simplify,cfg-simplify,cse,dce'
 fixture_check inline-alloc alloc_entry_keep keep inline
-for name in alloc_entry_chain fold_gate noinline_cold alloc_signed_i1 alloc_phi_keep alloc_selective alloc_recursive alloc_flagged alloc_i1_overflow; do
+for name in alloc_entry_chain alloc_entry_variants fold_gate noinline_cold alloc_signed_i1 alloc_phi_keep alloc_selective alloc_recursive alloc_flagged alloc_i1_overflow; do
   fixture_check "$R9_PASSES" "$name" changed inline
 done
 fixture_check release alloc_promote changed inline
@@ -1421,6 +1421,26 @@ prove_mutation 'R9Q: flagged integer operations do not fold' src/compiler/ir/opt
   value = case op' \
   -- mutation_check R9Q "$R9_PASSES" alloc_flagged inline || fail 'R9Q was not caught'
 mutation_result R9Q
+prove_mutation 'R9M: the plain allocation entry is eligible' src/compiler/ir/opt/inline.iyi \
+  '  when "__iyi_new", "__iyi_malloc64", "__iyi_malloc_atomic64" then true' \
+  '  when "__iyi_new", "__iyi_malloc_atomic64" then true' \
+  -- mutation_check R9M "$R9_PASSES" alloc_entry_variants inline || fail 'R9M was not caught'
+mutation_result R9M
+prove_mutation 'R9T: the atomic allocation entry is eligible' src/compiler/ir/opt/inline.iyi \
+  '  when "__iyi_new", "__iyi_malloc64", "__iyi_malloc_atomic64" then true' \
+  '  when "__iyi_new", "__iyi_malloc64" then true' \
+  -- mutation_check R9T "$R9_PASSES" alloc_entry_variants inline || fail 'R9T was not caught'
+mutation_result R9T
+prove_mutation 'R9B: realloc is not an allocation entry' src/compiler/ir/opt/inline.iyi \
+  '  when "__iyi_new", "__iyi_malloc64", "__iyi_malloc_atomic64" then true' \
+  '  when "__iyi_new", "__iyi_malloc64", "__iyi_malloc_atomic64", "__iyi_realloc64" then true' \
+  -- mutation_check R9B "$R9_PASSES" alloc_entry_variants inline || fail 'R9B was not caught'
+mutation_result R9B
+prove_mutation 'R9K: folded cost caching distinguishes the call arguments' src/compiler/ir/opt/inline.iyi \
+  '      key = key + (value ? "#{value}" : "?") + ","' \
+  '      key = key + "?,"' \
+  -- mutation_check R9K "$R9_PASSES" fold_gate inline || fail 'R9K was not caught'
+mutation_result R9K
 prove_mutation 'S9B2: early barrier never removes a heap destination' src/compiler/ir/opt/barrier.iyi \
   '    return stack if stack_only # mutation S9B2: early pass must not remove a heap barrier' \
   '    return true if stack_only # mutation S9B2: early pass must not remove a heap barrier' \
