@@ -184,6 +184,11 @@ def instruction_five_run_noisy(row):
             return True
     return False
 
+def short_cpu_arm(row):
+    return any(statistics.median(number(sample.get("cpu"), arm + " cpu") for sample in row[arm]) < 0.1
+               for arm in ("native", "hosted"))
+
+
 
 def metrics_for(row, ceilings, lowering):
     if "metric" in row:
@@ -424,6 +429,8 @@ def lower(args):
             print("  not lowering noisy row: %s" % " ".join(item["key"]))
         elif item["metric"] == "instructions" and min(len(item["row"]["native"]), len(item["row"]["hosted"])) < 5:
             print("  not lowering instruction row with fewer than five runs: %s" % " ".join(item["key"]))
+        elif item["metric"] == "cpu" and item["key"] not in ceilings and short_cpu_arm(item["row"]):
+            print("  not adding cpu row with an arm under 0.1s: %s" % " ".join(item["key"]))
         else:
             updates[item["key"]] = upward(item["ratio"])
     output = []

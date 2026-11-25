@@ -24,7 +24,7 @@ def run(seed : Int32) : Int64
   end
   sum = 0_i64
   pass = 0
-  while pass < 2000
+  while pass < 10_000
     i = 0
     while i < strings.size
       offset = 1

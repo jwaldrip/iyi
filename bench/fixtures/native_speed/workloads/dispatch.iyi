@@ -186,7 +186,7 @@ def run(seed : UInt64) : Int64
   end
   sum = 0_i64
   pass = 0
-  while pass < 2000
+  while pass < 60_000
     index = 0
     while index < entries.size
       sum = sum + entries[index].value.to_i64

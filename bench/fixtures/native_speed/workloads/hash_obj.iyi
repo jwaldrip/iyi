@@ -21,7 +21,7 @@ def run(seed : Int32) : Int64
   end
   sum = 0_i64
   pass = 0
-  while pass < 20
+  while pass < 240
     i = 0
     while i < keys.size
       sum = sum + table[keys[i]].to_i64

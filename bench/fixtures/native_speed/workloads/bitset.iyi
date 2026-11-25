@@ -19,7 +19,7 @@ def run(seed : UInt64) : Int64
   end
   sum = 0_i64
   pass = 0
-  while pass < 4
+  while pass < 20
     r = 0
     while r < rows.size
       row = rows[r]

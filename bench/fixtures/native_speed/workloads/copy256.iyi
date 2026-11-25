@@ -12,7 +12,7 @@ def run(seed : Int32) : Int64
   end
   sum = 0_i64
   i = 0
-  while i < 1_000_000
+  while i < 6_000_000
     index = (i + seed) & 255
     source[index] = (i & 255).to_u8
     target.copy_from(source, 256)

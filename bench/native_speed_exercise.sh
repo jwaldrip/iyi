@@ -131,6 +131,36 @@ PY
   fi
   return 0
 }
+# A short arm cannot seed a new CPU ceiling, but existing rows still ratchet.
+check_cpu_writer() {
+  "$PY" - "$WORK" <<'PY' || return 2
+import json, pathlib, sys
+work = pathlib.Path(sys.argv[1])
+def sample(cpu):
+    return {"cycles": 100, "cpu": cpu, "instructions": 100,
+            "footprint": 1048576, "result": "42"}
+def row(name, hosted, native):
+    return {"workload": name, "mode": "default",
+            "hosted": [sample(hosted)], "native": [sample(native)]}
+rows = [row("short_new", 0.0625, 0.5), row("long_new", 0.125, 0.25),
+        row("short_existing", 0.0625, 0.5)]
+(work / "cpu-writer.json").write_text(json.dumps({"rows": rows}), encoding="utf-8")
+(work / "cpu-writer.ceiling").write_text(
+    "noise cycles 0.05\nnoise cpu 0.10\nshort_existing default cpu 12.00\n", encoding="utf-8")
+PY
+  "$PY" "$(native_path "$HELPER")" lower --ceiling "$(native_path "$WORK/cpu-writer.ceiling")" \
+    --measurements "$(native_path "$WORK/cpu-writer.json")" \
+    --write "$(native_path "$WORK/cpu-writer.out")" >"$WORK/cpu-writer.log" 2>&1 || return 2
+  if grep -Eq '^short_new default cpu ' "$WORK/cpu-writer.out" ||
+     ! grep -Fxq 'long_new default cpu 2.00' "$WORK/cpu-writer.out" ||
+     ! grep -Fxq 'short_existing default cpu 8.00' "$WORK/cpu-writer.out"; then
+    echo 'decisive: short CPU arm created a new row or an existing row was not ratcheted'
+    cat "$WORK/cpu-writer.out"
+    return 1
+  fi
+  return 0
+}
+
 
 
 
@@ -254,7 +284,10 @@ if [ "$instruction_rc" -ne 0 ]; then fail "instruction judge fixture failed (exi
 instruction_writer_rc=0
 check_instruction_writer || instruction_writer_rc=$?
 if [ "$instruction_writer_rc" -ne 0 ]; then fail "instruction writer fixture failed (exit $instruction_writer_rc)"; fi
-if [ "$fixture_rc" -eq 0 ] && [ "$writer_rc" -eq 0 ] && [ "$instruction_rc" -eq 0 ] && [ "$instruction_writer_rc" -eq 0 ]; then echo "  judge and writer fixtures passed"; fi
+cpu_writer_rc=0
+check_cpu_writer || cpu_writer_rc=$?
+if [ "$cpu_writer_rc" -ne 0 ]; then fail "cpu writer fixture failed (exit $cpu_writer_rc)"; fi
+if [ "$fixture_rc" -eq 0 ] && [ "$writer_rc" -eq 0 ] && [ "$instruction_rc" -eq 0 ] && [ "$instruction_writer_rc" -eq 0 ] && [ "$cpu_writer_rc" -eq 0 ]; then echo "  judge and writer fixtures passed"; fi
 echo "== 1b. ceiling workload inventory"
 mkdir -p "$WORK/inventory" || { fail "cannot create inventory fixture"; exit 1; }
 : >"$WORK/inventory/w0_present.iyi"
@@ -430,6 +463,9 @@ prove_mutation "judge detects an exceeded instruction ceiling" "$HELPER" \
   '        for metric in metrics_for(row, ceilings, lowering):' \
   $'        for metric in metrics_for(row, ceilings, lowering):\n            if metric == "instructions":\n                continue' \
   -- check_instruction_judge || fail "instruction judge mutation was not proven"
+prove_mutation "new cpu ceilings require measurable arms" "$HELPER" \
+  '        elif item["metric"] == "cpu" and item["key"] not in ceilings and short_cpu_arm(item["row"]):' \
+  '        elif False:' -- check_cpu_writer || fail "short cpu mutation was not proven"
 prove_mutation "instruction ratchet checks the first five runs" "$HELPER" \
   '                noisy = noisy or instruction_five_run_noisy(row)' \
   '                noisy = noisy or False' -- check_instruction_writer || fail "instruction spread mutation was not proven"

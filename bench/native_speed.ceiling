@@ -34,6 +34,15 @@ append default cycles 1.28
 append default cpu 1.24
 append release cycles 4.77
 append release cpu 4.33
+arith default instructions 0.73
+arith release instructions 1.37
+nbody default instructions 0.54
+nbody release instructions 1.27
+fannkuch default instructions 0.58
+fannkuch release instructions 1.81
+hash default instructions 0.70
+hash release instructions 1.61
+append default instructions 0.65
 latency selfbuild wall 5.84
 latency selfbuild cpu 4.91
 latency selfbuild footprint 0.97
