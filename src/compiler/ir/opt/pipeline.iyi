@@ -100,6 +100,13 @@ pub def pass_named(name : String) : PassId?
   end
 end
 
+# Changed functions per late (simplify, cfg-simplify) round, measured at ae2eeb1473:
+# escape: (54,54) (27,27) (24,24) (21,21) (1,1) (0,0)
+# trees:  (55,55) (28,28) (25,25) (22,22) (1,1) (0,0)
+# stage1: (2820,2820) (2080,1509) (927,927) (682,607) (90,71) (0,0)
+# The sixth round allows one unchanged round after the last measured change.
+LATE_CLEANUP_ROUNDS = 6
+
 pub def tier_passes(tier : OptTier) : Array(PassId)
   return [] of PassId if tier == OptTier::None
   if tier == OptTier::Release
@@ -242,12 +249,14 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
     graph = has_inline ? CallGraph.new(mod) : nil
     # The late group may inline the allocation entries only after an escape pass has run (invariant I10c).
     late = passes[begin_at] == PassId::InlineAlloc
+    late_cleanup = late && begin_at + 2 < end_at &&
+                   passes[begin_at + 1] == PassId::Simplify && passes[begin_at + 2] == PassId::CfgSimplify
     entries_ok = late && passes[0, begin_at].any? { |id| id == PassId::Escape }
     budget = has_inline ? InlineBudget.new(mod, late, entries_ok) : nil
     escape = passes[begin_at] == PassId::Escape ? EscapeInfo.new(mod, partitioned) : nil
     selective_escape = release && passes[begin_at] == PassId::Escape
-    # A selective group stops after its first pass unless that pass changed the function. The escape group repeats
-    # from there; the late group cleans up only a function its inline changed, so other functions keep their output.
+    # A selective group stops after its first pass unless that pass changed the function. Escape repeats from
+    # its first pass; late cleanup repeats its pair only for a function changed by inlining.
     selective = selective_escape || late
     functions = graph ? graph.order : mod.functions
     f = 0
@@ -257,6 +266,8 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
         k = begin_at
         gate_changed = false
         group_changed = false
+        cleanup_changed = false
+        cleanup_rounds = 0
         start_used = 0
         start_size = 0
         if inline_budget = budget
@@ -281,6 +292,16 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
                 clock.report(passes)
               end
               return "#{pass_name(passes[k])}: @#{fn.name}: #{errors[0]}"
+            end
+          end
+          if late_cleanup && k == begin_at + 1
+            cleanup_changed = changed
+          elsif late_cleanup && k == begin_at + 2
+            cleanup_changed = cleanup_changed || changed
+            cleanup_rounds = cleanup_rounds + 1
+            if cleanup_changed && cleanup_rounds < LATE_CLEANUP_ROUNDS
+              k = begin_at + 1 # mutation R9B-cleanup: repeat the late pair
+              next
             end
           end
           k = k + 1

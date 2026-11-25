@@ -343,6 +343,8 @@ fixture_check inline-alloc alloc_entry_keep keep inline
 for name in alloc_entry_chain alloc_entry_variants fold_gate noinline_cold alloc_signed_i1 alloc_phi_keep alloc_selective alloc_recursive alloc_flagged alloc_i1_overflow; do
   fixture_check "$R9_PASSES" "$name" changed inline
 done
+fixture_check release alloc_cleanup changed inline
+fixture_check release alloc_cleanup_unknown changed inline
 fixture_check release alloc_promote changed inline
 fixture_check release budget_cold_init changed inline
 fixture_check inline cold_edge_scc changed
@@ -375,6 +377,8 @@ unroll_fixture_check() {
 }
 unroll_fixture_check inline recursive_outside inline
 unroll_fixture_check inline guards inline
+# This caller needs more cleanup rounds than the release bound. A second release run can legitimately keep folding it.
+unroll_fixture_check release alloc_cleanup_bound inline
 fixture_check deadfn roots changed
 fixture_check deadfn global_keep keep
 fixture_check deadfn asm_keep keep
@@ -1431,6 +1435,11 @@ prove_mutation 'R9S: late cleanup leaves unchanged functions alone' src/compiler
   '    selective = selective_escape' \
   -- mutation_check R9S "$R9_PASSES" alloc_selective inline || fail 'R9S was not caught'
 mutation_result R9S
+prove_mutation 'R9BC: late cleanup repeats after changes' src/compiler/ir/opt/pipeline.iyi \
+  '              k = begin_at + 1 # mutation R9B-cleanup: repeat the late pair' \
+  '              k = k + 1 # mutation R9B-cleanup: repeat the late pair' \
+  -- mutation_check R9BC release alloc_cleanup inline || fail 'R9BC was not caught'
+mutation_result R9BC
 prove_mutation 'R9Z: a constant sizeof argument is folded' src/compiler/ir/opt/inline.iyi \
   '  sizeof_value(mod, value)' \
   '  nil' \
