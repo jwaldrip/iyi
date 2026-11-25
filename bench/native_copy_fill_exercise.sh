@@ -95,6 +95,7 @@ cat "$FIX/header.ir" "$FIX/declared.ir" "$FIX/operations.ir" >"$WORK/declared.ir
 cat "$FIX/header.ir" "$FIX/operations.ir" >"$WORK/absent.ir"
 cat "$FIX/header.ir" "$FIX/cycle.ir" >"$WORK/cycle.ir"
 cat "$FIX/header.ir" "$FIX/defined.ir" "$FIX/benchmark.ir" >"$WORK/benchmark.ir"
+cp "$FIX/zeroing.ir" "$WORK/zeroing.ir"
 
 cat >"$WORK/check_shape.py" <<'PY'
 import os
@@ -156,6 +157,35 @@ for clean in (0, 1):
     expect('cycle', 'memcpy', ['__iyi_native_memcpy', '__iyi_native_memset'], clean)
     expect('cycle', 'memmove', ['__iyi_native_memmove'], clean)
     expect('cycle', 'memset', ['__iyi_native_memset'], clean)
+# R6, zeroing and fill: a memset of a constant zero length of an atomic object is two stores of the zero register and
+# no call. A nonzero 64-byte memset replicates its byte once and stores eight 64-bit chunks. The printer shows register
+# 31 as sp in a value position.
+def memset_text(fixture, function, clean):
+    env = dict(os.environ, IYI_NATIVE_MIR_CLEAN=str(clean))
+    try:
+        proc = subprocess.run([driver, 'mir', str(folder / (fixture + '.ir')), function],
+                              env=env, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        errors.append(f'{fixture}/{function}: MIR unavailable: {exc}')
+        return None
+    if proc.returncode or not proc.stdout.startswith('function ' + function + '\n'):
+        errors.append(f'{fixture}/{function}: invalid MIR: {proc.stderr.strip()}')
+        return None
+    return proc.stdout
+
+for clean in (0, 1):
+    text = memset_text('zeroing', 'clear_point', clean)
+    if text is not None:
+        checks += 1
+        offsets = sorted(int(x or 0) for x in re.findall(r'^  Str/64 sp, x\d+(?: #imm=(\d+))?$', text, re.M))
+        if offsets != [0, 8] or re.search(r'^  Bl/', text, re.M):
+            defects.append(f'zeroing/clear_point clean={clean}: stores at {offsets}, expected [0, 8] and no call')
+    text = memset_text('defined', 'set_small', clean)
+    if text is not None:
+        checks += 1
+        stores = re.findall(r'^  Str/64 (?!sp,)x\d+, x\d+(?: #imm=(\d+))?$', text, re.M)
+        if len(stores) != 8 or not re.search(r'^  Mul/64', text, re.M) or re.search(r'^  Bl/', text, re.M):
+            defects.append(f'defined/set_small clean={clean}: {len(stores)} register stores, expected 8, one multiply and no call')
 for message in errors:
     print('INVALID:', message)
 for message in defects:
@@ -209,6 +239,24 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
     done
     [ "$parity_ok" -eq 0 ] || echo "parity: $key (clean=0,1)"
   done
+  # R6: a zeroed object reads back zero, against the hosted twin of the zeroing fixture.
+  if ! ./bin/iyi build -o "$(native_path "$WORK/zeroing.hosted$EXE")" "$(native_path "$FIX/zeroing.iyi")" >"$WORK/zeroing.hosted.log" 2>&1; then
+    cat "$WORK/zeroing.hosted.log"
+    fail "zeroing: hosted twin did not build"
+  elif ! bounded_run "$WORK/zeroing.hosted$EXE" "$WORK/expected.zeroing"; then
+    fail "zeroing: hosted twin could not be observed"
+  elif [ "$(cat "$WORK/expected.zeroing.status")" != 0 ]; then
+    fail "zeroing: hosted twin exited nonzero"
+  else
+    parity_ok=1
+    for clean in 0 1; do
+      if ! check_output "$DRV" "$clean" zeroing zeroing; then
+        parity_ok=0
+        fail "zeroing: clean=$clean differs from hosted"
+      fi
+    done
+    [ "$parity_ok" -eq 0 ] || echo "parity: zeroing (clean=0,1)"
+  fi
 else
   host_limited "Darwin objects cannot be linked or executed on $HOST_ID"
 fi
@@ -265,6 +313,29 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_copy_mutation "fill: swap byte and length" \
     '    call_helper(name, dst, value, len) # copy-fill-argument-order' \
     '    call_helper(name, dst, len, value) # copy-fill-argument-order' defined operations
+  # R6: const_len must reduce a constant expression, or the zeroing memset calls the module routine.
+  check_zeroing_mutant() {
+    local mutant="$WORK/zeroing-mutant$EXE"
+    if ! build_driver "$mutant"; then
+      cat "$WORK/build.$(basename "$mutant").log"
+      touch "$MUTATION_INVALID"
+      return 2
+    fi
+    if ! "$mutant" mir "$(native_path "$WORK/zeroing.ir")" clear_point >"$WORK/zeroing-mutant.mir" 2>&1 || ! grep -q '^function clear_point' "$WORK/zeroing-mutant.mir"; then
+      touch "$MUTATION_INVALID"
+      return 2
+    fi
+    if grep -q '^  Bl/' "$WORK/zeroing-mutant.mir"; then
+      echo "decisive: a zeroing memset calls the module routine"
+      return 1
+    fi
+    return 0
+  }
+  rm -f "$MUTATION_INVALID"
+  if ! prove_mutation "zeroing: const_len ignores a constant expression" src/compiler/native/aarch64/isel.iyi 'return -1_i64 unless inst.op == Op::ConstExpr # const-expr-length' 'return -1_i64 # const-expr-length' -- check_zeroing_mutant; then
+    fail "mutation was not caught: zeroing: const_len ignores a constant expression"
+  fi
+  [ ! -e "$MUTATION_INVALID" ] || fail "mutation check had invalid setup: zeroing: const_len ignores a constant expression"
 else
   host_limited "runtime copy/fill mutation proofs (macOS arm64)"
 fi

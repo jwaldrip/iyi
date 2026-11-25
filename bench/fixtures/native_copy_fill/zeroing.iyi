@@ -1,0 +1,6 @@
+module zeroing
+
+# A zeroed object reads back zero in both fields: the native fixture stores 7 and 9 into a
+# two-field object, clears it with a memset of its size, and prints both fields.
+puts "#{0_i64}"
+puts "#{0_i64}"

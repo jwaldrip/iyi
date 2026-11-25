@@ -303,6 +303,19 @@ expect("leaf", "stack_arg", [op("StpFpLr"), r"Ldr/64 .*x29", op("LdpFpLr")])
 expect("leaf", "asm_leaf", [op("StpFpLr"), op("InlineAsm"), op("LdpFpLr")])
 expect("leaf", "saved_leaf", [op("StpFpLr"), op("SpStore"), op("SpLoad"), op("LdpFpLr")])
 expect("leaf", "nonleaf", [op("StpFpLr"), op("Bl"), op("LdpFpLr")])
+# R6, narrow selection: a signed i32 checked add or subtract uses the 32-bit flag-setting form and branches on vs;
+# nsw and unsigned constant division skip the canonicalising extension. The entry canonicalisation of the parameters
+# comes before each operation, so each forbidden shape looks after the operation.
+for clean in (0, 1):
+    expect("narrow", "sadd32", [r"^  Adds/32 ", op("Bcond")], [r"^  Adds/64", op("Cmp"), op("Cset")], clean)
+    expect("narrow", "ssub32", [r"^  Subs/32 ", op("Bcond")], [r"^  Subs/64", op("Cmp"), op("Cset")], clean)
+    expect("narrow", "wrap_add32", [r"^  Add/64[\s\S]*^  Sbfm/"], [], clean)
+    expect("narrow", "nsw_add32", [r"^  Add/64"], [r"^  Add/64[\s\S]*^  Sbfm/"], clean)
+    expect("narrow", "nsw_mul16", [r"^  Mul/64"], [r"^  Mul/64[\s\S]*^  Sbfm/"], clean)
+    expect("narrow", "nsw_sub8", [r"^  Sub/64"], [r"^  Sub/64[\s\S]*^  Sbfm/"], clean)
+    expect("narrow", "urem7", [r"^  Msub/64"], [r"^  Msub/64[\s\S]*^  Sbfm/"], clean)
+    expect("narrow", "udiv3", [r"^  Umulh/64"], [r"^  Umulh/64[\s\S]*^  Sbfm/"], clean)
+    expect("narrow", "udiv1", [r"^  Ubfm/64[\s\S]*^  Sbfm/"], [], clean)
 for problem in errors:
     print("INVALID: " + problem)
 for problem in defects:
@@ -357,6 +370,24 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
     done
     [ "$parity_ok" -eq 0 ] || echo "parity: $key (clean=0,1)"
   done
+  # R6: narrow overflow, wrap, nsw and unsigned constant division, against the hosted twin.
+  if ! ./bin/iyi build -o "$(native_path "$WORK/narrow.hosted$EXE")" "$(native_path "$FIX/narrow.iyi")" >"$WORK/narrow.hosted.log" 2>&1; then
+    cat "$WORK/narrow.hosted.log"
+    fail "narrow: hosted twin did not build"
+  elif ! bounded_run "$WORK/narrow.hosted$EXE" "$WORK/expected.narrow"; then
+    fail "narrow: hosted twin could not be observed"
+  elif [ "$(cat "$WORK/expected.narrow.status")" != 0 ]; then
+    fail "narrow: hosted twin exited nonzero"
+  else
+    parity_ok=1
+    for mode in 0 1; do
+      if ! check_output "$DRV" "$mode" narrow; then
+        parity_ok=0
+        fail "narrow: clean=$mode differs from hosted"
+      fi
+    done
+    [ "$parity_ok" -eq 0 ] || echo "parity: narrow (clean=0,1)"
+  fi
 else
   host_limited "Darwin objects cannot be linked or executed on $HOST_ID"
 fi
@@ -411,6 +442,8 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
     a = addend # fused-mul-addend' mulacc
   prove_fold_mutation "select: exchange conditional arms" src/compiler/native/aarch64/isel.iyi '        regs << csel_cond(tv[k], fv[k], cond) # select-arms' '        regs << csel_cond(fv[k], tv[k], cond) # select-arms' select
   prove_fold_mutation "pair: accept the wrong second offset" src/compiler/native/aarch64/isel.iyi '    return false unless high == low + scale # pair-adjacent-offset' '    return false unless high == low + scale * 2_i64 # pair-adjacent-offset' pairs
+  prove_fold_mutation "narrow overflow: branch on the wrong flag" src/compiler/native/aarch64/isel.iyi 'cond = cond_vs # narrow-overflow-cond' 'cond = cond_vc # narrow-overflow-cond' narrow
+  prove_fold_mutation "narrow wrap: skip the extension of a plain add" src/compiler/native/aarch64/isel.iyi 'if (op == Op::Add || op == Op::Sub || op == Op::Mul) && i.aux_int & 2_i64 != 0_i64 && t.int? && (t.bits == 8 || t.bits == 16 || t.bits == 32) # nsw-skip-canon' 'if (op == Op::Add || op == Op::Sub || op == Op::Mul) # nsw-skip-canon' narrow
   prove_fold_mutation "leaf: discard a required slot frame" src/compiler/native/frame.iyi '  return false unless f.slots.empty? # frameless-no-slots' '  return false unless true # frameless-no-slots' leaf
 else
   host_limited "runtime selector mutation proofs (macOS arm64)"
