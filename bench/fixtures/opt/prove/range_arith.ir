@@ -1,0 +1,31 @@
+; iyi-ir 1
+source_filename = "range_arith"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i1 @range_add(i8 %x) {
+entry:
+  %m = and i8 %x, 63
+  %y = add i8 %m, 10
+  %lt = icmp slt i8 %y, 0
+  ret i1 %lt
+}
+define internal i1 @range_mul(i8 %x) {
+entry:
+  %m = and i8 %x, 63
+  %p = mul i8 %m, -2
+  %lt = icmp slt i8 %p, 1
+  ret i1 %lt
+}
+define internal i1 @range_checked(i8 %x) {
+entry:
+  %m = and i8 %x, 63
+  %pair = intrinsic llvm.sadd.with.overflow.i8(i8 %m, i8 1)
+  %f = extractvalue { i8, i1 } %pair, 1
+  br i1 %f, label %bad, label %ok
+ok:
+  %v = extractvalue { i8, i1 } %pair, 0
+  %neg = icmp slt i8 %v, 0
+  ret i1 %neg
+bad:
+  ret i1 true
+}
