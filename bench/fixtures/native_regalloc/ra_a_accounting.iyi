@@ -1,0 +1,49 @@
+module ra_a_accounting
+
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, Role}
+import compiler/native/target::{new_inst}
+import compiler/native/regalloc_linear::{rewrite_spills, spill_traffic}
+
+fn = MFunction.new("traffic")
+entry = MBlock.new(0, "entry")
+loop_body = MBlock.new(1, "loop")
+exit_block = MBlock.new(2, "exit")
+fn.blocks << entry
+fn.blocks << loop_body
+fn.blocks << exit_block
+
+original = MInst.new(MOp::MovImm.value.to_i32)
+original.defs << Operand.new(OperandKind::Physical, 1)
+entry.insts << original
+jump = MInst.new(MOp::B.value.to_i32)
+jump.target = 1
+entry.insts << jump
+
+v = fn.new_vreg(RegClass::Gpr)
+fn.vreg_rematerializable[v] = true
+fn.vreg_remat[v] = 7_i64
+fn.vreg_home << -1
+fn.vreg_slot << -1
+slot = fn.frame.add_slot(8_i64, 8)
+original_in_loop = MInst.new(MOp::MovImm.value.to_i32)
+original_in_loop.defs << Operand.new(OperandKind::Physical, 2)
+loop_body.insts << original_in_loop
+use = MInst.new(MOp::AddImm.value.to_i32)
+use.defs << Operand.new(OperandKind::Physical, 0)
+use.uses << Operand.new(OperandKind::Virtual, v)
+loop_body.insts << use
+load = new_inst(fn.isa, Role::SlotLoad)
+load.defs << Operand.new(OperandKind::Physical, 3)
+load.uses << Operand.new(OperandKind::FrameSlot, slot, 0_i64)
+loop_body.insts << load
+store = new_inst(fn.isa, Role::SlotStore)
+store.uses << Operand.new(OperandKind::Physical, 3)
+store.uses << Operand.new(OperandKind::FrameSlot, slot, 0_i64)
+loop_body.insts << store
+back = MInst.new(MOp::Bcond.value.to_i32)
+back.target = 1
+loop_body.insts << back
+exit_block.insts << MInst.new(MOp::Ret.value.to_i32)
+
+rewrite_spills(fn)
+puts spill_traffic(fn)

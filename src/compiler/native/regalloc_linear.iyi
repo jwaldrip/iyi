@@ -35,6 +35,7 @@ module compiler/native/regalloc_linear
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, Role}
 import compiler/native/target::{new_inst, is_role?, terminator?, leaves_block?, block_branch?, table_branch?, distinct_inputs_and_defs?, bitwise_gpr_value?, integer_literal?, typed_fpr_value?, isa_aarch64}
 import compiler/native/aarch64/regs::{callee_saved_gprs, callee_saved_fprs, caller_saved_gprs, caller_saved_fprs, scratch_gprs, scratch_fprs, probe_reg, fp_reg, lr_reg, integer_arg_regs, fp_arg_regs}
+import std/time::{Time}
 
 # x17: the encoder's veneer scratch. regs.iyi names it in a comment and has no accessor for it.
 def veneer_reg : Int32
@@ -241,6 +242,8 @@ def remat_inst(fn : MFunction, reg : Int32, v : Int32) : MInst
   m = MInst.new(MOp::MovImm.value.to_i32)
   m.defs << Operand.new(OperandKind::Physical, reg)
   m.imm = fn.vreg_remat[v]
+  # MovImm has no jump table; this marker distinguishes a rebuilt spill from an original constant.
+  m.table = -2
   m
 end
 
@@ -727,6 +730,36 @@ pub def block_loop_depths(succs : Array(Array(Int32))) : Array(Int32)
   block_loop_nest(succs).depth
 end
 
+# Loop-weighted frame accesses and rematerialized spill reloads in the allocated MIR.
+pub def spill_traffic(fn : MFunction) : Int64
+  succs = [] of Array(Int32)
+  b = 0
+  while b < fn.blocks.size
+    succs << block_successors(fn, b)
+    b = b + 1
+  end
+  depths = block_loop_depths(succs)
+  total = 0_i64
+  b = 0
+  while b < fn.blocks.size
+    factor = 1_i64
+    depth = depths[b]
+    depth = 6 if depth > 6
+    while depth > 0
+      factor = factor * 8_i64
+      depth = depth - 1
+    end
+    fn.blocks[b].insts.each do |inst|
+      if is_role?(fn.isa, inst, Role::SlotLoad) || is_role?(fn.isa, inst, Role::SlotStore) ||
+         (inst.table == -2 && integer_literal?(fn.isa, inst))
+        total = total + factor
+      end
+    end
+    b = b + 1
+  end
+  total
+end
+
 def spill_weight_limit : Int64
   1152921504606846976_i64
 end
@@ -804,6 +837,28 @@ class LinearScan
     assign
     assert_assignment
     finish_frame
+  end
+
+  # This path runs only on request, leaving ordinary allocation free of clock reads.
+  def run_timed : {Int64, Int64, Int64}
+    started = Time.monotonic
+    assert_pools(@caller_pool + @callee_pool, @fpr_pool, @spill_gprs)
+    number_positions
+    build_successors
+    measure_weights
+    phase = Time.monotonic
+    solve_liveness
+    liveness = (Time.monotonic - phase).total_nanoseconds.to_i64
+    phase = Time.monotonic
+    build_intervals
+    ranges = (Time.monotonic - phase).total_nanoseconds.to_i64
+    collect_hints
+    record_reservations
+    assign
+    assert_assignment
+    finish_frame
+    total = (Time.monotonic - started).total_nanoseconds.to_i64
+    {liveness, ranges, total - liveness - ranges}
   end
 
   # The cost of spilling is the sum of 8^loop-depth for every use. Saturation
@@ -1530,8 +1585,20 @@ end
 
 # Allocates one function by linear scan, then writes the spill code.
 pub def allocate_linear(fn : MFunction) : Nil
-  coalesce_copies(fn)
-  scan = LinearScan.new(fn)
-  scan.run
-  rewrite_spills(fn)
+  if Program.env("IYI_NATIVE_TIME_RA") == "1"
+    started = Time.monotonic
+    coalesce_copies(fn)
+    coalesce = (Time.monotonic - started).total_nanoseconds.to_i64
+    scan = LinearScan.new(fn)
+    times = scan.run_timed
+    started = Time.monotonic
+    rewrite_spills(fn)
+    rewrite = (Time.monotonic - started).total_nanoseconds.to_i64
+    STDERR.puts "ra-time #{fn.name} #{fn.vreg_count} #{fn.blocks.size} #{times[0]} #{times[1]} #{coalesce} #{times[2]} 0 #{rewrite}"
+  else
+    coalesce_copies(fn)
+    scan = LinearScan.new(fn)
+    scan.run
+    rewrite_spills(fn)
+  end
 end

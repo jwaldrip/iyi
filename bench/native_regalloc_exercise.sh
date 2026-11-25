@@ -368,6 +368,90 @@ slot_status=$?
 echo "$slot_report"
 [ "$slot_status" -eq 0 ] || fail "spill report is invalid or linear spills more than pin"
 
+# The ledger covers each function of every allocator IR fixture. A missing,
+# duplicate, stale, or exceeded row fails rather than silently skipping work.
+check_traffic() {
+  local driver fixtures ceiling
+  driver=$(native_path "$1") || return 2
+  fixtures=$(native_path "$FIX_RA") || return 2
+  ceiling=$(native_path "$FIX_RA/traffic.ceiling") || return 2
+  "$PY" - "$driver" "$fixtures" "$ceiling" <<'PY'
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+driver, fixtures, ceiling = sys.argv[1:]
+limits = {}
+try:
+    for line in Path(ceiling).read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if len(parts) != 3 or not parts[2].isdigit() or tuple(parts[:2]) in limits:
+            raise ValueError(f"invalid or duplicate traffic row: {line!r}")
+        limits[tuple(parts[:2])] = int(parts[2])
+except (OSError, ValueError) as exc:
+    print(f"INVALID: traffic ceiling: {exc}")
+    sys.exit(2)
+paths = sorted(Path(fixtures).glob("*.ir"))
+if not paths:
+    print("INVALID: no allocator IR fixtures")
+    sys.exit(2)
+observed = set()
+exceeded = []
+for path in paths:
+    funcs = re.findall(r"^define [^@\n]*@([^\s(]+)\(", path.read_text(encoding="utf-8"), re.M)
+    if not funcs or len(funcs) != len(set(funcs)):
+        print(f"INVALID: {path.name} has missing or duplicate function definitions")
+        sys.exit(2)
+    for fn in funcs:
+        key = (path.stem, fn)
+        if key not in limits:
+            print(f"INVALID: missing traffic ceiling: {key[0]} {fn}")
+            sys.exit(2)
+        result = subprocess.run([driver, "mir", str(path), fn], env=dict(os.environ, IYI_NATIVE_REGALLOC="linear"),
+                                capture_output=True, text=True)
+        matches = re.findall(r"\btraffic=(\d+)\b", result.stdout)
+        if result.returncode or len(matches) != 1:
+            print(f"INVALID: {key[0]} {fn}: MIR exit={result.returncode}, traffic fields={len(matches)}")
+            print(result.stderr)
+            sys.exit(2)
+        value = int(matches[0])
+        observed.add(key)
+        if value > limits[key]:
+            exceeded.append((key, value, limits[key]))
+        print(f"traffic: {key[0]} {fn} {value}/{limits[key]}")
+extra = limits.keys() - observed
+if extra:
+    print("INVALID: stale traffic rows: " + ", ".join(f"{a} {b}" for a, b in sorted(extra)))
+    sys.exit(2)
+print(f"traffic totals: {len(observed)} functions, {len(exceeded)} above ceiling")
+for key, value, limit in exceeded:
+    print(f"MORE TRAFFIC: {key[0]} {key[1]} {value} > {limit}")
+sys.exit(1 if exceeded else 0)
+PY
+}
+
+# One original constant in the entry and another in the loop are excluded;
+# one rematerialized reload and two frame accesses in the loop each weigh 8.
+check_traffic_accounting() {
+  local ignored=$1 exe="$WORK/traffic-accounting-$RANDOM$EXE" result
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/ra_a_accounting.iyi")" >"$WORK/traffic-accounting.log" 2>&1; then
+    cat "$WORK/traffic-accounting.log"
+    return 2
+  fi
+  result=$("$exe") || return 2
+  case "$result" in
+    24) echo "traffic accounting: rematerialized reload and frame accesses weigh 8; original constants excluded"; return 0 ;;
+    *[!0-9]*|'') echo "invalid traffic accounting result"; return 2 ;;
+    *) echo "traffic accounting: expected 24, got $result"; return 1 ;;
+  esac
+}
+
+echo "== 5b. loop-weighted spill traffic"
+check_traffic "$DRV" || fail "traffic ceiling failed"
+check_traffic_accounting "$DRV" || fail "traffic accounting fixture failed"
+
 # A check returns 0 for a passing driver, 1 for a detected mutation, and 2 for
 # invalid setup. Each pristine predicate must pass before its mutant is built.
 mutate() {
@@ -1345,6 +1429,14 @@ prove_mutation "hoisting: a constant used only as an argument copy is hoisted an
   src/compiler/native/mir_const.iyi check_mir_constants \
   ' && other_use[inst.defs[0].reg]' \
   ' && true'
+prove_mutation "traffic: retain dead spill stores" \
+  src/compiler/native/regalloc_linear.iyi check_traffic \
+  '  drop_dead_spill_stores(fn)' \
+  '  nil'
+prove_mutation "traffic: count original constants as spill reloads" \
+  src/compiler/native/regalloc_linear.iyi check_traffic_accounting \
+  '(inst.table == -2 && integer_literal?(fn.isa, inst))' \
+  '(integer_literal?(fn.isa, inst))'
 echo "mutation totals: $mutation_caught/$mutation_total detected"
 echo "a mutation that changes nothing is refused by the proof helper:"
 [ ! -e "$NATIVE_SIGNATURE_FAILURE_FILE" ] || fail "a native executable failed signature verification"
