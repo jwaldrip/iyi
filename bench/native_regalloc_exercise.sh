@@ -1046,6 +1046,73 @@ if any(" x2" in line for line in lines):
 print("spilled copies: each copy to or from a fixed register is one load or store; dead stores are gone")
 PY
 }
+
+# R10 stale copy: a spilled value redefined by a store from a fixed register is reloaded at its next read, because the
+# scratch register that held its old value no longer serves it. Without the reload nothing reads the slot, and the
+# dead-store pass then removes both stores, so a missing store is the same failure.
+check_stale_copy() {
+  local ignored=$1 exe="$WORK/stale-copy-$RANDOM$EXE" out="$WORK/stale-copy.out"
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/stale_copy.iyi")" >"$WORK/stale-copy.log" 2>&1; then
+    cat "$WORK/stale-copy.log"
+    return 2
+  fi
+  if ! "$exe" >"$out" 2>&1; then
+    echo "stale copy fixture could not run"
+    return 2
+  fi
+  "$PY" - "$out" <<'PY'
+import sys
+from pathlib import Path
+
+lines = Path(sys.argv[1]).read_text().splitlines()
+if not lines or lines[0] != "function stale" or not any(line.startswith("  AddImm/64 ") and line.endswith("#imm=2") for line in lines):
+    print("invalid MIR for the stale-copy fixture")
+    sys.exit(2)
+store = "  StrFrame/64 x0, slot0+0"
+if store not in lines:
+    print("stale copy: the store from x0 is gone, so no later read reloads the value it defined")
+    sys.exit(1)
+after = lines[lines.index(store) + 1:]
+if not any(line.startswith("  LdrFrame/64 ") and line.endswith(", slot0+0") for line in after):
+    print("stale copy: the read after the store from x0 takes the scratch register's old value")
+    sys.exit(1)
+print("stale copy: a value redefined from a fixed register is reloaded at its next read")
+PY
+}
+
+# A fixed operand in a spill scratch register (x10) stays out of scratch allocation from its staging to its use. The
+# copies around inline assembly are single loads now, so fixed_staging.ir no longer puts a scratch reload between the
+# two; this fixture does, with MIR written by hand.
+check_staged_scratch() {
+  local ignored=$1 exe="$WORK/staged-scratch-$RANDOM$EXE" out="$WORK/staged-scratch.out"
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/staged_scratch.iyi")" >"$WORK/staged-scratch.log" 2>&1; then
+    cat "$WORK/staged-scratch.log"
+    return 2
+  fi
+  if ! "$exe" >"$out" 2>&1; then
+    echo "staged scratch fixture could not run"
+    return 2
+  fi
+  "$PY" - "$out" <<'PY'
+import sys
+from pathlib import Path
+
+lines = Path(sys.argv[1]).read_text().splitlines()
+staging, use = "  LdrFrame/64 x10, slot1+0", "  StrFrame/64 x10, slot3+0"
+if not lines or lines[0] != "function staged" or staging not in lines or use not in lines:
+    print("invalid MIR for the staged-scratch fixture")
+    sys.exit(2)
+first, last = lines.index(staging), lines.index(use)
+if first >= last or not any(line.startswith("  LdrFrame/64 ") and line.endswith(", slot0+0") for line in lines[first + 1:last]):
+    print("invalid MIR for the staged-scratch fixture: no reload sits between the staging and the use")
+    sys.exit(2)
+for line in lines[first + 1:last]:
+    if line.split()[1].rstrip(",") == "x10" and not line.startswith("  StrFrame/"):
+        print("staged scratch: a reload took the fixed operand's register: " + line.strip())
+        sys.exit(1)
+print("staged scratch: a fixed operand in a scratch register survives a reload between its staging and its use")
+PY
+}
 if check_copy_rename "$DRV" >"$WORK/copy_rename.pristine.log" 2>&1; then
   cat "$WORK/copy_rename.pristine.log"
 else
@@ -1057,6 +1124,18 @@ if check_spill_copies "$DRV" >"$WORK/spill_copies.pristine.log" 2>&1; then
 else
   cat "$WORK/spill_copies.pristine.log"
   fail "spilled copy and dead store fixture"
+fi
+if check_stale_copy "$DRV" >"$WORK/stale_copy.pristine.log" 2>&1; then
+  cat "$WORK/stale_copy.pristine.log"
+else
+  cat "$WORK/stale_copy.pristine.log"
+  fail "stale scratch copy fixture"
+fi
+if check_staged_scratch "$DRV" >"$WORK/staged_scratch.pristine.log" 2>&1; then
+  cat "$WORK/staged_scratch.pristine.log"
+else
+  cat "$WORK/staged_scratch.pristine.log"
+  fail "staged scratch fixture"
 fi
 
 echo "== 6. mutation proofs"
@@ -1136,13 +1215,13 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
     i = i + 1' \
     '    acc << m unless fn.name == "clobbered" && f.callee_saved[i] == 19
     i = i + 1'
-  prove_mutation "spill reload: overwrite a staged physical operand" \
-    src/compiler/native/regalloc_linear.iyi check_fixed_staging \
-    '    blocked = fixed[index] # protect-staged-physical' \
-    '    blocked = 0_u64 # protect-staged-physical'
 else
-  host_limited "runtime mutation: staged physical operands (macOS arm64)"
+  host_limited "runtime mutation: asm callee-saved registers (macOS arm64)"
 fi
+prove_mutation "spill reload: overwrite a staged physical operand" \
+  src/compiler/native/regalloc_linear.iyi check_staged_scratch \
+  '    blocked = fixed[index] # protect-staged-physical' \
+  '    blocked = 0_u64 # protect-staged-physical'
 prove_mutation "reload reuse: reload each use instead of reusing a scratch register" \
   src/compiler/native/regalloc_linear.iyi check_reload_reuse \
   '    return r if cache[r] == v && (blocked & mask) == 0_u64' \
@@ -1268,6 +1347,10 @@ prove_mutation "dead spill stores: a store to a slot that no reload reads is kep
   src/compiler/native/regalloc_linear.iyi check_spill_copies \
   '  drop_dead_spill_stores(fn)' \
   '  nil'
+prove_mutation "stale copy: a store from a fixed register leaves the value's cached scratch copy standing" \
+  src/compiler/native/regalloc_linear.iyi check_stale_copy \
+  '        gprs.each { |r| cache[r] = -1 if cache[r] == d.reg } # fixed-store-invalidates-reload' \
+  '        nil # fixed-store-invalidates-reload'
 prove_mutation "hoisting: a constant used only as an argument copy is hoisted anyway" \
   src/compiler/native/mir_const.iyi check_mir_constants \
   ' && other_use[inst.defs[0].reg]' \

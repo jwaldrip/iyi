@@ -1,0 +1,45 @@
+module stale_copy
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/regalloc_linear::{rewrite_spills}
+import compiler/native/driver::{dump_mfunction}
+
+# Every general-purpose value is spilled to its frame slot. val is defined, read once (which leaves its value cached in a
+# scratch register), then redefined by a copy from the fixed register x0, then read again. The second read must reload
+# the slot: the scratch register still holds the first value. The dump must therefore hold a load of slot 0 after the
+# store of x0 into slot 0.
+def inst_of(op : MOp, def_reg : Int32, use_reg : Int32, imm : Int64) : MInst
+  m = MInst.new(op.value.to_i32)
+  m.imm = imm
+  m.defs << Operand.new(OperandKind::Virtual, def_reg) if def_reg >= 0
+  m.uses << Operand.new(OperandKind::Virtual, use_reg) if use_reg >= 0
+  m
+end
+
+def copy_inst(dst_kind : OperandKind, dst_reg : Int32, src_kind : OperandKind, src_reg : Int32) : MInst
+  m = MInst.new(MOp::Mov.value.to_i32)
+  m.size = 64
+  m.defs << Operand.new(dst_kind, dst_reg)
+  m.uses << Operand.new(src_kind, src_reg)
+  m
+end
+
+fn = MFunction.new("stale")
+b = MBlock.new(0, "entry")
+fn.blocks << b
+val = fn.new_vreg(RegClass::Gpr)
+first = fn.new_vreg(RegClass::Gpr)
+second = fn.new_vreg(RegClass::Gpr)
+v = 0
+while v < fn.vreg_count
+  fn.vreg_home << -1
+  fn.vreg_slot << fn.frame.add_slot(8_i64, 8)
+  v = v + 1
+end
+b.insts << inst_of(MOp::MovImm, val, -1, 5_i64)
+b.insts << inst_of(MOp::AddImm, first, val, 1_i64)
+b.insts << copy_inst(OperandKind::Virtual, val, OperandKind::Physical, 0)
+b.insts << inst_of(MOp::AddImm, second, val, 2_i64)
+b.insts << copy_inst(OperandKind::Physical, 1, OperandKind::Virtual, first)
+b.insts << copy_inst(OperandKind::Physical, 2, OperandKind::Virtual, second)
+rewrite_spills(fn)
+print dump_mfunction(fn)

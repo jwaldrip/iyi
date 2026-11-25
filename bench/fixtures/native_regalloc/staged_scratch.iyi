@@ -1,0 +1,47 @@
+module staged_scratch
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/regalloc_linear::{rewrite_spills}
+import compiler/native/driver::{dump_mfunction}
+
+# Every general-purpose value is spilled to its frame slot. x10 is one of the spill scratch registers, and here it is
+# also a fixed operand: it is loaded with staged two instructions before the instruction that reads it. Between the
+# two, an add reads other, which no scratch register holds, so it must be reloaded. x10 is vacant in the scratch cache
+# at that point, and the reload must not take it: the dump must define x10 once, by the staging load, before x10 is read.
+def inst_of(op : MOp, def_reg : Int32, use_reg : Int32, imm : Int64) : MInst
+  m = MInst.new(op.value.to_i32)
+  m.imm = imm
+  m.defs << Operand.new(OperandKind::Virtual, def_reg) if def_reg >= 0
+  m.uses << Operand.new(OperandKind::Virtual, use_reg) if use_reg >= 0
+  m
+end
+
+def copy_inst(dst_kind : OperandKind, dst_reg : Int32, src_kind : OperandKind, src_reg : Int32) : MInst
+  m = MInst.new(MOp::Mov.value.to_i32)
+  m.size = 64
+  m.defs << Operand.new(dst_kind, dst_reg)
+  m.uses << Operand.new(src_kind, src_reg)
+  m
+end
+
+fn = MFunction.new("staged")
+b = MBlock.new(0, "entry")
+fn.blocks << b
+other = fn.new_vreg(RegClass::Gpr)
+staged = fn.new_vreg(RegClass::Gpr)
+sum = fn.new_vreg(RegClass::Gpr)
+taken = fn.new_vreg(RegClass::Gpr)
+v = 0
+while v < fn.vreg_count
+  fn.vreg_home << -1
+  fn.vreg_slot << fn.frame.add_slot(8_i64, 8)
+  v = v + 1
+end
+b.insts << copy_inst(OperandKind::Virtual, other, OperandKind::Physical, 0)
+b.insts << inst_of(MOp::MovImm, staged, -1, 5_i64)
+b.insts << copy_inst(OperandKind::Physical, 10, OperandKind::Virtual, staged)
+b.insts << inst_of(MOp::AddImm, sum, other, 1_i64)
+b.insts << copy_inst(OperandKind::Virtual, taken, OperandKind::Physical, 10)
+b.insts << copy_inst(OperandKind::Physical, 1, OperandKind::Virtual, sum)
+b.insts << copy_inst(OperandKind::Physical, 2, OperandKind::Virtual, taken)
+rewrite_spills(fn)
+print dump_mfunction(fn)
