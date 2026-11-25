@@ -134,6 +134,7 @@ module Iyi::Stale
         behavior_fp = compiler.behavior_key
         link_fp = Stale::Link.fp(lib_flags, compiler.link_flags, compiler.static?, ENV)
         cenv_fp = Stale::CompilerEnv.fp
+        Stale::CompilerEnv.dump(primary_source.filename)
 
         machine_key = Stale::MachineKey.load_or_create(cache_root)
         keyer_local = Stale::Keyer.local(machine_key)

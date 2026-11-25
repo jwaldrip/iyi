@@ -71,16 +71,21 @@ module Iyi::Stale
       fp(inputs.env, inputs.env_enumerated?)
     end
 
+    # Whether a variable the build read is one of the entries the fingerprint
+    # is made of.
+    def self.counted?(name : String, enumerated : Bool) : Bool
+      if enumerated
+        v_class = variable_class(name)
+        !v_class.display? && !v_class.locator?
+      else
+        variable_class(name).value?
+      end
+    end
+
     def self.fp(env : Hash(String, String?), enumerated : Bool = false) : Digest
       entries = [] of {String, String?}
       env.each do |name, val|
-        include_var = if enumerated
-                        v_class = variable_class(name)
-                        !v_class.display? && !v_class.locator?
-                      else
-                        variable_class(name).value?
-                      end
-        entries << {name, val} if include_var
+        entries << {name, val} if counted?(name, enumerated)
       end
 
       entries.sort_by! { |name, _| name }
@@ -105,6 +110,32 @@ module Iyi::Stale
       else
         fp({} of String => String?)
       end
+    end
+
+    # iyi: `IYI_STALE_CENV_DUMP=FILE` appends to FILE what this build's
+    # fingerprint was made of: a header with the file being built, then a line
+    # for each variable the build read, `*` when it counts. A test that misses
+    # with "compiler environment changed" does not say which variable differs,
+    # and the blocks of two runs of one test do. Read with
+    # `Crystal::System::Env`, which the recorder does not see, so asking for
+    # the dump changes nothing it records.
+    def self.dump(filename : String) : Nil
+      path = Crystal::System::Env.get("IYI_STALE_CENV_DUMP")
+      return unless path && !path.empty?
+      return unless inputs = BuildInputs.current
+      BuildInputs.paused do
+        ::File.open(path, "a") do |io|
+          io << "build file=" << filename << " pid=" << Process.pid << " enumerated=" << inputs.env_enumerated? << '\n'
+          inputs.env.to_a.sort_by { |name, _| name }.each do |name, val|
+            io << (counted?(name, inputs.env_enumerated?) ? '*' : ' ') << ' ' << name << '=' << (val || "(absent)") << '\n'
+          end
+          inputs.observed_env.to_a.sort_by { |name, _| name }.each do |name, val|
+            next if inputs.env.has_key?(name)
+            io << "~ " << name << '=' << (val || "(absent)") << '\n'
+          end
+        end
+      end
+    rescue ::File::Error | IO::Error
     end
   end
 end
