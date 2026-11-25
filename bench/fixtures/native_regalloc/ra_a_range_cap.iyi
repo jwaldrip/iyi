@@ -1,0 +1,36 @@
+module ra_a_range_cap
+
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/regalloc_linear::{allocate_linear}
+
+def homes(count : Int32) : {Int32, Int32}
+  fn = MFunction.new("range-cap")
+  block = MBlock.new(0, "entry")
+  fn.blocks << block
+  many = fn.new_vreg(RegClass::Gpr)
+  hole = fn.new_vreg(RegClass::Gpr)
+  i = 0
+  while i < count
+    definition = MInst.new(MOp::MovImm.value.to_i32)
+    definition.defs << Operand.new(OperandKind::Virtual, many)
+    block.insts << definition
+    use = MInst.new(MOp::CmpImm.value.to_i32)
+    use.uses << Operand.new(OperandKind::Virtual, many)
+    block.insts << use
+    if i == 0
+      gap_definition = MInst.new(MOp::MovImm.value.to_i32)
+      gap_definition.defs << Operand.new(OperandKind::Virtual, hole)
+      block.insts << gap_definition
+      gap_use = MInst.new(MOp::CmpImm.value.to_i32)
+      gap_use.uses << Operand.new(OperandKind::Virtual, hole)
+      block.insts << gap_use
+    end
+    i = i + 1
+  end
+  allocate_linear(fn)
+  {fn.vreg_home[many], fn.vreg_home[hole]}
+end
+
+at_limit = homes(64)
+over_limit = homes(65)
+puts "#{at_limit[0]} #{at_limit[1]} #{over_limit[0]} #{over_limit[1]}"

@@ -575,6 +575,122 @@ check_fixture_output() {
   return 0
 }
 
+check_cold_length() {
+  local drv=$1 out="$WORK/ra-a-cold.mir"
+  if ! "$drv" mir "$FIX_RA/ra_a_cold_length.ir" checked >"$out" 2>&1; then
+    echo "invalid cold-length MIR"
+    return 2
+  fi
+  "$PY" - "$out" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+if not text.startswith("function checked\n"):
+    print("invalid cold-length function")
+    sys.exit(2)
+header = re.search(r"^  frame .* slots=(\d+) traffic=(\d+)$", text, re.M)
+blocks = dict(re.findall(r"^block \d+ (\S+)\n(.*?)(?=^block |\Z)", text, re.M | re.S))
+loop = ("loop", "check2", "check3", "check4", "body")
+if not header or not all(name in blocks for name in loop):
+    print("invalid cold-length frame or loop blocks")
+    sys.exit(2)
+slots, traffic = map(int, header.groups())
+if slots != 0 or traffic != 0 or any(re.search(r"^  StrFrame/", blocks[b], re.M) for b in loop):
+    print(f"cold-length: slots={slots} traffic={traffic}; expected zero and no loop spill stores (R10: 4 slots, traffic 66)")
+    sys.exit(1)
+print("cold-length: 0 slots, traffic 0, no loop spill stores (R10: 4 slots, traffic 66)")
+PY
+}
+
+check_hole_reuse() {
+  local drv=$1 out="$WORK/ra-a-holes.mir"
+  if ! "$drv" mir "$FIX_RA/ra_a_hole_reuse.ir" holes >"$out" 2>&1; then
+    echo "invalid hole-reuse MIR"
+    return 2
+  fi
+  "$PY" - "$out" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+if not text.startswith("function holes\n"):
+    print("invalid hole-reuse function")
+    sys.exit(2)
+header = re.search(r"^  frame .* slots=(\d+) traffic=(\d+)$", text, re.M)
+blocks = dict(re.findall(r"^block \d+ (\S+)\n(.*?)(?=^block |\Z)", text, re.M | re.S))
+if not header or not all(name in blocks for name in ("early", "setup", "define_a", "late")):
+    print("invalid hole-reuse frame or blocks")
+    sys.exit(2)
+q = re.search(r"^  Mul/64 (x\d+),[^\n]*\n(?:.*\n)*?  Str/64 \1,", blocks["setup"], re.M)
+a = re.search(r"^  Mul/64 (x\d+),", blocks["define_a"], re.M)
+b = re.search(r"^  AddImm/64 (x\d+), [^#\n]+ #imm=11$", blocks["setup"], re.M)
+if (header.groups() != ("0", "0") or not q or not a or not b or q.group(1) != a.group(1)
+        or b.group(1) == a.group(1)
+        or not re.search(r"^  Add/64 [^,]+, " + a.group(1) + ", " + b.group(1) + r"$", blocks["late"], re.M)):
+    print("hole-reuse: disjoint ranges did not share a home or an overlapping range did")
+    sys.exit(1)
+print(f"hole-reuse: disjoint ranges share {a.group(1)}; overlapping value uses {b.group(1)}; 0 slots")
+PY
+}
+
+check_no_holes() {
+  local drv=$1 out="$WORK/ra-a-straight.mir"
+  if ! "$drv" mir "$FIX_RA/ra_a_no_holes.ir" straight >"$out" 2>&1; then
+    echo "invalid straight-line MIR"
+    return 2
+  fi
+  "$PY" - "$out" <<'PY'
+import sys
+from pathlib import Path
+
+expected = """function straight
+  frame size=0 outgoing=0 saves=0 slots=0 traffic=0
+block 0 entry
+  MovImm/64 x2 #imm=7
+  Mul/64 x2, x0, x2
+  AddImm/64 x1, x1 #imm=11
+  Eor/64 x1, x2, x1
+  MovImm/64 x2 #imm=5
+  Neg/64 x0, x0
+  Madd/64 x0, x0, x1, x2
+  Ret/64
+"""
+if Path(sys.argv[1]).read_text() != expected:
+    print("straight-line MIR changed from R10")
+    sys.exit(1)
+print("no-holes: straight-line MIR matches R10 exactly")
+PY
+}
+
+# The first value has 64 or 65 disjoint ranges. A short value fits in its
+# first hole only at the limit; at 65 the conservative hull occupies it.
+check_range_cap() {
+  local ignored=$1 exe="$WORK/range-cap-$RANDOM$EXE" result
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/ra_a_range_cap.iyi")" >"$WORK/range-cap.log" 2>&1; then
+    cat "$WORK/range-cap.log"
+    return 2
+  fi
+  result=$("$exe") || return 2
+  case "$result" in
+    "0 0 0 1") echo "range cap: 64 ranges share a home; 65 collapse to a hull"; return 0 ;;
+    *[!0-9\ ]*|'') echo "invalid range-cap result"; return 2 ;;
+    *) echo "range cap: expected 0 0 0 1, got $result"; return 1 ;;
+  esac
+}
+
+check_hole_output() {
+  check_fixture_output "$1" "$FIX_RA/ra_a_hole_reuse.ir"
+}
+
+echo "== 5c. lifetime range fixtures"
+check_cold_length "$DRV" || fail "cold-length fixture"
+check_hole_reuse "$DRV" || fail "hole-reuse fixture"
+check_no_holes "$DRV" || fail "straight-line fixture"
+check_range_cap "$DRV" || fail "range-cap fixture"
+
 # Preserve the complete combined corpus and both original pointer predicates.
 check_linear_outputs() {
   local drv=$1 dir ir seen=0 result
@@ -1351,8 +1467,8 @@ prove_mutation "coalescing: retain identity copies" \
 if [ "$HOST_ID" = darwin-arm64 ]; then
   prove_mutation "linear: a register is given to an interval that overlaps an active one" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
-    '      return reg unless held?(reg) || reserved?(reg, @starts[iv], @ends[iv])' \
-    '      return reg unless reserved?(reg, @starts[iv], @ends[iv])'
+    '      return reg unless held?(reg) || inactive_intersects?(reg, iv) || reserved_over?(reg, iv)' \
+    '      return reg unless inactive_intersects?(reg, iv) || reserved_over?(reg, iv)'
   prove_mutation "rewrite: a spilled operand is read without its reload" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
     '          reloads << reload_inst(fn, v, reg)' \
@@ -1437,6 +1553,22 @@ prove_mutation "traffic: count original constants as spill reloads" \
   src/compiler/native/regalloc_linear.iyi check_traffic_accounting \
   '(inst.table == -2 && integer_literal?(fn.isa, inst))' \
   '(integer_literal?(fn.isa, inst))'
+prove_mutation "ranges: allow 65 ranges instead of collapsing" \
+  src/compiler/native/regalloc_linear.iyi check_range_cap \
+  '        if counts[v] > 64 # collapse-pathological-ranges' \
+  '        if counts[v] > 65 # collapse-pathological-ranges'
+prove_mutation "ranges: replace every range list with its hull" \
+  src/compiler/native/regalloc_linear.iyi check_cold_length \
+  '        if counts[v] > 64 # collapse-pathological-ranges' \
+  '        if counts[v] > 0 # collapse-pathological-ranges'
+if [ "$HOST_ID" = darwin-arm64 ]; then
+  prove_mutation "ranges: ignore inactive register occupants" \
+    src/compiler/native/regalloc_linear.iyi check_hole_output \
+    '      return true if !@is_active[a] && intersects?(a, v) # inactive-interference' \
+    '      return true if false && !@is_active[a] && intersects?(a, v) # inactive-interference'
+else
+  host_limited "runtime mutation: inactive intervals interfere in a later block (macOS arm64)"
+fi
 echo "mutation totals: $mutation_caught/$mutation_total detected"
 echo "a mutation that changes nothing is refused by the proof helper:"
 [ ! -e "$NATIVE_SIGNATURE_FAILURE_FILE" ] || fail "a native executable failed signature verification"
