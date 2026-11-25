@@ -367,6 +367,8 @@ def rewrite_block(fn : MFunction, block : MBlock, has_use : Array(Bool)) : Nil
         next
       end
       if s.kind == OperandKind::Physical && s.reg >= 0 && s.reg < 31 && d.kind == OperandKind::Virtual && spilled_gpr?(fn, d.reg) && !fn.vreg_rematerializable[d.reg]
+        # The value is redefined, so a scratch register that still holds its old value must not serve a later read.
+        gprs.each { |r| cache[r] = -1 if cache[r] == d.reg } # fixed-store-invalidates-reload
         acc << slot_access(fn.isa, false, s.reg, fn.vreg_slot[d.reg], false) if has_use[d.reg]
         next
       end

@@ -1,0 +1,15 @@
+module dead_call_hull
+
+# The twin of dead_call_hull.ir. The IR's loop leaves through a trap block once the sum passes a bound that this run
+# never reaches, so the trap's exit call never runs; the twin computes the same sum and prints it.
+def sum_to(n : Int64) : Int64
+  i = 0_i64
+  acc = 0_i64
+  while i < n
+    acc = acc + i
+    i = i + 1_i64
+  end
+  acc
+end
+
+puts "#{sum_to(100_i64)}"
