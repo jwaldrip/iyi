@@ -858,6 +858,96 @@ print("reload reuse: GPR and FPR caches respect redefinitions and clobbers")
 PY
 }
 
+# The MIR fixture: a loop constant moves to its preheader once, a spilled one is rebuilt at its use with no slot,
+# two-operand functions home values in x12..x15, and a seven-operand inline asm keeps seven scratch registers.
+check_mir_constants() {
+  local exe expect out
+  exe="$WORK/mir_constants$EXE"
+  expect='hoist: hoisted=2 body_movimm=0 entry_movimm=4 entry_const=1
+remat: body_movimm=1 imm_ok=true const_slot=-1 wide_slot=true frame_slots=8 entry_movimm=3
+homes: 0 1 2 3 4 5 6 7 8 12 13 14 15 19
+asm: 9 10 11 12 13 14 15
+arg: hoisted=0 body_movimm=1'
+  if ! ./bin/iyi build -o "$(native_path "$exe")" "$(native_path "$FIX_RA/mir_constants.iyi")" >"$WORK/mir_constants.build.log" 2>&1; then
+    cat "$WORK/mir_constants.build.log"
+    return 2
+  fi
+  if ! out=$("$exe" 2>&1); then
+    printf '%s\n' "$out"
+    echo "mir constants fixture exited nonzero"
+    return 1
+  fi
+  if [ "$out" != "$expect" ]; then
+    printf 'expected:\n%s\ngot:\n%s\n' "$expect" "$out"
+    return 1
+  fi
+  echo "mir constants: hoisting, rematerialisation, pool order and seven scratch registers match"
+}
+if check_mir_constants >"$WORK/mir_constants.pristine.log" 2>&1; then
+  cat "$WORK/mir_constants.pristine.log"
+else
+  cat "$WORK/mir_constants.pristine.log"
+  fail "MIR constants fixture"
+fi
+
+# const_pressure.ir is const_pressure.iyi written out by hand: a loop that reads constants too wide for an immediate
+# field while sixteen values are live. Sections 3 and 3b emit it under both allocators and compare its checksums with
+# the hosted twin. This check keeps the fixture decisive: the modulus must be built once in the preheader and not in
+# the loop, and a spilled one-instruction constant must be rebuilt at a use.
+check_const_pressure() {
+  local drv=$1 out="$WORK/const_pressure.mir"
+  [ -x "$drv" ] || return 2
+  if ! "$drv" mir "$FIX_RA/const_pressure.ir" churn >"$out" 2>&1; then
+    echo "could not emit the const pressure fixture"
+    return 2
+  fi
+  "$PY" - "$out" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+blocks = {}
+name = None
+for line in Path(sys.argv[1]).read_text().splitlines():
+    match = re.match(r"block \d+ (\S+)$", line)
+    if match:
+        name = match.group(1)
+        blocks[name] = []
+    elif name is not None:
+        blocks[name].append(line)
+if "entry" not in blocks or "body" not in blocks:
+    print("const pressure: invalid MIR for churn")
+    sys.exit(2)
+
+def moves(block, imm=None):
+    found = []
+    for line in blocks[block]:
+        match = re.match(r"\s+MovImm/64 (\S+) #imm=(-?\d+)$", line)
+        if match and (imm is None or int(match.group(2)) == imm):
+            found.append(match.group(1))
+    return found
+
+modulus = 1000000007
+if len(moves("entry", modulus)) != 1:
+    print("const pressure: the modulus is not built once in the preheader")
+    sys.exit(1)
+if moves("body", modulus):
+    print("const pressure: the modulus is rebuilt inside the loop")
+    sys.exit(1)
+scratch = {"x9", "x10", "x11", "x12", "x13", "x14", "x15"}
+if not any(reg in scratch for reg in moves("body")):
+    print("const pressure: no spilled constant is rebuilt at a use inside the loop")
+    sys.exit(1)
+print("const pressure: the modulus is built once in the preheader; spilled constants are rebuilt at their uses")
+PY
+}
+if check_const_pressure "$DRV" >"$WORK/const_pressure.pristine.log" 2>&1; then
+  cat "$WORK/const_pressure.pristine.log"
+else
+  cat "$WORK/const_pressure.pristine.log"
+  fail "const pressure MIR"
+fi
+
 echo "== 6. mutation proofs"
 prove_mutation "floating ABI: flag typed parameters and call results" \
   src/compiler/native/regalloc_linear.iyi check_typed_abi_fprs \
@@ -1001,7 +1091,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
     '      return reg unless reserved?(reg, @starts[iv], @ends[iv])'
   prove_mutation "rewrite: a spilled operand is read without its reload" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
-    '          reloads << slot_access(fn.isa, true, reg, fn.vreg_slot[v], fp)' \
+    '          reloads << reload_inst(fn, v, reg)' \
     '        # the reload is dropped'
   prove_mutation "linear: a value that crosses a call may take a caller-saved register" \
     src/compiler/native/regalloc_linear.iyi check_linear_outputs \
@@ -1039,6 +1129,22 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
 else
   host_limited "runtime mutation: a value live into a call-headed block is not counted as crossing (macOS arm64)"
 fi
+prove_mutation "hoisting: a constant moves into the block that reads it, not into its preheader" \
+  src/compiler/native/mir_const.iyi check_mir_constants \
+  '    target[b] = pre[best] if best >= 0' \
+  '    target[b] = b if best >= 0'
+prove_mutation "rematerialization: a spilled constant is rebuilt with the wrong immediate" \
+  src/compiler/native/regalloc_linear.iyi check_mir_constants \
+  '  m.imm = fn.vreg_remat[v]' \
+  '  m.imm = fn.vreg_remat[v] + 1_i64'
+prove_mutation "spill scratch: one register fewer than the largest instruction needs" \
+  src/compiler/native/regalloc_linear.iyi check_mir_constants \
+  '  largest # spill-scratch-count' \
+  '  largest - 1 # spill-scratch-count'
+prove_mutation "hoisting: a constant used only as an argument copy is hoisted anyway" \
+  src/compiler/native/mir_const.iyi check_mir_constants \
+  ' && other_use[inst.defs[0].reg]' \
+  ' && true'
 echo "mutation totals: $mutation_caught/$mutation_total detected"
 echo "a mutation that changes nothing is refused by the proof helper:"
 [ ! -e "$NATIVE_SIGNATURE_FAILURE_FILE" ] || fail "a native executable failed signature verification"

@@ -11,7 +11,7 @@ fn.blocks << loop_body
 fn.blocks << exit_block
 cold = [] of Int32
 i = 0
-while i < 19
+while i < 23
   v = fn.new_vreg(RegClass::Gpr)
   cold << v
   inst = MInst.new(MOp::MovImm.value.to_i32)
@@ -43,7 +43,7 @@ backedge.target = 1
 loop_body.insts << backedge
 exit_block.insts << MInst.new(MOp::Ret.value.to_i32)
 allocate_linear(fn)
-puts "#{fn.vreg_home[hot]} #{fn.vreg_home[cold[18]]}"
+puts "#{fn.vreg_home[hot]} #{fn.vreg_home[cold[22]]}"
 
 # All warm values are used once in the outer loop. The last value is used
 # once in the inner loop, so depth rather than use count decides the spill.
@@ -60,7 +60,7 @@ nested.blocks << latch
 nested.blocks << done
 warm = [] of Int32
 i = 0
-while i < 19
+while i < 23
   v = nested.new_vreg(RegClass::Gpr)
   warm << v
   m = MInst.new(MOp::MovImm.value.to_i32)
@@ -108,7 +108,7 @@ graph.blocks << cycle
 graph.blocks << done
 cool = [] of Int32
 i = 0
-while i < 19
+while i < 23
   v = graph.new_vreg(RegClass::Gpr)
   cool << v
   m = MInst.new(MOp::MovImm.value.to_i32)
