@@ -795,6 +795,7 @@ class Isel
   def single_local_use?(v : Value, block : Int32) : Bool
     (@uses[v]? || 0) == 1 && @inst_blocks[v]? == block
   end
+
   def plan_select(i : Inst, block : Int32) : Nil
     value = i.args[0]
     hint = nil
@@ -833,7 +834,6 @@ class Isel
       k = k + 1
     end
   end
-
 
   def plan_address(v : Value, access : IrType, block : Int32) : Nil
     return unless v.is_a?(Inst) && single_local_use?(v, block)
