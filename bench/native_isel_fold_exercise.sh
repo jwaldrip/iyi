@@ -381,7 +381,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       continue
     fi
     expected_status=0
-    [ "$key" != n1_imm_checked ] || expected_status=77
+    [ "$key" != n1_imm_checked ] || expected_status=133
     if [ "$(cat "$WORK/expected.$key.status")" != "$expected_status" ]; then
       fail "$key: hosted twin exited nonzero"
       continue

@@ -1504,7 +1504,7 @@ class Isel
 
   # Checked add/sub by an encodable constant. Unsigned negative constants are
   # not exchanged, because doing so changes carry/borrow semantics.
-  def overflow_immediate(i : Inst, signed : Bool, sub : Bool) : {Int32, Int32}?
+  def overflow_immediate(i : Inst, signed : Bool, sub : Bool, needs_value : Bool) : {Int32, Int32}?
     operand = i.args[0]
     constant = integer_constant(i.args[1])
     if constant.nil? && !sub
@@ -1528,10 +1528,10 @@ class Isel
     emit(m)
     if t.bits == 64 || t.bits == 32
       cond = signed ? cond_vs : (sub ? cond_cc : cond_cs)
-      return {t.bits == 32 ? canon(raw, t) : raw, cond}
+      return {t.bits == 32 && needs_value ? canon(raw, t) : raw, cond}
     end
     norm = signed ? canon(raw, t) : zext(raw, t)
-    result = signed ? norm : canon(raw, t)
+    result = signed ? norm : (needs_value ? canon(raw, t) : raw)
     compare(raw, norm)
     {result, cond_ne}
   end
@@ -2456,7 +2456,7 @@ class Isel
     form = overflow_form(i.aux.as(IntrinsicAux).id)
     t = i.args[0].type
     unless form.mul
-      if immediate = overflow_immediate(i, form.signed, form.sub)
+      if immediate = overflow_immediate(i, form.signed, form.sub, @overflow_value.has_key?(i))
         if leaf = @overflow_value[i]?
           bind_result(leaf, [immediate[0]])
         end
@@ -2474,7 +2474,7 @@ class Isel
       value = overflow_product(a, b, shift)
       hi = overflow_product_high(a, b, shift, form.signed)
       if form.signed
-        sign = binop(MOp::Asr, value, const_gpr(63_i64))
+        sign = shift >= 0 ? immediate_shift(MOp::AsrImm, value, 63) : binop(MOp::Asr, value, const_gpr(63_i64))
         compare(hi, sign)
       else
         compare_zero(hi)
@@ -3487,7 +3487,7 @@ class Isel
     t = i.args[0].type
     bits = t.bits
     unless mul
-      if immediate = overflow_immediate(i, signed, sub)
+      if immediate = overflow_immediate(i, signed, sub, true)
         bind_result(i, [immediate[0], set_flag(immediate[1])])
         return
       end
@@ -3498,7 +3498,7 @@ class Isel
         lo = overflow_product(a, b, shift)
         hi = overflow_product_high(a, b, shift, signed)
         if signed
-          sign = binop(MOp::Asr, lo, const_gpr(63_i64))
+          sign = shift >= 0 ? immediate_shift(MOp::AsrImm, lo, 63) : binop(MOp::Asr, lo, const_gpr(63_i64))
           compare(hi, sign)
         else
           compare_zero(hi)
