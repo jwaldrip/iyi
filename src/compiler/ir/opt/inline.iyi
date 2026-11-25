@@ -2,7 +2,7 @@ module compiler/ir/opt/inline
 
 import compiler/ir/values::{Value, u64_as_i64}
 import compiler/ir/types::{IrType}
-import compiler/ir/inst::{Op, Inst, Block, Attribute, CallAux, AsmAux, IntrinsicAux, IntPredicate}
+import compiler/ir/inst::{Op, Inst, Block, Attribute, CallAux, AsmAux, IntrinsicAux}
 import compiler/ir/function::{Function, Linkage}
 import compiler/ir/module::{Module}
 import compiler/ir/intrinsics::{IntrinsicId}
@@ -10,7 +10,7 @@ import compiler/ir/opt/analysis::{Cfg, DomTree, LoopInfo}
 import compiler/ir/opt/callgraph::{CallGraph, cold_blocks}
 import compiler/ir/opt/effects::{runtime_entry?, returns_twice_call?}
 import compiler/ir/opt/edit::{new_inst, new_phi}
-import compiler/ir/opt/fold::{int_value, canonical}
+import compiler/ir/opt/fold::{int_value, canonical, unsigned_value, fold_int_binary, fold_int_compare, fold_int_cast}
 import compiler/ir/opt/escape::{sizeof_value}
 
 pub class InlineBudget
@@ -151,7 +151,7 @@ end
 def alloc_entry?(fn : Function) : Bool
   case fn.name
   when "__iyi_new", "__iyi_malloc64", "__iyi_malloc_atomic64" then true
-  else false
+  else                                                             false
   end
 end
 
@@ -599,77 +599,6 @@ def calls_noinline?(block : Block) : Bool
   block.insts.any? { |inst| inst.op == Op::Call && !inst.args.empty? && inst.args[0].is_a?(Function) && has_attr?(inst.args[0].as(Function).attrs, "noinline") }
 end
 
-def zero_of(bits : Int32, value : Int64) : UInt64
-  result = value.unsafe_to_u64
-  result &= 0xFFFFFFFFFFFFFFFF_u64.unsafe_shr(64 - bits) if bits < 64
-  result
-end
-
-def fold_arith(op : Op, bits : Int32, a : Int64, c : Int64) : Int64?
-  value = case op
-          when Op::Add then a &+ c
-          when Op::Sub then a &- c
-          when Op::Mul then a &* c
-          when Op::And then a & c
-          when Op::Or then a | c
-          when Op::Xor then a ^ c
-          when Op::Shl
-            return nil unless c >= 0_i64 && c < bits
-            a.unsafe_shl(c.to_i32)
-          when Op::LShr
-            return nil unless c >= 0_i64 && c < bits
-            u64_as_i64(zero_of(bits, a).unsafe_shr(c.to_i32))
-          when Op::AShr
-            return nil unless c >= 0_i64 && c < bits
-            canonical(bits, a).unsafe_shr(c.to_i32)
-          else
-            return nil
-          end
-  canonical(bits, value)
-end
-
-def fold_compare(predicate : Int64, bits : Int32, a : Int64, c : Int64) : Int64?
-  au = zero_of(bits, a)
-  cu = zero_of(bits, c)
-  as_signed = canonical(bits, a)
-  cs = canonical(bits, c)
-  result = if predicate == IntPredicate::EQ.value.to_i64
-             au == cu
-           elsif predicate == IntPredicate::NE.value.to_i64
-             au != cu
-           elsif predicate == IntPredicate::ULT.value.to_i64
-             au < cu
-           elsif predicate == IntPredicate::ULE.value.to_i64
-             au <= cu
-           elsif predicate == IntPredicate::UGT.value.to_i64
-             au > cu
-           elsif predicate == IntPredicate::UGE.value.to_i64
-             au >= cu
-           elsif predicate == IntPredicate::SLT.value.to_i64
-             as_signed < cs
-           elsif predicate == IntPredicate::SLE.value.to_i64
-             as_signed <= cs
-           elsif predicate == IntPredicate::SGT.value.to_i64
-             as_signed > cs
-           elsif predicate == IntPredicate::SGE.value.to_i64
-             as_signed >= cs
-           else
-             return nil
-           end
-  result ? 1_i64 : 0_i64
-end
-
-def fold_cast(op : Op, source : Int32, dest : Int32, a : Int64) : Int64?
-  result = if op == Op::ZExt
-             u64_as_i64(zero_of(source, a))
-           elsif op == Op::SExt
-             canonical(source, a)
-           else
-             a
-           end
-  canonical(dest, result)
-end
-
 # usub.with.overflow and uadd.with.overflow over known operands leave [value, overflow] for their extractvalues.
 def overflow_pair(inst : Inst, known : Hash(Value, Int64), pairs : Hash(Value, Array(Int64))) : Nil
   return nil unless inst.aux.is_a?(IntrinsicAux) && inst.args.size == 2 && inst.args[0].type.int? && inst.args[0].type.bits <= 64
@@ -679,8 +608,8 @@ def overflow_pair(inst : Inst, known : Hash(Value, Int64), pairs : Hash(Value, A
   a = known_of(inst.args[0], known)
   c = known_of(inst.args[1], known)
   return nil if a.nil? || c.nil?
-  au = zero_of(bits, a)
-  cu = zero_of(bits, c)
+  au = unsigned_value(bits, a)
+  cu = unsigned_value(bits, c)
   mask = bits < 64 ? 0xFFFFFFFFFFFFFFFF_u64.unsafe_shr(64 - bits) : 0xFFFFFFFFFFFFFFFF_u64
   if id == IntrinsicId::USubOverflow
     value = (au &- cu) & mask
@@ -697,18 +626,19 @@ end
 # The value an instruction takes when its operands are known, or nil. Overflow intrinsics record their pair.
 def fold_inst(inst : Inst, known : Hash(Value, Int64), pairs : Hash(Value, Array(Int64))) : Int64?
   case inst.op
-  when Op::Add, Op::Sub, Op::Mul, Op::And, Op::Or, Op::Xor, Op::Shl, Op::LShr, Op::AShr
+  when Op::Add, Op::Sub, Op::Mul, Op::And, Op::Or, Op::Xor, Op::Shl, Op::LShr, Op::AShr, Op::UDiv, Op::URem, Op::SDiv, Op::SRem
     return nil unless inst.type.int? && inst.type.bits <= 64
     a = known_of(inst.args[0], known)
     c = known_of(inst.args[1], known)
     return nil if a.nil? || c.nil?
-    fold_arith(inst.op, inst.type.bits, a, c)
+    fold_int_binary(inst.op, inst.type.bits, a, c, inst.aux_int)
   when Op::ICmp
     return nil unless inst.args[0].type.int? && inst.args[0].type.bits <= 64
     a = known_of(inst.args[0], known)
     c = known_of(inst.args[1], known)
     return nil if a.nil? || c.nil?
-    fold_compare(inst.aux_int, inst.args[0].type.bits, a, c)
+    result = fold_int_compare(inst.aux_int, inst.args[0].type.bits, a, c)
+    result.nil? ? nil : (result ? 1_i64 : 0_i64)
   when Op::Select
     condition = known_of(inst.args[0], known)
     return nil if condition.nil?
@@ -717,7 +647,7 @@ def fold_inst(inst : Inst, known : Hash(Value, Int64), pairs : Hash(Value, Array
     return nil unless inst.type.int? && inst.type.bits <= 64 && inst.args[0].type.int? && inst.args[0].type.bits <= 64
     a = known_of(inst.args[0], known)
     return nil if a.nil?
-    fold_cast(inst.op, inst.args[0].type.bits, inst.type.bits, a)
+    fold_int_cast(inst.op, inst.args[0].type.bits, inst.type.bits, a)
   when Op::ExtractValue
     agg = inst.args[0]
     return nil unless agg.is_a?(Inst)

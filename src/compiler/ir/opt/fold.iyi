@@ -28,7 +28,7 @@ def signed_value(bits : Int32, value : Int64) : Int64
   value.unsafe_shl(padding).unsafe_shr(padding)
 end
 
-def unsigned_value(bits : Int32, value : Int64) : UInt64
+pub def unsigned_value(bits : Int32, value : Int64) : UInt64
   result = value.unsafe_to_u64
   result &= 0xFFFFFFFFFFFFFFFF_u64.unsafe_shr(64 - bits) if bits < 64
   result
@@ -70,7 +70,13 @@ pub def fold_binary(b : Builder, op : Op, type : IrType, lhs : Value, rhs : Valu
   return nil unless a
   c = int_value(rhs)
   return nil unless c
-  bits = type.bits
+  result = fold_int_binary(op, type.bits, a, c, flags)
+  return nil if result.nil?
+  b.const_int(type, result)
+end
+
+pub def fold_int_binary(op : Op, bits : Int32, a : Int64, c : Int64, flags : Int64) : Int64?
+  return nil unless flags == 0_i64
   value = case op
           when Op::Add then a &+ c
           when Op::Sub then a &- c
@@ -103,7 +109,7 @@ pub def fold_binary(b : Builder, op : Op, type : IrType, lhs : Value, rhs : Valu
           else
             return nil
           end
-  b.const_int(type, canonical(bits, value))
+  canonical(bits, value)
 end
 
 def signed_compare(predicate : Int64, lhs_value : Int64, rhs_value : Int64) : Bool
@@ -121,7 +127,12 @@ pub def fold_icmp(b : Builder, predicate : Int64, lhs : Value, rhs : Value) : Va
   return nil unless a
   c = int_value(rhs)
   return nil unless c
-  bits = lhs.type.bits
+  result = fold_int_compare(predicate, lhs.type.bits, a, c)
+  return nil if result.nil?
+  b.const_int(b.types.int1, result ? 1_i64 : 0_i64)
+end
+
+pub def fold_int_compare(predicate : Int64, bits : Int32, a : Int64, c : Int64) : Bool?
   au = unsigned_value(bits, a)
   cu = unsigned_value(bits, c)
   result = if predicate == IntPredicate::EQ.value.to_i64
@@ -141,26 +152,31 @@ pub def fold_icmp(b : Builder, predicate : Int64, lhs : Value, rhs : Value) : Va
            else
              return nil
            end
-  b.const_int(b.types.int1, result ? 1_i64 : 0_i64)
+  result
 end
 
 pub def fold_cast(b : Builder, op : Op, value : Value, dest : IrType) : Value?
   return nil unless value.type.int? && dest.int? && value.type.bits <= 64 && dest.bits <= 64
   v = int_value(value)
   return nil unless v
-  source_bits = value.type.bits
+  result = fold_int_cast(op, value.type.bits, dest.bits, v)
+  return nil if result.nil?
+  b.const_int(dest, result)
+end
+
+pub def fold_int_cast(op : Op, source_bits : Int32, dest_bits : Int32, v : Int64) : Int64?
   result = case op
            when Op::Trunc
-             return nil unless dest.bits < source_bits
+             return nil unless dest_bits < source_bits
              v
            when Op::ZExt
-             return nil unless dest.bits > source_bits
+             return nil unless dest_bits > source_bits
              u64_as_i64(unsigned_value(source_bits, v))
            when Op::SExt
-             return nil unless dest.bits > source_bits
+             return nil unless dest_bits > source_bits
              signed_value(source_bits, v)
            else
              return nil
            end
-  b.const_int(dest, canonical(dest.bits, result))
+  canonical(dest_bits, result)
 end
