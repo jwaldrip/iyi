@@ -72,6 +72,11 @@ jobs:
           REPO="$(cygpath -m "$PWD")"
           IYI="$(cygpath -m "$PWD/.build/iyi.exe")"
           IYI_RG9_C3_SAMPLE=0 python3 bench/stale_rg9.py --repo "$REPO" --compiler "$IYI" --work "$RUNNER_TEMP/rg9" --inputs-check || true
+      - name: Probe rows 26, 28, 50 and 55 step by step
+        run: |
+          IYI="$(cygpath -m "$PWD/.build/iyi.exe")"
+          WORK="$(cygpath -m "$(mktemp -d "${TMPDIR:-/tmp}/iyi-rows-probe.XXXXXX")")"
+          python3 bench/stale_win_probe_rows.py "$IYI" "$WORK" || true
 
   rows:
     name: the stale acceptance rows

@@ -11,6 +11,7 @@ require "./key_file"
 require "./profile"
 require "./snapshot"
 require "./fast_record"
+require "./compiler_env"
 require "../compiler"
 
 module Iyi::Stale
@@ -240,6 +241,7 @@ module Iyi::Stale
       run_cwd = Dir.current
       audit = ENV["IYI_STALE_FAST_AUDIT"]? == "1"
       fast = FastPath.new(FastFacts.current(run_cwd, @target), audit, Runner.fast_drop(audit, ENV["IYI_STALE_FAST_DROP"]?))
+      CompilerEnv.dump_runner(fast.facts.env, host.rlimits)
 
       # Every build and run leads a process group that these traps end, so an
       # interrupted run leaves no test running (exit 128 + the signal).

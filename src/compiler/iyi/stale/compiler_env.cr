@@ -126,6 +126,8 @@ module Iyi::Stale
       BuildInputs.paused do
         ::File.open(path, "a") do |io|
           io << "build file=" << filename << " pid=" << Process.pid << " enumerated=" << inputs.env_enumerated? << '\n'
+          io << "info compat=" << (Crystal::System::Env.get("__COMPAT_LAYER") || "(absent)").inspect
+          io << " child-env-md5=" << ::Crystal::Digest::MD5.hexdigest(BuildInputs::CHILD_ENV.map { |name| Crystal::System::Env.get(name) || "(absent)" }.join('\0')) << '\n'
           inputs.env.to_a.sort_by { |name, _| name }.each do |name, val|
             io << (counted?(name, inputs.env_enumerated?) ? '*' : ' ') << ' ' << name << '=' << (val || "(absent)") << '\n'
           end
@@ -133,6 +135,19 @@ module Iyi::Stale
             next if inputs.env.has_key?(name)
             io << "~ " << name << '=' << (val || "(absent)") << '\n'
           end
+        end
+      end
+    rescue ::File::Error | IO::Error
+    end
+
+    # iyi: the runner's own view, for the same probe: the compatibility layer it
+    # sees, and the job limits it read for the profile.
+    def self.dump_runner(facts_env : Hash(String, String), rlimits : Hash(String, Int64)) : Nil
+      path = Crystal::System::Env.get("IYI_STALE_CENV_DUMP")
+      return unless path && !path.empty?
+      BuildInputs.paused do
+        ::File.open(path, "a") do |io|
+          io << "runner pid=" << Process.pid << " compat=" << (facts_env["__COMPAT_LAYER"]? || "(absent)").inspect << " rlimits=" << rlimits.inspect << '\n'
         end
       end
     rescue ::File::Error | IO::Error
