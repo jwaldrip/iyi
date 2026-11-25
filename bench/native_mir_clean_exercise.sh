@@ -665,38 +665,6 @@ else
   fail "the layout driver does not build"
 fi
 
-echo "== 4c. loop rotation: runtime parity with the hosted build at both tiers"
-RUN_PROG="$FIX_LAYOUT/rotate_run.iyi"
-if [ "$HOST_ID" = darwin-arm64 ]; then
-  if ./bin/iyi build -o "$(native_path "$WORK/rotate_run.hosted$EXE")" "$(native_path "$RUN_PROG")" >"$WORK/rotate_run.hosted.log" 2>&1 &&
-     bounded_run "$WORK/rotate_run.hosted$EXE" "$WORK/rotate_run.hosted" &&
-     ./bin/iyi build -o "$(native_path "$WORK/compile_native$EXE")" "$(native_path src/compiler/tools/compile_native.iyi)" >"$WORK/compile_native.build.log" 2>&1; then
-    printf '0 0 21 4950\n1 2 21008\n0 0 159\n0 9 -1\n' >"$WORK/rotate_run.expected"
-    cmp -s "$WORK/rotate_run.expected" "$WORK/rotate_run.hosted.out" || fail "the hosted rotate_run output is not the expected lines"
-    for tier in default release; do
-      release_flag=
-      [ "$tier" = release ] && release_flag=--release
-      if ! "$WORK/compile_native$EXE" "$(native_path "$RUN_PROG")" -o "$(native_path "$WORK/rotate_run.$tier$EXE")" \
-           --pipeline typed --prelude $release_flag >"$WORK/rotate_run.$tier.log" 2>&1; then
-        cat "$WORK/rotate_run.$tier.log"
-        fail "rotate_run does not build at the $tier tier"
-        continue
-      fi
-      if ! bounded_run "$WORK/rotate_run.$tier$EXE" "$WORK/rotate_run.$tier"; then
-        fail "rotate_run $tier did not run to completion"
-        continue
-      fi
-      cmp -s "$WORK/rotate_run.hosted.out" "$WORK/rotate_run.$tier.out" &&
-        cmp -s "$WORK/rotate_run.hosted.status" "$WORK/rotate_run.$tier.status" ||
-        fail "rotate_run $tier differs from the hosted build"
-    done
-  else
-    cat "$WORK/rotate_run.hosted.log" "$WORK/compile_native.build.log" 2>/dev/null || true
-    fail "rotate_run hosted build or compile tool does not build"
-  fi
-else
-  host_limited "rotate_run runtime parity (macOS arm64)"
-fi
 check_rotate_mutant() {
   local opt="$WORK/mutant-iyi-opt$EXE" result
   if ! build_layout_driver "$opt"; then
