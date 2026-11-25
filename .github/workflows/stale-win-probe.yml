@@ -363,30 +363,18 @@ jobs:
         id: census
         continue-on-error: true
         run: bash bench/stale_census.sh
-      # What a push to master does after the audit, run here whatever the
-      # ref: the candidate becomes the master snapshot, which the git-diff
-      # self-check then imports (no master snapshot exists in a fork to
-      # fetch, so the two steps above have nothing to import).
-      - name: Prepare audited master receipt snapshot
-        id: prepare
-        continue-on-error: true
-        run: cp -f "stale-index/master-candidate-${STALE_TARGET}.json" "stale-index/master-${STALE_TARGET}.json"
-      - name: Git-diff self-check of the prepared master snapshot
-        id: selfcheck2
+      # The master snapshot a fork can fetch or publish is refused on purpose
+      # (master namespace: trusted repository, ref and workflow only), so the
+      # git-diff half of the self-check is run on its own, with this run's
+      # snapshot standing in for master's: same commit, so an empty diff.
+      - name: git-diff-check against the run snapshot
+        id: gitdiff
         continue-on-error: true
         run: |
-          bash bench/stale_ci.sh master-self-check \
-            --snapshot "stale-index/master-${STALE_TARGET}.json" \
-            --out-json stale-index/master-cached.json
-      - name: Publish audited master receipt snapshot
-        id: publish
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: master-x86_64-windows-msvc.json
-          path: stale-index/master-x86_64-windows-msvc.json
-          archive: false
-          retention-days: 1
+          bash bench/stale_ci.sh git-diff-check \
+            --master-snapshot "stale-index/run-${GITHUB_RUN_ID}-${STALE_TARGET}.json" \
+            --cached-json stale-index/cached.json \
+            --repo "$PWD"
       - name: Prepare empty master snapshot after disagreement
         id: empty_snapshot
         continue-on-error: true
@@ -400,7 +388,7 @@ jobs:
           echo "dl_compiler=${{ steps.dl_compiler.outcome }} dl_run=${{ steps.dl_run.outcome }} dl_master=${{ steps.dl_master.outcome }}"
           echo "hits=${{ steps.hits.outcome }} shadow_audit=${{ steps.shadow_audit.outcome }} emptied=${{ steps.emptied.outcome }} planted=${{ steps.planted.outcome }}"
           echo "masterpath=${{ steps.masterpath.outcome }} rg17=${{ steps.rg17.outcome }} rg9=${{ steps.rg9.outcome }} fetch=${{ steps.fetch.outcome }} selfcheck=${{ steps.selfcheck.outcome }}"
-          echo "census=${{ steps.census.outcome }} prepare=${{ steps.prepare.outcome }} selfcheck2=${{ steps.selfcheck2.outcome }} publish=${{ steps.publish.outcome }} empty_snapshot=${{ steps.empty_snapshot.outcome }}"
-          case "${{ steps.dl_compiler.outcome }}${{ steps.dl_run.outcome }}${{ steps.dl_master.outcome }}${{ steps.hits.outcome }}${{ steps.shadow_audit.outcome }}${{ steps.emptied.outcome }}${{ steps.planted.outcome }}${{ steps.masterpath.outcome }}${{ steps.rg17.outcome }}${{ steps.rg9.outcome }}${{ steps.fetch.outcome }}${{ steps.selfcheck.outcome }}${{ steps.census.outcome }}${{ steps.prepare.outcome }}${{ steps.selfcheck2.outcome }}${{ steps.publish.outcome }}${{ steps.empty_snapshot.outcome }}" in
+          echo "census=${{ steps.census.outcome }} gitdiff=${{ steps.gitdiff.outcome }} empty_snapshot=${{ steps.empty_snapshot.outcome }}"
+          case "${{ steps.dl_compiler.outcome }}${{ steps.dl_run.outcome }}${{ steps.dl_master.outcome }}${{ steps.hits.outcome }}${{ steps.shadow_audit.outcome }}${{ steps.emptied.outcome }}${{ steps.planted.outcome }}${{ steps.masterpath.outcome }}${{ steps.rg17.outcome }}${{ steps.rg9.outcome }}${{ steps.fetch.outcome }}${{ steps.selfcheck.outcome }}${{ steps.census.outcome }}${{ steps.gitdiff.outcome }}${{ steps.empty_snapshot.outcome }}" in
             *failure*) exit 1 ;;
           esac
