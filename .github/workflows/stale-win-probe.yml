@@ -67,15 +67,10 @@ jobs:
           make -f Makefile.win iyi
       - name: Set producer compiler path
         run: echo "IYI=$(cygpath -m "$PWD/.build/iyi.exe")" >> "$GITHUB_ENV"
-      - name: Why the second compiler cannot find llvm's .lib
-        id: probe
-        continue-on-error: true
-        timeout-minutes: 25
-        run: bash bench/stale_win_probe_rg1.sh
       - name: RG1 alone
         id: rg1
         continue-on-error: true
-        run: bash bench/stale_reproducible.sh rg1
+        run: bash bench/stale_reproducible.sh
       - name: Every step's outcome
         if: always()
         run: |
