@@ -1,0 +1,19 @@
+; iyi-ir 1
+source_filename = "thread_const"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i32 @thread_const(i1 %c) {
+entry:
+  br i1 %c, label %a, label %b
+a:
+  br label %join
+b:
+  br label %join
+join:
+  %p = phi i1 [ true, label %a ], [ false, label %b ]
+  br i1 %p, label %yes, label %no
+yes:
+  ret i32 1
+no:
+  ret i32 2
+}

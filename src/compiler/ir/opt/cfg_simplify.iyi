@@ -1,11 +1,13 @@
 module compiler/ir/opt/cfg_simplify
 
 import compiler/ir/values::{Value}
-import compiler/ir/inst::{Op, Inst, Block}
+import compiler/ir/inst::{Op, Inst, Block, IntrinsicAux}
 import compiler/ir/function::{Function}
 import compiler/ir/module::{Module}
 import compiler/ir/opt/analysis::{Cfg, DefUse, Use}
 import compiler/ir/opt/edit::{new_inst}
+import compiler/ir/intrinsics::{IntrinsicId}
+import compiler/ir/opt/fold::{int_value}
 
 # A predecessor list is maintained while a batch of block edits is in flight.
 def replace_predecessor(block : Block, old : Block, replacement : Block) : Nil
@@ -253,6 +255,250 @@ class EmptyBlockForwarder
   end
 end
 
+# An i1 constant's value (0 or 1), or -1 for anything else.
+def literal_bit(value : Value) : Int32
+  return -1 unless value.type.int? && value.type.bits == 1
+  number = int_value(value)
+  return -1 if number.nil?
+  number == 0_i64 ? 0 : 1
+end
+
+def true_constant?(value : Value) : Bool
+  literal_bit(value) == 1
+end
+
+# expect.i1 and xor with the constant true keep an i1 value up to inversion; xor is the inverting one.
+def bool_wrapper?(inst : Inst) : Bool
+  if inst.op == Op::Intrinsic && inst.aux.is_a?(IntrinsicAux) && inst.aux.as(IntrinsicAux).id == IntrinsicId::ExpectI1
+    return inst.args.size == 2
+  end
+  inst.op == Op::Xor && inst.args.size == 2 && (true_constant?(inst.args[0]) || true_constant?(inst.args[1]))
+end
+
+# The value a wrapper keeps; only meaningful when bool_wrapper? holds.
+def bool_operand(inst : Inst) : Value
+  return inst.args[0] if inst.op == Op::Intrinsic
+  true_constant?(inst.args[0]) ? inst.args[1] : inst.args[0]
+end
+
+# The value under every wrapper of an i1 value.
+def bool_base(value : Value) : Value
+  v = value
+  while v.is_a?(Inst) && bool_wrapper?(v.as(Inst))
+    v = bool_operand(v.as(Inst))
+  end
+  v
+end
+
+# The number of xor wrappers between an i1 value and its base, mod 2.
+def bool_parity(value : Value) : Int32
+  parity = 0
+  v = value
+  while v.is_a?(Inst) && bool_wrapper?(v.as(Inst))
+    parity = 1 - parity if v.as(Inst).op == Op::Xor
+    v = bool_operand(v.as(Inst))
+  end
+  parity
+end
+
+# The index of the one entry of blocks that is block, or -1 when there is not exactly one.
+def sole_slot(blocks : Array(Block), block : Block) : Int32
+  slot = -1
+  count = 0
+  j = 0
+  while j < blocks.size
+    if blocks[j] == block
+      slot = j
+      count = count + 1
+    end
+    j = j + 1
+  end
+  count == 1 ? slot : -1
+end
+
+# Drops one predecessor from a block's list; the final relink puts every list in canonical order.
+def remove_pred(block : Block, pred : Block) : Nil
+  kept = [] of Block
+  block.preds.each { |p| kept << p unless p == pred }
+  block.preds[0, block.preds.size] = kept
+end
+
+# A test is a block whose only phi is an i1 phi, read by its conditional branch through wrappers, and that holds
+# nothing else. The phi's incoming value on an edge is known when it is an i1 constant, or when the predecessor's
+# single predecessor branched on the same value. A known edge moves to the successor the test would take on that
+# value, and the test's phi drops that incoming. Block order decides every choice; no instruction moves.
+class BoolPhiThreader
+  def initialize(@fn : Function)
+    @du = nil.as(DefUse?)
+  end
+
+  def run : Bool
+    changed = false
+    i = 0
+    while i < @fn.blocks.size
+      changed = true if thread_block(@fn.blocks[i])
+      i = i + 1
+    end
+    return false unless changed
+    remove_unreachable(@fn)
+    true
+  end
+
+  # Built at the first test, then kept exact by every edit this pass makes.
+  def use_table : DefUse
+    du = @du
+    return du if du
+    fresh = DefUse.new(@fn)
+    @du = fresh
+    fresh
+  end
+
+  # The inversion parity between a test's phi and its branch, or -1 when block is not a test.
+  def test_parity(block : Block) : Int32
+    return -1 unless block.terminated? && block.insts.size >= 2
+    p = block.insts[0]
+    return -1 unless p.op == Op::Phi && p.type.int? && p.type.bits == 1
+    term = block.terminator
+    return -1 unless term.op == Op::CondBr && term.targets[0] != term.targets[1]
+    cur = term.args[0]
+    parity = 0
+    i = block.insts.size - 2
+    while i >= 1
+      inst = block.insts[i]
+      return -1 unless cur == inst && bool_wrapper?(inst)
+      parity = 1 - parity if inst.op == Op::Xor
+      cur = bool_operand(inst)
+      i = i - 1
+    end
+    return -1 unless cur == p
+    parity
+  end
+
+  # The test's phi and each of its wrappers are used only inside the test.
+  def single_use?(block : Block) : Bool
+    du = use_table
+    last = block.insts.size - 2
+    i = 0
+    while i <= last
+      return false unless du.use_count(block.insts[i]) == 1
+      i = i + 1
+    end
+    true
+  end
+
+  def thread_block(block : Block) : Bool
+    parity = test_parity(block)
+    return false if parity < 0
+    return false unless single_use?(block)
+    p = block.insts[0]
+    term = block.terminator
+    changed = false
+    k = 0
+    while k < p.args.size
+      if thread_edge(block, p, term, parity, k)
+        changed = true
+      else
+        k = k + 1
+      end
+    end
+    changed
+  end
+
+  # The test's phi value on the edge from `from`, as 0 or 1, or -1 when no rule knows it.
+  def edge_bit(from : Block, value : Value) : Int32
+    bit = literal_bit(value)
+    return bit if bit >= 0
+    return -1 unless from.preds.size == 1
+    q = from.preds[0]
+    return -1 unless q.terminated?
+    branch = q.terminator
+    return -1 unless branch.op == Op::CondBr && branch.targets[0] != branch.targets[1]
+    return -1 unless branch.targets[0] == from || branch.targets[1] == from
+    return -1 unless bool_base(value) == bool_base(branch.args[0])
+    on_true = (branch.targets[0] == from) ? 1 : 0
+    on_true ^ bool_parity(branch.args[0]) ^ bool_parity(value)
+  end
+
+  # Moves the edge from `from` (the k-th incoming of the test's phi) to the successor the test takes on it.
+  # Returns false, with nothing changed, when a rule refuses it.
+  def thread_edge(block : Block, p : Inst, term : Inst, parity : Int32, k : Int32) : Bool
+    from = p.targets[k]
+    return false if from == block
+    bit = edge_bit(from, p.args[k])
+    return false if bit < 0
+    target = ((bit ^ parity) == 1) ? term.targets[0] : term.targets[1]
+    return false if target == block || target == from
+    return false unless from.terminated?
+    fterm = from.terminator
+    return false unless fterm.op == Op::Br || fterm.op == Op::CondBr || fterm.op == Op::Switch
+    slot = sole_slot(fterm.targets, block)
+    return false if slot < 0
+    return false if fterm.targets.any? { |t| t == target }
+    return false unless takes_from?(target, block)
+    retarget(block, p, k, from, fterm, slot, target)
+    true
+  end
+
+  # The successor may gain a predecessor. It has no i1 phi, so an edge only ever loses an i1 incoming and the
+  # pass terminates. Each of its phis has exactly one incoming from block, which becomes the value on the new edge.
+  def takes_from?(target : Block, block : Block) : Bool
+    target.insts.each do |phi|
+      break unless phi.op == Op::Phi
+      return false if phi.type.int? && phi.type.bits == 1
+      return false if sole_slot(phi.targets, block) < 0
+    end
+    true
+  end
+
+  # The edge now enters target: the predecessor lists follow, target's phis take their incoming from block as their
+  # incoming from from, and the test's phi drops its incoming from from.
+  def retarget(block : Block, p : Inst, k : Int32, from : Block, fterm : Inst, slot : Int32, target : Block) : Nil
+    du = use_table
+    fterm.targets[slot] = target
+    remove_pred(block, from)
+    target.add_pred(from)
+    target.insts.each do |phi|
+      break unless phi.op == Op::Phi
+      j = sole_slot(phi.targets, block)
+      phi.add_incoming(phi.args[j], from)
+      du.add(phi, phi.args.size - 1)
+    end
+    drop_pair(p, k)
+  end
+
+  # Removes the k-th incoming pair of a phi, keeping every use count exact.
+  def drop_pair(p : Inst, k : Int32) : Nil
+    du = use_table
+    j = 0
+    while j < p.args.size
+      du.remove(p, j)
+      j = j + 1
+    end
+    values = [] of Value
+    blocks = [] of Block
+    j = 0
+    while j < p.args.size
+      if j != k
+        values << p.args[j]
+        blocks << p.targets[j]
+      end
+      j = j + 1
+    end
+    p.args[0, p.args.size] = values
+    p.targets[0, p.targets.size] = blocks
+    j = 0
+    while j < p.args.size
+      du.add(p, j)
+      j = j + 1
+    end
+  end
+end
+
+# The fixed-point loop in run_cfg_simplify merges and forwards what this leaves behind.
+def thread_bool_phis(fn : Function) : Bool
+  BoolPhiThreader.new(fn).run
+end
+
 pub def run_cfg_simplify(mod : Module, fn : Function) : Bool
   return false if fn.declaration?
   changed = remove_unreachable(fn)
@@ -260,7 +506,8 @@ pub def run_cfg_simplify(mod : Module, fn : Function) : Bool
   while true
     merged = BlockMerger.new(fn).run
     forwarded = EmptyBlockForwarder.new(fn).run
-    break unless merged || forwarded
+    threaded = thread_bool_phis(fn)
+    break unless merged || forwarded || threaded
     changed = true
   end
   changed

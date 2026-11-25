@@ -297,6 +297,8 @@ fi
 echo '== 2. individual pass fixtures, determinism and idempotence'
 for name in unreachable_block merge_chain forward_empty condbr_same_targets; do fixture_check cfg-simplify "$name" changed; done
 fixture_check cfg-simplify forward_blocked_by_phi_conflict keep
+for name in thread_or thread_and thread_const thread_inverted; do fixture_check cfg-simplify "$name" changed; done
+for name in thread_shared_succ thread_two_phis thread_side_effect thread_phi_used_elsewhere thread_into_bool_phi thread_switch_edges thread_back_edge; do fixture_check cfg-simplify "$name" keep; done
 for name in straight_line diamond loop nested_loops uninitialized_read pointer_slot i1_slot null_uninitialized unreachable_predecessor; do fixture_check mem2reg "$name" changed; done
 for name in escaping_slot volatile_slot aggregate_slot atomic_slot tls_slot stored_address unreachable_slot_use; do fixture_check mem2reg "$name" keep; done
 for name in fold_int fold_icmp_signed identities trivial_phi condbr_const overflow_flag_unused fold_double power_of_two switch_const expect_const fold_cast fold_divrem fold_double_ops trivial_self_phi constant_global; do fixture_check simplify "$name" changed; done
@@ -1066,6 +1068,64 @@ prove_mutation 'M11: mutable globals are not constants' src/compiler/ir/opt/simp
   '    return nil if false # mutation S8-global: only immutable globals fold' \
   -- mutation_check M11 simplify constant_global_keep || fail 'M11 was not caught'
 mutation_result M11
+prove_mutation 'R3M1: a known incoming takes the opposite successor' src/compiler/ir/opt/cfg_simplify.iyi \
+  '    target = ((bit ^ parity) == 1) ? term.targets[0] : term.targets[1]' \
+  '    target = ((bit ^ parity) == 1) ? term.targets[1] : term.targets[0] # mutation R3-opposite: the wrong successor' \
+  -- mutation_check R3M1 cfg-simplify thread_and || fail 'R3M1 was not caught'
+mutation_result R3M1
+prove_mutation 'R3M2: a successor takes a second incoming from one predecessor' src/compiler/ir/opt/cfg_simplify.iyi \
+  '    return false if fterm.targets.any? { |t| t == target }' \
+  '    nil # mutation R3-I3: the shared-successor refusal is dropped' \
+  -- mutation_check R3M2 cfg-simplify thread_shared_succ || fail 'R3M2 was not caught'
+mutation_result R3M2
+prove_mutation 'R3M3: only constant incomings are known' src/compiler/ir/opt/cfg_simplify.iyi \
+  '    return -1 unless from.preds.size == 1' \
+  '    return -1 # mutation R3-constants: the predecessor branch is not used' \
+  -- mutation_check R3M3 cfg-simplify thread_and || fail 'R3M3 was not caught'
+mutation_result R3M3
+prove_mutation 'R3M4: xor wrappers do not invert the test' src/compiler/ir/opt/cfg_simplify.iyi \
+  '      parity = 1 - parity if inst.op == Op::Xor' \
+  '      nil # mutation R3-parity: the inversion of a xor wrapper is ignored' \
+  -- mutation_check R3M4 cfg-simplify thread_inverted || fail 'R3M4 was not caught'
+mutation_result R3M4
+prove_mutation 'R3M5: the test value may have uses outside the test' src/compiler/ir/opt/cfg_simplify.iyi \
+  '      return false unless du.use_count(block.insts[i]) == 1' \
+  '      nil # mutation R3-use: a use outside the test is allowed' \
+  -- mutation_check R3M5 cfg-simplify thread_phi_used_elsewhere || fail 'R3M5 was not caught'
+mutation_result R3M5
+prove_mutation 'R3M6: other instructions may sit in the test' src/compiler/ir/opt/cfg_simplify.iyi \
+  '      return -1 unless cur == inst && bool_wrapper?(inst)' \
+  '      if cur != inst
+        i = i - 1
+        next # mutation R3-shape: other instructions are skipped
+      end
+      return -1 unless bool_wrapper?(inst)' \
+  -- mutation_check R3M6 cfg-simplify thread_side_effect || fail 'R3M6 was not caught'
+mutation_result R3M6
+prove_mutation 'R3M7: a block with a second phi is a test' src/compiler/ir/opt/cfg_simplify.iyi \
+  '      return -1 unless cur == inst && bool_wrapper?(inst)' \
+  '      if cur != inst
+        i = i - 1
+        next # mutation R3-shape: a second phi is skipped
+      end
+      return -1 unless bool_wrapper?(inst)' \
+  -- mutation_check R3M7 cfg-simplify thread_two_phis || fail 'R3M7 was not caught'
+mutation_result R3M7
+prove_mutation 'R3M8: a successor with an i1 phi may gain an incoming' src/compiler/ir/opt/cfg_simplify.iyi \
+  '      return false if phi.type.int? && phi.type.bits == 1' \
+  '      nil # mutation R3-boolphi: an i1 phi may gain an incoming' \
+  -- mutation_check R3M8 cfg-simplify thread_into_bool_phi || fail 'R3M8 was not caught'
+mutation_result R3M8
+prove_mutation 'R3M9: a predecessor with two edges to the block is threaded' src/compiler/ir/opt/cfg_simplify.iyi \
+  '  count == 1 ? slot : -1' \
+  '  slot # mutation R3-edges: several edges to the block are not refused' \
+  -- mutation_check R3M9 cfg-simplify thread_switch_edges || fail 'R3M9 was not caught'
+mutation_result R3M9
+prove_mutation 'R3M10: an edge may become a self edge' src/compiler/ir/opt/cfg_simplify.iyi \
+  '    return false if target == block || target == from' \
+  '    return false if target == block # mutation R3-self: a self edge is allowed' \
+  -- mutation_check R3M10 cfg-simplify thread_back_edge || fail 'R3M10 was not caught'
+mutation_result R3M10
 prove_mutation 'M12: stores invalidate earlier loads' src/compiler/ir/opt/cse.iyi \
   '        version = @boundaries[inst] # mutation CSE-store: invalidate loads at each store' \
   '        version = @entry_version[block] # mutation CSE-store: invalidate loads at each store' \
