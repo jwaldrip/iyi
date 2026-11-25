@@ -175,13 +175,13 @@ def make_dispatch(kind : Int32) : DispatchBase
   end
 end
 
-def run(seed : UInt32) : Int64
+def run(seed : UInt64) : Int64
   entries = [] of DispatchBase
   state = seed
   index = 0
   while index < 4096
-    state = (state &* 1664525_u32) &+ 1013904223_u32
-    entries << make_dispatch((state.unsafe_shr(16) % 24_u32).to_i32)
+    state = ((state &* 1664525_u64) &+ 1013904223_u64) & 0xFFFFFFFF_u64
+    entries << make_dispatch((state.unsafe_shr(16_u64) % 24_u64).to_i32)
     index = index + 1
   end
   sum = 0_i64
@@ -197,4 +197,4 @@ def run(seed : UInt32) : Int64
   sum
 end
 
-puts "result=#{run(ARGC_UNSAFE.to_u32)}"
+puts "result=#{run(ARGC_UNSAFE.to_u64)}"

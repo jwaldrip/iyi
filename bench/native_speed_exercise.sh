@@ -80,6 +80,41 @@ JSON
   if [ "$rc" -ne 0 ]; then cat "$WORK/instructions-fixture.log"; return 2; fi
   return 0
 }
+# A five-run instruction spread cannot be hidden by a stable median after a
+# retry, and an existing row cannot be lowered from fewer than five runs.
+check_instruction_writer() {
+  "$PY" - "$WORK" <<'PY' || return 2
+import json, pathlib, sys
+work = pathlib.Path(sys.argv[1])
+def sample(instructions):
+    return {"cycles": 100, "cpu": 1, "instructions": instructions,
+            "footprint": 1048576, "result": "42"}
+def row(name, hosted, native):
+    return {"workload": name, "mode": "default",
+            "hosted": [sample(x) for x in hosted], "native": [sample(x) for x in native]}
+rows = [
+    row("stable", [100]*5, [120]*5),
+    row("unstable", [100]*10, [100, 103, 103, 103, 103, 100, 100, 100, 100, 100]),
+    row("short", [100]*3, [50]*3),
+]
+(work / "instructions-writer.json").write_text(json.dumps({"rows": rows}), encoding="utf-8")
+(work / "instructions-writer.ceiling").write_text(
+    "noise cycles 0.05\nnoise cpu 0.10\nnoise instructions 0.02\nshort default instructions 1.50\n",
+    encoding="utf-8")
+PY
+  "$PY" "$(native_path "$HELPER")" lower --ceiling "$(native_path "$WORK/instructions-writer.ceiling")" \
+    --measurements "$(native_path "$WORK/instructions-writer.json")" \
+    --write "$(native_path "$WORK/instructions-writer.out")" >"$WORK/instructions-writer.log" 2>&1 || return 2
+  if ! grep -Fxq 'stable default instructions 1.20' "$WORK/instructions-writer.out" ||
+     grep -Eq '^unstable default instructions ' "$WORK/instructions-writer.out" ||
+     ! grep -Fxq 'short default instructions 1.50' "$WORK/instructions-writer.out"; then
+    echo 'decisive: instruction ratchet admitted a noisy row or lowered one with too few runs'
+    cat "$WORK/instructions-writer.out"
+    return 1
+  fi
+  return 0
+}
+
 
 
 check_writer() {
@@ -199,7 +234,10 @@ if [ "$writer_rc" -ne 0 ]; then fail "ceiling writer failed (exit $writer_rc)"; 
 instruction_rc=0
 check_instruction_judge || instruction_rc=$?
 if [ "$instruction_rc" -ne 0 ]; then fail "instruction judge fixture failed (exit $instruction_rc)"; fi
-if [ "$fixture_rc" -eq 0 ] && [ "$writer_rc" -eq 0 ] && [ "$instruction_rc" -eq 0 ]; then echo "  judge and writer fixtures passed"; fi
+instruction_writer_rc=0
+check_instruction_writer || instruction_writer_rc=$?
+if [ "$instruction_writer_rc" -ne 0 ]; then fail "instruction writer fixture failed (exit $instruction_writer_rc)"; fi
+if [ "$fixture_rc" -eq 0 ] && [ "$writer_rc" -eq 0 ] && [ "$instruction_rc" -eq 0 ] && [ "$instruction_writer_rc" -eq 0 ]; then echo "  judge and writer fixtures passed"; fi
 
 echo "== 2. build the self-hosted compiler"
 stage1_ok=0
@@ -356,6 +394,9 @@ prove_mutation "judge detects an exceeded instruction ceiling" "$HELPER" \
   '        for metric in metrics_for(row, ceilings, lowering):' \
   $'        for metric in metrics_for(row, ceilings, lowering):\n            if metric == "instructions":\n                continue' \
   -- check_instruction_judge || fail "instruction judge mutation was not proven"
+prove_mutation "instruction ratchet checks the first five runs" "$HELPER" \
+  '                noisy = noisy or instruction_five_run_noisy(row)' \
+  '                noisy = noisy or False' -- check_instruction_writer || fail "instruction spread mutation was not proven"
 prove_mutation "writer cannot raise a ceiling" "$HELPER" 'kept = min(old, measured)' 'kept = measured' -- check_writer || fail "writer mutation was not proven"
 
 echo "== 8. ceiling ratchet"

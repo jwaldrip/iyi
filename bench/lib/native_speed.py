@@ -177,6 +177,14 @@ def values(row, metric):
     result["ratio"] = result["native"] / result["hosted"]
     return result
 
+def instruction_five_run_noisy(row):
+    for arm in ("native", "hosted"):
+        samples = [number(sample.get("instructions"), arm + " instructions") for sample in row[arm][:5]]
+        if statistics.median(samples) / min(samples) > 1.02:
+            return True
+    return False
+
+
 def metrics_for(row, ceilings, lowering):
     if "metric" in row:
         return [row["metric"]]
@@ -330,6 +338,8 @@ def evaluate(data, noise, ceilings, scale, target=False, lowering=False):
                     verdict = "FAIL"
             spread_limit = 1 + noise[metric] * (1 if metric == "instructions" else 2)
             noisy = max(stats["spread_native"], stats["spread_hosted"]) > spread_limit
+            if metric == "instructions" and min(len(row["native"]), len(row["hosted"])) >= 5:
+                noisy = noisy or instruction_five_run_noisy(row)
             if verdict != "FAIL" and noisy:
                 verdict = "NOISY"
             if row.get("cosmetic", False):
@@ -408,10 +418,14 @@ def lower(args):
     rows = evaluate(read_json(args.measurements), noise, ceilings, 1, lowering=True)
     if any(item["verdict"] in ("RESULT", "COSMETIC") for item in rows):
         raise GateError("cannot lower a ceiling from invalid measurements")
+    updates = {}
     for item in rows:
         if item["noisy"]:
             print("  not lowering noisy row: %s" % " ".join(item["key"]))
-    updates = {item["key"]: upward(item["ratio"]) for item in rows if not item["noisy"]}
+        elif item["metric"] == "instructions" and min(len(item["row"]["native"]), len(item["row"]["hosted"])) < 5:
+            print("  not lowering instruction row with fewer than five runs: %s" % " ".join(item["key"]))
+        else:
+            updates[item["key"]] = upward(item["ratio"])
     output = []
     for line in text.splitlines():
         fields = line.split()
