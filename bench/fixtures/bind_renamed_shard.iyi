@@ -1,0 +1,50 @@
+module HarborKit
+  class Settings
+    def initialize(@salutation : String = "Hello", @active : Bool = false)
+    end
+
+    def salutation : String
+      @salutation
+    end
+
+    def active? : Bool
+      @active
+    end
+
+    def adjust(input)
+      input
+    end
+  end
+
+  class Announcer
+    def initialize(@settings : Settings)
+    end
+
+    def announce(recipient : String) : String
+      "#{@settings.salutation}, #{recipient}!"
+    end
+
+    def render_many(*recipients : String) : Array(String)
+      [announce("everyone")] of String
+    end
+
+    def elapsed(&work : -> Nil) : Nil
+      yield
+    end
+
+    def examine(item)
+      item
+    end
+
+    private def note(message : String) : Nil
+    end
+  end
+
+  def self.release : String
+    "2.1.0"
+  end
+
+  def self.assemble(salutation : String = "Hi") : Announcer
+    Announcer.new(Settings.new(salutation))
+  end
+end

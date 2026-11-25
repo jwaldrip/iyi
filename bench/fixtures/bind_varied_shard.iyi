@@ -1,0 +1,73 @@
+module ParcelDepot
+  class Dispatch
+    def initialize(@timeout : Int32 = 1)
+    end
+
+    def bundle(*pieces : String) : String
+      "joined"
+    end
+
+    def batch(*quantities : Int32) : Int32
+      7
+    end
+
+    def around(&work : -> _) : String
+      "before"
+    end
+
+    def measure(&work : -> _) : Int32
+      3
+    end
+
+    def distance : Int32
+      3
+    end
+
+    def deadline(duration : Int32)
+      duration
+    end
+
+    def overseas(record : ExternalRecord) : String
+      "outside"
+    end
+
+    def observe(value)
+      value
+    end
+
+    def inspect_record(record)
+      record
+    end
+
+    def forward(message)
+      message
+    end
+  end
+
+  class Cell(Element, Key)
+    def initialize(@entry : Element, @token : Key)
+    end
+
+    def entry : Element
+      @entry
+    end
+
+    def duplicate(first : Element, second : Element) : Element
+      first
+    end
+
+    def key : Key
+      @token
+    end
+
+    def pair(entry : Element, token : Key) : Tuple(Element, Key)
+      {entry, token}
+    end
+  end
+end
+
+class ExternalRecord
+  def serial : Int32
+    1
+  end
+end
