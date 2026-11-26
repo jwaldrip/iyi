@@ -1,5 +1,6 @@
 # typed parity floors: <repo-relative file> <matched nodes>.
-# A count may only rise. Raise with: TYPED_PARITY_RAISE=1 bash bench/selfhost_typed_parity_exercise.sh
+# A path@host row overrides a lower shared floor. Counts may only rise.
+# Raise with: TYPED_PARITY_RAISE=1 bash bench/selfhost_typed_parity_exercise.sh
 samples/iyi/basics.iyi 71
 samples/iyi/calc.iyi 17
 samples/iyi/collections.iyi 79
@@ -357,6 +358,7 @@ src/std/string_scanner.iyi 51
 src/std/symbol.iyi 19
 src/std/system.iyi 11
 src/std/system_roots.iyi 39
+src/std/system_roots.iyi@linux 40
 src/std/tar.iyi 117
 src/std/term.iyi 31
 src/std/text.iyi 121

@@ -196,7 +196,8 @@ echo "  $(wc -l < "$RESULTS" | tr -d ' ') files measured"
 
 echo
 echo "== 4. Checking each file against its committed floor"
-awk -F'\t' -v floorfile="$FLOOR_FILE" '
+typed_verdicts() {
+awk -F'\t' -v floorfile="${1:-$FLOOR_FILE}" -v host="${2:-$HOST_OS}" '
   BEGIN {
     while ((getline line < floorfile) > 0) {
       if (line ~ /^[ \t]*#/ || line ~ /^[ \t]*$/) continue
@@ -206,21 +207,46 @@ awk -F'\t' -v floorfile="$FLOOR_FILE" '
   }
   {
     corpus = $1; rel = $2; nodes = $3 + 0; matched = $4 + 0; note = $5
+    key = rel "@" host
+    fl = (rel in floor) ? floor[rel] : "-"
+    if (key in floor && rel in floor && floor[key] > fl) fl = floor[key]
     if (note ~ /^ORACLE/) verdict = "ORACLE"
     else if (note ~ /^PORT/) verdict = "PORT"
     else if (!(rel in floor)) verdict = "NO FLOOR"
-    else if (matched < floor[rel]) verdict = "BELOW FLOOR"
-    else if (matched > floor[rel]) verdict = "RAISE THE FLOOR"
+    else if (matched < fl) verdict = "BELOW FLOOR"
+    else if (matched > fl) verdict = "RAISE THE FLOOR"
     else verdict = "ok"
-    fl = (rel in floor) ? floor[rel] : "-"
     printf "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n", verdict, corpus, rel, nodes, matched, \
       (nodes > 0 ? sprintf("%.1f%%", 100 * matched / nodes) : "n/a"), fl, note
-  }' "$RESULTS" > "$VERDICTS"
+  }' "${3:-$RESULTS}" > "${4:-$VERDICTS}"
+}
+
+# Check the actual verdict logic in both directions for a host override.
+printf 'probe.iyi 3\nprobe.iyi@%s 5\n' "$HOST_OS" > "$WORK/host.floor"
+printf 'subset\tprobe.iyi\t5\t5\t-\n' > "$WORK/host.results"
+typed_verdicts "$WORK/host.floor" "$HOST_OS" "$WORK/host.results" "$WORK/host.verdict"
+if ! awk -F'\t' '$1 != "ok" { bad = 1 } END { exit bad }' "$WORK/host.verdict"; then
+  echo "FAIL: host floor baseline did not match"
+  status=1
+fi
+for spec in '4:RAISE THE FLOOR' '6:BELOW FLOOR'; do
+  count="${spec%%:*}"
+  expected="${spec#*:}"
+  printf 'probe.iyi 3\nprobe.iyi@%s %s\n' "$HOST_OS" "$count" > "$WORK/host.floor"
+  typed_verdicts "$WORK/host.floor" "$HOST_OS" "$WORK/host.results" "$WORK/host.verdict"
+  if awk -F'\t' -v expected="$expected" '$1 == expected { found = 1 } END { exit !found }' "$WORK/host.verdict"; then
+    echo "  caught: host floor $count gives $expected"
+  else
+    echo "FAIL: host floor $count did not give $expected"
+    status=1
+  fi
+done
+typed_verdicts
 
 if [ "$RAISE" = 1 ]; then
-  "$PY" - "$(native_path "$VERDICTS")" "$(native_path "$FLOOR_FILE")" <<'PY'
+  "$PY" - "$(native_path "$VERDICTS")" "$(native_path "$FLOOR_FILE")" "$HOST_OS" <<'PY'
 import sys
-verdicts, floor_path = sys.argv[1], sys.argv[2]
+verdicts, floor_path, host = sys.argv[1:]
 floor = {}
 try:
     for line in open(floor_path, encoding="utf-8"):
@@ -235,15 +261,17 @@ for line in open(verdicts, encoding="utf-8"):
     verdict, rel, matched = cols[0], cols[2], int(cols[4])
     if verdict in ("BELOW FLOOR", "ORACLE", "PORT"):
         continue
-    old = floor.get(rel, 0)
+    key = f"{rel}@{host}" if f"{rel}@{host}" in floor else rel
+    old = floor.get(key, 0)
     if matched > old:
-        floor[rel] = matched
+        floor[key] = matched
         raised += 1
-    elif rel not in floor:
-        floor[rel] = old
+    elif key not in floor:
+        floor[key] = old
 with open(floor_path, "w", encoding="utf-8", newline="\n") as out:
     out.write("# typed parity floors: <repo-relative file> <matched nodes>.\n")
-    out.write("# A count may only rise. Raise with: TYPED_PARITY_RAISE=1 bash bench/selfhost_typed_parity_exercise.sh\n")
+    out.write("# A path@host row overrides a lower shared floor. Counts may only rise.\n")
+    out.write("# Raise with: TYPED_PARITY_RAISE=1 bash bench/selfhost_typed_parity_exercise.sh\n")
     for rel in sorted(floor):
         out.write(f"{rel} {floor[rel]}\n")
 print(f"  floor written: {len(floor)} entries, {raised} raised")

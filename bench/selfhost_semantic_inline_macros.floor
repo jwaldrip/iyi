@@ -1,5 +1,6 @@
 # Floor for bench/selfhost_semantic_inline_macros_exercise.sh: the agreeing declaration
-# records each file must keep. Only raise these (SEMINL_RAISE=1); never lower one.
+# records each file must keep. A path@host row overrides a lower shared floor.
+# Only raise these (SEMINL_RAISE=1); never lower one.
 samples/iyi/basics.iyi 2
 samples/iyi/calc.iyi 0
 samples/iyi/collections.iyi 11
@@ -37,6 +38,7 @@ src/compiler/backend/llvm/translate.iyi 0
 src/compiler/backend/native.iyi 6
 src/compiler/codegen/codegen.iyi 307
 src/compiler/command/daemon.iyi 133
+src/compiler/command/daemon.iyi@darwin 141
 src/compiler/command/driver.iyi 247
 src/compiler/command/execute.iyi 11
 src/compiler/compiler.iyi 65
@@ -121,6 +123,7 @@ src/compiler/macros/macro_parser.iyi 26
 src/compiler/macros/methods.iyi 24
 src/compiler/macros/site_scan.iyi 49
 src/compiler/macros/target_flags.iyi 28
+src/compiler/macros/target_flags.iyi@darwin 31
 src/compiler/macros/type_facts.iyi 31
 src/compiler/native/aarch64/abi.iyi 2
 src/compiler/native/aarch64/asm.iyi 68
@@ -234,23 +237,28 @@ src/iyi/atomic.iyi 9
 src/iyi/chaos.iyi 65
 src/iyi/chaos_points.iyi 7
 src/iyi/concurrency.iyi 704
+src/iyi/concurrency.iyi@darwin 706
 src/iyi/enum.iyi 16
 src/iyi/file.iyi 10
 src/iyi/float.iyi 68
+src/iyi/float.iyi@linux 71
 src/iyi/hash.iyi 72
 src/iyi/heap_partition.iyi 293
 src/iyi/heap_verify.iyi 85
+src/iyi/heap_verify.iyi@linux 87
 src/iyi/io.iyi 46
 src/iyi/macros.iyi 1
 src/iyi/number.iyi 41
 src/iyi/object.iyi 26
 src/iyi/prelude.iyi 757
+src/iyi/prelude.iyi@darwin 770
 src/iyi/primitives.iyi 575
 src/iyi/range.iyi 16
 src/iyi/set.iyi 13
 src/iyi/string.iyi 75
 src/iyi/testing.iyi 18
 src/iyi/thread.iyi 93
+src/iyi/thread.iyi@linux 111
 src/std/acme.iyi 146
 src/std/aead.iyi 104
 src/std/annotations.iyi 7
@@ -274,10 +282,12 @@ src/std/crypto.iyi 33
 src/std/csv.iyi 72
 src/std/curve25519.iyi 123
 src/std/debug.iyi 21
+src/std/debug.iyi@linux 42
 src/std/deque.iyi 40
 src/std/derives.iyi 8
 src/std/digest.iyi 191
 src/std/dir.iyi 59
+src/std/dir.iyi@linux 72
 src/std/dns.iyi 150
 src/std/ecdsa.iyi 119
 src/std/eiy.iyi 66
@@ -287,6 +297,7 @@ src/std/enumerable.iyi 76
 src/std/env.iyi 44
 src/std/errno.iyi 38
 src/std/file.iyi 215
+src/std/file.iyi@darwin 217
 src/std/file_utils.iyi 22
 src/std/fileserver.iyi 9
 src/std/float.iyi 323
@@ -313,6 +324,7 @@ src/std/list.iyi 21
 src/std/log.iyi 151
 src/std/mail.iyi 208
 src/std/math.iyi 648
+src/std/math.iyi@darwin 650
 src/std/mime.iyi 22
 src/std/mlkem.iyi 63
 src/std/mutex.iyi 33
@@ -323,6 +335,7 @@ src/std/number_format.iyi 35
 src/std/oauth.iyi 114
 src/std/oauth2.iyi 108
 src/std/observe.iyi 140
+src/std/observe.iyi@darwin 150
 src/std/ocsp.iyi 106
 src/std/option_parser.iyi 33
 src/std/otp.iyi 52
@@ -333,9 +346,11 @@ src/std/password.iyi 32
 src/std/path.iyi 73
 src/std/png.iyi 117
 src/std/process.iyi 149
+src/std/process.iyi@linux 156
 src/std/qpack.iyi 91
 src/std/quic.iyi 384
 src/std/random.iyi 65
+src/std/random.iyi@linux 67
 src/std/reference_storage.iyi 11
 src/std/regex.iyi 194
 src/std/router.iyi 62
@@ -349,6 +364,7 @@ src/std/signal.iyi 31
 src/std/slice.iyi 58
 src/std/smtp.iyi 59
 src/std/socket.iyi 226
+src/std/socket.iyi@linux 227
 src/std/sse.iyi 44
 src/std/static_array.iyi 61
 src/std/steppable.iyi 14
@@ -356,20 +372,26 @@ src/std/string_pool.iyi 18
 src/std/string_scanner.iyi 36
 src/std/symbol.iyi 17
 src/std/system.iyi 14
+src/std/system.iyi@linux 17
 src/std/system_roots.iyi 28
+src/std/system_roots.iyi@darwin 57
 src/std/tar.iyi 115
 src/std/term.iyi 63
+src/std/term.iyi@darwin 65
 src/std/text.iyi 102
 src/std/time.iyi 360
+src/std/time.iyi@darwin 362
 src/std/tls.iyi 663
 src/std/toml.iyi 211
 src/std/traits.iyi 115
 src/std/tuple.iyi 32
 src/std/udp.iyi 95
+src/std/udp.iyi@linux 96
 src/std/unicode.iyi 180
 src/std/unit.iyi 8
 src/std/uri.iyi 85
 src/std/user.iyi 41
+src/std/user.iyi@darwin 50
 src/std/uuid.iyi 18
 src/std/weak_ref.iyi 8
 src/std/websocket.iyi 87

@@ -214,7 +214,7 @@ echo "  $(wc -l < "$RESULTS" | tr -d ' ') files measured"
 echo
 echo "== 4. Checking each file against its committed floor"
 verdicts() {
-awk -F'\t' -v floorfile="$FLOOR_FILE" '
+awk -F'\t' -v floorfile="${1:-$FLOOR_FILE}" -v host="${2:-$HOST_OS}" '
   BEGIN {
     while ((getline line < floorfile) > 0) {
       if (line ~ /^[ \t]*#/ || line ~ /^[ \t]*$/) continue
@@ -224,23 +224,43 @@ awk -F'\t' -v floorfile="$FLOOR_FILE" '
   }
   {
     corpus = $1; rel = $2; nodes = $3 + 0; matched = $4 + 0; note = $9
+    key = rel "@" host
+    fl = (rel in floor) ? floor[rel] : "-"
+    if (key in floor && rel in floor && floor[key] > fl) fl = floor[key]
     if (note ~ /^ORACLE/) verdict = "ORACLE"
     else if (!(rel in floor)) verdict = "NO FLOOR"
-    else if (matched < floor[rel]) verdict = "BELOW FLOOR"
-    else if (matched > floor[rel]) verdict = "RAISE THE FLOOR"
+    else if (matched < fl) verdict = "BELOW FLOOR"
+    else if (matched > fl) verdict = "RAISE THE FLOOR"
     else verdict = "ok"
-    fl = (rel in floor) ? floor[rel] : "-"
     printf "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n", verdict, corpus, rel, nodes, matched, \
       (nodes > 0 ? sprintf("%.1f%%", 100 * matched / nodes) : "n/a"), fl, note
-  }' "$RESULTS" > "$VERDICTS"
+  }' "${3:-$RESULTS}" > "${4:-$VERDICTS}"
 }
+
+# Exercise the same verdict code with a platform override, including both
+# directions of a wrong override. A shared floor must not mask either error.
+printf 'probe.iyi 3\nprobe.iyi@%s 5\n' "$HOST_OS" > "$WORK/host.floor"
+printf 'subset\tprobe.iyi\t5\t5\t0\t0\t0\t0\t-\n' > "$WORK/host.results"
+check_host_floor() {
+  verdicts "$WORK/host.floor" "$HOST_OS" "$WORK/host.results" "$WORK/host.verdict"
+  awk -F'\t' '$1 != "ok" { bad = 1 } END { exit bad }' "$WORK/host.verdict"
+}
+if ! check_host_floor; then
+  echo "FAIL: host floor baseline did not match"
+  status=1
+else
+  prove_mutation "a host floor below its measured count" "$WORK/host.floor" \
+    "probe.iyi@$HOST_OS 5" "probe.iyi@$HOST_OS 4" -- check_host_floor || status=1
+  prove_mutation "a host floor above its measured count" "$WORK/host.floor" \
+    "probe.iyi@$HOST_OS 5" "probe.iyi@$HOST_OS 6" -- check_host_floor || status=1
+fi
 verdicts
 
 fails=0
 if [ "$RAISE" = 1 ]; then
   # Write each measured file's floor up to its count, never down; a file that is
   # not oracle-analysable keeps its old floor.
-  awk -F'\t' -v floorfile="$FLOOR_FILE" '
+  awk -F'\t' -v floorfile="$FLOOR_FILE" -v host="$HOST_OS" '
     BEGIN {
       while ((getline line < floorfile) > 0) {
         if (line ~ /^[ \t]*#/ || line ~ /^[ \t]*$/) continue
@@ -248,14 +268,19 @@ if [ "$RAISE" = 1 ]; then
         floor[a[1]] = a[2] + 0
       }
     }
-    $9 !~ /^ORACLE/ { if (!($2 in floor) || $4 + 0 > floor[$2]) floor[$2] = $4 + 0 }
+    $9 !~ /^ORACLE/ {
+      key = $2 "@" host
+      if (!(key in floor)) key = $2
+      if (!(key in floor) || $4 + 0 > floor[key]) floor[key] = $4 + 0
+    }
     END {
       for (k in floor) print k "\t" floor[k]
     }' "$RESULTS" | sort > "$WORK/floor.new"
   if [ -s "$WORK/floor.new" ]; then
     {
       echo "# Floor for bench/selfhost_semantic_inline_macros_exercise.sh: the agreeing declaration"
-      echo "# records each file must keep. Only raise these (SEMINL_RAISE=1); never lower one."
+      echo "# records each file must keep. A path@host row overrides a lower shared floor."
+      echo "# Only raise these (SEMINL_RAISE=1); never lower one."
       awk -F'\t' '{ printf "%s %s\n", $1, $2 }' "$WORK/floor.new"
     } > "$FLOOR_FILE"
     echo "  floor written to ${FLOOR_FILE#$REPO/}"
