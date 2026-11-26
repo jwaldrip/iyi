@@ -206,13 +206,17 @@ end
 # define_new_methods) and not given a default here.
 pub def define_default_new_single(program : SemanticProgram, type : NonGenericClassType) : Nil
   return if builtin_for_new?(program, type)
-  return if has_new_or_initialize?(type, "initialize")
-  return if has_new_or_initialize?(type.metaclass, "new")
+  has_initialize = has_new_or_initialize?(type, "initialize")
+  # Creating the metaclass also registers its allocate primitive, even when
+  # an inherited initialize means there is no default new to add.
+  metaclass = type.metaclass
+  return if has_initialize
+  return if has_new_or_initialize?(metaclass, "new")
   loc : Location? = nil
   if locs = type.locations
     loc = locs[0] if locs.size > 0
   end
-  type.metaclass.add_def(argless_new(loc))
+  metaclass.add_def(argless_new(loc))
   type.add_def(argless_initialize(loc))
   nil
 end
