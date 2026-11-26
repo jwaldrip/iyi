@@ -8,7 +8,7 @@ done
 fixture_check switch-chain,switch-value d2_duplicate changed switch-value
 for name in d2_three d2_span d2_sign_wrap d2_duplicate_switch d2_arm_inst d2_nonconstant d2_wide d2_float \
             d2_null d2_address d2_undef d2_no_phi d2_holes_nonvalue d2_holes_nonconstant d2_sparse \
-            d2_many_phis d2_arm_pred d2_split_join d2_self_join; do
+            d2_many_phis d2_arm_pred d2_split_join d2_self_join d2_span_dense; do
   fixture_check switch-value "$name" keep
 done
 fixture_stats switch-value "$FIXTURES/switch-value/d2_affine.ir"
@@ -29,9 +29,9 @@ else
   head -n 40 "$WORK/d2-dead.ir" 2>/dev/null
 fi
 
-# Scale (decision of 2026-11-26): the least CPU of five runs with 500 and 1000 switches, each of four arms, all feeding
-# one join, must be within 2.5 times. A switch's span is at most 256, so the pass's cost grows with the number of
-# switches and with the join's predecessors. Portable: no /usr/bin/time.
+# Scale (decision of 2026-11-26): the pass time from its IYI_TIME_PASSES row (the compiler own clock, read from stderr,
+# no platform counter), for 2500 and 5000 switches of four arms all feeding one join. The least of five runs at each size
+# must be within 2.5 times, and the smaller must take at least 20 ms.
 d2_scale_check() {
   local binary="$1"
   "$PY" - "$binary" "$WORK" <<'PY'
@@ -39,91 +39,67 @@ import os
 import subprocess
 import sys
 
-if os.name == 'nt':
-    import ctypes
-    from ctypes import wintypes
-
-    get_times = ctypes.windll.kernel32.GetProcessTimes
-    get_times.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
-    get_times.restype = wintypes.BOOL
-else:
-    import resource
-
 binary, work = sys.argv[1:]
-header = '''; iyi-ir 1
+header = """; iyi-ir 1
 source_filename = "d2_scale"
 target triple = "aarch64-apple-darwin"
 target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
-'''
+"""
 
 def make(heads):
-    path = os.path.join(work, 'd2-scale-%d.ir' % heads)
-    with open(path, 'w', encoding='utf-8') as f:
+    path = os.path.join(work, "d2-scale-%d.ir" % heads)
+    with open(path, "w", encoding="utf-8") as f:
         f.write(header)
-        f.write('define external i32 @dispatch(i32 %x) {\nentry:\n  br label %h0\n')
+        f.write("define external i32 @dispatch(i32 %x) {\nentry:\n  br label %h0\n")
         for h in range(heads):
-            following = 'h%d' % (h + 1) if h + 1 < heads else 'otherwise'
-            f.write('h%d:\n  switch i32 %%x, label %%%s [ i32 0, label %%a%d_0, i32 1, label %%a%d_1, '
-                    'i32 2, label %%a%d_2, i32 3, label %%a%d_3 ]\n' % (h, following, h, h, h, h))
+            following = "h%d" % (h + 1) if h + 1 < heads else "otherwise"
+            f.write("h%d:\n  switch i32 %%x, label %%%s [ i32 0, label %%a%d_0, i32 1, label %%a%d_1, "
+                    "i32 2, label %%a%d_2, i32 3, label %%a%d_3 ]\n" % (h, following, h, h, h, h))
         for h in range(heads):
             for k in range(4):
-                f.write('a%d_%d:\n  br label %%join\n' % (h, k))
-        f.write('otherwise:\n  unreachable\njoin:\n')
-        f.write('  %%v = phi i32 %s\n' % ', '.join('[ %d, label %%a%d_%d ]' % (2 * k + 1, h, k)
+                f.write("a%d_%d:\n  br label %%join\n" % (h, k))
+        f.write("otherwise:\n  unreachable\njoin:\n")
+        f.write("  %%v = phi i32 %s\n" % ", ".join("[ %d, label %%a%d_%d ]" % (2 * k + 1, h, k)
                                                   for h in range(heads) for k in range(4)))
-        f.write('  ret i32 %v\n}\n')
+        f.write("  ret i32 %v\n}\n")
     return path
 
-paths = {n: make(n) for n in (500, 1000)}
-times = {500: [], 1000: []}
-env = dict(os.environ, GC_MARKERS='1', GC_NPROCS='1')
+paths = {n: make(n) for n in (2500, 5000)}
+env = dict(os.environ, GC_MARKERS="1", GC_NPROCS="1", IYI_TIME_PASSES="1")
 
-def cpu_seconds(path):
-    if os.name != 'nt':
-        before = resource.getrusage(resource.RUSAGE_CHILDREN)
-    proc = subprocess.Popen([binary, 'run', '--no-verify', 'switch-value', path],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-    try:
-        out, err = proc.communicate(timeout=300)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
-        raise
-    if os.name == 'nt':
-        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
-        if not get_times(int(proc._handle), ctypes.byref(created), ctypes.byref(exited),
-                         ctypes.byref(kernel), ctypes.byref(user)):
-            raise OSError('GetProcessTimes failed')
-        def seconds(t):
-            return ((t.dwHighDateTime << 32) | t.dwLowDateTime) / 10000000.0
-        elapsed = seconds(kernel) + seconds(user)
-    else:
-        after = resource.getrusage(resource.RUSAGE_CHILDREN)
-        elapsed = (after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime)
+def pass_seconds(path):
+    proc = subprocess.run([binary, "run", "--no-verify", "switch-value", path],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=300)
     if proc.returncode != 0:
-        raise RuntimeError('scale optimizer failed: ' + err.decode('utf-8', 'replace'))
-    if b'switch.affine.in_range' not in out or b'switch i32 %x' in out:
-        raise RuntimeError('scale switches were not converted')
-    return elapsed
+        raise RuntimeError("scale optimizer failed: " + proc.stderr.decode("utf-8", "replace"))
+    if b"switch.affine.in_range" not in proc.stdout or b"switch i32 %x" in proc.stdout:
+        raise RuntimeError("scale switches were not converted")
+    for line in proc.stderr.splitlines():
+        row = line.split(b"\t")
+        if len(row) == 4 and row[0] == b"opt-time" and row[1] == b"switch-value":
+            return int(row[3]) / 1e9
+    raise RuntimeError("no switch-value timing row")
 
+times = {2500: [], 5000: []}
 try:
     for _ in range(5):
-        for n in (500, 1000):
-            times[n].append(cpu_seconds(paths[n]))
-    small = min(times[500])
-    large = min(times[1000])
-    if small <= 0:
-        raise RuntimeError('scale timer returned zero')
+        for n in (2500, 5000):
+            times[n].append(pass_seconds(paths[n]))
+    small = min(times[2500])
+    large = min(times[5000])
+    if small < 0.02:
+        raise RuntimeError("the pass takes %.4f s at 2500 switches, under 20 ms" % small)
     ratio = large / small
-    print('  d2 scale: 500 switches=%.6fs 1000 switches=%.6fs ratio=%.3f (least of 5 CPU runs)' % (small, large, ratio))
+    print("  d2 scale: switch-value pass 2500 switches=%.6fs 5000 switches=%.6fs ratio=%.3f (least of 5 pass rows)" % (small, large, ratio))
     if ratio > 2.5:
-        print('decisive: D2 scale ratio %.3f exceeds 2.5' % ratio)
+        print("decisive: D2 scale ratio %.3f exceeds 2.5" % ratio)
         sys.exit(1)
 except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
-    print('FAIL: D2 scale:', exc, file=sys.stderr)
+    print("FAIL: D2 scale:", exc, file=sys.stderr)
     sys.exit(2)
 PY
 }
+
 
 d2_scale_mutation() {
   if ! build_driver "$MUTANT"; then
@@ -182,7 +158,7 @@ mutation_result D2Duplicate
 prove_mutation 'D2: a span of more than 256 keys is refused' src/compiler/ir/opt/switch_value.iyi \
   '    return false if high - low >= MAX_SPAN.to_u64 # mutation D2-span' \
   '    return false if high - low >= 1024_u64 # mutation: spans up to 1024' \
-  -- mutation_check D2Span switch-value d2_span || fail 'D2 span mutation was not caught'
+  -- mutation_check D2Span switch-value d2_span_dense || fail 'D2 span mutation was not caught'
 mutation_result D2Span
 
 prove_mutation 'D2: an arm holding an instruction is refused' src/compiler/ir/opt/switch_value.iyi \

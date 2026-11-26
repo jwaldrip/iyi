@@ -1,0 +1,527 @@
+; iyi-ir 1
+source_filename = "d2_span_dense"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i32 @dispatch(i32 %x) {
+entry:
+  switch i32 %x, label %otherwise [ i32 0, label %a0, i32 1, label %a1, i32 2, label %a2, i32 3, label %a3, i32 4, label %a4, i32 5, label %a5, i32 6, label %a6, i32 7, label %a7, i32 8, label %a8, i32 9, label %a9, i32 10, label %a10, i32 11, label %a11, i32 12, label %a12, i32 13, label %a13, i32 14, label %a14, i32 15, label %a15, i32 16, label %a16, i32 17, label %a17, i32 18, label %a18, i32 19, label %a19, i32 20, label %a20, i32 21, label %a21, i32 22, label %a22, i32 23, label %a23, i32 24, label %a24, i32 25, label %a25, i32 26, label %a26, i32 27, label %a27, i32 28, label %a28, i32 29, label %a29, i32 30, label %a30, i32 31, label %a31, i32 32, label %a32, i32 33, label %a33, i32 34, label %a34, i32 35, label %a35, i32 36, label %a36, i32 37, label %a37, i32 38, label %a38, i32 39, label %a39, i32 40, label %a40, i32 41, label %a41, i32 42, label %a42, i32 43, label %a43, i32 44, label %a44, i32 45, label %a45, i32 46, label %a46, i32 47, label %a47, i32 48, label %a48, i32 49, label %a49, i32 50, label %a50, i32 51, label %a51, i32 52, label %a52, i32 53, label %a53, i32 54, label %a54, i32 55, label %a55, i32 56, label %a56, i32 57, label %a57, i32 58, label %a58, i32 59, label %a59, i32 60, label %a60, i32 61, label %a61, i32 62, label %a62, i32 63, label %a63, i32 64, label %a64, i32 65, label %a65, i32 66, label %a66, i32 67, label %a67, i32 68, label %a68, i32 69, label %a69, i32 70, label %a70, i32 71, label %a71, i32 72, label %a72, i32 73, label %a73, i32 74, label %a74, i32 75, label %a75, i32 76, label %a76, i32 77, label %a77, i32 78, label %a78, i32 79, label %a79, i32 80, label %a80, i32 81, label %a81, i32 82, label %a82, i32 83, label %a83, i32 84, label %a84, i32 85, label %a85, i32 86, label %a86, i32 87, label %a87, i32 88, label %a88, i32 89, label %a89, i32 90, label %a90, i32 91, label %a91, i32 92, label %a92, i32 93, label %a93, i32 94, label %a94, i32 95, label %a95, i32 96, label %a96, i32 97, label %a97, i32 98, label %a98, i32 99, label %a99, i32 100, label %a100, i32 101, label %a101, i32 102, label %a102, i32 103, label %a103, i32 104, label %a104, i32 105, label %a105, i32 106, label %a106, i32 107, label %a107, i32 108, label %a108, i32 109, label %a109, i32 110, label %a110, i32 111, label %a111, i32 112, label %a112, i32 113, label %a113, i32 114, label %a114, i32 115, label %a115, i32 116, label %a116, i32 117, label %a117, i32 118, label %a118, i32 119, label %a119, i32 120, label %a120, i32 121, label %a121, i32 122, label %a122, i32 123, label %a123, i32 124, label %a124, i32 125, label %a125, i32 126, label %a126, i32 127, label %a127, i32 128, label %a128, i32 129, label %a129, i32 130, label %a130, i32 131, label %a131, i32 132, label %a132, i32 133, label %a133, i32 134, label %a134, i32 135, label %a135, i32 136, label %a136, i32 137, label %a137, i32 138, label %a138, i32 139, label %a139, i32 140, label %a140, i32 141, label %a141, i32 142, label %a142, i32 143, label %a143, i32 144, label %a144, i32 145, label %a145, i32 146, label %a146, i32 147, label %a147, i32 148, label %a148, i32 149, label %a149, i32 150, label %a150, i32 151, label %a151, i32 152, label %a152, i32 153, label %a153, i32 154, label %a154, i32 155, label %a155, i32 156, label %a156, i32 157, label %a157, i32 158, label %a158, i32 159, label %a159, i32 160, label %a160, i32 161, label %a161, i32 162, label %a162, i32 163, label %a163, i32 164, label %a164, i32 165, label %a165, i32 166, label %a166, i32 167, label %a167, i32 168, label %a168, i32 169, label %a169, i32 170, label %a170, i32 171, label %a171, i32 172, label %a172, i32 173, label %a173, i32 174, label %a174, i32 175, label %a175, i32 176, label %a176, i32 177, label %a177, i32 178, label %a178, i32 179, label %a179, i32 180, label %a180, i32 181, label %a181, i32 182, label %a182, i32 183, label %a183, i32 184, label %a184, i32 185, label %a185, i32 186, label %a186, i32 187, label %a187, i32 188, label %a188, i32 189, label %a189, i32 190, label %a190, i32 191, label %a191, i32 192, label %a192, i32 193, label %a193, i32 194, label %a194, i32 195, label %a195, i32 196, label %a196, i32 197, label %a197, i32 198, label %a198, i32 199, label %a199, i32 200, label %a200, i32 201, label %a201, i32 202, label %a202, i32 203, label %a203, i32 204, label %a204, i32 205, label %a205, i32 206, label %a206, i32 207, label %a207, i32 208, label %a208, i32 209, label %a209, i32 210, label %a210, i32 211, label %a211, i32 212, label %a212, i32 213, label %a213, i32 214, label %a214, i32 215, label %a215, i32 216, label %a216, i32 217, label %a217, i32 218, label %a218, i32 219, label %a219, i32 220, label %a220, i32 221, label %a221, i32 222, label %a222, i32 223, label %a223, i32 224, label %a224, i32 225, label %a225, i32 226, label %a226, i32 227, label %a227, i32 228, label %a228, i32 229, label %a229, i32 230, label %a230, i32 231, label %a231, i32 232, label %a232, i32 233, label %a233, i32 234, label %a234, i32 235, label %a235, i32 236, label %a236, i32 237, label %a237, i32 238, label %a238, i32 239, label %a239, i32 240, label %a240, i32 241, label %a241, i32 242, label %a242, i32 243, label %a243, i32 244, label %a244, i32 245, label %a245, i32 246, label %a246, i32 247, label %a247, i32 248, label %a248, i32 249, label %a249, i32 250, label %a250, i32 251, label %a251, i32 252, label %a252, i32 253, label %a253, i32 254, label %a254, i32 255, label %a255, i32 256, label %a256 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+a4:
+  br label %join
+a5:
+  br label %join
+a6:
+  br label %join
+a7:
+  br label %join
+a8:
+  br label %join
+a9:
+  br label %join
+a10:
+  br label %join
+a11:
+  br label %join
+a12:
+  br label %join
+a13:
+  br label %join
+a14:
+  br label %join
+a15:
+  br label %join
+a16:
+  br label %join
+a17:
+  br label %join
+a18:
+  br label %join
+a19:
+  br label %join
+a20:
+  br label %join
+a21:
+  br label %join
+a22:
+  br label %join
+a23:
+  br label %join
+a24:
+  br label %join
+a25:
+  br label %join
+a26:
+  br label %join
+a27:
+  br label %join
+a28:
+  br label %join
+a29:
+  br label %join
+a30:
+  br label %join
+a31:
+  br label %join
+a32:
+  br label %join
+a33:
+  br label %join
+a34:
+  br label %join
+a35:
+  br label %join
+a36:
+  br label %join
+a37:
+  br label %join
+a38:
+  br label %join
+a39:
+  br label %join
+a40:
+  br label %join
+a41:
+  br label %join
+a42:
+  br label %join
+a43:
+  br label %join
+a44:
+  br label %join
+a45:
+  br label %join
+a46:
+  br label %join
+a47:
+  br label %join
+a48:
+  br label %join
+a49:
+  br label %join
+a50:
+  br label %join
+a51:
+  br label %join
+a52:
+  br label %join
+a53:
+  br label %join
+a54:
+  br label %join
+a55:
+  br label %join
+a56:
+  br label %join
+a57:
+  br label %join
+a58:
+  br label %join
+a59:
+  br label %join
+a60:
+  br label %join
+a61:
+  br label %join
+a62:
+  br label %join
+a63:
+  br label %join
+a64:
+  br label %join
+a65:
+  br label %join
+a66:
+  br label %join
+a67:
+  br label %join
+a68:
+  br label %join
+a69:
+  br label %join
+a70:
+  br label %join
+a71:
+  br label %join
+a72:
+  br label %join
+a73:
+  br label %join
+a74:
+  br label %join
+a75:
+  br label %join
+a76:
+  br label %join
+a77:
+  br label %join
+a78:
+  br label %join
+a79:
+  br label %join
+a80:
+  br label %join
+a81:
+  br label %join
+a82:
+  br label %join
+a83:
+  br label %join
+a84:
+  br label %join
+a85:
+  br label %join
+a86:
+  br label %join
+a87:
+  br label %join
+a88:
+  br label %join
+a89:
+  br label %join
+a90:
+  br label %join
+a91:
+  br label %join
+a92:
+  br label %join
+a93:
+  br label %join
+a94:
+  br label %join
+a95:
+  br label %join
+a96:
+  br label %join
+a97:
+  br label %join
+a98:
+  br label %join
+a99:
+  br label %join
+a100:
+  br label %join
+a101:
+  br label %join
+a102:
+  br label %join
+a103:
+  br label %join
+a104:
+  br label %join
+a105:
+  br label %join
+a106:
+  br label %join
+a107:
+  br label %join
+a108:
+  br label %join
+a109:
+  br label %join
+a110:
+  br label %join
+a111:
+  br label %join
+a112:
+  br label %join
+a113:
+  br label %join
+a114:
+  br label %join
+a115:
+  br label %join
+a116:
+  br label %join
+a117:
+  br label %join
+a118:
+  br label %join
+a119:
+  br label %join
+a120:
+  br label %join
+a121:
+  br label %join
+a122:
+  br label %join
+a123:
+  br label %join
+a124:
+  br label %join
+a125:
+  br label %join
+a126:
+  br label %join
+a127:
+  br label %join
+a128:
+  br label %join
+a129:
+  br label %join
+a130:
+  br label %join
+a131:
+  br label %join
+a132:
+  br label %join
+a133:
+  br label %join
+a134:
+  br label %join
+a135:
+  br label %join
+a136:
+  br label %join
+a137:
+  br label %join
+a138:
+  br label %join
+a139:
+  br label %join
+a140:
+  br label %join
+a141:
+  br label %join
+a142:
+  br label %join
+a143:
+  br label %join
+a144:
+  br label %join
+a145:
+  br label %join
+a146:
+  br label %join
+a147:
+  br label %join
+a148:
+  br label %join
+a149:
+  br label %join
+a150:
+  br label %join
+a151:
+  br label %join
+a152:
+  br label %join
+a153:
+  br label %join
+a154:
+  br label %join
+a155:
+  br label %join
+a156:
+  br label %join
+a157:
+  br label %join
+a158:
+  br label %join
+a159:
+  br label %join
+a160:
+  br label %join
+a161:
+  br label %join
+a162:
+  br label %join
+a163:
+  br label %join
+a164:
+  br label %join
+a165:
+  br label %join
+a166:
+  br label %join
+a167:
+  br label %join
+a168:
+  br label %join
+a169:
+  br label %join
+a170:
+  br label %join
+a171:
+  br label %join
+a172:
+  br label %join
+a173:
+  br label %join
+a174:
+  br label %join
+a175:
+  br label %join
+a176:
+  br label %join
+a177:
+  br label %join
+a178:
+  br label %join
+a179:
+  br label %join
+a180:
+  br label %join
+a181:
+  br label %join
+a182:
+  br label %join
+a183:
+  br label %join
+a184:
+  br label %join
+a185:
+  br label %join
+a186:
+  br label %join
+a187:
+  br label %join
+a188:
+  br label %join
+a189:
+  br label %join
+a190:
+  br label %join
+a191:
+  br label %join
+a192:
+  br label %join
+a193:
+  br label %join
+a194:
+  br label %join
+a195:
+  br label %join
+a196:
+  br label %join
+a197:
+  br label %join
+a198:
+  br label %join
+a199:
+  br label %join
+a200:
+  br label %join
+a201:
+  br label %join
+a202:
+  br label %join
+a203:
+  br label %join
+a204:
+  br label %join
+a205:
+  br label %join
+a206:
+  br label %join
+a207:
+  br label %join
+a208:
+  br label %join
+a209:
+  br label %join
+a210:
+  br label %join
+a211:
+  br label %join
+a212:
+  br label %join
+a213:
+  br label %join
+a214:
+  br label %join
+a215:
+  br label %join
+a216:
+  br label %join
+a217:
+  br label %join
+a218:
+  br label %join
+a219:
+  br label %join
+a220:
+  br label %join
+a221:
+  br label %join
+a222:
+  br label %join
+a223:
+  br label %join
+a224:
+  br label %join
+a225:
+  br label %join
+a226:
+  br label %join
+a227:
+  br label %join
+a228:
+  br label %join
+a229:
+  br label %join
+a230:
+  br label %join
+a231:
+  br label %join
+a232:
+  br label %join
+a233:
+  br label %join
+a234:
+  br label %join
+a235:
+  br label %join
+a236:
+  br label %join
+a237:
+  br label %join
+a238:
+  br label %join
+a239:
+  br label %join
+a240:
+  br label %join
+a241:
+  br label %join
+a242:
+  br label %join
+a243:
+  br label %join
+a244:
+  br label %join
+a245:
+  br label %join
+a246:
+  br label %join
+a247:
+  br label %join
+a248:
+  br label %join
+a249:
+  br label %join
+a250:
+  br label %join
+a251:
+  br label %join
+a252:
+  br label %join
+a253:
+  br label %join
+a254:
+  br label %join
+a255:
+  br label %join
+a256:
+  br label %join
+otherwise:
+  unreachable
+join:
+  %v = phi i32 [ 0, label %a0 ], [ 1, label %a1 ], [ 4, label %a2 ], [ 9, label %a3 ], [ 16, label %a4 ], [ 25, label %a5 ], [ 36, label %a6 ], [ 49, label %a7 ], [ 64, label %a8 ], [ 81, label %a9 ], [ 100, label %a10 ], [ 121, label %a11 ], [ 144, label %a12 ], [ 169, label %a13 ], [ 196, label %a14 ], [ 225, label %a15 ], [ 5, label %a16 ], [ 38, label %a17 ], [ 73, label %a18 ], [ 110, label %a19 ], [ 149, label %a20 ], [ 190, label %a21 ], [ 233, label %a22 ], [ 27, label %a23 ], [ 74, label %a24 ], [ 123, label %a25 ], [ 174, label %a26 ], [ 227, label %a27 ], [ 31, label %a28 ], [ 88, label %a29 ], [ 147, label %a30 ], [ 208, label %a31 ], [ 20, label %a32 ], [ 85, label %a33 ], [ 152, label %a34 ], [ 221, label %a35 ], [ 41, label %a36 ], [ 114, label %a37 ], [ 189, label %a38 ], [ 15, label %a39 ], [ 94, label %a40 ], [ 175, label %a41 ], [ 7, label %a42 ], [ 92, label %a43 ], [ 179, label %a44 ], [ 17, label %a45 ], [ 108, label %a46 ], [ 201, label %a47 ], [ 45, label %a48 ], [ 142, label %a49 ], [ 241, label %a50 ], [ 91, label %a51 ], [ 194, label %a52 ], [ 48, label %a53 ], [ 155, label %a54 ], [ 13, label %a55 ], [ 124, label %a56 ], [ 237, label %a57 ], [ 101, label %a58 ], [ 218, label %a59 ], [ 86, label %a60 ], [ 207, label %a61 ], [ 79, label %a62 ], [ 204, label %a63 ], [ 80, label %a64 ], [ 209, label %a65 ], [ 89, label %a66 ], [ 222, label %a67 ], [ 106, label %a68 ], [ 243, label %a69 ], [ 131, label %a70 ], [ 21, label %a71 ], [ 164, label %a72 ], [ 58, label %a73 ], [ 205, label %a74 ], [ 103, label %a75 ], [ 3, label %a76 ], [ 156, label %a77 ], [ 60, label %a78 ], [ 217, label %a79 ], [ 125, label %a80 ], [ 35, label %a81 ], [ 198, label %a82 ], [ 112, label %a83 ], [ 28, label %a84 ], [ 197, label %a85 ], [ 117, label %a86 ], [ 39, label %a87 ], [ 214, label %a88 ], [ 140, label %a89 ], [ 68, label %a90 ], [ 249, label %a91 ], [ 181, label %a92 ], [ 115, label %a93 ], [ 51, label %a94 ], [ 240, label %a95 ], [ 180, label %a96 ], [ 122, label %a97 ], [ 66, label %a98 ], [ 12, label %a99 ], [ 211, label %a100 ], [ 161, label %a101 ], [ 113, label %a102 ], [ 67, label %a103 ], [ 23, label %a104 ], [ 232, label %a105 ], [ 192, label %a106 ], [ 154, label %a107 ], [ 118, label %a108 ], [ 84, label %a109 ], [ 52, label %a110 ], [ 22, label %a111 ], [ 245, label %a112 ], [ 219, label %a113 ], [ 195, label %a114 ], [ 173, label %a115 ], [ 153, label %a116 ], [ 135, label %a117 ], [ 119, label %a118 ], [ 105, label %a119 ], [ 93, label %a120 ], [ 83, label %a121 ], [ 75, label %a122 ], [ 69, label %a123 ], [ 65, label %a124 ], [ 63, label %a125 ], [ 63, label %a126 ], [ 65, label %a127 ], [ 69, label %a128 ], [ 75, label %a129 ], [ 83, label %a130 ], [ 93, label %a131 ], [ 105, label %a132 ], [ 119, label %a133 ], [ 135, label %a134 ], [ 153, label %a135 ], [ 173, label %a136 ], [ 195, label %a137 ], [ 219, label %a138 ], [ 245, label %a139 ], [ 22, label %a140 ], [ 52, label %a141 ], [ 84, label %a142 ], [ 118, label %a143 ], [ 154, label %a144 ], [ 192, label %a145 ], [ 232, label %a146 ], [ 23, label %a147 ], [ 67, label %a148 ], [ 113, label %a149 ], [ 161, label %a150 ], [ 211, label %a151 ], [ 12, label %a152 ], [ 66, label %a153 ], [ 122, label %a154 ], [ 180, label %a155 ], [ 240, label %a156 ], [ 51, label %a157 ], [ 115, label %a158 ], [ 181, label %a159 ], [ 249, label %a160 ], [ 68, label %a161 ], [ 140, label %a162 ], [ 214, label %a163 ], [ 39, label %a164 ], [ 117, label %a165 ], [ 197, label %a166 ], [ 28, label %a167 ], [ 112, label %a168 ], [ 198, label %a169 ], [ 35, label %a170 ], [ 125, label %a171 ], [ 217, label %a172 ], [ 60, label %a173 ], [ 156, label %a174 ], [ 3, label %a175 ], [ 103, label %a176 ], [ 205, label %a177 ], [ 58, label %a178 ], [ 164, label %a179 ], [ 21, label %a180 ], [ 131, label %a181 ], [ 243, label %a182 ], [ 106, label %a183 ], [ 222, label %a184 ], [ 89, label %a185 ], [ 209, label %a186 ], [ 80, label %a187 ], [ 204, label %a188 ], [ 79, label %a189 ], [ 207, label %a190 ], [ 86, label %a191 ], [ 218, label %a192 ], [ 101, label %a193 ], [ 237, label %a194 ], [ 124, label %a195 ], [ 13, label %a196 ], [ 155, label %a197 ], [ 48, label %a198 ], [ 194, label %a199 ], [ 91, label %a200 ], [ 241, label %a201 ], [ 142, label %a202 ], [ 45, label %a203 ], [ 201, label %a204 ], [ 108, label %a205 ], [ 17, label %a206 ], [ 179, label %a207 ], [ 92, label %a208 ], [ 7, label %a209 ], [ 175, label %a210 ], [ 94, label %a211 ], [ 15, label %a212 ], [ 189, label %a213 ], [ 114, label %a214 ], [ 41, label %a215 ], [ 221, label %a216 ], [ 152, label %a217 ], [ 85, label %a218 ], [ 20, label %a219 ], [ 208, label %a220 ], [ 147, label %a221 ], [ 88, label %a222 ], [ 31, label %a223 ], [ 227, label %a224 ], [ 174, label %a225 ], [ 123, label %a226 ], [ 74, label %a227 ], [ 27, label %a228 ], [ 233, label %a229 ], [ 190, label %a230 ], [ 149, label %a231 ], [ 110, label %a232 ], [ 73, label %a233 ], [ 38, label %a234 ], [ 5, label %a235 ], [ 225, label %a236 ], [ 196, label %a237 ], [ 169, label %a238 ], [ 144, label %a239 ], [ 121, label %a240 ], [ 100, label %a241 ], [ 81, label %a242 ], [ 64, label %a243 ], [ 49, label %a244 ], [ 36, label %a245 ], [ 25, label %a246 ], [ 16, label %a247 ], [ 9, label %a248 ], [ 4, label %a249 ], [ 1, label %a250 ], [ 0, label %a251 ], [ 1, label %a252 ], [ 4, label %a253 ], [ 9, label %a254 ], [ 16, label %a255 ], [ 25, label %a256 ]
+  ret i32 %v
+}
