@@ -225,6 +225,7 @@ def is_doc(path):
 def is_selfhost(path):
     return ((path.startswith("src/compiler/") and path.endswith((".iyi", ".ir")))
             or path.startswith(("bench/selfhost_", "bench/native_", "bench/macro_", "bench/fixtures/"))
+            or (path.startswith(("src/iyi/", "src/std/", "samples/iyi/")) and path.endswith(".iyi"))
             or path == "bench/lib/host.sh")
 
 

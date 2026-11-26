@@ -1,0 +1,30 @@
+# Stage-one sample floors: path<TAB>same, or path<TAB>refused<TAB>first diagnostic line.
+# Raise with SAMPLES_RAISE=1 bash bench/selfhost_samples_exercise.sh; a same row never falls.
+samples/iyi/basics.iyi	same
+samples/iyi/calc.iyi	same
+samples/iyi/collections.iyi	refused	Error: undefined constant Elem
+samples/iyi/config.iyi	refused	iyi: panic: lower: visit(an exhaustive case (hosted cleanup_transformer.cr: replace_unreachable_if_needed)) (hosted codegen.cr) is not ported yet
+samples/iyi/cores.iyi	refused	iyi: panic: undefined method 'await_writable' for Std::Socket::IyiSocket.class
+samples/iyi/derive.iyi	refused	Error: undefined constant Name
+samples/iyi/enums.iyi	refused	iyi: panic: type mismatch for return type: expected Array(Enum), got Array(Samples::Enums::Level)
+samples/iyi/errors.iyi	refused	iyi: panic: lower: visit(an exhaustive case (hosted cleanup_transformer.cr: replace_unreachable_if_needed)) (hosted codegen.cr) is not ported yet
+samples/iyi/files.iyi	same
+samples/iyi/format.iyi	refused	iyi: panic: unsupported node: Splat
+samples/iyi/formatting.iyi	same
+samples/iyi/generics.iyi	refused	iyi: panic: undefined constant X
+samples/iyi/grid.iyi	same
+samples/iyi/hello.iyi	same
+samples/iyi/immutable.iyi	refused	Error: undefined constant Elem
+samples/iyi/init_order.iyi	same
+samples/iyi/inventory.iyi	same
+samples/iyi/io.iyi	same
+samples/iyi/modules.iyi	refused	Error: undefined constant Greet
+samples/iyi/sessions.iyi	same
+samples/iyi/shapes.iyi	same
+samples/iyi/socket.iyi	refused	iyi: panic: undefined method 'new' for Std::Slice::Slice(UInt8)
+samples/iyi/std_iterator.iyi	refused	Error: undefined constant TakeIterator
+samples/iyi/std_text.iyi	same
+samples/iyi/std_time.iyi	same
+samples/iyi/visited.iyi	same
+samples/iyi/webapp.iyi	refused	iyi: panic: no overload matches 'Proc#call' with type Kemal::Router::Context
+samples/iyi/workers.iyi	refused	iyi: panic: lower: visit(spawn classification of samples/iyi/workers.iyi:19:7 is not ported (hosted cleanup_transformer.cr classify_spawn)) (hosted codegen.cr) is not ported yet
