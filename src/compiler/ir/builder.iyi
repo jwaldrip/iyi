@@ -259,7 +259,7 @@ pub class Builder
       targets << u
       flag = 1_i64
     end
-    emit(Op::CleanupRet, types.void, [pad] of Value, flag, nil, targets, nil, name)
+    emit(Op::CleanupRet, types.void, [pad] of Value, flag, nil, targets, nil, "")
   end
 
   # ---- memory -------------------------------------------------------------------------
