@@ -1,7 +1,7 @@
 module compiler/ir/opt/layout
 
 import compiler/ir/function::{Function}
-import compiler/ir/inst::{Block, Inst, IntrinsicAux, Op}
+import compiler/ir/inst::{Block, Inst, IntPredicate, IntrinsicAux, Op}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/module::{Module}
 import compiler/ir/opt/analysis::{Cfg, DomTree}
@@ -13,6 +13,12 @@ class BlockLayout
     @parents = [] of Int32
     @depths = [] of Int32
     @jumps = [] of Array(Int32)
+    @irreducible = false
+    @guards_built = false
+    @header_guard = [] of Bool
+    @latch_guard = [] of Bool
+    @loop_begin = [] of Int32
+    @loop_end = [] of Int32
     i = 0
     while i < @cfg.size
       @inner << -1
@@ -89,7 +95,8 @@ class BlockLayout
   # its external incoming edges all enter that header in a reducible graph.
   # Each representative's predecessors are visited only in its parent loop.
   def collect_loops : Nil
-    return if irreducible?
+    @irreducible = irreducible?
+    return if @irreducible
     latches = [] of Array(Int32)
     stamp = [] of Int32
     parent = [] of Int32
@@ -209,21 +216,131 @@ class BlockLayout
     cold
   end
 
+  # A guessed edge may not make a loop or its route to a backedge cold.
+  # In a loop the latch guard is deliberately broader: a dominated predecessor
+  # of any latch, in any loop, suffices to refuse the opcode guess.
+  def build_opcode_guards : Nil
+    return if @headers.empty?
+    i = 0
+    while i < @cfg.size
+      @header_guard << false
+      @latch_guard << false
+      i = i + 1
+    end
+    @headers.each { |header| @header_guard[header] = true }
+    @cfg.rpo.each do |b|
+      latch = false
+      @cfg.succs(b).each do |s|
+        if @dom.dominates?(s, b)
+          latch = true
+          break
+        end
+      end
+      @cfg.preds(b).each { |p| @latch_guard[p] = true } if latch
+    end
+    order = @dom.preorder
+    i = order.size - 1
+    while i > 0
+      b = order[i]
+      parent = @dom.idom(b)
+      @header_guard[parent] = true if @header_guard[b]
+      @latch_guard[parent] = true if @latch_guard[b]
+      i = i - 1
+    end
+
+    # Number the loop forest once for constant-time loop containment queries.
+    first = [] of Int32
+    sibling = [] of Int32
+    work = [] of Int32
+    i = 0
+    while i < @headers.size
+      first << -1
+      sibling << -1
+      @loop_begin << -1
+      @loop_end << -1
+      i = i + 1
+    end
+    i = 0
+    while i < @headers.size
+      parent = @parents[i]
+      if parent < 0
+        work << i
+      else
+        sibling[i] = first[parent]
+        first[parent] = i
+      end
+      i = i + 1
+    end
+    clock = 0
+    while !work.empty?
+      node = work.pop
+      if node < 0
+        @loop_end[-node - 1] = clock
+      else
+        @loop_begin[node] = clock
+        clock = clock + 1
+        work << -node - 1
+        child = first[node]
+        while child >= 0
+          work << child
+          child = sibling[child]
+        end
+      end
+    end
+  end
+
+  def opcode_loop_contains?(loop_id : Int32, block : Int32) : Bool
+    inner = @inner[block]
+    return false if inner < 0
+    @loop_begin[loop_id] <= @loop_begin[inner] && @loop_begin[inner] < @loop_end[loop_id]
+  end
+
   def unlikely_successor(b : Int32) : Int32
     term = @cfg.block(b).terminator
     return -1 unless term.op == Op::CondBr && term.targets[0] != term.targets[1]
     condition = term.args[0]
     return -1 unless condition.is_a?(Inst)
-    expect = condition.as(Inst)
-    return -1 unless expect.op == Op::Intrinsic && expect.aux.is_a?(IntrinsicAux)
-    return -1 unless expect.aux.as(IntrinsicAux).id == IntrinsicId::ExpectI1 && expect.args.size == 2
-    value = expect.args[1]
+    test = condition.as(Inst)
+    if test.op == Op::Intrinsic
+      return -1 unless test.aux.is_a?(IntrinsicAux)
+      return -1 unless test.aux.as(IntrinsicAux).id == IntrinsicId::ExpectI1 && test.args.size == 2
+      value = test.args[1]
+      return -1 unless value.is_a?(Inst)
+      expected = value.as(Inst)
+      return -1 unless expected.op == Op::ConstInt
+      return @cfg.index(term.targets[0]) if expected.aux_int == 0_i64 # mutation M18: cold false edge
+      return @cfg.index(term.targets[1]) if expected.aux_int == 1_i64
+      return -1
+    end
+    return -1 unless test.op == Op::ICmp && test.args.size == 2
+    value = test.args[1]
     return -1 unless value.is_a?(Inst)
-    expected = value.as(Inst)
-    return -1 unless expected.op == Op::ConstInt
-    return @cfg.index(term.targets[0]) if expected.aux_int == 0_i64 # mutation M18: cold false edge
-    return @cfg.index(term.targets[1]) if expected.aux_int == 1_i64
-    -1
+    constant = value.as(Inst)
+    zero = constant.op == Op::ConstInt && constant.aux_int == 0_i64
+    minus_one = constant.op == Op::ConstInt && constant.aux_int == -1_i64
+    null = constant.op == Op::ConstNull
+    predicate = test.aux_int
+    unlikely_true = (zero || minus_one || null) && predicate == IntPredicate::EQ.value.to_i64
+    unlikely_true ||= zero && predicate == IntPredicate::SLT.value.to_i64
+    unlikely_true ||= minus_one && predicate == IntPredicate::SLE.value.to_i64
+    unlikely_false = (zero || minus_one || null) && predicate == IntPredicate::NE.value.to_i64
+    unlikely_false ||= zero && predicate == IntPredicate::SGE.value.to_i64
+    unlikely_false ||= minus_one && predicate == IntPredicate::SGT.value.to_i64
+    return -1 unless unlikely_true || unlikely_false
+    return -1 if @irreducible # l1-irreducible-guard
+    unless @guards_built
+      build_opcode_guards
+      @guards_built = true
+    end
+    edge = @cfg.index(term.targets[unlikely_true ? 0 : 1])
+    other = @cfg.index(term.targets[unlikely_true ? 1 : 0])
+    return -1 if !@headers.empty? && @header_guard[edge] # l1-header-guard
+    loop_id = @inner[b]
+    if loop_id >= 0
+      return -1 if @latch_guard[edge] # l1-latch-guard
+      return -1 if opcode_loop_contains?(loop_id, edge) && !opcode_loop_contains?(loop_id, other) # l1-exit-guard
+    end
+    edge # l1-static-unlikely
   end
 
   def hot_blocks(cold : Array(Bool), unlikely : Array(Int32)) : Array(Bool)
