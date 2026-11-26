@@ -234,49 +234,6 @@
     Held.cycle = anchor.as(Void*).address if anchor.is_a?(ProbeNode)
   end
 
-  # Two real type IDs that share a cache slot must still select their own
-  # immutable layouts. A missing ID with the same slot must not inherit
-  # either entry. The table is the oracle, not the cache under test.
-  def check_layout_cache : Nil
-    table = IyiMark.layouts_table
-    raise "layout cache: missing layout table" if table == 0_u64
-    total = IyiHeap.read64(table)
-    first = 0_u64
-    second = 0_u64
-    i = 0_u64
-    while i < total && second == 0_u64
-      candidate = IyiHeap.read64(table &+ 8_u64 &+ i &* IyiMark::ENTRY)
-      j = i &+ 1_u64
-      while j < total
-        other = IyiHeap.read64(table &+ 8_u64 &+ j &* IyiMark::ENTRY)
-        if candidate != 0_u64 && other != 0_u64 && candidate != other && (candidate & 63_u64) == (other & 63_u64)
-          first = candidate
-          second = other
-          break
-        end
-        j = j &+ 1_u64
-      end
-      i = i &+ 1_u64
-    end
-    raise "layout cache: no two table entries share a slot" if second == 0_u64
-    first_entry = IyiMark.layout_search(first)
-    second_entry = IyiMark.layout_search(second)
-    raise "layout cache: invalid table entries" if first_entry == 0_u64 || second_entry == 0_u64 || first_entry == second_entry
-    w = IyiMark.worker
-    raise "layout cache collision: first type returned a neighbour" unless IyiMark.layout_entry(w, first) == first_entry
-    raise "layout cache collision: second type returned a neighbour" unless IyiMark.layout_entry(w, second) == second_entry
-    raise "layout cache collision: first type was not restored" unless IyiMark.layout_entry(w, first) == first_entry
-    # The program-local type IDs are 32-bit; this ID is absent and keeps
-    # the same low six bits as the first valid ID.
-    missing = first &+ 0x100000000_u64
-    raise "layout cache: expected a missing type" unless IyiMark.layout_search(missing) == 0_u64
-    raise "layout cache absent: missing type returned a neighbour" unless IyiMark.layout_entry(w, missing) == 0_u64
-    raise "layout cache collision: missing type displaced the valid one incorrectly" unless IyiMark.layout_entry(w, first) == first_entry
-    puts "    layout cache: colliding types and an absent type kept their own entries"
-  end
-
-  check_layout_cache
-
   puts "== the exercise, the collector's allocator"
 
   # 1. A chain, and garbage beside it.

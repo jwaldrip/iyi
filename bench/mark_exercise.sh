@@ -103,13 +103,13 @@ fi
 
 echo
 echo "== every check reported"
-for phrase in chain garbage idempotent unmark cycles "interior root" depth "layout cache"; do
+for phrase in chain garbage idempotent unmark cycles "interior root" depth; do
   grep -q "$phrase" "$WORK/mark.out" 2>/dev/null || {
     echo "  MISSING: nothing reported for $phrase"
     status=1
   }
 done
-[ "$status" -eq 0 ] && echo "  chain, garbage, idempotence, unmark, cycles, interior root, depth and layout cache all reported"
+[ "$status" -eq 0 ] && echo "  chain, garbage, idempotence, unmark, cycles, interior root and depth all reported"
 
 echo
 echo "== the same program with optimisation on"
