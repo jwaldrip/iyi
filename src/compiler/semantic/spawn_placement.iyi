@@ -43,26 +43,18 @@ def spawn_target?(visitor : MainVisitor, definition : Def, receiver : Type?) : B
   group_type?(visitor.program.def_owner(definition))
 end
 
-def spawn_receiver(visitor : MainVisitor, call : Call) : Type?
+pub def spawn_call?(visitor : MainVisitor, call : Call) : Bool
   receiver = visitor.call_receiver?(call)
   if receiver.nil?
     if obj = call.obj
       receiver = visitor.type_of?(obj)
     end
   end
-  receiver
-end
-
-pub def spawn_call?(visitor : MainVisitor, call : Call) : Bool
   if definition = visitor.target_def?(call)
-    if spawn_name?(definition.name)
-      return true if spawn_target?(visitor, definition, spawn_receiver(visitor, call))
-    end
+    return true if spawn_target?(visitor, definition, receiver)
   end
   if targets = visitor.dispatch_targets?(call)
     targets.each do |target|
-      next unless spawn_name?(target.definition.name)
-      receiver = spawn_receiver(visitor, call)
       return true if spawn_target?(visitor, target.definition, receiver || target.receiver)
     end
   end
@@ -76,7 +68,13 @@ def unresolved_group_spawn?(visitor : MainVisitor, call : Call) : Bool
   if targets = visitor.dispatch_targets?(call)
     return false unless targets.empty?
   end
-  group_type?(spawn_receiver(visitor, call))
+  receiver = visitor.call_receiver?(call)
+  if receiver.nil?
+    if obj = call.obj
+      receiver = visitor.type_of?(obj)
+    end
+  end
+  group_type?(receiver)
 end
 
 def placement_text(call : Call) : String
@@ -285,6 +283,7 @@ pub class SpawnAnalysis
     if visitor.program.types.has_key?("IyiChaos")
       analysis.proven("-Diyi_chaos: every loop checks for preemption (hosted codegen.cr 2999)")
     end
+
     reach = PoolReachWalk.new(visitor, analysis)
     root.accept(reach)
     constants.each do |constant|
