@@ -1209,7 +1209,7 @@ prove_mutation "j1: signed range check indexes a value below the lowest case" \
 prove_mutation "j1: block offsets ignore the first table's bytes" \
   src/compiler/native/aarch64/encode.iyi \
   '      offsets << enc.here' \
-  '      offsets << enc.here - (enc.table_offsets.empty? || enc.table_offsets[0] < 0_i64 ? 0_i64 : fn.jump_tables[0].targets.size.to_i64 * 4_i64)' \
+  '      offsets << enc.here - (fn.jump_tables.empty? || enc.table_layout.as(Array(Int64))[1] < 0_i64 ? 0_i64 : fn.jump_tables[0].targets.size.to_i64 * 4_i64)' \
   check_j1_table
 prove_mutation "thread-local: the thunk call is skipped, so the descriptor's address is taken for the variable" \
   src/compiler/native/aarch64/isel.iyi \
