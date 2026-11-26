@@ -1,0 +1,87 @@
+; iyi-ir 1
+module "j1_table_form"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [13 x i8] c"%d %d %d %d\0A\00"
+
+; The first target is before the dispatch, the others are after it. The duplicate -2 must lose to the first.
+define internal i32 @dense(i32 %n) {
+entry:
+  br label %dispatch
+before:
+  ret i32 33
+dispatch:
+  switch i32 %n, label %default [ i32 -3, label %before, i32 -2, label %after, i32 -2, label %duplicate, i32 0, label %zero, i32 1, label %one, i32 2, label %two, i32 3, label %three ]
+after:
+  ret i32 12
+duplicate:
+  ret i32 99
+zero:
+  ret i32 20
+one:
+  ret i32 21
+two:
+  ret i32 22
+three:
+  ret i32 23
+default:
+  ret i32 -9
+}
+
+; Both switches belong to the same function and have different table bases.
+define internal i32 @two_tables(i32 %a, i32 %b) {
+entry:
+  switch i32 %a, label %bad_first [ i32 0, label %second, i32 1, label %second, i32 2, label %second, i32 3, label %second ]
+second:
+  switch i32 %b, label %bad_second [ i32 10, label %b10, i32 11, label %b11, i32 12, label %b12, i32 13, label %b13 ]
+b10:
+  ret i32 100
+b11:
+  ret i32 101
+b12:
+  ret i32 102
+b13:
+  ret i32 103
+bad_first:
+  ret i32 -1
+bad_second:
+  ret i32 -2
+}
+
+define internal i32 @recursive(i32 %n) {
+entry:
+  switch i32 %n, label %done [ i32 1, label %step, i32 2, label %step, i32 3, label %step, i32 4, label %step ]
+step:
+  %next = sub i32 %n, 1
+  %part = call i32 (i32) @recursive(i32 %next)
+  %sum = add i32 %n, %part
+  ret i32 %sum
+done:
+  ret i32 0
+}
+
+define i32 @main() {
+entry:
+  %a = call i32 (i32) @dense(i32 -4)
+  %b = call i32 (i32) @dense(i32 -3)
+  %c = call i32 (i32) @dense(i32 -2)
+  %d = call i32 (i32) @dense(i32 -1)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i32 %a, i32 %b, i32 %c, i32 %d)
+  %e = call i32 (i32) @dense(i32 0)
+  %f = call i32 (i32) @dense(i32 3)
+  %g = call i32 (i32) @dense(i32 4)
+  %h = call i32 (i32) @dense(i32 2)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i32 %e, i32 %f, i32 %g, i32 %h)
+  %i = call i32 (i32, i32) @two_tables(i32 0, i32 10)
+  %j = call i32 (i32, i32) @two_tables(i32 2, i32 13)
+  %k = call i32 (i32, i32) @two_tables(i32 5, i32 11)
+  %l = call i32 (i32, i32) @two_tables(i32 1, i32 9)
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i32 %i, i32 %j, i32 %k, i32 %l)
+  %m = call i32 (i32) @recursive(i32 4)
+  %n = call i32 (i32) @recursive(i32 1)
+  %o = call i32 (i32) @recursive(i32 0)
+  %q = call i32 (i32) @recursive(i32 5)
+  %p4 = call i32 (ptr, ...) @printf(ptr @fmt, i32 %m, i32 %n, i32 %o, i32 %q)
+  ret i32 0
+}

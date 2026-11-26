@@ -550,6 +550,199 @@ expect_table jump_loop run 6 0 || fail "jump_loop: run is not a 6-entry table at
 expect_chain jump_sparse sparse || fail "jump_sparse: a sparse switch took a table"
 expect_chain jump_sparse none || fail "jump_sparse: a switch with no cases took a table"
 
+# J1: the exact in-text entries are relative to their own table, and cover targets on both sides.
+if [ ! -f "$FIX/j1_table_form.ir" ] || [ ! -f "$FIX/j1_table_form.iyi" ] || [ ! -f "$FIX/j1_relax.iyi" ]; then
+  fail "j1: a required fixture is missing"
+fi
+expect_table j1_table_form dense 7 -3 || fail "j1: dense table shape differs"
+expect_table j1_table_form two_tables 4 0 || fail "j1: first table shape differs"
+expect_table j1_table_form recursive 4 1 || fail "j1: recursive table shape differs"
+if j1_mir=$(IYI_NATIVE_REGALLOC=linear "$DRV" mir "$(native_path "$FIX/j1_table_form.ir")" two_tables) \
+    && [ "$(printf '%s\n' "$j1_mir" | grep -c 'AddrTable/64')" -eq 2 ] \
+    && [ "$(printf '%s\n' "$j1_mir" | grep -c 'LdrswIdx/32')" -eq 2 ] \
+    && [ "$(printf '%s\n' "$j1_mir" | grep -c 'BrTable/64')" -eq 2 ] \
+    && printf '%s\n' "$j1_mir" | grep -qF 'jump table 1 entries=4 low=10 targets=2,3,4,5'; then
+  echo "j1: two ADR, signed indexed loads, and table branches in one function"
+else
+  fail "j1: the two-table MIR does not have the relative form"
+fi
+if IYI_NATIVE_REGALLOC=linear "$DRV" obj "$(native_path "$FIX/j1_table_form.ir")" "$(native_path "$WORK/j1-linear.o")" \
+    && "$DRV" bytes "$(native_path "$WORK/j1-linear.o")" >"$WORK/j1-linear.bytes" \
+    && "$LLVM_OBJDUMP" --macho --private-headers "$(native_path "$WORK/j1-linear.o")" >"$WORK/j1-linear.headers" \
+    && "$PY" - "$(native_path "$WORK/j1-linear.bytes")" "$(native_path "$WORK/j1-linear.headers")" <<'PY'
+import re, struct, sys
+
+sections, symbols, relocs = {}, {}, []
+for line in open(sys.argv[1], encoding="utf-8"):
+    f = line.rstrip("\n").split("\t")
+    if f[0] == "section":
+        sections[int(f[1])] = bytes.fromhex(f[2])
+    elif f[0] == "sym":
+        symbols[bytes.fromhex(f[1]).decode()] = (int(f[2]), int(f[3]))
+    elif f[0] == "reloc":
+        relocs.append((int(f[1]), int(f[2]), f[3]))
+headers = open(sys.argv[2], encoding="utf-8").read()
+assert ("__const", "__DATA") not in re.findall(r"sectname\s+(\S+)\s+segname\s+(\S+)", headers)
+assert all(".jt" not in name for name in symbols)
+assert all(kind != "Abs64" for _, _, kind in relocs)
+expected = {
+    "dense": [(-44, 28, 76, 44, 52, 60, 68)],
+    "two_tables": [(16, 16, 16, 16), (16, 24, 32, 40)],
+    "recursive": [(16, 16, 16, 16)],
+}
+for name, tables in expected.items():
+    section, start = symbols[name]
+    text = sections[section]
+    end = min([off for sec, off in symbols.values() if sec == section and off > start] or [len(text)])
+    found = []
+    for pc in range(start, end, 4):
+        adr = int.from_bytes(text[pc:pc + 4], "little")
+        if adr & 0x9f000000 != 0x10000000:
+            continue
+        imm = (((adr >> 5) & 0x7ffff) << 2) | ((adr >> 29) & 3)
+        if imm & (1 << 20):
+            imm -= 1 << 21
+        table = pc + imm
+        assert table == pc + 16 and table % 4 == 0
+        load, add, branch = struct.unpack_from("<III", text, pc + 4)
+        assert load & 0xffe0fc00 == 0xb8a07800
+        assert add & 0xffe0fc00 == 0x8b000000
+        assert branch & 0xfffffc1f == 0xd61f0000
+        assert (load >> 5) & 31 == adr & 31
+        assert (add >> 5) & 31 == adr & 31 and (add >> 16) & 31 == load & 31
+        assert (branch >> 5) & 31 == add & 31
+        want = tables[len(found)]
+        got = struct.unpack_from("<" + "i" * len(want), text, table)
+        assert got == want, (name, got, want)
+        assert all(not (sec == section and table <= off < table + 4 * len(want)) for sec, off, _ in relocs)
+        found.append(got)
+    assert found == tables, (name, found, tables)
+assert expected["dense"][0][0] < 0 < expected["dense"][0][1]
+print("j1: exact signed table bytes, ADR/ldrsw/add/br, no table relocations, symbols, or data section")
+PY
+then
+  :
+else
+  fail "j1: relative table object inspection failed"
+fi
+
+# The sparse function is unchanged byte for byte from d777bd9e96, not merely still a compare chain.
+if IYI_NATIVE_REGALLOC=linear "$DRV" obj "$(native_path "$FIX/jump_sparse.ir")" "$(native_path "$WORK/j1-sparse.o")" \
+    && "$DRV" bytes "$(native_path "$WORK/j1-sparse.o")" >"$WORK/j1-sparse.bytes" \
+    && "$PY" - "$(native_path "$WORK/j1-sparse.bytes")" "$(native_path "$FIX/j1_sparse.expected")" <<'PY'
+import sys
+
+sections, symbols = {}, {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    f = line.rstrip("\n").split("\t")
+    if f[0] == "section":
+        sections[int(f[1])] = bytes.fromhex(f[2])
+    elif f[0] == "sym":
+        symbols[bytes.fromhex(f[1]).decode()] = (int(f[2]), int(f[3]))
+sec, start = symbols["sparse"]
+end = min([off for idx, off in symbols.values() if idx == sec and off > start] or [len(sections[sec])])
+actual = sections[sec][start:end].hex()
+expected = open(sys.argv[2], encoding="utf-8").read().strip()
+assert actual == expected, (actual, expected)
+print("j1: sparse compare chain matches all 96 bytes from d777bd9e96")
+PY
+then
+  :
+else
+  fail "j1: sparse switch bytes changed"
+fi
+
+# One short sign-test branch crosses an 8193-entry table. Its relaxed branch and runtime are checked separately.
+if ! "$PY" - "$(native_path "$WORK/j1-relax.ir")" <<'PY'
+import sys
+
+cases = ", ".join(f"i32 {i}, label %match" for i in range(8193))
+text = r'''; iyi-ir 1
+module "j1_relax"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [13 x i8] c"%d %d %d %d\0A\00"
+define internal i32 @relax(i64 %test, i32 %selector) {
+entry:
+  %negative = icmp slt i64 %test, 0
+  br i1 %negative, label %far, label %dispatch
+dispatch:
+  switch i32 %selector, label %default [ ''' + cases + r''' ]
+match:
+  ret i32 7
+default:
+  ret i32 -7
+far:
+  ret i32 42
+}
+define i32 @main() {
+entry:
+  %a = call i32 (i64, i32) @relax(i64 -1, i32 0)
+  %b = call i32 (i64, i32) @relax(i64 1, i32 0)
+  %c = call i32 (i64, i32) @relax(i64 1, i32 8192)
+  %d = call i32 (i64, i32) @relax(i64 1, i32 8193)
+  %p = call i32 (ptr, ...) @printf(ptr @fmt, i32 %a, i32 %b, i32 %c, i32 %d)
+  ret i32 0
+}
+'''
+open(sys.argv[1], "w", encoding="utf-8").write(text)
+PY
+then
+  fail "j1: cannot generate the relaxation fixture"
+elif ! IYI_NATIVE_REGALLOC=linear "$DRV" obj "$(native_path "$WORK/j1-relax.ir")" "$(native_path "$WORK/j1-relax.o")" \
+    || ! "$DRV" bytes "$(native_path "$WORK/j1-relax.o")" >"$WORK/j1-relax.bytes" \
+    || ! "$PY" - "$(native_path "$WORK/j1-relax.bytes")" <<'PY'
+import sys
+
+sections, symbols = {}, {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    f = line.rstrip("\n").split("\t")
+    if f[0] == "section":
+        sections[int(f[1])] = bytes.fromhex(f[2])
+    elif f[0] == "sym":
+        symbols[bytes.fromhex(f[1]).decode()] = (int(f[2]), int(f[3]))
+sec, start = symbols["relax"]
+end = min([off for idx, off in symbols.values() if idx == sec and off > start] or [len(sections[sec])])
+text = sections[sec]
+assert end - start > 8193 * 4
+for pc in range(start, min(end - 4, start + 128), 4):
+    first = int.from_bytes(text[pc:pc + 4], "little")
+    second = int.from_bytes(text[pc + 4:pc + 8], "little")
+    if first & 0xff000000 == 0xb6000000 and (first >> 5) & 0x3fff == 2 and second & 0xfc000000 == 0x14000000:
+        delta = second & 0x3ffffff
+        if delta & (1 << 25):
+            delta -= 1 << 26
+        assert delta * 4 > 32764
+        print(f"j1: relaxed tbz over an 8193-entry table, long branch displacement {delta * 4}")
+        break
+else:
+    raise AssertionError("the sign branch was not relaxed over the table")
+PY
+then
+  fail "j1: short branch did not relax across the table"
+elif [ "$HOST_ID" = darwin-arm64 ]; then
+  if ! cc "$WORK/j1-relax.o" "$FIX/rt_stub.c" -o "$WORK/j1-relax.native" >"$WORK/j1-relax.link.log" 2>&1 \
+      || ! record_executable "$WORK/j1-relax.native" \
+      || ! "$IYI" build -o "$(native_path "$WORK/j1-relax.hosted$EXE")" "$(native_path "$FIX/j1_relax.iyi")" >"$WORK/j1-relax.hosted.log" 2>&1; then
+    cat "$WORK/j1-relax.link.log" "$WORK/j1-relax.hosted.log" 2>/dev/null
+    fail "j1: relaxation runtime setup failed"
+  else
+    "$WORK/j1-relax.native" >"$WORK/j1-relax.native.out" 2>"$WORK/j1-relax.native.err"
+    j1_native_status=$?
+    "$WORK/j1-relax.hosted$EXE" >"$WORK/j1-relax.hosted.out" 2>"$WORK/j1-relax.hosted.err"
+    j1_hosted_status=$?
+    if [ "$j1_native_status" -eq "$j1_hosted_status" ] && cmp -s "$WORK/j1-relax.native.out" "$WORK/j1-relax.hosted.out"; then
+      echo "j1: relaxed branch runtime matches the hosted twin"
+      cat "$WORK/j1-relax.native.out"
+    else
+      fail "j1: relaxed branch runtime differs from the hosted twin"
+    fi
+  fi
+else
+  host_limited "j1: relaxation fixture execution requires macOS arm64"
+fi
+
 # ---- 4d. thread-local access: the descriptor sequence, the Linux local-exec form, and the sections' flags and
 # placement, as the oracle's object has them -------------------------------------------------------------------
 echo "== 4d. thread-local access lowers as the oracle's sequences; section flags and placement match its object"
@@ -798,6 +991,7 @@ check_mono_pair() {
 check_jump_dense() { check_fixture "$1" jump_dense; }
 # This mutation is specific to linear-scan control-flow successors.
 check_jump_loop() { IYI_NATIVE_REGALLOC=linear check_fixture "$1" jump_loop; }
+check_j1_table() { IYI_NATIVE_REGALLOC=linear check_fixture "$1" j1_table_form; }
 check_probe() {
   local mir n
   mir=$("$1" mir "$(native_path "$FIX/frame64k.ir")" big) || return 124
@@ -996,6 +1190,27 @@ prove_mutation "jump table: the case-0 block is missing from the branch's succes
   '      table_targets.each do |t|
         acc << t unless t == table_targets[0]' \
   check_jump_loop
+
+prove_mutation "j1: table entries are relative to the function start" \
+  src/compiler/native/aarch64/encode.iyi \
+  '        delta = block_offsets[target] - table_start' \
+  '        delta = block_offsets[target]' \
+  check_j1_table
+prove_mutation "j1: indexed table entries are not sign-extended" \
+  src/compiler/native/aarch64/encode.iyi \
+  '      word(0xB8A07800_i64 | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))' \
+  '      word(0xB8607800_i64 | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))' \
+  check_j1_table
+prove_mutation "j1: signed range check indexes a value below the lowest case" \
+  src/compiler/native/aarch64/isel.iyi \
+  '    range_check.cond = cond_hi' \
+  '    range_check.cond = cond_gt' \
+  check_j1_table
+prove_mutation "j1: block offsets ignore the first table's bytes" \
+  src/compiler/native/aarch64/encode.iyi \
+  '      offsets << enc.here' \
+  '      offsets << enc.here - (enc.table_offsets.empty? || enc.table_offsets[0] < 0_i64 ? 0_i64 : fn.jump_tables[0].targets.size.to_i64 * 4_i64)' \
+  check_j1_table
 prove_mutation "thread-local: the thunk call is skipped, so the descriptor's address is taken for the variable" \
   src/compiler/native/aarch64/isel.iyi \
   '    m.clobbers = tlv_clobbers
