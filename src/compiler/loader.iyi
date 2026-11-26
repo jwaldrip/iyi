@@ -162,6 +162,8 @@ pub class Loader
   property header_root : String?
   property project_root : String?
   property load_prelude : Bool
+  @resolution_cache : Hash(Tuple(String, String), String)
+  @resolution_header_root : String?
   # Expands a file's top-level `{% if %}` and `{% for %}` sites, so that a `require` is loaded only from the
   # branch the target's flags pick. One engine for the whole resolution: each site still gets a fresh interpreter.
   property macro_engine : MacroEngine
@@ -173,6 +175,8 @@ pub class Loader
     @header_root = nil
     @project_root = nil
     @load_prelude = false
+    @resolution_cache = Hash(Tuple(String, String), String).new
+    @resolution_header_root = nil
     @macro_engine = MacroEngine.new
   end
 
@@ -183,6 +187,8 @@ pub class Loader
     @order = [] of String
     @import_stack = [] of String
     @header_root = nil
+    @resolution_cache.clear
+    @resolution_header_root = nil
 
     cleaned_root = Loader.clean_path(root_file)
     @project_root = Loader.dirname(cleaned_root)
@@ -344,7 +350,20 @@ pub class Loader
     relative_dir = Loader.dirname(clean_fn)
 
     import_paths.each do |mod_path|
-      resolved = @iyi_path.find(mod_path, relative_dir, @header_root)
+      # A later file can establish the header root while a parent is resolving.
+      # Keep only successes for this root and importing directory.
+      if @resolution_header_root != @header_root
+        @resolution_cache.clear
+        @resolution_header_root = @header_root
+      end
+      key = {relative_dir, mod_path}
+      resolved = @resolution_cache[key]?
+      unless resolved
+        resolved = @iyi_path.find(mod_path, relative_dir, @header_root)
+        if found = resolved
+          @resolution_cache[key] = found
+        end
+      end
       unless res_fn = resolved
         STDERR.puts "Error: can't find module '#{mod_path}'. A module's path is its file's path, so this one is `#{mod_path}.iyi`, resolved from the directory of the file being built and then from `IYI_PATH`"
         LibC.exit(1)
