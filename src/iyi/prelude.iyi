@@ -3295,13 +3295,21 @@ require "./file"
           if head != 0
             stamp(table, index, head, bits, type_id)
             if clear
-              # `chunk_of` for a class of eight-byte steps; the chunk is
-              # whole words, so a word at a time and no tail.
-              word = head
-              stop = head &+ (index.to_u64 &+ 2_u64) &* 8_u64
-              while word < stop
-                write64(word, 0_u64)
-                word = word &+ 8_u64
+              # The common 16-, 24- and 32-byte classes need at most
+              # four stores. Clear them directly rather than looping per
+              # word; larger classes still use the same whole-chunk loop.
+              if index <= 2
+                write64(head, 0_u64)
+                write64(head &+ 8_u64, 0_u64)
+                write64(head &+ 16_u64, 0_u64) if index >= 1
+                write64(head &+ 24_u64, 0_u64) if index >= 2
+              else
+                word = head
+                stop = head &+ (index.to_u64 &+ 2_u64) &* 8_u64
+                while word < stop
+                  write64(word, 0_u64)
+                  word = word &+ 8_u64
+                end
               end
             end
             leave(table)
