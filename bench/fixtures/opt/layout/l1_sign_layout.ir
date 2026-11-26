@@ -1,0 +1,134 @@
+; iyi-ir 1
+source_filename = "l1_sign_layout"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+
+define internal i32 @slt_zero(i64 %x) {
+entry:
+  %test = icmp slt i64 %x, 0
+  br i1 %test, label %slow, label %fast
+slow:
+  br label %join
+fast:
+  br label %join
+join:
+  %result = phi i32 [ 1, label %slow ], [ 2, label %fast ]
+  ret i32 %result
+}
+
+define internal i32 @sge_zero(i64 %x) {
+entry:
+  %test = icmp sge i64 %x, 0
+  br i1 %test, label %fast, label %slow
+slow:
+  br label %join
+fast:
+  br label %join
+join:
+  %result = phi i32 [ 1, label %slow ], [ 2, label %fast ]
+  ret i32 %result
+}
+
+define internal i32 @sle_minus_one(i64 %x) {
+entry:
+  %test = icmp sle i64 %x, -1
+  br i1 %test, label %slow, label %fast
+slow:
+  br label %join
+fast:
+  br label %join
+join:
+  %result = phi i32 [ 1, label %slow ], [ 2, label %fast ]
+  ret i32 %result
+}
+
+define internal i32 @sgt_minus_one(i64 %x) {
+entry:
+  %test = icmp sgt i64 %x, -1
+  br i1 %test, label %fast, label %slow
+slow:
+  br label %join
+fast:
+  br label %join
+join:
+  %result = phi i32 [ 1, label %slow ], [ 2, label %fast ]
+  ret i32 %result
+}
+
+define internal i32 @eq_zero(i64 %x) {
+entry:
+  %test = icmp eq i64 %x, 0
+  br i1 %test, label %slow, label %fast
+slow:
+  br label %join
+fast:
+  br label %join
+join:
+  %result = phi i32 [ 1, label %slow ], [ 2, label %fast ]
+  ret i32 %result
+}
+
+define internal i32 @ne_zero(i64 %x) {
+entry:
+  %test = icmp ne i64 %x, 0
+  br i1 %test, label %fast, label %slow
+slow:
+  br label %join
+fast:
+  br label %join
+join:
+  %result = phi i32 [ 1, label %slow ], [ 2, label %fast ]
+  ret i32 %result
+}
+
+define internal i32 @eq_minus_one(i64 %x) {
+entry:
+  %test = icmp eq i64 %x, -1
+  br i1 %test, label %slow, label %fast
+slow:
+  br label %join
+fast:
+  br label %join
+join:
+  %result = phi i32 [ 1, label %slow ], [ 2, label %fast ]
+  ret i32 %result
+}
+
+define internal i32 @ne_minus_one(i64 %x) {
+entry:
+  %test = icmp ne i64 %x, -1
+  br i1 %test, label %fast, label %slow
+slow:
+  br label %join
+fast:
+  br label %join
+join:
+  %result = phi i32 [ 1, label %slow ], [ 2, label %fast ]
+  ret i32 %result
+}
+
+define internal i32 @eq_null(ptr %x) {
+entry:
+  %test = icmp eq ptr %x, null
+  br i1 %test, label %slow, label %fast
+slow:
+  br label %join
+fast:
+  br label %join
+join:
+  %result = phi i32 [ 1, label %slow ], [ 2, label %fast ]
+  ret i32 %result
+}
+
+define internal i32 @ne_null(ptr %x) {
+entry:
+  %test = icmp ne ptr %x, null
+  br i1 %test, label %fast, label %slow
+slow:
+  br label %join
+fast:
+  br label %join
+join:
+  %result = phi i32 [ 1, label %slow ], [ 2, label %fast ]
+  ret i32 %result
+}

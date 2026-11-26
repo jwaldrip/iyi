@@ -1,0 +1,16 @@
+; iyi-ir 1
+source_filename = "l1_other_keep"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i32 @other_compare(i64 %x) {
+entry:
+  %test = icmp slt i64 %x, 1
+  br i1 %test, label %less, label %greater
+greater:
+  br label %join
+less:
+  br label %join
+join:
+  %result = phi i32 [ 1, label %less ], [ 2, label %greater ]
+  ret i32 %result
+}

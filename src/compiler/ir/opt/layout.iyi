@@ -1,7 +1,7 @@
 module compiler/ir/opt/layout
 
 import compiler/ir/function::{Function}
-import compiler/ir/inst::{Block, Inst, IntrinsicAux, Op}
+import compiler/ir/inst::{Block, Inst, IntPredicate, IntrinsicAux, Op}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/module::{Module}
 import compiler/ir/opt/analysis::{Cfg, DomTree}
@@ -214,15 +214,34 @@ class BlockLayout
     return -1 unless term.op == Op::CondBr && term.targets[0] != term.targets[1]
     condition = term.args[0]
     return -1 unless condition.is_a?(Inst)
-    expect = condition.as(Inst)
-    return -1 unless expect.op == Op::Intrinsic && expect.aux.is_a?(IntrinsicAux)
-    return -1 unless expect.aux.as(IntrinsicAux).id == IntrinsicId::ExpectI1 && expect.args.size == 2
-    value = expect.args[1]
+    test = condition.as(Inst)
+    if test.op == Op::Intrinsic
+      return -1 unless test.aux.is_a?(IntrinsicAux)
+      return -1 unless test.aux.as(IntrinsicAux).id == IntrinsicId::ExpectI1 && test.args.size == 2
+      value = test.args[1]
+      return -1 unless value.is_a?(Inst)
+      expected = value.as(Inst)
+      return -1 unless expected.op == Op::ConstInt
+      return @cfg.index(term.targets[0]) if expected.aux_int == 0_i64 # mutation M18: cold false edge
+      return @cfg.index(term.targets[1]) if expected.aux_int == 1_i64
+      return -1
+    end
+    return -1 unless test.op == Op::ICmp && test.args.size == 2
+    value = test.args[1]
     return -1 unless value.is_a?(Inst)
-    expected = value.as(Inst)
-    return -1 unless expected.op == Op::ConstInt
-    return @cfg.index(term.targets[0]) if expected.aux_int == 0_i64 # mutation M18: cold false edge
-    return @cfg.index(term.targets[1]) if expected.aux_int == 1_i64
+    constant = value.as(Inst)
+    zero = constant.op == Op::ConstInt && constant.aux_int == 0_i64
+    minus_one = constant.op == Op::ConstInt && constant.aux_int == -1_i64
+    null = constant.op == Op::ConstNull
+    predicate = test.aux_int
+    unlikely_true = (zero || minus_one || null) && predicate == IntPredicate::EQ.value.to_i64
+    unlikely_true ||= zero && predicate == IntPredicate::SLT.value.to_i64
+    unlikely_true ||= minus_one && predicate == IntPredicate::SLE.value.to_i64
+    unlikely_false = (zero || minus_one || null) && predicate == IntPredicate::NE.value.to_i64
+    unlikely_false ||= zero && predicate == IntPredicate::SGE.value.to_i64
+    unlikely_false ||= minus_one && predicate == IntPredicate::SGT.value.to_i64
+    return @cfg.index(term.targets[0]) if unlikely_true # l1-static-unlikely
+    return @cfg.index(term.targets[1]) if unlikely_false
     -1
   end
 
