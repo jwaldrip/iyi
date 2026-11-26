@@ -307,17 +307,18 @@ pub class GenericClassInstanceType < GenericInstanceType
   # The instance variables of this instance and of its superclass, as the hosted
   # all_instance_vars: the superclass's first, then its own.
   def all_instance_vars : Hash(String, MetaTypeVar)
-    all = if sc = @superclass
-            if sc.is_a?(ModuleType)
-              sc.as(ModuleType).all_instance_vars
-            elsif sc.is_a?(GenericClassInstanceType)
-              sc.as(GenericClassInstanceType).all_instance_vars
-            else
-              Hash(String, MetaTypeVar).new
-            end
-          else
-            Hash(String, MetaTypeVar).new
-          end
+    all = Hash(String, MetaTypeVar).new
+    if sc = @superclass
+      if sc.is_a?(ModuleType)
+        sc.as(ModuleType).all_instance_vars.each do |k, v|
+          all[k] = v
+        end
+      elsif sc.is_a?(GenericClassInstanceType)
+        sc.as(GenericClassInstanceType).all_instance_vars.each do |k, v|
+          all[k] = v
+        end
+      end
+    end
     @included_modules.each do |parent|
       if parent.is_a?(ModuleType)
         parent.as(ModuleType).all_instance_vars.each { |k, v| all[k] = v }

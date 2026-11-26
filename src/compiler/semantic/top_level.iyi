@@ -413,24 +413,20 @@ pub abstract class ModuleType < NamedType
   end
 
   def all_instance_vars : Hash(String, MetaTypeVar)
+    all_ivars = Hash(String, MetaTypeVar).new
     superclass : Type? = nil
     if self.is_a?(ClassType)
       superclass = self.as(ClassType).superclass
+      if sc = superclass
+        if sc.is_a?(ModuleType)
+          sc.as(ModuleType).all_instance_vars.each do |k, v|
+            all_ivars[k] = v
+          end
+        elsif vars = sc.all_instance_vars?
+          vars.each { |k, v| all_ivars[k] = v }
+        end
+      end
     end
-    # The superclass's table is fresh, so extend it rather than rehashing it.
-    all_ivars = if sc = superclass
-                   if sc.is_a?(ModuleType)
-                     sc.as(ModuleType).all_instance_vars
-                   else
-                     all = Hash(String, MetaTypeVar).new
-                     if vars = sc.all_instance_vars?
-                       vars.each { |k, v| all[k] = v }
-                     end
-                     all
-                   end
-                 else
-                   Hash(String, MetaTypeVar).new
-                 end
     @parents.each_with_index do |p, i|
       # A class normally stores its superclass as its first parent too. The
       # immediately repeated merge cannot change values or insertion order.
