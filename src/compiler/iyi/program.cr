@@ -562,7 +562,16 @@ module Iyi
     # `.iyi` file in it may reach a shard the way a `.cr` file does. The rules
     # that make a module a module are unaffected: they are the language's, and
     # the prelude is a library.
-    property? iyi_prelude = true
+    getter? iyi_prelude = true
+
+    def iyi_prelude=(enabled : Bool)
+      @iyi_prelude = enabled
+      if enabled
+        types["UInt64x2"] ||= UInt64x2Type.new self, self, "UInt64x2", @value.not_nil!, 16
+      elsif vector = types.delete("UInt64x2")
+        @value.not_nil!.subclasses.delete(vector)
+      end
+    end
 
     # iyi: true when building with `--crystal`, targeting Crystal's standard library and ABI.
     property? crystal_library = false
@@ -653,6 +662,10 @@ module Iyi
     # than of the typed defs: every program that spawns types the pool's
     # path beside `spawn`'s, for a call the cleanup may never point at it.
     property? iyi_pool_reached : Bool = false
+
+    # A freestanding wasm program whose kept code can park a task needs the
+    # JSPI entry and imports. Ordinary programs do not carry that runtime.
+    property? iyi_wasm_tasks_reached : Bool = false
 
     # iyi: whether code written outside the prelude calls a C function — a
     # `lib` fun that is neither an LLVM intrinsic nor a variable. Set where
