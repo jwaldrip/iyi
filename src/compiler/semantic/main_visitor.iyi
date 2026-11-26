@@ -408,6 +408,8 @@ pub class MainVisitor < TypeNodeHost
   property def_instances : Hash(String, DefInstance)
   # Per-concrete-type initializers, shared by every visitor typing this program.
   property instance_var_initializer_lists : Hash(UInt64, Array(InstanceVarInitializer))
+  # Filename spellings are stable; import tables themselves are read on every entry.
+  property normalized_file_paths : Hash(String, String)
 
   # The values the body being typed returns (`return`), and the values a `break` (of the call
   # whose block it is) and a `next` (of that block) carry while they are collected. nil where
@@ -555,6 +557,7 @@ pub class MainVisitor < TypeNodeHost
     @typed_instances = [] of TypedInstance
     @def_instances = Hash(String, DefInstance).new
     @instance_var_initializer_lists = Hash(UInt64, Array(InstanceVarInitializer)).new
+    @normalized_file_paths = Hash(String, String).new
   end
 
   def set_type(node : ASTNode, type : Type) : Type
@@ -3595,10 +3598,10 @@ pub class MainVisitor < TypeNodeHost
       level_start = matches.size
       ordered.each do |definition|
         next if definition.abstract && !owner.is_a?(TraitType)
-        next unless CallMatch.yields?(definition) == !call_node.block.nil?
         if call_node.named_args.nil? && definition.splat_index.nil?
-          next if args.size < min_args_count(definition) || args.size > definition.args.size
+          next if args.size > definition.args.size || args.size < min_args_count(definition)
         end
+        next unless CallMatch.yields?(definition) == !call_node.block.nil?
         old_imports = @program.current_imports
         old_defs = @program.current_import_defs
         old_type = @current_type
@@ -3611,7 +3614,7 @@ pub class MainVisitor < TypeNodeHost
           instance = owner.as(MetaclassType).instance_type
           match_owner = instance if instance.is_a?(GenericInstanceType)
         end
-        attempt = CallMatch.attempt(type_node_system(@program), signature, definition, match_owner, defining)
+        attempt = CallMatch.attempt(type_node_system(@program), signature, definition, match_owner, defining, true)
         @current_type = old_type
         @program.current_imports = old_imports
         @program.current_import_defs = old_defs
@@ -4271,9 +4274,17 @@ pub class MainVisitor < TypeNodeHost
   # no location (a generated def) keeps the scope it is typed from.
   def enter_file_scope(node : ASTNode, required : Bool = false) : Nil
     if loc = node.location
-      filename = normalize_path(loc.filename)
-      imports = @program.file_imports[loc.filename]? || @program.file_imports[filename]?
-      defs = @program.file_import_defs[loc.filename]? || @program.file_import_defs[filename]?
+      imports = @program.file_imports[loc.filename]?
+      defs = @program.file_import_defs[loc.filename]?
+      if imports.nil? || defs.nil?
+        filename = @normalized_file_paths[loc.filename]?
+        if filename.nil?
+          filename = normalize_path(loc.filename)
+          @normalized_file_paths[loc.filename] = filename
+        end
+        imports = imports || @program.file_imports[filename]?
+        defs = defs || @program.file_import_defs[filename]?
+      end
       if required && (imports.nil? || defs.nil?)
         raise("missing import table for #{loc.filename}")
       end
@@ -5879,9 +5890,15 @@ pub class MainVisitor < TypeNodeHost
         instantiated_def = hit.definition
         ret_t = hit.return_type
       else
-        instantiated_def = target_def.clone
+        # A call expansion has already built a fresh wrapper and body.
+        instantiated_def = target_def
+        if target_def.object_id == original_def.object_id
+          instantiated_def = target_def.clone
+        end
         defaults_bind_splat(original_def, instantiated_def, supplied_args)
-        @program.copy_def_owner(target_def, instantiated_def)
+        if instantiated_def.object_id != target_def.object_id
+          @program.copy_def_owner(target_def, instantiated_def)
+        end
         @call_target_defs[node] = instantiated_def
         ret_t = type_method_body(instantiated_def, union_instance_owner, arguments, node.block, node, dkey, node)
         instantiated_def = @call_target_defs[node]? || instantiated_def
@@ -6023,9 +6040,15 @@ pub class MainVisitor < TypeNodeHost
       @call_target_defs[node] = instantiated_def
       body_ret = hit.return_type
     else
-      instantiated_def = target_def.clone
+      # Only a declaration needs a clone; a call expansion is already private.
+      instantiated_def = target_def
+      if target_def.object_id == original_def.object_id
+        instantiated_def = target_def.clone
+      end
       defaults_bind_splat(original_def, instantiated_def, node.args)
-      @program.copy_def_owner(target_def, instantiated_def)
+      if instantiated_def.object_id != target_def.object_id
+        @program.copy_def_owner(target_def, instantiated_def)
+      end
       @call_target_defs[node] = instantiated_def
       if blk = node.block
         @block_breaks[blk] = [] of Type?
@@ -6327,6 +6350,7 @@ pub class MainVisitor < TypeNodeHost
     inner.typed_instances = @typed_instances
     inner.def_instances = @def_instances
     inner.instance_var_initializer_lists = @instance_var_initializer_lists
+    inner.normalized_file_paths = @normalized_file_paths
     inner.def_var_unions = @def_var_unions
     inner.def_nil_resets = @def_nil_resets
     inner.def_free_types = @def_free_types
