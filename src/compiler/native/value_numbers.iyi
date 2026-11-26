@@ -7,6 +7,9 @@ import compiler/ir/function::{Function}
 # the table stores only their object identities and never changes after construction.
 pub class ValueNumbers
   getter size : Int32
+  getter mask : Int32
+  getter keys : Array(UInt64)
+  getter numbers : Array(Int32)
 
   def initialize(fn : Function)
     count = fn.params.size
