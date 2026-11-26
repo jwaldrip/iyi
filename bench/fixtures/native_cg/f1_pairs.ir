@@ -1,0 +1,71 @@
+; iyi-ir 1
+module "f1_pairs"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [25 x i8] c"%ld %ld %ld %ld %ld %ld\0A\00"
+
+define void @f1_touch() {
+entry:
+  ret void
+}
+
+; Five integers and three derived doubles are live across the call. Both
+; return blocks must restore the same saved registers.
+define i64 @f1_probe(i64 %a, i64 %b, i64 %c, i64 %d, i64 %e) {
+entry:
+  %fa = sitofp i64 %a to double
+  %fb = sitofp i64 %b to double
+  %fc = sitofp i64 %c to double
+  call void () @f1_touch()
+  %f1 = fadd double %fa, %fb
+  %f2 = fadd double %f1, %fc
+  %iv = fptosi double %f2 to i64
+  %s1 = add i64 %a, %b
+  %s2 = add i64 %s1, %c
+  %s3 = add i64 %s2, %d
+  %s4 = add i64 %s3, %e
+  %sum = add i64 %s4, %iv
+  %negative = icmp slt i64 %a, 0
+  br i1 %negative, label %neg, label %pos
+neg:
+  %r = sub i64 0, %sum
+  ret i64 %r
+pos:
+  ret i64 %sum
+}
+
+; This caller owns distinct x19..x23 values across f1_probe. It saves its own
+; caller's registers and records every value so an exchanged pair is visible.
+define void @f1_keeper(ptr %out, i64 %a) [naked] {
+entry:
+  call void () asm sideeffect "stp x29, x30, [sp, #-16]!; stp x19, x20, [sp, #-16]!; stp x21, x22, [sp, #-16]!; stp x23, x24, [sp, #-16]!; stp x25, x26, [sp, #-16]!; mov x24, x0; mov x25, x1; mov x19, #11; mov x20, #22; mov x21, #33; mov x22, #44; mov x23, #55; mov x0, x25; mov x1, #2; mov x2, #3; mov x3, #4; mov x4, #5; bl f1_probe; str x0, [x24]; str x19, [x24, #8]; str x20, [x24, #16]; str x21, [x24, #24]; str x22, [x24, #32]; str x23, [x24, #40]; ldp x25, x26, [sp], #16; ldp x23, x24, [sp], #16; ldp x21, x22, [sp], #16; ldp x19, x20, [sp], #16; ldp x29, x30, [sp], #16; ret", "~{x19},~{x20},~{x21},~{x22},~{x23},~{x24},~{x25},~{x26},~{x30},~{memory}"()
+  unreachable
+}
+
+define void @f1_print(i64 %a) {
+entry:
+  %out = alloca [6 x i64], align 8
+  call void (ptr, i64) @f1_keeper(ptr %out, i64 %a)
+  %p0 = getelementptr [6 x i64], ptr %out, i64 0, i64 0
+  %p1 = getelementptr [6 x i64], ptr %out, i64 0, i64 1
+  %p2 = getelementptr [6 x i64], ptr %out, i64 0, i64 2
+  %p3 = getelementptr [6 x i64], ptr %out, i64 0, i64 3
+  %p4 = getelementptr [6 x i64], ptr %out, i64 0, i64 4
+  %p5 = getelementptr [6 x i64], ptr %out, i64 0, i64 5
+  %v0 = load i64, ptr %p0, align 8
+  %v1 = load i64, ptr %p1, align 8
+  %v2 = load i64, ptr %p2, align 8
+  %v3 = load i64, ptr %p3, align 8
+  %v4 = load i64, ptr %p4, align 8
+  %v5 = load i64, ptr %p5, align 8
+  %printed = call i32 (ptr, ...) @printf(ptr @fmt, i64 %v0, i64 %v1, i64 %v2, i64 %v3, i64 %v4, i64 %v5)
+  ret void
+}
+
+define i32 @main() {
+entry:
+  call void (i64) @f1_print(i64 1)
+  call void (i64) @f1_print(i64 -1)
+  ret i32 0
+}

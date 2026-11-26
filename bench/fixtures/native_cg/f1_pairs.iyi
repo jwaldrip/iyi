@@ -1,0 +1,20 @@
+module f1_pairs
+
+def touch : Nil
+end
+
+@[NoInline]
+def probe(a : Int64, b : Int64, c : Int64, d : Int64, e : Int64) : Int64
+  fa = a.to_f64
+  fb = b.to_f64
+  fc = c.to_f64
+  touch
+  sum = a + b + c + d + e + (fa + fb + fc).to_i64
+  a < 0_i64 ? -sum : sum
+end
+
+values = [11_i64, 22_i64, 33_i64, 44_i64, 55_i64]
+[1_i64, -1_i64].each do |a|
+  result = probe(a, 2_i64, 3_i64, 4_i64, 5_i64)
+  puts "#{result} #{values[0]} #{values[1]} #{values[2]} #{values[3]} #{values[4]}"
+end

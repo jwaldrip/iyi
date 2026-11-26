@@ -1,0 +1,10 @@
+@[Unsafe("the fixture writes a callee-saved register")]
+module f1_one_save
+
+@[NoInline]
+def one : Nil
+  asm("mov x19, #99" ::: "x19" : "volatile")
+end
+
+one
+puts "#{7_i64}"

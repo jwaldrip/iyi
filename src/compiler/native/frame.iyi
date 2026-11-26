@@ -16,7 +16,7 @@ module compiler/native/frame
 # epilogue restores the saves, releases the frame and pops the record.
 
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, Role}
-import compiler/native/target::{new_inst, is_role?}
+import compiler/native/target::{new_inst, is_role?, isa_aarch64}
 import compiler/native/aarch64/regs::{fp_reg, lr_reg, is_fpr?, callee_saved_gprs, callee_saved_fprs}
 
 def round_up(n : Int64, to : Int64) : Int64
@@ -68,6 +68,21 @@ pub def lay_out(fn : MFunction, stack_align : Int64) : Nil
   fp_saves.each do |reg|
     f.callee_saved << reg if written.includes?(reg) && !f.callee_saved.includes?(reg)
   end
+  # The physical numbering puts GPRs before FPRs. Sorting changes only each
+  # register's slot in the save area, not the area's size or position.
+  if fn.isa == isa_aarch64
+    i = 1
+    while i < f.callee_saved.size
+      reg = f.callee_saved[i]
+      j = i
+      while j > 0 && f.callee_saved[j - 1] > reg
+        f.callee_saved[j] = f.callee_saved[j - 1]
+        j = j - 1
+      end
+      f.callee_saved[j] = reg
+      i = i + 1
+    end
+  end
   offset = round_up(f.outgoing_bytes, 8_i64)
   f.saves_offset = offset
   offset = offset + 8_i64 * f.callee_saved.size.to_i64
@@ -92,6 +107,17 @@ def sp_adjust(isa : Int32, insts : Array(MInst), by : Int64) : Nil
   insts << m
 end
 
+# Odd, out-of-range and equal-register neighbours stay single. Pin can
+# record a register twice; both slots hold its entry value, so a later
+# duplicate may pair with a different neighbour and either restore is safe.
+def pairs_with_next?(fn : MFunction, i : Int32) : Bool
+  f = fn.frame
+  fn.isa == isa_aarch64 && i + 1 < f.callee_saved.size &&
+    f.callee_saved[i] != f.callee_saved[i + 1] &&
+    is_fpr?(f.callee_saved[i]) == is_fpr?(f.callee_saved[i + 1]) &&
+    f.saves_offset + 8_i64 * i.to_i64 <= 504_i64
+end
+
 # The prologue: the frame record, the frame, the probes, and the saves.
 def prologue_insts(fn : MFunction) : Array(MInst)
   f = fn.frame
@@ -109,13 +135,20 @@ def prologue_insts(fn : MFunction) : Array(MInst)
   end
   i = 0
   while i < f.callee_saved.size
+    paired = pairs_with_next?(fn, i)
     m = new_inst(fn.isa, Role::SaveReg)
     m.size = 64
     m.fp = is_fpr?(f.callee_saved[i])
     m.imm = f.saves_offset + 8_i64 * i.to_i64
     m.uses << Operand.new(OperandKind::Physical, f.callee_saved[i])
+    if paired
+      m.opcode = MOp::Stp.value.to_i32
+      m.uses << Operand.new(OperandKind::Physical, f.callee_saved[i + 1])
+      m.uses << Operand.new(OperandKind::Physical, 31)
+    end
     acc << m
     i = i + 1
+    i = i + 1 if paired
   end
   acc
 end
@@ -134,13 +167,20 @@ def insert_epilogues(fn : MFunction, block : MBlock) : Nil
     if is_role?(fn.isa, inst, Role::Return)
       i = 0
       while i < f.callee_saved.size
+        paired = pairs_with_next?(fn, i)
         m = new_inst(fn.isa, Role::RestoreReg)
         m.size = 64
         m.fp = is_fpr?(f.callee_saved[i])
         m.imm = f.saves_offset + 8_i64 * i.to_i64
         m.defs << Operand.new(OperandKind::Physical, f.callee_saved[i])
+        if paired
+          m.opcode = MOp::Ldp.value.to_i32
+          m.defs << Operand.new(OperandKind::Physical, f.callee_saved[i + 1])
+          m.uses << Operand.new(OperandKind::Physical, 31)
+        end
         acc << m
         i = i + 1
+        i = i + 1 if paired
       end
       if f.frame_size > 0_i64
         sp_adjust(fn.isa, acc, f.frame_size)

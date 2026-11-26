@@ -2,10 +2,20 @@ module fpr_frame_probe
 import compiler/ir/parser::{parse, IrParseError}
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Function}
-import compiler/native/mir::{MFunction, OperandKind, Role}
+import compiler/native/mir::{MFunction, MInst, MOp, OperandKind, Role}
 import compiler/native/driver::{symbol_table, function_mir}
 import compiler/native/target::{is_role?}
 import compiler/native/obj/object::{ObjectFile, ObjFormat}
+
+def pair_save?(inst : MInst) : Bool
+  inst.opcode == MOp::Stp.value.to_i32 && inst.uses.size == 3 &&
+    inst.uses[2].kind == OperandKind::Physical && inst.uses[2].reg == 31
+end
+
+def pair_restore?(inst : MInst) : Bool
+  inst.opcode == MOp::Ldp.value.to_i32 && inst.defs.size == 2 && inst.uses.size == 1 &&
+    inst.uses[0].kind == OperandKind::Physical && inst.uses[0].reg == 31
+end
 
 parsed = parse(File.read(Program.args[0]))
 raise "invalid fixture" if parsed.is_a?(IrParseError)
@@ -29,7 +39,8 @@ while i < 8
 end
 mf.blocks.each do |b|
   b.insts.each do |inst|
-    next if is_role?(mf.isa, inst, Role::SaveReg) || is_role?(mf.isa, inst, Role::RestoreReg)
+    next if is_role?(mf.isa, inst, Role::SaveReg) || is_role?(mf.isa, inst, Role::RestoreReg) ||
+            pair_save?(inst) || pair_restore?(inst)
     inst.defs.each do |op|
       if op.kind == OperandKind::Physical && op.reg >= 40 && op.reg <= 47
         expected = expected | (1_u64 << (op.reg - 40))
@@ -47,19 +58,29 @@ mf.blocks.each do |b|
     i = i + 1
   end
   b.insts.each do |inst|
-    if is_role?(mf.isa, inst, Role::SaveReg) && inst.uses.size > 0
-      op = inst.uses[0]
-      if op.kind == OperandKind::Physical && op.reg >= 40 && op.reg <= 47
-        index = op.reg - 40
-        saved = saved | (1_u64 << index)
-        offsets[index] = inst.imm
+    if is_role?(mf.isa, inst, Role::SaveReg) || pair_save?(inst)
+      count = pair_save?(inst) ? 2 : 1
+      index = 0
+      while index < count
+        op = inst.uses[index]
+        if op.kind == OperandKind::Physical && op.reg >= 40 && op.reg <= 47
+          reg = op.reg - 40
+          saved = saved | (1_u64 << reg)
+          offsets[reg] = inst.imm + 8_i64 * index.to_i64
+        end
+        index = index + 1
       end
-    elsif is_role?(mf.isa, inst, Role::RestoreReg) && inst.defs.size > 0
-      op = inst.defs[0]
-      if op.kind == OperandKind::Physical && op.reg >= 40 && op.reg <= 47
-        index = op.reg - 40
-        restored = restored | (1_u64 << index)
-        restored_offsets[index] = inst.imm
+    elsif is_role?(mf.isa, inst, Role::RestoreReg) || pair_restore?(inst)
+      count = pair_restore?(inst) ? 2 : 1
+      index = 0
+      while index < count
+        op = inst.defs[index]
+        if op.kind == OperandKind::Physical && op.reg >= 40 && op.reg <= 47
+          reg = op.reg - 40
+          restored = restored | (1_u64 << reg)
+          restored_offsets[reg] = inst.imm + 8_i64 * index.to_i64
+        end
+        index = index + 1
       end
     elsif is_role?(mf.isa, inst, Role::Return)
       missing = missing | (expected & (restored ^ 18446744073709551615_u64))
