@@ -1,0 +1,20 @@
+; iyi-ir 1
+source_filename = "m1_body_field_out_of_bounds"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i8 @m1_body_field_out_of_bounds(ptr %source, i1 %again) {
+entry:
+  %field = getelementptr i8, ptr %source, i64 4096
+  %present = load i8, ptr %source, align 1
+  br label %head
+head:
+  %total = phi i8 [ 0, label %entry ], [ %next, label %body ]
+  br i1 %again, label %body, label %done
+body:
+  %value = load i8, ptr %field, align 1
+  %next = add i8 %total, %value
+  br label %head
+done:
+  %result = add i8 %total, %present
+  ret i8 %result
+}

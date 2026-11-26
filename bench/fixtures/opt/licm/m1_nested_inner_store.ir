@@ -1,0 +1,20 @@
+; iyi-ir 1
+source_filename = "m1_nested_inner_store"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i64 @m1_nested_inner_store(ptr %source, ptr %out, i1 %outer_again, i1 %inner_again) {
+entry:
+  br label %outer
+outer:
+  %value = load i64, ptr %source, align 8
+  br i1 %outer_again, label %inner, label %done
+inner:
+  br i1 %inner_again, label %inner_body, label %after_inner
+inner_body:
+  store i64 %value, ptr %out, align 8
+  br label %inner
+after_inner:
+  br label %outer
+done:
+  ret i64 %value
+}

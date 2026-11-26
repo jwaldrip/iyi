@@ -1,0 +1,21 @@
+; iyi-ir 1
+source_filename = "m1_raise_call"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external void @raise_error()
+define internal i64 @m1_raise_call(ptr %source, i1 %bad, i1 %again) {
+entry:
+  br label %head
+head:
+  %value = load i64, ptr %source, align 8
+  br i1 %bad, label %raise, label %check
+check:
+  br i1 %again, label %body, label %done
+body:
+  br label %head
+raise:
+  call void () @raise_error()
+  unreachable
+done:
+  ret i64 %value
+}

@@ -1,10 +1,11 @@
 module compiler/ir/opt/licm
 
-import compiler/ir/inst::{Op, Inst, IntrinsicAux}
-import compiler/ir/function::{Function}
+import compiler/ir/values::{Value}
+import compiler/ir/inst::{Op, Inst, IntrinsicAux, terminator_op?}
+import compiler/ir/function::{Function, Global}
 import compiler/ir/module::{Module}
 import compiler/ir/opt/analysis::{Cfg, DomTree}
-import compiler/ir/opt/effects::{pure?}
+import compiler/ir/opt/effects::{pure?, writes_memory?, opaque?, has_side_effects?, marking_flag_load?}
 
 # The effects classifier describes side effects, not whether integer division
 # can trap. A zero-trip loop must not execute division in its preheader.
@@ -64,8 +65,25 @@ end
 class Licm
   def initialize(@fn : Function, @cfg : Cfg, @dom : DomTree)
     @places = Hash(Inst, Int32).new
+    @mentions_marking = false
+    @escaped_marking = false
+    @marking_roots = Hash(Value, Bool).new
     @fn.blocks.each_with_index do |block, b|
-      block.insts.each { |inst| @places[inst] = b }
+      block.insts.each do |inst|
+        @places[inst] = b
+        unless @mentions_marking
+          inst.args.each do |arg|
+            if arg.is_a?(Global)
+              @mentions_marking = true if arg.as(Global).name == "__iyi_marking"
+            elsif arg.is_a?(Inst)
+              node = arg.as(Inst)
+              if node.op == Op::ConstExpr || node.op == Op::ConstAggregate || node.op == Op::GlobalAddr
+                @mentions_marking = true if rooted_at_marking?(arg)
+              end
+            end
+          end
+        end
+      end
     end
     @inner = [] of Int32
     @headers = [] of Int32
@@ -73,6 +91,7 @@ class Licm
     @preheaders = [] of Int32
     @nearest = [] of Int32
     @jumps = [] of Array(Int32)
+    @transparent = [] of Bool
     k = 0
     while k < @cfg.size
       @inner << -1
@@ -193,6 +212,85 @@ class Licm
     end
   end
 
+  # Trace an address through SSA operands, including GEPs, casts and phis.
+  # A visited set handles loop-carried phis; only complete walks are cached.
+  def rooted_at_marking?(value : Value) : Bool
+    return @marking_roots[value] if @marking_roots.has_key?(value)
+    pending = [value] of Value
+    seen = Hash(Inst, Bool).new
+    found = false
+    while !pending.empty?
+      current = pending.pop
+      if current.is_a?(Global)
+        if current.as(Global).name == "__iyi_marking"
+          found = true
+          break
+        end
+      elsif current.is_a?(Inst)
+        node = current.as(Inst)
+        next if seen.has_key?(node)
+        seen[node] = true
+        node.args.each { |arg| pending << arg }
+      end
+    end
+    @marking_roots[value] = found
+    found
+  end
+
+  # If the marking address escapes, a later load may recover it from memory.
+  # Do not hoist loads in that function without a whole-program alias proof.
+  def find_marking_references : Nil
+    return unless @mentions_marking
+    @fn.blocks.each do |block|
+      block.insts.each do |inst|
+        if inst.op == Op::Store && !inst.args.empty?
+          @escaped_marking = true if rooted_at_marking?(inst.args[0])
+        elsif inst.op == Op::Call || inst.op == Op::Invoke || inst.op == Op::Ret
+          inst.args.each { |arg| @escaped_marking = true if rooted_at_marking?(arg) }
+        end
+      end
+    end
+  end
+
+  def marking_read?(inst : Inst) : Bool
+    return false unless inst.op == Op::Load && !inst.args.empty?
+    marking_flag_load?(inst) || (@mentions_marking && rooted_at_marking?(inst.args[0]))
+  end
+
+  # Calls are checked independently of their memory classification: even a
+  # memory-free call can raise or fail to return.
+  def loop_boundary?(inst : Inst) : Bool
+    return may_leave_block?(inst) if inst.op == Op::Call
+    writes_memory?(inst) || opaque?(inst) || marking_read?(inst) ||
+      (!terminator_op?(inst.op) && has_side_effects?(inst))
+  end
+
+  # The loop ids are created inside out. Mark the innermost owner of each
+  # clobber, then propagate that fact to its ancestors just once.
+  def build_transparency : Nil
+    @headers.each { |_| @transparent << true }
+    @cfg.rpo.each do |b|
+      owner = @inner[b]
+      next if owner < 0 || !@transparent[owner]
+      @cfg.block(b).insts.each do |inst|
+        if loop_boundary?(inst)
+          @transparent[owner] = false
+          break
+        end
+      end
+    end
+    i = 0
+    while i < @headers.size
+      parent = @parents[i]
+      @transparent[parent] = false if parent >= 0 && !@transparent[i]
+      i = i + 1
+    end
+  end
+
+  def loop_transparent?(loop_id : Int32) : Bool
+    @transparent[loop_id]
+  end
+
   # A loop lacking a preheader does not prevent motion directly to an outer
   # loop's preheader. Jumps index only ancestors which actually have one.
   def build_jumps : Nil
@@ -262,10 +360,35 @@ class Licm
     @preheaders[loop_id]
   end
 
+  # A header runs whenever its preheader runs. Stop at the first loop whose
+  # header is not this block rather than speculating a body-only load.
+  def header_load_destination(inst : Inst, owner : Int32, block : Int32) : Int32
+    return -1 unless inst.op == Op::Load && !inst.type.void? && inst.args.size == 1
+    pointer = inst.args[0]
+    if pointer.is_a?(Inst)
+      op = pointer.as(Inst).op
+      return -1 if op == Op::ConstUndef || op == Op::ConstPoison
+    end
+    return -1 if @escaped_marking || opaque?(inst) || marking_read?(inst)
+    loop_id = @nearest[owner]
+    return -1 if loop_id < 0 || @headers[loop_id] != block || !loop_transparent?(loop_id)
+    return -1 unless available?(latest_operand_block(inst), @preheaders[loop_id])
+    @preheaders[loop_id]
+  end
+
+  # A header load is certain to run only if no preceding instruction can
+  # leave the block in a defined way. Calls are also transparency barriers.
+  def may_leave_block?(inst : Inst) : Bool
+    return true if inst.op == Op::Call # mutation M1Call: calls may leave the block
+    inst.op == Op::Invoke || (inst.op == Op::Intrinsic && has_side_effects?(inst))
+  end
+
   def run : Bool
     collect_loops
     return false if @headers.empty?
     build_jumps
+    find_marking_references
+    build_transparency
     moved_from = [] of Bool
     moved_to = [] of Array(Inst)
     k = 0
@@ -280,9 +403,15 @@ class Licm
       next if owner < 0 || @nearest[owner] < 0
       block = @cfg.block(b)
       next if block.terminator.op == Op::Unreachable
+      earlier_exit = false
       block.insts.each do |inst|
-        next unless speculatable?(inst)
-        target = destination(owner, latest_operand_block(inst))
+        target = -1
+        if inst.op == Op::Load
+          target = header_load_destination(inst, owner, b) unless earlier_exit
+        else
+          earlier_exit = true if may_leave_block?(inst)
+          target = destination(owner, latest_operand_block(inst)) if speculatable?(inst)
+        end
         next if target < 0
         @places[inst] = target
         moved_from[b] = true

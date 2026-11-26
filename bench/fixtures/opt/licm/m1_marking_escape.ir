@@ -1,0 +1,19 @@
+; iyi-ir 1
+source_filename = "m1_marking_escape"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+@__iyi_marking = external global i8
+define internal i8 @m1_marking_escape(i1 %again) {
+entry:
+  %slot = alloca ptr, align 8
+  store ptr @__iyi_marking, ptr %slot, align 8
+  %address = load ptr, ptr %slot, align 8
+  br label %head
+head:
+  %flag = load i8, ptr %address, align 1
+  br i1 %again, label %body, label %done
+body:
+  br label %head
+done:
+  ret i8 %flag
+}

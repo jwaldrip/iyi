@@ -1,0 +1,57 @@
+class M1Box
+  getter value : Int64
+
+  def initialize(@value : Int64)
+  end
+end
+
+def m1_sum(items : Array(Int64)) : Int64
+  index = 0
+  sum = 0_i64
+  while index < items.size
+    sum = sum + items[index]
+    index = index + 1
+  end
+  sum
+end
+
+def m1_body_only(box : M1Box?, count : Int32) : Int64
+  index = 0
+  sum = 0_i64
+  while index < count
+    if current = box
+      sum = sum + current.value
+    else
+      return -1_i64
+    end
+    index = index + 1
+  end
+  sum
+end
+
+items = [1_i64, 2_i64, 3_i64]
+before = m1_sum(items)
+items[1] = 10_i64
+items << 7_i64
+after = m1_sum(items)
+change = -> { items[0] = items[0] + 1_i64 }
+index = 0
+observed = 0_i64
+while index < 4
+  observed = observed + items[0]
+  change.call
+  index = index + 1
+end
+puts "sums=#{before},#{after} observed=#{observed} final=#{items[0]}"
+puts "body=#{m1_body_only(nil, 0)},#{m1_body_only(M1Box.new(7_i64), 3)}"
+counts = {} of Int32 => Int64
+counts[1] = 11_i64
+counts[2] = 17_i64
+probe = 0_i64
+index = 0
+while index < 4
+  probe = probe + counts[1] + counts[2]
+  index = index + 1
+end
+counts[1] = 5_i64
+puts "probe=#{probe},#{counts[1]}"

@@ -1,0 +1,22 @@
+; iyi-ir 1
+source_filename = "m1_body_different_struct"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i64 @m1_body_different_struct(ptr %source, i1 %again) {
+entry:
+  %first = getelementptr inbounds { i8, i8 }, ptr %source, i64 0, i32 0
+  %second = getelementptr inbounds { i8, i64 }, ptr %source, i64 0, i32 1
+  %present = load i8, ptr %first, align 1
+  br label %head
+head:
+  %total = phi i64 [ 0, label %entry ], [ %next, label %body ]
+  br i1 %again, label %body, label %done
+body:
+  %value = load i64, ptr %second, align 8
+  %next = add i64 %total, %value
+  br label %head
+done:
+  %extended = zext i8 %present to i64
+  %result = add i64 %total, %extended
+  ret i64 %result
+}
