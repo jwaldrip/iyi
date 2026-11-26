@@ -526,11 +526,11 @@ pub class MainVisitor < TypeNodeHost
   property fun_inline_file : String?
   @literal_expander : LiteralExpander
 
-  def initialize(@program : SemanticProgram, @speculation : SpeculationLedger = SpeculationLedger.new)
+  def initialize(@program : SemanticProgram, @speculation : SpeculationLedger = SpeculationLedger.new, prepare_new_methods : Bool = true)
     @literal_expander = LiteralExpander.new(@program.normalizer)
-    # The generated `new` methods are completed before any body is typed: the
-    # declarations pass has recorded the expansions, and this consumes them (idempotent).
-    define_new_methods(@program)
+    # Declarations finish before the outer visitor starts typing. Nested visitors
+    # share that program and must not repeat its whole constructor pass.
+    define_new_methods(@program) if prepare_new_methods
     @current_type = @program
     @scope = nil
     @vars = Hash(String, Type).new
@@ -6329,7 +6329,7 @@ pub class MainVisitor < TypeNodeHost
 
   # The visitor of a fun body: its own locals, sharing the maps lowering reads.
   def sub_visitor(vars : Hash(String, Type)) : TypeNodeHost
-    inner = MainVisitor.new(@program, @speculation)
+    inner = MainVisitor.new(@program, @speculation, false)
     inner.vars = vars
     inner.scope = @program
     inner.current_type = @current_type
