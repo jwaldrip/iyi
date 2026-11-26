@@ -1,0 +1,25 @@
+; iyi-ir 1
+source_filename = "d2_two_phis"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+
+define external i64 @dispatch(i32 %x) {
+entry:
+  switch i32 %x, label %otherwise [ i32 20, label %a0, i32 21, label %a1, i32 22, label %a2, i32 23, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+otherwise:
+  ret i64 -200
+join:
+  %v = phi i32 [ 5, label %a0 ], [ 7, label %a1 ], [ 9, label %a2 ], [ 11, label %a3 ]
+  %w = phi i64 [ 100, label %a0 ], [ -4, label %a1 ], [ 33, label %a2 ], [ 1, label %a3 ]
+  %v64 = sext i32 %v to i64
+  %sum = add i64 %v64, %w
+  ret i64 %sum
+}

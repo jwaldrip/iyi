@@ -1,0 +1,24 @@
+; iyi-ir 1
+source_filename = "d2_i1_table"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+@__iyi_switch_value.dispatch.0 = private constant [4 x i8] [ i8 1, i8 0, i8 0, i8 1 ]
+define external i1 @dispatch(i32 %x) {
+entry:
+  %switch.selector = freeze i32 %x
+  %switch.index = sub i32 %switch.selector, 10
+  %switch.table.in_range = icmp ule i32 %switch.index, 3
+  br i1 %switch.table.in_range, label %switch.value, label %otherwise
+otherwise:
+  ret i1 false
+join:
+  %result = phi i1 [ %switch.table.truncate, label %switch.value ]
+  ret i1 %result
+switch.value:
+  %switch.index.extend = zext i32 %switch.index to i64
+  %switch.table.address = getelementptr inbounds i8, ptr @__iyi_switch_value.dispatch.0, i64 %switch.index.extend
+  %switch.table.load = load i8, ptr %switch.table.address, align 1
+  %switch.table.truncate = trunc i8 %switch.table.load to i1
+  br label %join
+}
+

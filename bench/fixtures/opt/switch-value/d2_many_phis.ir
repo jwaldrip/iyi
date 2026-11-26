@@ -1,0 +1,30 @@
+; iyi-ir 1
+source_filename = "d2_many_phis"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+
+define external i32 @dispatch(i32 %x) {
+entry:
+  switch i32 %x, label %otherwise [ i32 0, label %a0, i32 1, label %a1, i32 2, label %a2, i32 3, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+otherwise:
+  unreachable
+join:
+  %v0 = phi i32 [ 0, label %a0 ], [ 1, label %a1 ], [ 3, label %a2 ], [ 0, label %a3 ]
+  %v1 = phi i32 [ 0, label %a0 ], [ 1, label %a1 ], [ 3, label %a2 ], [ 1, label %a3 ]
+  %v2 = phi i32 [ 0, label %a0 ], [ 1, label %a1 ], [ 3, label %a2 ], [ 2, label %a3 ]
+  %v3 = phi i32 [ 0, label %a0 ], [ 1, label %a1 ], [ 3, label %a2 ], [ 3, label %a3 ]
+  %v4 = phi i32 [ 0, label %a0 ], [ 1, label %a1 ], [ 3, label %a2 ], [ 4, label %a3 ]
+  %s0 = add i32 %v0, %v1
+  %s1 = add i32 %s0, %v2
+  %s2 = add i32 %s1, %v3
+  %s3 = add i32 %s2, %v4
+  ret i32 %s3
+}

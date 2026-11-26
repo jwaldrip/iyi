@@ -1,0 +1,44 @@
+# Constant arms selected by a value read at run time (argc), so no pass can fold the selector. The loop covers
+# every selector from low - 1 to high + 1 for each switch. A hole takes the default's value (d2_dense), and an i1
+# phi (d2_flag) takes the table's truncated byte.
+def d2_mix(kind : Int32) : Int32
+  case kind
+  when 10 then 7
+  when 11 then 9
+  when 12 then 11
+  when 13 then 13
+  else 100
+  end
+end
+
+def d2_dense(kind : Int32) : Int32
+  case kind
+  when 20 then 10
+  when 21 then 20
+  when 23 then 50
+  when 24 then 60
+  else 0
+  end
+end
+
+def d2_flag(kind : Int32) : Bool
+  case kind
+  when 30 then true
+  when 31 then false
+  when 32 then true
+  when 33 then true
+  else false
+  end
+end
+
+base = ARGC_UNSAFE - 1
+sum = 0_i64
+index = 0
+while index < 40
+  kind = base + index
+  sum = sum + d2_mix(kind).to_i64
+  sum = sum + d2_dense(kind + 10).to_i64
+  sum = sum + (d2_flag(kind + 30) ? 1_i64 : 0_i64)
+  index = index + 1
+end
+puts "table=#{sum}"

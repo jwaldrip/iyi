@@ -1,0 +1,29 @@
+; iyi-ir 1
+source_filename = "d2_duplicate"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+@input = internal global i32 1
+define external i32 @dispatch(i32 %x) {
+entry:
+  %switch.selector = freeze i32 %x
+  %switch.affine.in_range = icmp ule i32 %switch.selector, 3
+  %switch.affine.multiply = mul i32 %switch.selector, 11
+  br i1 %switch.affine.in_range, label %join, label %otherwise
+a2:
+  br label %join
+otherwise:
+  ret i32 -1
+join:
+  %v = phi i32 [ 999, label %a2 ], [ %switch.affine.multiply, label %entry ]
+  ret i32 %v
+}
+
+define external i32 @main() {
+entry:
+  %input_value = load i32, ptr @input, align 4
+  %result = call i32 (i32) @dispatch(i32 %input_value)
+  %ok = icmp eq i32 %result, 11
+  %status = select i1 %ok, i32 0, i32 77
+  ret i32 %status
+}
+

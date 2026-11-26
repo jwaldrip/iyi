@@ -1,0 +1,128 @@
+; iyi-ir 1
+source_filename = "d1_concrete"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i32 @dispatch(i32 %x, i32 %y) {
+entry:
+  %c0 = icmp eq i32 %x, 0
+  br i1 %c0, label %arm0, label %b1
+b1:
+  %c1 = icmp eq i32 1, %x
+  br i1 %c1, label %arm1, label %b2
+b2:
+  %c2 = icmp eq i32 %x, 2
+  br i1 %c2, label %arm2, label %b3
+b3:
+  %c3 = icmp eq i32 3, %x
+  br i1 %c3, label %arm3, label %b4
+b4:
+  %c4 = icmp eq i32 %x, 4
+  br i1 %c4, label %arm4, label %b5
+b5:
+  %c5 = icmp eq i32 5, %x
+  br i1 %c5, label %arm5, label %b6
+b6:
+  %c6 = icmp eq i32 %x, 6
+  br i1 %c6, label %arm6, label %b7
+b7:
+  %c7 = icmp eq i32 7, %x
+  br i1 %c7, label %arm7, label %b8
+b8:
+  %c8 = icmp eq i32 %x, 8
+  br i1 %c8, label %arm8, label %b9
+b9:
+  %c9 = icmp eq i32 9, %x
+  br i1 %c9, label %arm9, label %b10
+b10:
+  %c10 = icmp eq i32 %x, 10
+  br i1 %c10, label %arm10, label %b11
+b11:
+  %c11 = icmp eq i32 11, %x
+  br i1 %c11, label %arm11, label %b12
+b12:
+  %c12 = icmp eq i32 %x, 12
+  br i1 %c12, label %arm12, label %b13
+b13:
+  %c13 = icmp eq i32 13, %x
+  br i1 %c13, label %arm13, label %b14
+b14:
+  %c14 = icmp eq i32 %x, 14
+  br i1 %c14, label %arm14, label %b15
+b15:
+  %c15 = icmp eq i32 15, %x
+  br i1 %c15, label %arm15, label %b16
+b16:
+  %c16 = icmp eq i32 %x, 16
+  br i1 %c16, label %arm16, label %b17
+b17:
+  %c17 = icmp eq i32 17, %x
+  br i1 %c17, label %arm17, label %b18
+b18:
+  %c18 = icmp eq i32 %x, 18
+  br i1 %c18, label %arm18, label %b19
+b19:
+  %c19 = icmp eq i32 19, %x
+  br i1 %c19, label %arm19, label %b20
+b20:
+  %c20 = icmp eq i32 %x, 20
+  br i1 %c20, label %arm20, label %b21
+b21:
+  %c21 = icmp eq i32 21, %x
+  br i1 %c21, label %arm21, label %b22
+b22:
+  %c22 = icmp eq i32 %x, 22
+  br i1 %c22, label %arm22, label %b23
+b23:
+  %c23 = icmp eq i32 23, %x
+  br i1 %c23, label %arm23, label %default
+arm0:
+  ret i32 0
+arm1:
+  ret i32 1
+arm2:
+  ret i32 2
+arm3:
+  ret i32 3
+arm4:
+  ret i32 4
+arm5:
+  ret i32 5
+arm6:
+  ret i32 6
+arm7:
+  ret i32 7
+arm8:
+  ret i32 8
+arm9:
+  ret i32 9
+arm10:
+  ret i32 10
+arm11:
+  ret i32 11
+arm12:
+  ret i32 12
+arm13:
+  ret i32 13
+arm14:
+  ret i32 14
+arm15:
+  ret i32 15
+arm16:
+  ret i32 16
+arm17:
+  ret i32 17
+arm18:
+  ret i32 18
+arm19:
+  ret i32 19
+arm20:
+  ret i32 20
+arm21:
+  ret i32 21
+arm22:
+  ret i32 22
+arm23:
+  ret i32 23
+default:
+  unreachable
+}

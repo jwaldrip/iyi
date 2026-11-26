@@ -1,0 +1,196 @@
+abstract class D2Base
+  abstract def value : Int32
+end
+
+class D2Case00 < D2Base
+  def value : Int32
+    0
+  end
+end
+
+class D2Case01 < D2Base
+  def value : Int32
+    1
+  end
+end
+
+class D2Case02 < D2Base
+  def value : Int32
+    2
+  end
+end
+
+class D2Case03 < D2Base
+  def value : Int32
+    3
+  end
+end
+
+class D2Case04 < D2Base
+  def value : Int32
+    4
+  end
+end
+
+class D2Case05 < D2Base
+  def value : Int32
+    5
+  end
+end
+
+class D2Case06 < D2Base
+  def value : Int32
+    6
+  end
+end
+
+class D2Case07 < D2Base
+  def value : Int32
+    7
+  end
+end
+
+class D2Case08 < D2Base
+  def value : Int32
+    8
+  end
+end
+
+class D2Case09 < D2Base
+  def value : Int32
+    9
+  end
+end
+
+class D2Case10 < D2Base
+  def value : Int32
+    10
+  end
+end
+
+class D2Case11 < D2Base
+  def value : Int32
+    11
+  end
+end
+
+class D2Case12 < D2Base
+  def value : Int32
+    12
+  end
+end
+
+class D2Case13 < D2Base
+  def value : Int32
+    13
+  end
+end
+
+class D2Case14 < D2Base
+  def value : Int32
+    14
+  end
+end
+
+class D2Case15 < D2Base
+  def value : Int32
+    15
+  end
+end
+
+class D2Case16 < D2Base
+  def value : Int32
+    16
+  end
+end
+
+class D2Case17 < D2Base
+  def value : Int32
+    17
+  end
+end
+
+class D2Case18 < D2Base
+  def value : Int32
+    18
+  end
+end
+
+class D2Case19 < D2Base
+  def value : Int32
+    19
+  end
+end
+
+class D2Case20 < D2Base
+  def value : Int32
+    20
+  end
+end
+
+class D2Case21 < D2Base
+  def value : Int32
+    21
+  end
+end
+
+class D2Case22 < D2Base
+  def value : Int32
+    22
+  end
+end
+
+class D2Case23 < D2Base
+  def value : Int32
+    23
+  end
+end
+
+def d2_case(kind : Int32) : D2Base
+  case kind
+  when 0 then D2Case00.new
+  when 1 then D2Case01.new
+  when 2 then D2Case02.new
+  when 3 then D2Case03.new
+  when 4 then D2Case04.new
+  when 5 then D2Case05.new
+  when 6 then D2Case06.new
+  when 7 then D2Case07.new
+  when 8 then D2Case08.new
+  when 9 then D2Case09.new
+  when 10 then D2Case10.new
+  when 11 then D2Case11.new
+  when 12 then D2Case12.new
+  when 13 then D2Case13.new
+  when 14 then D2Case14.new
+  when 15 then D2Case15.new
+  when 16 then D2Case16.new
+  when 17 then D2Case17.new
+  when 18 then D2Case18.new
+  when 19 then D2Case19.new
+  when 20 then D2Case20.new
+  when 21 then D2Case21.new
+  when 22 then D2Case22.new
+  else D2Case23.new
+  end
+end
+
+entries = [] of D2Base
+state = 4242_u64 &+ ARGC_UNSAFE.to_u64
+index = 0
+while index < 1024
+  state = ((state &* 1664525_u64) &+ 1013904223_u64) & 0xFFFFFFFF_u64
+  entries << d2_case((state.unsafe_shr(16_u64) % 24_u64).to_i32)
+  index = index + 1
+end
+sum = 0_i64
+round = 0
+while round < 64
+  index = 0
+  while index < entries.size
+    sum = sum + entries[index].value.to_i64
+    index = index + 1
+  end
+  round = round + 1
+end
+puts "sum=#{sum}"

@@ -1,0 +1,371 @@
+module compiler/ir/opt/switch_value
+
+import compiler/ir/types::{IrType}
+import compiler/ir/values::{Value}
+import compiler/ir/inst::{Op, Inst, Block, IntPredicate}
+import compiler/ir/function::{Function, Linkage}
+import compiler/ir/module::{Module}
+import compiler/ir/builder::{Builder}
+import compiler/ir/opt/fold::{canonical, int_value, unsigned_value}
+
+# Slice D2: a switch whose arms only select constants becomes a value. A switch of at least four cases whose case
+# targets each reach one join block J with nothing but a branch (or are J itself), where every phi of J takes an
+# integer constant on each of those edges, is replaced by arithmetic on the selector when one affine function fits
+# every case (the dispatch of a virtual call to constant-returning methods), and otherwise by one load per phi from a
+# constant table. The range check keeps the switch's default where it was. Runs in the release tier after
+# SwitchChain and DeadFn, before Layout. Refusals and their fixtures are in bench/native_opt.d/d2.sh.
+#
+# Order. A table is a private global that belongs to the function it was made for. DeadFn runs before this pass in
+# the release tier, so a function it removes never gets a table. A custom pass order that runs switch-value first
+# can leave a table with no user; the release schedule is what prevents that, not this file.
+
+MIN_CASES = 4
+MAX_SPAN = 256
+MAX_TABLES = 4
+
+def branch_only?(block : Block) : Bool
+  block.insts.size == 1 && block.terminated? && block.terminator.op == Op::Br && block.terminator.targets.size == 1
+end
+
+# One phi of the join: its value for every index in [0, span), and the affine function that gives it when one fits.
+class PhiPlan
+  getter phi : Inst
+  getter entries : Array(Int64)
+  getter slope : Int64
+  getter intercept : Int64
+  getter affine : Bool
+
+  def initialize(@phi : Inst, @entries : Array(Int64))
+    bits = @phi.type.bits
+    @intercept = @entries[0]
+    @slope = canonical(bits, @entries[1] &- @intercept)
+    @affine = true
+    k = 0
+    while k < @entries.size
+      if canonical(bits, (@slope &* k.to_i64) &+ @intercept) != @entries[k] # mutation D2-affine-fit
+        @affine = false
+        break
+      end
+      k = k + 1
+    end
+  end
+end
+
+class SwitchValues
+  def initialize(@mod : Module, @fn : Function)
+    @table_index = 0
+    @removed = Hash(Block, Bool).new
+    @inputs = Hash(Inst, Hash(Block, Value)).new
+    @drops = Hash(Inst, Hash(Block, Bool)).new
+    @additions = Hash(Inst, Array({Value, Block})).new
+  end
+
+  # The constant a phi takes on the edge from `predecessor`, or nil when that edge carries anything else. Each join's
+  # inputs are indexed once, so a join with many predecessors costs one pass over them.
+  def incoming_integer(phi : Inst, predecessor : Block) : Int64?
+    inputs = @inputs[phi]?
+    unless inputs
+      inputs = Hash(Block, Value).new
+      k = 0
+      while k < phi.targets.size
+        inputs[phi.targets[k]] = phi.args[k]
+        k = k + 1
+      end
+      @inputs[phi] = inputs
+    end
+    value = inputs[predecessor]?
+    return nil unless value
+    if value.is_a?(Inst) && value.as(Inst).op == Op::ConstZero && value.type.int?
+      return 0_i64
+    end
+    int_value(value)
+  end
+
+  # Tables are named after their function, with a counter per function. Function names are unique in the module, so
+  # the names do not depend on the order in which functions are optimized.
+  def table_name : String
+    name = "__iyi_switch_value.#{@fn.name}.#{@table_index}"
+    while @mod.get_global?(name) || @mod.get_function?(name)
+      @table_index = @table_index + 1
+      name = "__iyi_switch_value.#{@fn.name}.#{@table_index}"
+    end
+    @table_index = @table_index + 1
+    name
+  end
+
+  def cast_index(builder : Builder, value : Value, type : IrType, cache : Hash(IrType, Value)) : Value
+    return value if value.type == type
+    cached = cache[type]?
+    return cached if cached
+    result = value.type.bits < type.bits ? builder.zext(value, type, "switch.index.extend") : builder.trunc(value, type, "switch.index.truncate")
+    cache[type] = result
+    result
+  end
+
+  def affine_value(builder : Builder, plan : PhiPlan, index : Value, cache : Hash(IrType, Value)) : Value
+    type = plan.phi.type
+    return builder.const_int(type, plan.intercept) if plan.slope == 0_i64
+    value = cast_index(builder, index, type, cache)
+    if plan.slope != 1_i64
+      value = builder.mul(value, builder.const_int(type, plan.slope), "switch.affine.multiply")
+    end
+    if plan.intercept != 0_i64
+      value = builder.add(value, builder.const_int(type, plan.intercept), "switch.affine.add")
+    end
+    value
+  end
+
+  # One load from a private constant table of the phi's values. The element is the smallest integer type that holds
+  # the phi, so an i1 phi takes i8 entries. The index is always in range: the range check guards the edge to here.
+  def table_value(builder : Builder, plan : PhiPlan, pointer_index : Value) : Value
+    bits = plan.phi.type.bits
+    element_bits = bits <= 8 ? 8 : (bits <= 16 ? 16 : (bits <= 32 ? 32 : 64))
+    element = @mod.types.int(element_bits)
+    entries = [] of Value
+    plan.entries.each { |value| entries << builder.const_int(element, value) }
+    array = builder.const_array(element, entries)
+    global = @mod.add_global(table_name, array.type)
+    global.linkage = Linkage::Private
+    global.global_constant = true
+    global.initializer = array
+    pointer = builder.inbounds_gep(element, global, [pointer_index] of Value, "switch.table.address")
+    load = builder.load(element, pointer, "switch.table.load")
+    load.alignment = @mod.layout.abi_align(element)
+    loaded = load.as(Value)
+    return loaded if element == plan.phi.type
+    builder.trunc(loaded, plan.phi.type, "switch.table.truncate")
+  end
+
+  def convert(head : Block) : Bool
+    return false unless head.terminated?
+    term = head.terminator
+    return false unless term.op == Op::Switch && term.args.size == 1
+    return false unless term.cases.size >= MIN_CASES
+    return false unless term.targets.size == term.cases.size + 1
+    selector = term.args[0]
+    return false unless selector.type.int? && selector.type.bits <= 64
+
+    # Each case is indexed from the lowest key, in the selector's width. A key that repeats is refused.
+    keys = [] of UInt64
+    targets = [] of Block
+    seen = Hash(UInt64, Bool).new
+    low = 0_u64
+    high = 0_u64
+    k = 0
+    while k < term.cases.size
+      key = unsigned_value(selector.type.bits, term.cases[k])
+      return false if seen.has_key?(key) # mutation D2-duplicate
+      seen[key] = true
+      low = key if k == 0 || key < low
+      high = key if k == 0 || key > high
+      keys << key
+      targets << term.targets[k + 1]
+      k = k + 1
+    end
+    return false if high - low >= MAX_SPAN.to_u64 # mutation D2-span
+    span = (high - low).to_i32 + 1
+    holes = keys.size < span
+    default = term.targets[0]
+
+    first = targets[0]
+    join = branch_only?(first) ? first.terminator.targets[0] : first
+    return false if join == head
+    case_preds = Hash(Block, Bool).new
+    arms = Hash(Block, Bool).new
+    targets.each do |target|
+      if target == join
+        case_preds[head] = true
+      else
+        return false unless branch_only?(target) # mutation D2-arm-instructions
+        # An arm that does not branch to J has no entry among J's phis, so the constant lookup below refuses it.
+        return false unless target.preds.size == 1 && target.preds[0] == head # mutation D2-predecessor
+        case_preds[target] = true
+        arms[target] = true
+      end
+    end
+
+    # The block whose edge to J carries the default's value. A default that reaches J with nothing but a branch, or
+    # J itself, has one; an unreachable default or another block has none, so it cannot supply a hole.
+    default_from = nil.as(Block?)
+    if default == join
+      default_from = head
+    elsif branch_only?(default) && default.terminator.targets[0] == join
+      default_from = default
+    end
+    return false if holes && default_from.nil? # mutation D2-hole-default
+
+    plans = [] of PhiPlan
+    tables = 0
+    join.insts.each do |phi|
+      break unless phi.op == Op::Phi
+      # A phi that is not an integer of at most 64 bits has no integer constant, so the lookup below refuses it.
+      fill = 0_i64
+      if holes
+        value = incoming_integer(phi, default_from.as(Block))
+        return false if value.nil? # mutation D2-hole-constant
+        fill = value.as(Int64)
+      end
+      entries = [] of Int64
+      span.times { entries << fill } # mutation D2-hole-fill
+      k = 0
+      while k < keys.size
+        predecessor = targets[k] == join ? head : targets[k]
+        value = incoming_integer(phi, predecessor)
+        return false if value.nil? # mutation D2-case-constant
+        entries[(keys[k] - low).to_i32] = value.as(Int64)
+        k = k + 1
+      end
+      plan = PhiPlan.new(phi, entries)
+      tables = tables + 1 unless plan.affine
+      plans << plan
+    end
+    return false if plans.empty? # mutation D2-no-phi
+    return false if tables > MAX_TABLES # mutation D2-table-count
+    return false if tables > 0 && keys.size * 5 < span * 2 # mutation D2-table-density
+
+    # Every refusal has been decided. From here the head is rewritten, and the join's phis are recorded for the batch.
+    needs_block = tables > 0 || default == join
+    value_block = needs_block ? @fn.append_basic_block("switch.value") : head
+    head.insts.pop
+    builder = Builder.new(@mod)
+    builder.position_at_end(head)
+    builder.set_debug_loc(term.loc)
+    stable = builder.freeze(selector, "switch.selector")
+    index = stable.as(Value)
+    if low != 0_u64
+      index = builder.sub(stable, builder.const_uint(selector.type, low), "switch.index")
+    end
+    kind = tables > 0 ? "table" : "affine"
+    in_range = builder.icmp(IntPredicate::ULE, index, builder.const_int(selector.type, span - 1), "switch.#{kind}.in_range") # mutation D2-range
+    if needs_block
+      branch = Inst.new(Op::CondBr, @mod.types.void, [in_range] of Value, 0_i64, nil, [value_block, default] of Block, [] of Int64)
+      branch.loc = term.loc
+      head.insts << branch
+      builder.position_at_end(value_block)
+    end
+
+    cache = Hash(IrType, Value).new
+    pointer_index = nil.as(Value?)
+    if tables > 0
+      pointer_type = @mod.types.int(@mod.layout.pointer_bytes * 8)
+      pointer_index = cast_index(builder, index, pointer_type, cache) # mutation D2-table-index
+    end
+    values = [] of Value
+    plans.each do |plan|
+      if plan.affine
+        values << affine_value(builder, plan, index, cache)
+      else
+        values << table_value(builder, plan, pointer_index.as(Value))
+      end
+    end
+    if needs_block
+      jump = Inst.new(Op::Br, @mod.types.void, [] of Value, 0_i64, nil, [join] of Block, [] of Int64)
+      jump.loc = term.loc
+      value_block.insts << jump
+    else
+      branch = Inst.new(Op::CondBr, @mod.types.void, [in_range] of Value, 0_i64, nil, [join, default] of Block, [] of Int64)
+      branch.loc = term.loc
+      head.insts << branch
+    end
+
+    k = 0
+    while k < plans.size
+      phi = plans[k].phi
+      drops = @drops[phi]?
+      unless drops
+        drops = Hash(Block, Bool).new
+        @drops[phi] = drops
+      end
+      case_preds.each do |from, flag|
+        drops[from] = true unless !default_from.nil? && from == default_from
+      end
+      additions = @additions[phi]?
+      unless additions
+        additions = [] of {Value, Block}
+        @additions[phi] = additions
+      end
+      additions << {values[k], value_block}
+      k = k + 1
+    end
+
+    arms.each do |arm, flag|
+      next if arm == default
+      head.no_vectorize = true if arm.no_vectorize
+      @removed[arm] = true
+    end
+    true
+  end
+
+  # Rebuilds the predecessors in edge order. Function#relink adds each one through Block#add_pred, a scan of the list,
+  # which is quadratic for a join with thousands of predecessors. The order is the same.
+  def relink : Nil
+    @fn.blocks.each { |block| block.clear_preds }
+    @fn.blocks.each do |block|
+      next unless block.terminated?
+      targets = block.terminator.targets
+      if targets.size <= 2
+        targets[0].preds << block if targets.size >= 1
+        targets[1].preds << block if targets.size == 2 && targets[1] != targets[0]
+      else
+        seen = Hash(Block, Bool).new
+        targets.each do |target|
+          unless seen.has_key?(target)
+            seen[target] = true
+            target.preds << block
+          end
+        end
+      end
+    end
+    nil
+  end
+
+  def run : Bool
+    heads = [] of Block
+    @fn.blocks.each do |block|
+      if block.terminated? && block.terminator.op == Op::Switch && block.terminator.cases.size >= MIN_CASES
+        heads << block
+      end
+    end
+    changed = false
+    heads.each do |head|
+      changed = true if convert(head)
+    end
+    return false unless changed
+    # The join's phis change once, after every switch that feeds it has been decided, so each switch reads the
+    # original inputs.
+    @drops.each do |phi, drops|
+      values = [] of Value
+      predecessors = [] of Block
+      k = 0
+      while k < phi.targets.size
+        unless drops.has_key?(phi.targets[k])
+          values << phi.args[k]
+          predecessors << phi.targets[k]
+        end
+        k = k + 1
+      end
+      @additions[phi].each do |pair|
+        values << pair[0]
+        predecessors << pair[1]
+      end
+      phi.args[0, phi.args.size] = values
+      phi.targets[0, phi.targets.size] = predecessors
+    end
+    unless @removed.empty?
+      kept = [] of Block
+      @fn.blocks.each { |block| kept << block unless @removed.has_key?(block) }
+      @fn.blocks[0, @fn.blocks.size] = kept
+    end
+    relink
+    true
+  end
+end
+
+pub def run_switch_value(mod : Module, fn : Function) : Bool
+  fn.blocks.each do |block|
+    if block.terminated? && block.terminator.op == Op::Switch && block.terminator.cases.size >= MIN_CASES
+      return SwitchValues.new(mod, fn).run
+    end
+  end
+  false
+end

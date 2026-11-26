@@ -15,6 +15,8 @@ import compiler/ir/opt/cse::{run_cse}
 import compiler/ir/opt/prove::{run_prove}
 import compiler/ir/opt/licm::{run_licm}
 import compiler/ir/opt/layout::{run_layout}
+import compiler/ir/opt/switch_chain::{run_switch_chain}
+import compiler/ir/opt/switch_value::{run_switch_value}
 import compiler/ir/opt/escape::{run_escape, EscapeInfo, partitioned_heap?}
 import compiler/ir/opt/barrier::{run_barrier, run_stack_barrier, run_barrier_checked, run_stack_barrier_checked}
 import std/time::{Time}
@@ -35,6 +37,8 @@ pub enum PassId
   Barrier
   BarrierStack
   InlineAlloc
+  SwitchChain
+  SwitchValue
 end
 
 pub enum OptTier
@@ -72,6 +76,8 @@ pub def pass_name(id : PassId) : String
   when PassId::Escape       then "escape"
   when PassId::Barrier      then "barrier"
   when PassId::BarrierStack then "barrier-stack"
+  when PassId::SwitchChain  then "switch-chain"
+  when PassId::SwitchValue  then "switch-value"
   when PassId::InlineAlloc  then "inline-alloc"
   else
     raise "BUG: unknown IR pass"
@@ -95,6 +101,8 @@ pub def pass_named(name : String) : PassId?
   when "barrier"       then PassId::Barrier
   when "barrier-stack" then PassId::BarrierStack
   when "inline-alloc"  then PassId::InlineAlloc
+  when "switch-chain"  then PassId::SwitchChain
+  when "switch-value"  then PassId::SwitchValue
   else
     nil
   end
@@ -110,6 +118,8 @@ LATE_CLEANUP_ROUNDS = 6
 pub def tier_passes(tier : OptTier) : Array(PassId)
   return [] of PassId if tier == OptTier::None
   if tier == OptTier::Release
+    # Table globals can be orphaned if a custom pipeline runs switch-value before deadfn.
+    # Release prunes dead functions first, so it never creates their tables.
     return [PassId::CfgSimplify, PassId::Sroa, PassId::Simplify, PassId::Cse, PassId::Dce, PassId::CfgSimplify,
             PassId::Inline,
             PassId::CfgSimplify, PassId::Sroa, PassId::Simplify, PassId::Cse, PassId::Dce, PassId::CfgSimplify,
@@ -118,7 +128,7 @@ pub def tier_passes(tier : OptTier) : Array(PassId)
             PassId::Prove, PassId::Simplify, PassId::Dce, PassId::CfgSimplify,
             PassId::Licm, PassId::Cse, PassId::Barrier,
             PassId::InlineAlloc, PassId::Simplify, PassId::CfgSimplify, PassId::Cse, PassId::Dce,
-            PassId::Layout, PassId::DeadFn]
+            PassId::SwitchChain, PassId::DeadFn, PassId::SwitchValue, PassId::Layout]
   end
   [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::CfgSimplify]
 end
@@ -144,6 +154,8 @@ pub def run_function_pass(mod : Module, fn : Function, id : PassId) : Bool
   when PassId::Layout       then run_layout(mod, fn)
   when PassId::Escape       then run_escape(mod, fn)
   when PassId::Barrier      then run_barrier(mod, fn)
+  when PassId::SwitchChain  then run_switch_chain(mod, fn)
+  when PassId::SwitchValue  then run_switch_value(mod, fn)
   when PassId::BarrierStack then run_stack_barrier(mod, fn)
   else
     raise "BUG: unknown IR pass"
@@ -240,6 +252,8 @@ pub def run_passes(mod : Module, passes : Array(PassId), options : PassOptions) 
       if end_at > begin_at
         id = passes[end_at]
         break if id == PassId::Prove || id == PassId::Licm || id == PassId::Layout || id == PassId::Escape || id == PassId::InlineAlloc
+        break if id == PassId::SwitchChain || passes[begin_at] == PassId::SwitchChain
+        break if id == PassId::SwitchValue || passes[begin_at] == PassId::SwitchValue
         break if id == PassId::Barrier || (id == PassId::BarrierStack && (!release || passes[begin_at] != PassId::Escape))
         break if id == PassId::Inline && passes[begin_at] == PassId::Escape
       end

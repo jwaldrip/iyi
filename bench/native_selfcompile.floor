@@ -41,6 +41,8 @@ src/compiler/ir/opt/pipeline.iyi parse
 src/compiler/ir/opt/prove.iyi parse
 src/compiler/ir/opt/simplify.iyi parse
 src/compiler/ir/opt/sroa.iyi parse
+src/compiler/ir/opt/switch_chain.iyi parse
+src/compiler/ir/opt/switch_value.iyi parse
 src/compiler/ir/parser.iyi parse
 src/compiler/ir/printer.iyi parse
 src/compiler/ir/types.iyi semantic
