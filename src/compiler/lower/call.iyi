@@ -1398,13 +1398,12 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
     # (zeroinitializer); the helper `llvm_nil` is an undef constant in this port, so it is not used here.
     passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)
     converted : Value
-    different_types = at.full_name != target_type.full_name
-    if different_types && numeric_literal_autocast?(arg_node, at, target_type)
+    if at.full_name != target_type.full_name && numeric_literal_autocast?(arg_node, at, target_type)
       converted = lib_number_value(low, arg_node.as(NumberLiteral), target_type)
-    elsif different_types && !at.is_a?(NoReturnType) && at.implements?(target_type)
+    elsif at.full_name != target_type.full_name && !at.is_a?(NoReturnType) && at.implements?(target_type)
       converted = upcast(low, passed, at, target_type)
     else
-      passed = pointer_of_value(low, arg_node, passed, at) if at.is_a?(MixedUnionType) && different_types
+      passed = pointer_of_value(low, arg_node, passed, at) if at.is_a?(MixedUnionType) && at.full_name != target_type.full_name
       converted = downcast(low, passed, target_type, at, true)
     end
     if passed_by_value?(target_type) && converted.type.pointer?
