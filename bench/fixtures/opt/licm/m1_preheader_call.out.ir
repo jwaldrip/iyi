@@ -1,0 +1,17 @@
+; iyi-ir 1
+source_filename = "m1_preheader_call"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external void @prepare(ptr)
+define internal i64 @m1_preheader_call(ptr %source, i1 %again) {
+entry:
+  call void (ptr) @prepare(ptr %source)
+  %value = load i64, ptr %source, align 8
+  br label %head
+head:
+  br i1 %again, label %body, label %done
+body:
+  br label %head
+done:
+  ret i64 %value
+}

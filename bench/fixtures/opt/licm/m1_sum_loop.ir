@@ -1,0 +1,25 @@
+; iyi-ir 1
+source_filename = "m1_sum_loop"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i64 @m1_sum_loop(ptr %array) {
+entry:
+  %size_ptr = getelementptr inbounds { i64, ptr }, ptr %array, i64 0, i32 0
+  %buffer_ptr = getelementptr inbounds { i64, ptr }, ptr %array, i64 0, i32 1
+  br label %head
+head:
+  %index = phi i64 [ 0, label %entry ], [ %next_index, label %body ]
+  %sum = phi i64 [ 0, label %entry ], [ %next_sum, label %body ]
+  %size = load i64, ptr %size_ptr, align 8
+  %more = icmp ult i64 %index, %size
+  br i1 %more, label %body, label %done
+body:
+  %buffer = load ptr, ptr %buffer_ptr, align 8
+  %element_ptr = getelementptr i64, ptr %buffer, i64 %index
+  %element = load i64, ptr %element_ptr, align 8
+  %next_sum = add i64 %sum, %element
+  %next_index = add i64 %index, 1
+  br label %head
+done:
+  ret i64 %sum
+}

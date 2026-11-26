@@ -1,0 +1,30 @@
+; iyi-ir 1
+source_filename = "m1_probe_loop"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i64 @m1_probe_loop(ptr %table, i64 %key, i64 %bound) {
+entry:
+  %keys_ptr = getelementptr inbounds { ptr, i64, ptr }, ptr %table, i64 0, i32 0
+  %indices_ptr = getelementptr inbounds { ptr, i64, ptr }, ptr %table, i64 0, i32 2
+  br label %head
+head:
+  %index = phi i64 [ 0, label %entry ], [ %next, label %advance ]
+  %indices = load ptr, ptr %indices_ptr, align 8
+  %index_ptr = getelementptr i64, ptr %indices, i64 %index
+  %entry_index = load i64, ptr %index_ptr, align 8
+  %more = icmp ult i64 %entry_index, %bound
+  br i1 %more, label %body, label %done
+body:
+  %keys = load ptr, ptr %keys_ptr, align 8
+  %key_ptr = getelementptr i64, ptr %keys, i64 %entry_index
+  %entry_key = load i64, ptr %key_ptr, align 8
+  %hit = icmp eq i64 %entry_key, %key
+  br i1 %hit, label %found, label %advance
+advance:
+  %next = add i64 %index, 1
+  br label %head
+found:
+  ret i64 %index
+done:
+  ret i64 -1
+}
