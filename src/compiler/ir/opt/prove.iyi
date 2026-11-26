@@ -200,6 +200,7 @@ class Prover
     @widened_divs = [] of Inst
     @merged_checks = Hash(Int32, MergedCheck).new
     @merge_order = [] of MergedCheck
+    @merged_heads = Hash(Inst, Bool).new
     @wraps = [] of Inst
     @branch_terms = [] of Inst
     @branch_truths = [] of Bool
@@ -1009,6 +1010,8 @@ class Prover
     first = term.args[0].as(Inst)
     return unless first.op == Op::ICmp && first.args.size == 2
     return if condition(first, 0) >= 0
+    # A head whose test a dominating edge already decides is folded by that edge, never rewritten here.
+    return if known_truth(term.args[0], 0) >= 0 # mutation P1-known: a head decided by a dominating edge is not rewritten
     failure = @cfg.index(term.targets[0])
     middle = @cfg.index(term.targets[1])
     return unless @cfg.preds(middle).size == 1 && @cfg.preds(middle)[0] == block
@@ -1033,9 +1036,11 @@ class Prover
     bound = range_at(n)
     return if bound.lo < 0_i64 || bound.lo > bound.hi # mutation P1-bound: the bound is nonnegative
     return unless same_failure_values?(failure, block, middle)
-    check = MergedCheck.new(term, x, n)
+    # The rewritten compare takes its operands as written: each one dominates the head. Canonical values are for facts only.
+    check = MergedCheck.new(term, low.args[0], high.args[1])
     @merged_checks[middle] = check
     @merge_order << check
+    @merged_heads[term] = true
   end
 
   # The truth of a value on the edge into a block with one predecessor. The first record for a value wins.
@@ -1140,8 +1145,11 @@ class Prover
       term = predecessor.terminator
       if term.op == Op::CondBr && term.targets[0] != term.targets[1]
         truth = @cfg.index(term.targets[0]) == block # mutation M14: opposite successor fact
-        push_facts(term.args[0], truth, 0)
-        record_known(term.args[0], truth, 0) if @cfg.preds(block).size == 1
+        # A head's true edge reaches its failure block with the rewritten test, so the original test's fact does not hold there.
+        unless @merged_heads.has_key?(term) && truth # mutation P1-head: a head's true edge carries no fact of the original test
+          push_facts(term.args[0], truth, 0)
+          record_known(term.args[0], truth, 0) if @cfg.preds(block).size == 1
+        end
       end
       @cfg.block(block).insts.each do |inst|
         break unless inst.op == Op::Phi
@@ -1157,12 +1165,14 @@ class Prover
       end
     end
     if merged = @merged_checks[block]?
-      zero = @builder.const_int(merged.index.type, 0_i64)
-      nonnegative = Fact.new(IntPredicate::SGE.value.to_i64, merged.index, zero)
-      below = Fact.new(IntPredicate::SLT.value.to_i64, merged.index, merged.bound)
-      push_one(merged.index, nonnegative)
-      push_one(merged.index, below)
-      push_one(merged.bound, below)
+      index = canonical_value(merged.index)
+      bound = canonical_value(merged.bound)
+      zero = @builder.const_int(index.type, 0_i64)
+      nonnegative = Fact.new(IntPredicate::SGE.value.to_i64, index, zero)
+      below = Fact.new(IntPredicate::SLT.value.to_i64, index, bound)
+      push_one(index, nonnegative)
+      push_one(index, below)
+      push_one(bound, below)
     end
     exit_term = @cfg.block(block).terminator
     if exit_term.op == Op::CondBr && exit_term.targets[0] != exit_term.targets[1]

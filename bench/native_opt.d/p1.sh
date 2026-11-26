@@ -1,6 +1,6 @@
 # Range proof fixtures, refusals, and mutations.
 echo '== P1. range proof fixtures'
-for name in p1_shift_loop p1_offset_unsigned p1_merged_check p1_widen_urem; do
+for name in p1_shift_loop p1_offset_unsigned p1_merged_check p1_widen_urem p1_merged_fail_facts p1_merged_known_head; do
   fixture_check prove "$name" changed
   fixture_stats prove "$FIXTURES/prove/$name.ir"
 done
@@ -44,3 +44,13 @@ prove_mutation 'P1-divisor: unsigned constants widen without sign extension' src
   '    number # mutation P1-divisor: zero-extend the unsigned constant' \
   -- mutation_check P1DIVISOR prove p1_widen_urem || fail 'P1DIVISOR was not caught'
 mutation_result P1DIVISOR
+prove_mutation 'P1-known: a head decided by a dominating edge is not rewritten' src/compiler/ir/opt/prove.iyi \
+  'return if known_truth(term.args[0], 0) >= 0' \
+  'return if false' \
+  -- mutation_check P1KNOWN prove p1_merged_known_head || fail 'P1KNOWN was not caught'
+mutation_result P1KNOWN
+prove_mutation 'P1-head: a head true edge carries no fact of the original test' src/compiler/ir/opt/prove.iyi \
+  'unless @merged_heads.has_key?(term) && truth' \
+  'unless false' \
+  -- mutation_check P1HEAD prove p1_merged_fail_facts || fail 'P1HEAD was not caught'
+mutation_result P1HEAD

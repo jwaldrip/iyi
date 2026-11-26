@@ -1,0 +1,21 @@
+; iyi-ir 1
+source_filename = "p1_merged_known_head"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i32 @known_head(i32 %x, i32 %n) {
+entry:
+  %size = and i32 %n, 2147483647
+  %neg = icmp slt i32 %x, 0
+  br i1 %neg, label %done, label %head
+head:
+  br i1 %neg, label %fail, label %middle
+middle:
+  %above = icmp sge i32 %x, %size
+  br i1 %above, label %fail, label %ok
+fail:
+  ret i32 -1
+ok:
+  ret i32 %size
+done:
+  ret i32 -2
+}

@@ -21,6 +21,26 @@ def shift(values : Array(Int32)) : Int64
   total
 end
 
+# A bound that is nonnegative by its mask: the two tests of one refusal in
+# either order must refuse the same inputs as the source says.
+@[NoInline]
+def pick(x : Int32, n : Int32) : Int32
+  size = n & 2147483647
+  if x < 0 || x >= size
+    return -1
+  end
+  x
+end
+
+@[NoInline]
+def pick_reversed(x : Int32, n : Int32) : Int32
+  size = n & 2147483647
+  if x >= size || x < 0
+    return -1
+  end
+  x
+end
+
 @[NoInline]
 def failure(values : Array(Int32), index : Int32, write : Bool) : Nil
   message = "no panic"
@@ -47,6 +67,8 @@ values = [10, 20, 30]
 puts "negative-valid=#{values[-1]}"
 puts "shift=#{shift(values)} values=#{values[0]},#{values[1]},#{values[2]}"
 byte_remainder(127_u8)
+puts "pick=#{pick(-1, 5)} #{pick(0, 5)} #{pick(4, 5)} #{pick(5, 5)} #{pick(999, 5)} #{pick(0, 0)} #{pick(-7, 0)}"
+puts "pick-reversed=#{pick_reversed(-1, 5)} #{pick_reversed(0, 5)} #{pick_reversed(4, 5)} #{pick_reversed(5, 5)} #{pick_reversed(999, 5)} #{pick_reversed(0, 0)} #{pick_reversed(-7, 0)}"
 [false, true].each do |write|
   failure(empty, -1, write)
   failure(empty, 0, write)
