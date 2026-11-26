@@ -1,0 +1,13 @@
+module n1_ldpsw
+
+import std/int
+import std/static_array
+
+narrow = StaticArray(Int32, 2).new
+narrow[0] = -2147483648_i32
+narrow[1] = -1_i32
+wide = StaticArray(Int64, 2).new
+wide[0] = -9_i64
+wide[1] = 4_i64
+puts "#{narrow[0].to_i64 + narrow[1].to_i64}"
+puts "#{wide[0] - wide[1]}"

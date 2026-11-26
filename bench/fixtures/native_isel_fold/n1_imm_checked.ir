@@ -1,0 +1,113 @@
+; iyi-ir 1
+module "n1_imm_checked"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+declare external i32 @fflush(ptr)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+
+define internal i64 @sadd(i64 %a) {
+entry:
+  %pair = intrinsic llvm.sadd.with.overflow.i64(i64 %a, i64 1)
+  %value = extractvalue { i64, i1 } %pair, 0
+  %flag = extractvalue { i64, i1 } %pair, 1
+  br i1 %flag, label %overflow, label %ok
+overflow:
+  ret i64 -100
+ok:
+  ret i64 %value
+}
+
+define internal i64 @sneg(i32 %a) {
+entry:
+  %pair = intrinsic llvm.ssub.with.overflow.i32(i32 %a, i32 -1)
+  %value = extractvalue { i32, i1 } %pair, 0
+  %flag = extractvalue { i32, i1 } %pair, 1
+  %early = sext i32 %value to i64
+  br i1 %flag, label %overflow, label %ok
+overflow:
+  ret i64 -101
+ok:
+  ret i64 %early
+}
+
+define internal i64 @uadd(i32 %a) {
+entry:
+  %pair = intrinsic llvm.uadd.with.overflow.i32(i32 %a, i32 1)
+  %value = extractvalue { i32, i1 } %pair, 0
+  %flag = extractvalue { i32, i1 } %pair, 1
+  br i1 %flag, label %overflow, label %ok
+overflow:
+  ret i64 -102
+ok:
+  %wide = zext i32 %value to i64
+  ret i64 %wide
+}
+
+define internal i64 @usub(i64 %a) {
+entry:
+  %pair = intrinsic llvm.usub.with.overflow.i64(i64 %a, i64 1)
+  %value = extractvalue { i64, i1 } %pair, 0
+  %flag = extractvalue { i64, i1 } %pair, 1
+  br i1 %flag, label %overflow, label %ok
+overflow:
+  ret i64 -103
+ok:
+  ret i64 %value
+}
+
+define internal i64 @outside(i64 %a) {
+entry:
+  %pair = intrinsic llvm.sadd.with.overflow.i64(i64 %a, i64 4096)
+  %value = extractvalue { i64, i1 } %pair, 0
+  %flag = extractvalue { i64, i1 } %pair, 1
+  br i1 %flag, label %overflow, label %ok
+overflow:
+  ret i64 -104
+ok:
+  ret i64 %value
+}
+
+define internal i64 @unsigned_negative(i64 %a) {
+entry:
+  %pair = intrinsic llvm.usub.with.overflow.i64(i64 %a, i64 -1)
+  %value = extractvalue { i64, i1 } %pair, 0
+  %flag = extractvalue { i64, i1 } %pair, 1
+  br i1 %flag, label %overflow, label %ok
+overflow:
+  ret i64 -105
+ok:
+  ret i64 %value
+}
+
+define i32 @main() {
+entry:
+  %a = call i64 (i64) @sadd(i64 9223372036854775806)
+  %b = call i64 (i64) @sadd(i64 9223372036854775807)
+  %c = call i64 (i32) @sneg(i32 2147483646)
+  %d = call i64 (i32) @sneg(i32 2147483647)
+  %e = call i64 (i32) @uadd(i32 -1)
+  %f = call i64 (i32) @uadd(i32 -2)
+  %g = call i64 (i64) @usub(i64 0)
+  %h = call i64 (i64) @usub(i64 3)
+  %i = call i64 (i64) @outside(i64 5)
+  %j = call i64 (i64) @unsigned_negative(i64 0)
+  %p0 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %a)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %b)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %c)
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %d)
+  %p4 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %e)
+  %p5 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %f)
+  %p6 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %g)
+  %p7 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %h)
+  %p8 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %i)
+  %p9 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %j)
+  %trapped = icmp eq i64 %b, -100
+  br i1 %trapped, label %trap, label %failed
+trap:
+  %flushed = call i32 (ptr) @fflush(ptr null)
+  intrinsic llvm.trap()
+  unreachable
+failed:
+  ret i32 0
+}

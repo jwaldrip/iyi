@@ -92,18 +92,31 @@ pub class Encoder
     (reg & 31).to_i64
   end
 
-  # Moves a 64-bit constant into xd with movz and movk, skipping zero chunks.
+  # Choose the baseline that needs the fewest halfword writes. Ties keep movz.
   def move_imm(rd : Int32, value : Int64) : Nil
+    zeros = 0
+    ones = 0
+    shift = 0
+    while shift < 64
+      chunk = (value >> shift) & 65535_i64
+      zeros = zeros + 1 if chunk == 0_i64
+      ones = ones + 1 if chunk == 65535_i64
+      shift = shift + 16
+    end
+    use_movn = ones > zeros # n1-movn-choice
+    fill = use_movn ? 65535_i64 : 0_i64
     first = true
     shift = 0
     while shift < 64
       chunk = (value >> shift) & 65535_i64
       if first
-        if chunk != 0 || shift == 48
-          word(0xD2800000_i64 | ((shift // 16).to_i64 << 21) | (chunk << 5) | field(rd))
+        if chunk != fill || shift == 48 || (use_movn && ones == 4)
+          base = use_movn ? 0x92800000_i64 : 0xD2800000_i64
+          imm = use_movn ? (chunk ^ 65535_i64) : chunk
+          word(base | ((shift // 16).to_i64 << 21) | (imm << 5) | field(rd))
           first = false
         end
-      elsif chunk != 0
+      elsif chunk != fill
         word(0xF2800000_i64 | ((shift // 16).to_i64 << 21) | (chunk << 5) | field(rd))
       end
       shift = shift + 16
@@ -306,6 +319,11 @@ pub class Encoder
       word(0x91000000_i64 | (inst.imm << 10) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::SubImm
       word(0xD1000000_i64 | (inst.imm << 10) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::AddsImm || op == MOp::SubsImm
+      raise "invalid flag-setting immediate #{inst.imm}" if inst.imm < 0_i64 || inst.imm > 4095_i64
+      base = op == MOp::AddsImm ? 0x31000000_i64 : 0x71000000_i64
+      base = base | 0x80000000_i64 if inst.size == 64
+      word(base | (inst.imm << 10) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::OrrImm || op == MOp::EorImm
       mask = logical_immediate(inst.imm)
       raise "the encoder cannot encode #{inst.imm} as a logical immediate" unless mask
@@ -486,7 +504,11 @@ pub class Encoder
     if inst.fp
       base = inst.size == 64 ? (load ? 0x6D400000_i64 : 0x6D000000_i64) : (load ? 0x2D400000_i64 : 0x2D000000_i64)
     else
-      base = inst.size == 64 ? (load ? 0xA9400000_i64 : 0xA9000000_i64) : (load ? 0x29400000_i64 : 0x29000000_i64)
+      base = if load && inst.size == 32 && inst.signed
+               0x69400000_i64
+             else
+               inst.size == 64 ? (load ? 0xA9400000_i64 : 0xA9000000_i64) : (load ? 0x29400000_i64 : 0x29000000_i64)
+             end
     end
     scale = inst.size // 8
     raise "invalid pair offset #{inst.imm}" if inst.imm % scale.to_i64 != 0_i64 || inst.imm // scale.to_i64 < -64_i64 || inst.imm // scale.to_i64 > 63_i64

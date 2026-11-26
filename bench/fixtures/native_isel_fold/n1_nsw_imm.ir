@@ -1,0 +1,53 @@
+; iyi-ir 1
+module "n1_nsw_imm"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+
+define internal i64 @nsw_add(i32 %a) {
+entry:
+  %r = add nsw i32 %a, 1
+  %wide = sext i32 %r to i64
+  ret i64 %wide
+}
+define internal i64 @nsw_sub(i16 %a) {
+entry:
+  %r = sub nsw i16 %a, 1
+  %wide = sext i16 %r to i64
+  ret i64 %wide
+}
+define internal i64 @nsw_shift(i8 %a) {
+entry:
+  %r = shl nsw i8 %a, 2
+  %wide = sext i8 %r to i64
+  ret i64 %wide
+}
+define internal i64 @wrap_add(i32 %a) {
+entry:
+  %r = add i32 %a, 1
+  %wide = sext i32 %r to i64
+  ret i64 %wide
+}
+define internal i64 @wrap_shift(i8 %a) {
+entry:
+  %r = shl i8 %a, 2
+  %wide = sext i8 %r to i64
+  ret i64 %wide
+}
+define i32 @main() {
+entry:
+  %a = call i64 (i32) @nsw_add(i32 -2)
+  %b = call i64 (i32) @nsw_add(i32 2147483646)
+  %c = call i64 (i16) @nsw_sub(i16 -32767)
+  %d = call i64 (i8) @nsw_shift(i8 -31)
+  %e = call i64 (i32) @wrap_add(i32 2147483647)
+  %f = call i64 (i8) @wrap_shift(i8 64)
+  %p0 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %a)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %b)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %c)
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %d)
+  %p4 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %e)
+  %p5 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %f)
+  ret i32 0
+}

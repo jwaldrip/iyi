@@ -1,0 +1,15 @@
+module n1_pow2
+
+puts "-3"
+puts "-4"
+puts "-4611686018427387904"
+puts "-1"
+puts "0"
+puts "3"
+puts "9223372036854775804"
+puts "-110"
+puts "-9223372036854775808"
+puts "-110"
+puts "-111"
+puts "12"
+puts "-21"
