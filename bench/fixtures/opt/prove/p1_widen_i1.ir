@@ -1,0 +1,12 @@
+; iyi-ir 1
+source_filename = "p1_widen_i1"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i64 @different_extensions(i1 %x, ptr %out) {
+entry:
+  %quotient = udiv i1 %x, 1
+  %signed = sext i1 %quotient to i64
+  %unsigned = zext i1 %quotient to i64
+  store i64 %signed, ptr %out, align 8
+  ret i64 %unsigned
+}

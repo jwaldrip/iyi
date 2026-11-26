@@ -26,3 +26,13 @@ body:
 done:
   ret i1 false
 }
+define internal i1 @high_bit_offset(i8 %i, i8 %size) {
+entry:
+  %next = add nuw i8 %i, -128
+  %more = icmp ult i8 %next, %size
+  br i1 %more, label %body, label %done
+body:
+  ret i1 true
+done:
+  ret i1 false
+}

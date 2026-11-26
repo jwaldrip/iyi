@@ -31,3 +31,32 @@ entry:
   %1 = udiv i64 %0, 7
   ret i64 %1
 }
+define internal i64 @byte_boundary(i8 %x, ptr %out) {
+entry:
+  %value = and i8 %x, 127
+  %0 = sext i8 %value to i64
+  %1 = urem i64 %0, 200
+  store i64 %1, ptr %out, align 8
+  ret i64 %1
+}
+define internal i64 @word_divisor(i16 %x) {
+entry:
+  %value = and i16 %x, 32767
+  %0 = sext i16 %value to i64
+  %1 = udiv i64 %0, 40000
+  ret i64 %1
+}
+define internal i64 @int_divisor(i32 %x) {
+entry:
+  %value = and i32 %x, 2147483647
+  %0 = sext i32 %value to i64
+  %1 = urem i64 %0, 4294967295
+  ret i64 %1
+}
+define internal i64 @i63_divisor(i63 %x) {
+entry:
+  %value = and i63 %x, 4611686018427387903
+  %0 = sext i63 %value to i64
+  %1 = urem i64 %0, 9223372036854775807
+  ret i64 %1
+}

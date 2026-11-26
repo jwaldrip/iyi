@@ -725,7 +725,9 @@ class Prover
       amount = int_value(args[0])
       x = canonical_value(args[1])
     end
-    return if amount.nil? || amount <= 0_i64 # mutation P1-offset: zero does not imply strict inequality
+    return if amount.nil?
+    return if amount == 0_i64 # mutation P1-offset: zero does not imply strict inequality
+    return if signed && amount < 0_i64
     return if indeterminate?(x) || same?(x, right)
     strict = signed ? IntPredicate::SLT.value.to_i64 : IntPredicate::ULT.value.to_i64
     fact = Fact.new(strict, x, right)
@@ -928,14 +930,26 @@ class Prover
     true
   end
 
+  # Constants are sign-canonical in the IR, including unsigned divisors.
+  # For a narrow unsigned operation, recover its zero-extended bit pattern.
+  def widened_divisor(inst : Inst) : Int64?
+    number = int_value(inst.args[1])
+    return nil if number.nil? || number == 0_i64
+    return number if number > 0_i64
+    return nil if inst.op == Op::SDiv || inst.op == Op::SRem
+    bits = inst.type.bits
+    return max_int(64) + number + 1_i64 if bits == 63
+    number + (1_i64 << bits) # mutation P1-divisor: zero-extend the unsigned constant
+  end
+
   # Widen only when the original unsigned result has no narrow observers.
   # A nonnegative dividend makes both the quotient and remainder nonnegative,
   # so signed and unsigned extensions of the result agree.
   def widen_division?(inst : Inst) : Bool
-    return false unless supported?(inst) && inst.type.bits < 64
+    return false unless inst.type.int? && inst.type.bits < 64
+    return false if inst.type.bits == 1 # mutation P1-i1: signed and unsigned extensions differ
     return false if indeterminate?(inst.args[0]) || indeterminate?(inst.args[1])
-    divisor = int_value(inst.args[1])
-    return false if divisor.nil? || divisor <= 0_i64
+    return false if widened_divisor(inst).nil?
     dividend = range_at(inst.args[0])
     return false if dividend.lo < 0_i64 || dividend.lo > dividend.hi # mutation P1-widen: the operand is nonnegative
     uses = @du.uses(inst)
@@ -950,7 +964,7 @@ class Prover
   def apply_widened_division(editor : Editor, inst : Inst) : Nil
     uses = @du.uses(inst)
     return if uses.empty?
-    number = int_value(inst.args[1])
+    number = widened_divisor(inst)
     return if number.nil?
     wide = @mod.types.int64
     x = new_inst(Op::SExt, wide, [inst.args[0]] of Value)
