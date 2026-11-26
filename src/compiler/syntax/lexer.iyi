@@ -1557,11 +1557,9 @@ pub class Lexer
     else
       # Convert base 2, 8, 16 to base 10 string
       dec_val = convert_base_to_decimal_string(raw_num, base)
-      first_b = @source[start_pos]
-      if first_b == '+'
-        dec_val = "+" + dec_val
-      elsif first_b == '-'
-        dec_val = "-" + dec_val
+      first_b = @source[start_pos].to_s
+      if first_b == "+" || first_b == "-"
+        dec_val = first_b + dec_val
       end
       @token.value = dec_val
       raw_num = dec_val
@@ -1587,14 +1585,16 @@ pub class Lexer
   end
 
   private def strip_underscores(s : String) : String
-    String.build(s.bytesize) do |builder|
-      i = 0
-      while i < s.bytesize
-        ch = s[i]
-        builder << ch if ch != '_'
-        i = i + 1
+    res = ""
+    i = 0
+    while i < s.bytesize
+      ch = s[i]
+      if ch != '_'
+        res = res + ch.to_s
       end
+      i = i + 1
     end
+    res
   end
 
   private def convert_base_to_decimal_string(s : String, base : Int32) : String
