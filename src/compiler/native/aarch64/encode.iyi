@@ -48,34 +48,30 @@ class BranchFixup
   end
 end
 
-# An adr whose target is a table placed after its indirect branch.
-class TableFixup
-  getter word_at : Int64
-  getter table : Int32
-
-  def initialize(@word_at : Int64, @table : Int32)
-  end
-end
-
 pub class Encoder
   getter bytes : Array(UInt8)
   getter relocs : Array(Reloc)
   getter fixups : Array(BranchFixup)
   property frame : FrameInfo
   property tables : Array(JumpTable)
-  getter table_offsets : Array(Int64)
-  getter table_fixups : Array(TableFixup)
+  getter table_layout : Array(Int64)? # adr and table offsets in pairs; absent for functions without tables
   property failure : String?
   getter far_branches : Array(MInst)
   property long_branches : Hash(MInst, Bool)?
 
-  def initialize(@frame : FrameInfo)
+  def initialize(@frame : FrameInfo, @tables : Array(JumpTable) = [] of JumpTable)
     @bytes = [] of UInt8
     @relocs = [] of Reloc
     @fixups = [] of BranchFixup
-    @tables = [] of JumpTable
-    @table_offsets = [] of Int64
-    @table_fixups = [] of TableFixup
+    @table_layout = nil
+    unless @tables.empty?
+      layout = [] of Int64
+      @tables.each do |_|
+        layout << -1_i64
+        layout << -1_i64
+      end
+      @table_layout = layout
+    end
     @far_branches = [] of MInst
     @long_branches = nil
     @failure = nil
@@ -220,7 +216,18 @@ pub class Encoder
       reloc(RelocKind::A64AddLo12, inst.sym)
       word(0x91000000_i64 | (field(inst.defs[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::AddrTable
-      @table_fixups << TableFixup.new(here, inst.table) if inst.table >= 0
+      if inst.table >= 0
+        if inst.table >= @tables.size
+          @failure = "jump table #{inst.table} is missing"
+          return
+        end
+        layout = @table_layout.as(Array(Int64))
+        if layout[inst.table * 2] >= 0_i64
+          @failure = "jump table #{inst.table} has two addresses"
+          return
+        end
+        layout[inst.table * 2] = here
+      end
       word(0x10000000_i64 | field(inst.defs[0].reg))
     elsif op == MOp::LoadGot
       reloc(RelocKind::A64GotPage21, inst.sym)
@@ -406,15 +413,20 @@ pub class Encoder
     elsif op == MOp::BrTable
       word(0xD61F0000_i64 | (field(inst.uses[0].reg) << 5))
       if inst.table >= 0
-        if inst.table >= @tables.size || @table_offsets[inst.table] >= 0_i64
-          @failure = "jump table #{inst.table} is missing or placed twice"
+        if inst.table >= @tables.size
+          @failure = "jump table #{inst.table} is missing"
+          return
+        end
+        layout = @table_layout.as(Array(Int64))
+        if layout[inst.table * 2 + 1] >= 0_i64
+          @failure = "jump table #{inst.table} is placed twice"
           return
         end
         if here % 4_i64 != 0_i64
           @failure = "jump table #{inst.table} is not aligned to four bytes"
           return
         end
-        @table_offsets[inst.table] = here
+        layout[inst.table * 2 + 1] = here
         k = 0
         while k < @tables[inst.table].targets.size
           word(0_i64)
@@ -669,17 +681,21 @@ pub class Encoder
 
   # Table offsets and block offsets are final only after branch relaxation has converged.
   def finish_tables(block_offsets : Array(Int64)) : Nil
-    @table_fixups.each do |fix|
-      if fix.table >= @table_offsets.size || @table_offsets[fix.table] < 0_i64
-        @failure = "jump table #{fix.table} has no placement"
+    layout = @table_layout.as(Array(Int64))
+    k = 0
+    while k < @tables.size
+      adr_at = layout[k * 2]
+      table_start = layout[k * 2 + 1]
+      if adr_at < 0_i64 || table_start < 0_i64
+        @failure = "jump table #{k} has no address or placement"
         return
       end
-      delta = @table_offsets[fix.table] - fix.word_at
+      delta = table_start - adr_at
       if delta < -1048576_i64 || delta >= 1048576_i64
-        @failure = "jump table #{fix.table} adr displacement #{delta} is outside signed 21-bit range"
+        @failure = "jump table #{k} adr displacement #{delta} is outside signed 21-bit range"
         return
       end
-      at = fix.word_at.to_i32
+      at = adr_at.to_i32
       value = 0_i64
       i = 0
       while i < 4
@@ -691,14 +707,6 @@ pub class Encoder
       while i < 4
         @bytes[at + i] = ((value >> (i * 8)) & 255_i64).to_u8
         i = i + 1
-      end
-    end
-    k = 0
-    while k < @tables.size
-      table_start = @table_offsets[k]
-      if table_start < 0_i64
-        @failure = "jump table #{k} has no placement"
-        return
       end
       t = @tables[k]
       j = 0
@@ -730,10 +738,8 @@ end
 pub def encode_function(fn : MFunction) : EncodedFunction | EncodeError
   long_branches = nil
   while true
-    enc = Encoder.new(fn.frame)
+    enc = Encoder.new(fn.frame, fn.jump_tables)
     enc.long_branches = long_branches
-    enc.tables = fn.jump_tables
-    fn.jump_tables.each { |_| enc.table_offsets << -1_i64 }
     offsets = [] of Int64
     fn.blocks.each do |b|
       offsets << enc.here
