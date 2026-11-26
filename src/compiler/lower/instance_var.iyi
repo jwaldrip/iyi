@@ -100,7 +100,10 @@ end
 
 # The declared type of an instance variable of an owner (hosted `lookup_instance_var(name).type`).
 pub def instance_var_type(owner : Type, name : String) : Type
-  vars = owner_instance_vars(owner)
+  instance_var_type_in(owner, name, owner_instance_vars(owner))
+end
+
+def instance_var_type_in(owner : Type, name : String, vars : Hash(String, MetaTypeVar)?) : Type
   if vars.nil?
     refuse_port("lower: instance variable #{name} of #{owner.full_name}: not a class or struct (hosted instance_var_ptr, union or virtual owner) (slice S2a)")
   end
@@ -117,12 +120,14 @@ end
 
 # The position of an instance variable among its owner's fields (`all_instance_vars` order).
 pub def instance_var_index(owner : Type, name : String) : Int32
-  vars = owner_instance_vars(owner)
+  instance_var_index_in(owner, name, owner_instance_vars(owner))
+end
+
+def instance_var_index_in(owner : Type, name : String, vars : Hash(String, MetaTypeVar)?) : Int32
   raise "BUG: #{owner.full_name} has no instance variables (hosted index_of_instance_var)" if vars.nil?
-  names = vars.as(Hash(String, MetaTypeVar)).keys
   i = 0
-  while i < names.size
-    return i if names[i] == name
+  vars.as(Hash(String, MetaTypeVar)).each do |key, value|
+    return i if key == name
     i += 1
   end
   raise "BUG: #{owner.full_name} has no instance variable #{name} (hosted index_of_instance_var)"
@@ -134,8 +139,16 @@ pub def instance_var_pointer(low : Lowerer, owner : Type, name : String, pointer
   if owner.is_a?(VirtualType)
     owner = owner.as(VirtualType).base_type
   end
-  instance_var_type(owner, name)
-  index = instance_var_index(owner, name)
+  vars = owner_instance_vars(owner)
+  instance_var_type_in(owner, name, vars)
+  instance_var_pointer_in(low, owner, name, pointer, vars)
+end
+
+def instance_var_pointer_in(low : Lowerer, owner : Type, name : String, pointer : Value, vars : Hash(String, MetaTypeVar)?) : Value
+  if owner.is_a?(VirtualType)
+    owner = owner.as(VirtualType).base_type
+  end
+  index = instance_var_index_in(owner, name, vars)
   # Hosted `instance_var_ptr`: under Crystal's layout a class's type id is an i32 in front of its fields.
   index += 1 if !owner_struct?(owner) && !low.typer.iyi_layout
   struct_t = low.typer.llvm_struct_type(owner)
@@ -150,8 +163,9 @@ end
 # `read_instance_var`). The field is loaded at its declared type, the port's value of it, and read as
 # `node_type` through the same `downcast` the hosted code makes.
 pub def read_instance_var(low : Lowerer, node_type : Type, owner : Type, name : String, pointer : Value) : Value
-  ivar_t = instance_var_type(owner, name)
-  ptr = instance_var_pointer(low, owner, name, pointer)
+  vars = owner_instance_vars(owner)
+  ivar_t = instance_var_type_in(owner, name, vars)
+  ptr = instance_var_pointer_in(low, owner, name, pointer, vars)
   current = load_aligned(low, low.typer.llvm_type(ivar_t), ptr, "")
   downcast_loaded(low, current, node_type, ivar_t)
 end
@@ -207,7 +221,8 @@ pub def store_instance_var(low : Lowerer, name : String, value : Value, value_ty
   if self_var.nil?
     raise "BUG: instance variable #{name} is assigned with no self (hosted llvm_self_ptr)"
   end
-  ivar_t = instance_var_type(owner.as(Type), name)
-  ptr = instance_var_pointer(low, owner.as(Type), name, self_var.as(LowerVar).pointer)
+  vars = owner_instance_vars(owner.as(Type))
+  ivar_t = instance_var_type_in(owner.as(Type), name, vars)
+  ptr = instance_var_pointer_in(low, owner.as(Type), name, self_var.as(LowerVar).pointer, vars)
   assign(low, ptr, ivar_t, value_type, value)
 end
