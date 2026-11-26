@@ -7,6 +7,7 @@ import compiler/ir/verifier::{verify, IrError}
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Function}
 import compiler/ir/opt/pipeline::{PassId, OptTier, PassOptions, pass_name, pass_named, tier_passes, run_passes}
+import compiler/ir/opt/escape::{call_cycle_edge_count}
 
 lib LibC
   fun exit(status : Int32) : NoReturn
@@ -14,7 +15,7 @@ end
 
 module IrOpt
   def self.usage : NoReturn
-    STDERR.puts "iyi-opt: usage: run [--verify-each] [--no-verify] PASSES FILE | print FILE | passes | stats PASSES FILE"
+    STDERR.puts "iyi-opt: usage: run [--verify-each] [--no-verify] PASSES FILE | print FILE | passes | stats PASSES FILE | call-edges FILE"
     LibC.exit(2)
   end
 
@@ -93,10 +94,11 @@ module IrOpt
     command = args[0]
     if command == "passes"
       usage unless args.size == 1
-      passes = [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce]
+      passes = [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::Sroa, PassId::Inline, PassId::DeadFn, PassId::Cse, PassId::Prove, PassId::Licm, PassId::Layout, PassId::Escape, PassId::Barrier, PassId::BarrierStack]
       k = 0
       while k < passes.size
-        STDOUT.puts "#{pass_name(passes[k])}\tdefault,release"
+        tiers = k < 4 ? "default,release" : "release"
+        STDOUT.puts "#{pass_name(passes[k])}\t#{tiers}"
         k = k + 1
       end
       return
@@ -107,22 +109,26 @@ module IrOpt
       STDOUT.print(print(mod))
       return
     end
+    if command == "call-edges"
+      usage unless args.size == 2
+      mod = read_module(args[1])
+      STDOUT.puts call_cycle_edge_count(mod)
+      return
+    end
     usage unless command == "run" || command == "stats"
 
     verify_each = false
     no_verify = command == "stats"
     index = 1
-    if command == "run"
-      while index < args.size
-        if args[index] == "--verify-each"
-          verify_each = true
-        elsif args[index] == "--no-verify"
-          no_verify = true
-        else
-          break
-        end
-        index = index + 1
+    while index < args.size
+      if command == "run" && args[index] == "--verify-each"
+        verify_each = true
+      elsif command == "run" && args[index] == "--no-verify"
+        no_verify = true
+      else
+        break
       end
+      index = index + 1
     end
     usage unless args.size == index + 2
     usage if verify_each && no_verify
@@ -130,15 +136,15 @@ module IrOpt
     mod = read_module(args[index + 1])
     verify_input(mod) unless no_verify
 
-    before_insts = [] of Int32
-    before_blocks = [] of Int32
+    before_insts = Hash(Function, Int32).new
+    before_blocks = Hash(Function, Int32).new
     if command == "stats"
       k = 0
       while k < mod.functions.size
         fn = mod.functions[k]
         unless fn.declaration?
-          before_insts << instruction_count(fn)
-          before_blocks << fn.blocks.size
+          before_insts[fn] = instruction_count(fn)
+          before_blocks[fn] = fn.blocks.size
         end
         k = k + 1
       end
@@ -158,12 +164,10 @@ module IrOpt
     end
     if command == "stats"
       k = 0
-      j = 0
       while k < mod.functions.size
         fn = mod.functions[k]
         unless fn.declaration?
-          STDOUT.puts "#{fn.name}\t#{before_insts[j]}\t#{instruction_count(fn)}\t#{before_blocks[j]}\t#{fn.blocks.size}"
-          j = j + 1
+          STDOUT.puts "#{fn.name}\t#{before_insts[fn]}\t#{instruction_count(fn)}\t#{before_blocks[fn]}\t#{fn.blocks.size}"
         end
         k = k + 1
       end

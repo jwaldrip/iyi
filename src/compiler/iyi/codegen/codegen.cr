@@ -858,6 +858,13 @@ module Iyi
       # pool neither calls it nor carries it (`iyi_preempt_on?`).
       return false if node.name == PREEMPT_NAME && !iyi_preempt_on?
 
+      # The JSPI host entry and its wrappers are runtime-only exports. Keep
+      # them only when a freestanding program has a path that can park.
+      if @program.has_flag?("wasm32") && !@program.has_flag?("wasi") && !@program.iyi_wasm_tasks_reached? &&
+         node.name.in?("iyi_fiber_entry", "__iyi_wasm_swap", "__iyi_wasm_idle", "__iyi_wasm_fiber_exit")
+        return false
+      end
+
       unless node.external.dead?
         # Mark as dead so we don't generate it twice
         # (can happen with well known functions like __crystal_raise)
@@ -3448,14 +3455,15 @@ module Iyi
     # `ptr.value = (ptr + 1).value` reads both halves of an overlap before
     # either is written. Neither is volatile, as the load and store were not;
     # a volatile or atomic access is a primitive of its own, on a scalar.
-    # Both ends are assumed aligned to the type's ABI alignment, which is what
-    # the load and store assumed.
+    # Both ends use the ABI alignment, capped at eight for vector or wide
+    # integer storage because an arena object may only be eight-aligned.
     def copy_value(dest, src, type, *, fresh = false)
       return if @builder.end
 
       llvm_value_type = llvm_type(type)
       size = size_t(llvm_typer.size_of(llvm_value_type))
       align = llvm_typer.align_of(llvm_value_type)
+      align = 8_u32 if llvm_typer.needs_heap_align8?(llvm_value_type) && align > 8
       if fresh
         memcpy(dest, src, size, align, int1(0))
       else
