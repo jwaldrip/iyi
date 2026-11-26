@@ -1,0 +1,16 @@
+module ra_a_reserved_range
+
+def reserved(seed : Int64, choose : Int64) : {Int64, Int64}
+  a = seed * 7_i64
+  if choose > 0_i64
+    {42_i64, a}
+  else
+    {500_i64 + a, 0_i64}
+  end
+end
+
+first = reserved(4_i64, 0_i64)
+puts "#{first[0]}"
+second = reserved(4_i64, 1_i64)
+puts "#{second[0]}"
+puts "#{second[1]}"

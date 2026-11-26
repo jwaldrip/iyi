@@ -21,6 +21,7 @@ import compiler/native/jump_table::{declare_jump_tables, place_jump_tables, jump
 import compiler/native/aarch64/isel::{select_function, IselError}
 import compiler/native/aarch64/encode::{encode_function, EncodedFunction, EncodeError}
 import compiler/native/regalloc::{allocate}
+import compiler/native/regalloc_linear::{spill_traffic}
 import compiler/native/frame::{lay_out}
 import compiler/native/emit::{SectionWriter, to_bytes, write_initializer, data_section_name}
 import compiler/native/thread_locals::{place_thread_locals}
@@ -264,7 +265,7 @@ end
 # The MIR as text, one instruction per line: the form the gate reads for the probe and the register homes.
 pub def dump_mfunction(mf : MFunction) : String
   acc = "function #{mf.name}\n"
-  acc = acc + "  frame size=#{mf.frame.frame_size} outgoing=#{mf.frame.outgoing_bytes} saves=#{mf.frame.saves_offset} slots=#{mf.frame.slots.size}\n"
+  acc = acc + "  frame size=#{mf.frame.frame_size} outgoing=#{mf.frame.outgoing_bytes} saves=#{mf.frame.saves_offset} slots=#{mf.frame.slots.size} traffic=#{spill_traffic(mf)}\n"
   mf.blocks.each do |b|
     acc = acc + "block #{b.index} #{b.name}\n"
     b.insts.each do |inst|
@@ -303,6 +304,7 @@ def dump_inst(isa : Int32, inst : MInst) : String
   text = text + " target=#{inst.target}" if inst.target >= 0
   text = text + " table=#{inst.table}" if inst.table >= 0
   text = text + " sym=#{inst.sym}" if inst.sym >= 0
+  text = text + " remat" if inst.remat
   unless inst.clobbers.empty?
     names = [] of String
     inst.clobbers.each do |r|

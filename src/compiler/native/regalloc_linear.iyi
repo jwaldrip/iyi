@@ -5,7 +5,7 @@ module compiler/native/regalloc_linear
 #
 # Positions. Each instruction has a use position 2i and a definition position
 # 2i+1. A dying input can share a register with an output unless the target
-# requires distinct operands. Liveness extends interval hulls across block edges.
+# requires distinct operands. Liveness forms disjoint ranges across block edges.
 #
 # Fixed registers. A physical operand reserves its register from the last point that clobbered it up to
 # the point that reads it. An argument move reserves its register up to the call that reads it, a call
@@ -35,6 +35,7 @@ module compiler/native/regalloc_linear
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, Role}
 import compiler/native/target::{new_inst, is_role?, terminator?, leaves_block?, block_branch?, table_branch?, distinct_inputs_and_defs?, bitwise_gpr_value?, integer_literal?, typed_fpr_value?, isa_aarch64}
 import compiler/native/aarch64/regs::{callee_saved_gprs, callee_saved_fprs, caller_saved_gprs, caller_saved_fprs, scratch_gprs, scratch_fprs, probe_reg, fp_reg, lr_reg, integer_arg_regs, fp_arg_regs}
+import std/time::{Time}
 
 # x17: the encoder's veneer scratch. regs.iyi names it in a comment and has no accessor for it.
 def veneer_reg : Int32
@@ -241,6 +242,7 @@ def remat_inst(fn : MFunction, reg : Int32, v : Int32) : MInst
   m = MInst.new(MOp::MovImm.value.to_i32)
   m.defs << Operand.new(OperandKind::Physical, reg)
   m.imm = fn.vreg_remat[v]
+  m.remat = true
   m
 end
 
@@ -727,8 +729,66 @@ pub def block_loop_depths(succs : Array(Array(Int32))) : Array(Int32)
   block_loop_nest(succs).depth
 end
 
+# Loop-weighted frame accesses and rematerialized spill reloads in the allocated MIR.
+pub def spill_traffic(fn : MFunction) : Int64
+  succs = [] of Array(Int32)
+  b = 0
+  while b < fn.blocks.size
+    succs << block_successors(fn, b)
+    b = b + 1
+  end
+  depths = block_loop_depths(succs)
+  total = 0_i64
+  b = 0
+  while b < fn.blocks.size
+    factor = 1_i64
+    depth = depths[b]
+    depth = 6 if depth > 6
+    while depth > 0
+      factor = factor * 8_i64
+      depth = depth - 1
+    end
+    fn.blocks[b].insts.each do |inst|
+      if is_role?(fn.isa, inst, Role::SlotLoad) || is_role?(fn.isa, inst, Role::SlotStore) ||
+         inst.remat
+        total = total + factor
+      end
+    end
+    b = b + 1
+  end
+  total
+end
+
 def spill_weight_limit : Int64
   1152921504606846976_i64
+end
+
+# `word` is nonzero. Skip whole groups of zero bits before locating its first set bit.
+def lowest_set_bit(word : UInt64) : Int32
+  shift = 0
+  x = word
+  if (x & 0xffffffff_u64) == 0_u64
+    shift = shift + 32
+    x = x >> 32
+  end
+  if (x & 0xffff_u64) == 0_u64
+    shift = shift + 16
+    x = x >> 16
+  end
+  if (x & 0xff_u64) == 0_u64
+    shift = shift + 8
+    x = x >> 8
+  end
+  if (x & 0xf_u64) == 0_u64
+    shift = shift + 4
+    x = x >> 4
+  end
+  if (x & 0x3_u64) == 0_u64
+    shift = shift + 2
+    x = x >> 2
+  end
+  shift = shift + 1 if (x & 1_u64) == 0_u64
+  shift
 end
 
 class LinearScan
@@ -742,6 +802,11 @@ class LinearScan
   property live_out : Array(Array(UInt64))
   property starts : Array(Int32)
   property ends : Array(Int32)
+  property range_start : Array(Int32)
+  property range_end : Array(Int32)
+  property range_first : Array(Int32)
+  property range_count : Array(Int32)
+  property range_cursor : Array(Int32)
   property has_interval : Array(Bool)
   property crossing : Array(Bool)
   property pointer : Array(Bool)
@@ -750,6 +815,11 @@ class LinearScan
   property res_end : Array(Array(Int32))
   property homes : Array(Int32)
   property active : Array(Int32)
+  property inactive : Array(Int32)
+  property next_active : Array(Int32)
+  property next_inactive : Array(Int32)
+  property is_active : Array(Bool)
+  property occupants : Array(Array(Int32))
   property caller_pool : Array(Int32)
   property callee_pool : Array(Int32)
   property hint_vreg : Array(Int32)
@@ -768,20 +838,31 @@ class LinearScan
     @live_out = [] of Array(UInt64)
     @starts = [] of Int32
     @ends = [] of Int32
+    @range_start = [] of Int32
+    @range_end = [] of Int32
+    @range_first = [] of Int32
+    @range_count = [] of Int32
+    @range_cursor = [] of Int32
     @has_interval = [] of Bool
     @crossing = [] of Bool
     @pointer = [] of Bool
     @weights = [] of Int64
     @res_start = [] of Array(Int32)
     @res_end = [] of Array(Int32)
+    @occupants = [] of Array(Int32)
     r = 0
     while r < 64
       @res_start << ([] of Int32)
       @res_end << ([] of Int32)
+      @occupants << ([] of Int32)
       r = r + 1
     end
     @homes = [] of Int32
     @active = [] of Int32
+    @inactive = [] of Int32
+    @next_active = [] of Int32
+    @next_inactive = [] of Int32
+    @is_active = bool_row(@vcount)
     @spill_gprs = first_of(scratch_gprs, spill_scratch_count(fn))
     @caller_pool = caller_gpr_pool(@spill_gprs)
     @callee_pool = callee_saved_gprs
@@ -804,6 +885,28 @@ class LinearScan
     assign
     assert_assignment
     finish_frame
+  end
+
+  # This path runs only on request, leaving ordinary allocation free of clock reads.
+  def run_timed : {Int64, Int64, Int64}
+    started = Time.monotonic
+    assert_pools(@caller_pool + @callee_pool, @fpr_pool, @spill_gprs)
+    number_positions
+    build_successors
+    measure_weights
+    phase = Time.monotonic
+    solve_liveness
+    liveness = (Time.monotonic - phase).total_nanoseconds.to_i64
+    phase = Time.monotonic
+    build_intervals
+    ranges = (Time.monotonic - phase).total_nanoseconds.to_i64
+    collect_hints
+    record_reservations
+    assign
+    assert_assignment
+    finish_frame
+    total = (Time.monotonic - started).total_nanoseconds.to_i64
+    {liveness, ranges, total - liveness - ranges}
   end
 
   # The cost of spilling is the sum of 8^loop-depth for every use. Saturation
@@ -920,42 +1023,130 @@ class LinearScan
     end
   end
 
-  def extend_at(v : Int32, p : Int32) : Nil
-    @starts[v] = p if p < @starts[v]
-    @ends[v] = p if p > @ends[v]
+  # Ranges arrive in reverse position order. Link the new earlier span in
+  # front, merging adjacent or overlapping spans for the same vreg.
+  def add_range(v : Int32, first : Int32, last : Int32, heads : Array(Int32), links : Array(Int32), counts : Array(Int32)) : Nil
+    head = heads[v]
+    if head >= 0 && @range_start[head] <= last + 1
+      @range_start[head] = first if first < @range_start[head]
+      @range_end[head] = last if last > @range_end[head]
+    else
+      links << head
+      heads[v] = @range_start.size
+      @range_start << first
+      @range_end << last
+      counts[v] = counts[v] + 1
+    end
   end
 
-  # Interval hulls, the crossing flags, and the pointer-carrying flags.
-  def build_intervals : Nil
+  # Walk backwards from each block's live-out bits. Opening on a use and
+  # closing on a definition avoids a block-by-vreg scan.
+  def build_ranges : Nil
     n = @vcount
+    words = (n + 63) >> 6
+    heads = int_row(n, -1)
+    counts = int_row(n, 0)
+    open_end = int_row(n, -1)
+    links = [] of Int32
+    b = @fn.blocks.size - 1
+    while b >= 0
+      if @block_last[b] >= @block_first[b]
+        live = [] of UInt64
+        w = 0
+        while w < words
+          bits = @live_out[b][w]
+          live << bits
+          while bits != 0_u64
+            v = (w << 6) + lowest_set_bit(bits)
+            open_end[v] = @block_last[b]
+            bits = bits & (bits - 1_u64)
+          end
+          w = w + 1
+        end
+        insts = @fn.blocks[b].insts
+        i = insts.size - 1
+        while i >= 0
+          inst = insts[i]
+          pos = @block_first[b] + 2 * i
+          inst.defs.each do |op|
+            next unless op.kind == OperandKind::Virtual
+            v = op.reg
+            if bit?(live, v)
+              add_range(v, pos + 1, open_end[v], heads, links, counts)
+              bit_clear(live, v)
+            else
+              add_range(v, pos + 1, pos + 1, heads, links, counts)
+            end
+          end
+          use_end = distinct_inputs_and_defs?(@fn.isa, inst) ? pos + 1 : pos
+          inst.uses.each do |op|
+            next unless op.kind == OperandKind::Virtual
+            v = op.reg
+            unless bit?(live, v)
+              bit_set(live, v)
+              open_end[v] = use_end
+            end
+          end
+          i = i - 1
+        end
+        w = 0
+        while w < words
+          bits = live[w]
+          while bits != 0_u64
+            v = (w << 6) + lowest_set_bit(bits)
+            add_range(v, @block_first[b], open_end[v], heads, links, counts)
+            bits = bits & (bits - 1_u64)
+          end
+          w = w + 1
+        end
+      end
+      b = b - 1
+    end
+
+    # Flatten each list in vreg order. A pathological list keeps its hull,
+    # bounding subsequent intersection and reservation checks.
+    raw_start = @range_start
+    raw_end = @range_end
+    @range_start = [] of Int32
+    @range_end = [] of Int32
     @starts = int_row(n, big_position)
     @ends = int_row(n, -1)
     @homes = int_row(n, -1)
-    pos = 0
-    @fn.blocks.each do |block|
-      block.insts.each do |inst|
-        use_end = distinct_inputs_and_defs?(@fn.isa, inst) ? pos + 1 : pos
-        inst.uses.each do |op|
-          extend_at(op.reg, use_end) if op.kind == OperandKind::Virtual
+    v = 0
+    while v < n
+      first = @range_start.size
+      @range_first << first
+      @range_cursor << first
+      index = heads[v]
+      if index >= 0
+        @starts[v] = raw_start[index]
+        if counts[v] > 64 # collapse-pathological-ranges
+          last = raw_end[index]
+          while links[index] >= 0
+            index = links[index]
+            last = raw_end[index]
+          end
+          @range_start << @starts[v]
+          @range_end << last
+          @ends[v] = last
+        else
+          while index >= 0
+            @range_start << raw_start[index]
+            @range_end << raw_end[index]
+            @ends[v] = raw_end[index]
+            index = links[index]
+          end
         end
-        inst.defs.each do |op|
-          extend_at(op.reg, pos + 1) if op.kind == OperandKind::Virtual
-        end
-        pos = pos + 2
       end
+      @range_count << (@range_start.size - first)
+      v = v + 1
     end
-    b = 0
-    while b < @fn.blocks.size
-      if @block_last[b] >= @block_first[b]
-        v = 0
-        while v < n
-          extend_at(v, @block_first[b]) if bit?(@live_in[b], v)
-          extend_at(v, @block_last[b]) if bit?(@live_out[b], v)
-          v = v + 1
-        end
-      end
-      b = b + 1
-    end
+  end
+
+  # The hull still orders intervals; crossing and pointer flags are unchanged.
+  def build_intervals : Nil
+    build_ranges
+    n = @vcount
     pointers = pointer_fprs
     across = measure_crossing
     v = 0
@@ -1263,27 +1454,122 @@ class LinearScan
     lo < ends.size && starts[lo] <= e
   end
 
-  def held?(reg : Int32) : Bool
-    @active.each do |a|
-      return true if @homes[a] == reg
+  # The scan visits positions monotonically, so each interval's cursor only advances.
+  def covers?(v : Int32, p : Int32) : Bool
+    i = @range_cursor[v]
+    last = @range_first[v] + @range_count[v]
+    while i < last && @range_end[i] < p
+      i = i + 1
+    end
+    @range_cursor[v] = i
+    i < last && @range_start[i] <= p
+  end
+
+  def intersects?(a : Int32, b : Int32) : Bool
+    i = @range_first[a]
+    j = @range_first[b]
+    a_end = i + @range_count[a]
+    b_end = j + @range_count[b]
+    while i < a_end && j < b_end
+      if @range_end[i] < @range_start[j]
+        i = i + 1
+      elsif @range_end[j] < @range_start[i]
+        j = j + 1
+      else
+        return true
+      end
     end
     false
   end
 
-  def expire(s : Int32) : Nil
-    kept = [] of Int32
-    @active.each do |a|
-      kept << a if @ends[a] >= s
+  def reserved_over?(reg : Int32, v : Int32) : Bool
+    i = @range_first[v]
+    last = i + @range_count[v]
+    while i < last
+      return true if reserved?(reg, @range_start[i], @range_end[i])
+      i = i + 1
     end
-    @active = kept
+    false
+  end
+
+  def held?(reg : Int32) : Bool
+    @occupants[reg].each do |a|
+      return true if @is_active[a]
+    end
+    false
+  end
+
+  def inactive_intersects?(reg : Int32, v : Int32) : Bool
+    @occupants[reg].each do |a|
+      return true if !@is_active[a] && intersects?(a, v) # inactive-interference
+    end
+    false
+  end
+
+  def other_intersects?(reg : Int32, v : Int32, except : Int32) : Bool
+    @occupants[reg].each do |a|
+      return true if a != except && intersects?(a, v)
+    end
+    false
+  end
+
+  def remove_occupant(v : Int32) : Nil
+    occupants = @occupants[@homes[v]]
+    i = 0
+    while i < occupants.size
+      if occupants[i] == v
+        occupants[i] = occupants[occupants.size - 1]
+        occupants.pop
+        return
+      end
+      i = i + 1
+    end
+    raise "regalloc: missing register occupant #{v}"
+  end
+
+  # An interval in a hole remains an occupant until its last range expires.
+  def expire(s : Int32) : Nil
+    @next_active.clear
+    @next_inactive.clear
+    @active.each do |a|
+      if @ends[a] < s
+        @is_active[a] = false
+        remove_occupant(a)
+      elsif covers?(a, s)
+        @next_active << a
+      else
+        @is_active[a] = false
+        @next_inactive << a
+      end
+    end
+    @inactive.each do |a|
+      if @ends[a] < s
+        remove_occupant(a)
+      elsif covers?(a, s)
+        @is_active[a] = true
+        @next_active << a
+      else
+        @next_inactive << a
+      end
+    end
+    old_active = @active
+    old_inactive = @inactive
+    @active = @next_active
+    @inactive = @next_inactive
+    @next_active = old_active
+    @next_inactive = old_inactive
   end
 
   def remove_active(v : Int32) : Nil
-    kept = [] of Int32
+    @next_active.clear
     @active.each do |a|
-      kept << a unless a == v
+      @next_active << a unless a == v
     end
-    @active = kept
+    old_active = @active
+    @active = @next_active
+    @next_active = old_active
+    @is_active[v] = false
+    remove_occupant(v)
   end
 
   # The candidate registers for one interval, in the order they are tried.
@@ -1309,11 +1595,11 @@ class LinearScan
     preferred = @hint_reg[iv]
     other = @hint_vreg[iv]
     preferred = @homes[other] if other >= 0 && @homes[other] >= 0
-    if preferred >= 0 && member?(pool, preferred) && !held?(preferred) && !reserved?(preferred, @starts[iv], @ends[iv])
+    if preferred >= 0 && member?(pool, preferred) && !held?(preferred) && !inactive_intersects?(preferred, iv) && !reserved_over?(preferred, iv)
       return preferred
     end
     pool.each do |reg|
-      return reg unless held?(reg) || reserved?(reg, @starts[iv], @ends[iv])
+      return reg unless held?(reg) || inactive_intersects?(reg, iv) || reserved_over?(reg, iv)
     end
     -1
   end
@@ -1327,7 +1613,7 @@ class LinearScan
       a = @active[k]
       reg = @homes[a]
       cheaper = @weights[a] < @weights[iv] || (@weights[a] == @weights[iv] && @ends[a] > @ends[iv])
-      if member?(pool, reg) && cheaper && !reserved?(reg, @starts[iv], @ends[iv])
+      if member?(pool, reg) && cheaper && !reserved_over?(reg, iv) && !other_intersects?(reg, iv, a)
         if best < 0 || @weights[a] < @weights[best] || (@weights[a] == @weights[best] && @ends[a] > @ends[best])
           best = a
         end
@@ -1351,14 +1637,18 @@ class LinearScan
       reg = find_free(iv, pool)
       if reg >= 0
         @homes[iv] = reg
+        @is_active[iv] = true
+        @occupants[reg] << iv
         @active << iv
       else
         victim = find_victim(iv, pool)
         if victim >= 0
           taken = @homes[victim]
-          @homes[victim] = -1
           remove_active(victim)
+          @homes[victim] = -1
           @homes[iv] = taken
+          @is_active[iv] = true
+          @occupants[taken] << iv
           @active << iv
         else
           @homes[iv] = -1
@@ -1529,9 +1819,24 @@ pub def coalesce_copies(fn : MFunction) : Int32
 end
 
 # Allocates one function by linear scan, then writes the spill code.
+# IYI_NATIVE_TIME_RA reports linear allocation only; pin emits no timing line.
 pub def allocate_linear(fn : MFunction) : Nil
-  coalesce_copies(fn)
-  scan = LinearScan.new(fn)
-  scan.run
-  rewrite_spills(fn)
+  if Program.env("IYI_NATIVE_TIME_RA") == "1"
+    started = Time.monotonic
+    coalesce_copies(fn)
+    coalesce = (Time.monotonic - started).total_nanoseconds.to_i64
+    started = Time.monotonic
+    scan = LinearScan.new(fn)
+    setup = (Time.monotonic - started).total_nanoseconds.to_i64
+    times = scan.run_timed
+    started = Time.monotonic
+    rewrite_spills(fn)
+    rewrite = (Time.monotonic - started).total_nanoseconds.to_i64
+    STDERR.puts "ra-time #{fn.name} #{fn.vreg_count} #{fn.blocks.size} #{times[0]} #{times[1]} #{coalesce} #{times[2] + setup} 0 #{rewrite}"
+  else
+    coalesce_copies(fn)
+    scan = LinearScan.new(fn)
+    scan.run
+    rewrite_spills(fn)
+  end
 end

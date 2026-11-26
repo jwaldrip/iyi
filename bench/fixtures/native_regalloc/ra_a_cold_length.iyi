@@ -1,0 +1,27 @@
+module ra_a_cold_length
+
+def checked(seed : Int64, l1 : Int64, l2 : Int64, l3 : Int64, l4 : Int64) : Int64
+  data = [1_i64, 2_i64, 3_i64, 4_i64, 5_i64, 6_i64, 7_i64, 8_i64]
+  h = seed * 2_i64 + seed * 3_i64 + seed * 5_i64 + seed * 7_i64 + seed * 11_i64 + seed * 13_i64 + seed * 17_i64 + seed * 19_i64 + seed * 23_i64 + seed * 29_i64 + seed * 31_i64 + seed * 37_i64 + seed * 41_i64 + seed * 43_i64 + seed * 47_i64 + seed * 53_i64
+  acc = 0_i64
+  i = 0_i64
+  while i < 8_i64
+    return -l1 if i >= l1
+    v1 = data[i.to_i32]
+    return -100_i64 - l2 if i >= l2
+    v2 = data[i.to_i32]
+    return -200_i64 - l3 if i >= l3
+    v3 = data[i.to_i32]
+    return -300_i64 - l4 if i >= l4
+    v4 = data[i.to_i32]
+    acc = acc + v1 + v2 + v3 + v4 + h + h
+    i += 1_i64
+  end
+  acc
+end
+
+puts "#{checked(3_i64, 8_i64, 8_i64, 8_i64, 8_i64)}"
+puts "#{checked(3_i64, 3_i64, 8_i64, 8_i64, 8_i64)}"
+puts "#{checked(3_i64, 8_i64, 3_i64, 8_i64, 8_i64)}"
+puts "#{checked(3_i64, 8_i64, 8_i64, 3_i64, 8_i64)}"
+puts "#{checked(3_i64, 8_i64, 8_i64, 8_i64, 3_i64)}"

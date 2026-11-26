@@ -1,0 +1,12 @@
+module ra_a_no_holes
+
+def straight(x : Int64, y : Int64) : Int64
+  a = x * 7_i64
+  b = y + 11_i64
+  c = a ^ b
+  d = c * 5_i64
+  d - x
+end
+
+puts "#{straight(3_i64, 7_i64)}"
+puts "#{straight(-4_i64, 2_i64)}"

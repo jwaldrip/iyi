@@ -1,0 +1,134 @@
+; iyi-ir 1
+module "ra_a_cold_length"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+@data = internal global [8 x i64] [ i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7, i64 8 ]
+@len1 = internal global i64 8
+@len2 = internal global i64 8
+@len3 = internal global i64 8
+@len4 = internal global i64 8
+
+define internal i64 @checked(i64 %seed) {
+entry:
+  %h1 = mul i64 %seed, 2
+  %h2 = mul i64 %seed, 3
+  %h3 = mul i64 %seed, 5
+  %h4 = mul i64 %seed, 7
+  %h5 = mul i64 %seed, 11
+  %h6 = mul i64 %seed, 13
+  %h7 = mul i64 %seed, 17
+  %h8 = mul i64 %seed, 19
+  %h9 = mul i64 %seed, 23
+  %h10 = mul i64 %seed, 29
+  %h11 = mul i64 %seed, 31
+  %h12 = mul i64 %seed, 37
+  %h13 = mul i64 %seed, 41
+  %h14 = mul i64 %seed, 43
+  %h15 = mul i64 %seed, 47
+  %h16 = mul i64 %seed, 53
+  br label %loop
+loop:
+  %i = phi i64 [ 0, label %entry ], [ %next, label %body ]
+  %acc = phi i64 [ 0, label %entry ], [ %nextacc, label %body ]
+  %l1 = load i64, ptr @len1, align 8
+  %bad1 = icmp sge i64 %i, %l1
+  br i1 %bad1, label %error1, label %check2
+check2:
+  %p1 = getelementptr [8 x i64], ptr @data, i64 0, i64 %i
+  %v1 = load i64, ptr %p1, align 8
+  %l2 = load i64, ptr @len2, align 8
+  %bad2 = icmp sge i64 %i, %l2
+  br i1 %bad2, label %error2, label %check3
+check3:
+  %p2 = getelementptr [8 x i64], ptr @data, i64 0, i64 %i
+  %v2 = load i64, ptr %p2, align 8
+  %l3 = load i64, ptr @len3, align 8
+  %bad3 = icmp sge i64 %i, %l3
+  br i1 %bad3, label %error3, label %check4
+check4:
+  %p3 = getelementptr [8 x i64], ptr @data, i64 0, i64 %i
+  %v3 = load i64, ptr %p3, align 8
+  %l4 = load i64, ptr @len4, align 8
+  %bad4 = icmp sge i64 %i, %l4
+  br i1 %bad4, label %error4, label %body
+body:
+  %p4 = getelementptr [8 x i64], ptr @data, i64 0, i64 %i
+  %v4 = load i64, ptr %p4, align 8
+  %s1 = add i64 %acc, %v1
+  %s2 = add i64 %s1, %v2
+  %s3 = add i64 %s2, %v3
+  %s4 = add i64 %s3, %v4
+  %s5 = add i64 %s4, %h1
+  %s6 = add i64 %s5, %h2
+  %s7 = add i64 %s6, %h3
+  %s8 = add i64 %s7, %h4
+  %s9 = add i64 %s8, %h5
+  %s10 = add i64 %s9, %h6
+  %s11 = add i64 %s10, %h7
+  %s12 = add i64 %s11, %h8
+  %s13 = add i64 %s12, %h9
+  %s14 = add i64 %s13, %h10
+  %s15 = add i64 %s14, %h11
+  %s16 = add i64 %s15, %h12
+  %s17 = add i64 %s16, %h13
+  %s18 = add i64 %s17, %h14
+  %s19 = add i64 %s18, %h15
+  %s20 = add i64 %s19, %h16
+  %t1 = add i64 %s20, %h1
+  %t2 = add i64 %t1, %h2
+  %t3 = add i64 %t2, %h3
+  %t4 = add i64 %t3, %h4
+  %t5 = add i64 %t4, %h5
+  %t6 = add i64 %t5, %h6
+  %t7 = add i64 %t6, %h7
+  %t8 = add i64 %t7, %h8
+  %t9 = add i64 %t8, %h9
+  %t10 = add i64 %t9, %h10
+  %t11 = add i64 %t10, %h11
+  %t12 = add i64 %t11, %h12
+  %t13 = add i64 %t12, %h13
+  %t14 = add i64 %t13, %h14
+  %t15 = add i64 %t14, %h15
+  %nextacc = add i64 %t15, %h16
+  %next = add i64 %i, 1
+  %done = icmp eq i64 %next, 8
+  br i1 %done, label %end, label %loop
+end:
+  ret i64 %nextacc
+error1:
+  %e1 = sub i64 0, %l1
+  ret i64 %e1
+error2:
+  %e2 = sub i64 -100, %l2
+  ret i64 %e2
+error3:
+  %e3 = sub i64 -200, %l3
+  ret i64 %e3
+error4:
+  %e4 = sub i64 -300, %l4
+  ret i64 %e4
+}
+
+define i32 @main() {
+entry:
+  %ok = call i64 (i64) @checked(i64 3)
+  %p0 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %ok)
+  store i64 3, ptr @len1, align 8
+  %r1 = call i64 (i64) @checked(i64 3)
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %r1)
+  store i64 8, ptr @len1, align 8
+  store i64 3, ptr @len2, align 8
+  %r2 = call i64 (i64) @checked(i64 3)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %r2)
+  store i64 8, ptr @len2, align 8
+  store i64 3, ptr @len3, align 8
+  %r3 = call i64 (i64) @checked(i64 3)
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %r3)
+  store i64 8, ptr @len3, align 8
+  store i64 3, ptr @len4, align 8
+  %r4 = call i64 (i64) @checked(i64 3)
+  %p4 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %r4)
+  ret i32 0
+}

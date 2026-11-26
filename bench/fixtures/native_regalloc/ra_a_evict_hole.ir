@@ -1,0 +1,108 @@
+; iyi-ir 1
+module "ra_a_evict_hole"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+@scratch = internal global i64 0
+
+define internal i64 @evict(i64 %seed) {
+entry:
+  %h1 = mul i64 %seed, 2
+  %h2 = mul i64 %seed, 3
+  %h3 = mul i64 %seed, 4
+  %h4 = mul i64 %seed, 5
+  %h5 = mul i64 %seed, 6
+  %h6 = mul i64 %seed, 7
+  %h7 = mul i64 %seed, 8
+  %h8 = mul i64 %seed, 9
+  %h9 = mul i64 %seed, 10
+  %h10 = mul i64 %seed, 11
+  %h11 = mul i64 %seed, 12
+  %h12 = mul i64 %seed, 13
+  %h13 = mul i64 %seed, 14
+  %h14 = mul i64 %seed, 15
+  %h15 = mul i64 %seed, 16
+  %h16 = mul i64 %seed, 17
+  %h17 = mul i64 %seed, 18
+  %h18 = mul i64 %seed, 19
+  %h19 = mul i64 %seed, 20
+  %h20 = mul i64 %seed, 21
+  %h21 = mul i64 %seed, 22
+  br label %setup
+early:
+  %early_result = add i64 %a, 3
+  ret i64 %early_result
+setup:
+  %q = mul i64 %seed, 3
+  %b = add i64 %seed, 11
+  store i64 %q, ptr @scratch, align 8
+  br label %define_a
+define_a:
+  %a = mul i64 %seed, 7
+  br label %late
+late:
+  %r0 = add i64 %a, %b
+  %r1 = add i64 %r0, %b
+  %r2 = add i64 %r1, %b
+  %r3 = add i64 %r2, %seed
+  %r4 = add i64 %r3, %h1
+  %r5 = add i64 %r4, %h2
+  %r6 = add i64 %r5, %h3
+  %r7 = add i64 %r6, %h4
+  %r8 = add i64 %r7, %h5
+  %r9 = add i64 %r8, %h6
+  %r10 = add i64 %r9, %h7
+  %r11 = add i64 %r10, %h8
+  %r12 = add i64 %r11, %h9
+  %r13 = add i64 %r12, %h10
+  %r14 = add i64 %r13, %h11
+  %r15 = add i64 %r14, %h12
+  %r16 = add i64 %r15, %h13
+  %r17 = add i64 %r16, %h14
+  %r18 = add i64 %r17, %h15
+  %r19 = add i64 %r18, %h16
+  %r20 = add i64 %r19, %h17
+  %r21 = add i64 %r20, %h18
+  %r22 = add i64 %r21, %h19
+  %r23 = add i64 %r22, %h20
+  %extra = add i64 %r23, %h21
+  %r24 = add i64 %extra, %h1
+  %r25 = add i64 %r24, %h2
+  %r26 = add i64 %r25, %h3
+  %r27 = add i64 %r26, %h4
+  %r28 = add i64 %r27, %h5
+  %r29 = add i64 %r28, %h6
+  %r30 = add i64 %r29, %h7
+  %r31 = add i64 %r30, %h8
+  %r32 = add i64 %r31, %h9
+  %r33 = add i64 %r32, %h10
+  %r34 = add i64 %r33, %h11
+  %r35 = add i64 %r34, %h12
+  %r36 = add i64 %r35, %h13
+  %r37 = add i64 %r36, %h14
+  %r38 = add i64 %r37, %h15
+  %r39 = add i64 %r38, %h16
+  %r40 = add i64 %r39, %h17
+  %r41 = add i64 %r40, %h18
+  %r42 = add i64 %r41, %h19
+  %r43 = add i64 %r42, %h20
+  %r44 = add i64 %r43, %h21
+  %negative = icmp slt i64 %seed, 0
+  br i1 %negative, label %early, label %done
+done:
+  ret i64 %r44
+}
+
+define i32 @main() {
+entry:
+  %a = call i64 (i64) @evict(i64 4)
+  %q1 = load i64, ptr @scratch, align 8
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %a)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %q1)
+  %b = call i64 (i64) @evict(i64 -2)
+  %q2 = load i64, ptr @scratch, align 8
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %b)
+  %p4 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %q2)
+  ret i32 0
+}

@@ -1,0 +1,63 @@
+; iyi-ir 1
+module "ra_a_hole_reuse"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external i32 @printf(ptr, ...)
+@fmt = private constant [5 x i8] c"%ld\0A\00"
+@scratch = internal global i64 0
+
+define internal i64 @holes(i64 %seed) {
+entry:
+  %h1 = mul i64 %seed, 2
+  %h2 = mul i64 %seed, 3
+  %h3 = mul i64 %seed, 4
+  %h4 = mul i64 %seed, 5
+  %h5 = mul i64 %seed, 6
+  %h6 = mul i64 %seed, 7
+  %h7 = mul i64 %seed, 8
+  %h8 = mul i64 %seed, 9
+  %h9 = mul i64 %seed, 10
+  %h10 = mul i64 %seed, 11
+  br label %setup
+early:
+  %early_result = add i64 %a, 3
+  ret i64 %early_result
+setup:
+  %q = mul i64 %seed, 3
+  store i64 %q, ptr @scratch, align 8
+  %b = add i64 %seed, 11
+  br label %define_a
+define_a:
+  %a = mul i64 %seed, 7
+  br label %late
+late:
+  %r0 = add i64 %a, %b
+  %with_seed = add i64 %r0, %seed
+  %r1 = add i64 %with_seed, %h1
+  %r2 = add i64 %r1, %h2
+  %r3 = add i64 %r2, %h3
+  %r4 = add i64 %r3, %h4
+  %r5 = add i64 %r4, %h5
+  %r6 = add i64 %r5, %h6
+  %r7 = add i64 %r6, %h7
+  %r8 = add i64 %r7, %h8
+  %r9 = add i64 %r8, %h9
+  %result = add i64 %r9, %h10
+  %negative = icmp slt i64 %seed, 0
+  br i1 %negative, label %early, label %done
+done:
+  ret i64 %result
+}
+
+define i32 @main() {
+entry:
+  %a = call i64 (i64) @holes(i64 4)
+  %q1 = load i64, ptr @scratch, align 8
+  %p1 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %a)
+  %p2 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %q1)
+  %b = call i64 (i64) @holes(i64 -2)
+  %q2 = load i64, ptr @scratch, align 8
+  %p3 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %b)
+  %p4 = call i32 (ptr, ...) @printf(ptr @fmt, i64 %q2)
+  ret i32 0
+}

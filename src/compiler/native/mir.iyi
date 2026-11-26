@@ -200,6 +200,7 @@ pub class MInst
   property reloc : RelocKind?      # relocation applied at the instruction
   property target : Int32          # block index for branches, or -1
   property table : Int32           # jump table index for AddrTable and BrTable, or -1
+  property remat : Bool            # a constant the allocator rebuilt at a use of a spilled, rematerializable value
   property call : Bool
   property terminator : Bool
   property asm : AsmBody?
@@ -217,6 +218,7 @@ pub class MInst
     @reloc = nil
     @target = -1
     @table = -1
+    @remat = false
     @call = false
     @terminator = false
     @asm = nil
