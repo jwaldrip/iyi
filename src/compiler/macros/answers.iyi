@@ -12,17 +12,37 @@ import compiler/macros/ast::{MacroId, MetaMacroVar, TypeNode}
 pub class MacroAnswers
   # Whether the hosted compiler answers `method` on a receiver of `class_name`.
   def self.receiver?(class_name : String, method : String) : Bool
-    (" " + receiver_names(class_name) + " ").includes?(" " + method + " ")
+    includes_name?(receiver_names(class_name), method)
   end
 
   # Whether the hosted compiler answers a receiverless call named `name`.
   def self.receiverless?(name : String) : Bool
-    (" " + receiverless_names + " ").includes?(" " + name + " ")
+    includes_name?(receiverless_names, name)
   end
 
   # Whether a path naming one of these resolves to a type, as the hosted program's own do.
   def self.builtin_type?(name : String) : Bool
-    (" " + builtin_type_names + " ").includes?(" " + name + " ")
+    includes_name?(builtin_type_names, name)
+  end
+
+  # Search the existing list at word boundaries without padding and copying it.
+  private def self.includes_name?(names : String, name : String) : Bool
+    if name.empty?
+      return true if names.empty?
+      return true if names.byte_at(0) == 32_u8 || names.byte_at(names.bytesize - 1) == 32_u8
+      return names.includes?("  ")
+    end
+
+    offset = 0
+    while index = names.byte_index(name, offset)
+      finish = index + name.bytesize
+      if (index == 0 || names.byte_at(index - 1) == 32_u8) &&
+         (finish == names.bytesize || names.byte_at(finish) == 32_u8)
+        return true
+      end
+      offset = index + 1
+    end
+    false
   end
 
   def self.builtin_type_names : String
