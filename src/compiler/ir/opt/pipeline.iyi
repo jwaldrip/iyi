@@ -122,7 +122,7 @@ pub def tier_passes(tier : OptTier) : Array(PassId)
             PassId::Prove, PassId::Simplify, PassId::Dce, PassId::CfgSimplify,
             PassId::Licm, PassId::Cse, PassId::Barrier,
             PassId::InlineAlloc, PassId::Simplify, PassId::CfgSimplify, PassId::Cse, PassId::Dce,
-            PassId::SwitchChain, PassId::Layout, PassId::DeadFn]
+            PassId::SwitchChain, PassId::DeadFn, PassId::Layout]
   end
   [PassId::CfgSimplify, PassId::Mem2Reg, PassId::Simplify, PassId::Dce, PassId::CfgSimplify]
 end
