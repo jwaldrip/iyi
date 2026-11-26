@@ -92,16 +92,6 @@ pub class ClosureFrame
 
   def finish : Nil
     @closured.clear
-    # Most frames capture no locals; there is no ordering or error work to do
-    # for them, and visible_names otherwise copies the whole parent chain.
-    captured = false
-    @bindings.each do |binding|
-      if binding.captured
-        captured = true
-        break
-      end
-    end
-    return unless captured
     visible_names.each do |name|
       binding = local?(name)
       next unless binding
@@ -140,9 +130,7 @@ pub class ClosureWalk < Visitor
         return false
       end
     end
-    if @frame.parent
-      capture_self if node.is_a?(Call) && node.as(Call).obj.nil? && implicit_self_call?(node.as(Call))
-    end
+    capture_self if node.is_a?(Call) && node.as(Call).obj.nil? && implicit_self_call?(node.as(Call))
     true
   end
 
@@ -233,7 +221,6 @@ pub class ClosureWalk < Visitor
   end
 
   def visit(node : Var) : Bool
-    return false if @frame.parent.nil?
     if node.name == "self"
       capture_self
     else
@@ -253,7 +240,6 @@ pub class ClosureWalk < Visitor
   end
 
   def capture_self : Nil
-    return if @frame.parent.nil?
     current : ClosureFrame? = @frame
     seen_proc = false
     while frame = current
