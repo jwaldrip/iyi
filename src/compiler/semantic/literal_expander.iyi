@@ -385,7 +385,7 @@ pub class LiteralExpander < Transformer
     chain = else_or_nop(node.else, it_subject)
     i = node.whens.size - 1
     while i >= 0
-      chain = when_chain(node.whens[i], bodies[i], subject, chain, tuple_temps)
+      chain = when_chain(node.whens[i], bodies[i], subject, chain, tuple_temps, !it_subject.nil?)
       i -= 1
     end
     if assigns.empty?
@@ -437,9 +437,10 @@ pub class LiteralExpander < Transformer
   end
 
   # One `when`: an `if` over its conditions, with `tail` as its `else`. When every
-  # condition is a type, one `if` per type, each with its own copy of the body.
+  # condition is a type, each branch gets its own body. A body copied by bind_it
+  # can serve one branch directly; the other branches still need their own copies.
   # `tuple_temps` holds the subject's temporaries when the subject is a tuple.
-  def when_chain(wh : When, body : ASTNode, subject : ASTNode?, tail : ASTNode, tuple_temps : Array(ASTNode)? = nil) : ASTNode
+  def when_chain(wh : When, body : ASTNode, subject : ASTNode?, tail : ASTNode, tuple_temps : Array(ASTNode)? = nil, reuse_body : Bool = false) : ASTNode
     comps = [] of ASTNode
     j = 0
     while j < wh.conds.size
@@ -460,7 +461,8 @@ pub class LiteralExpander < Transformer
       cur = tail
       k = comps.size - 1
       while k >= 0
-        cur = If.new(comps[k], body.clone, cur)
+        branch_body = reuse_body && k == 0 ? body : body.clone
+        cur = If.new(comps[k], branch_body, cur)
         k -= 1
       end
       return cur
@@ -497,7 +499,7 @@ pub class LiteralExpander < Transformer
       whole << temps[i].clone
       i += 1
     end
-    case_when_comparison(TupleLiteral.new(whole), cond)
+    case_when_test(TupleLiteral.new(whole), cond)
   end
 
   # The hosted `case_when_comparison`: a `nil` or a type is an `is_a?`, `X.class`
