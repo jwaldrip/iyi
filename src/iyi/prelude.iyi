@@ -2677,6 +2677,9 @@ require "./file"
 
       @[NoInline]
       @[Effect(:collector)]; def self.first_touch : UInt64
+        # A caller that supplies its own C main bypasses the prelude's main.
+        # Open the statistics page before the first heap lock in that case.
+        IyiStat.open
         page = __iyi_mmap(DIR_LEN).address
         lock
         # The shared pages, made under the same lock the first time any
@@ -11210,16 +11213,26 @@ require "./file"
       page &+ slot.unsafe_shl(3_u64)
     end
 
-    # The shared page mapped, and the words that start other than 0 set:
-    # once, by `fun main` before the program's first line, so every thread
-    # finds it in place.
+    # The prelude's main opens the page before the program starts. A custom C
+    # main may instead reach the heap first, so first_touch also calls here.
+    # Publish one initialized page even if several threads first allocate at
+    # once. The sentinel is not an address any supported target can map.
     def self.open : Nil
-      fresh = map
-      Pointer(UInt64).new(fresh &+ EPOCH.unsafe_shl(3_u64)).value = 1_u64
-      Pointer(UInt64).new(fresh &+ ROUND.unsafe_shl(3_u64)).value = 1_u64
-      Pointer(UInt64).new(fresh &+ GROWTH.unsafe_shl(3_u64)).value = 200_u64
-      Pointer(UInt64).new(fresh &+ VERIFY_NOISE.unsafe_shl(3_u64)).value = 0x9E3779B97F4A7C15_u64
-      @@page = fresh
+      page = Pointer(Atomic(UInt64)).new(pointerof(@@page).address)
+      return if page.value.get > 1_u64
+      if page.value.compare_and_set(0_u64, 1_u64)[1]
+        fresh = map
+        Pointer(UInt64).new(fresh &+ EPOCH.unsafe_shl(3_u64)).value = 1_u64
+        Pointer(UInt64).new(fresh &+ ROUND.unsafe_shl(3_u64)).value = 1_u64
+        Pointer(UInt64).new(fresh &+ GROWTH.unsafe_shl(3_u64)).value = 200_u64
+        Pointer(UInt64).new(fresh &+ VERIFY_NOISE.unsafe_shl(3_u64)).value = 0x9E3779B97F4A7C15_u64
+        page.value.set(fresh)
+      else
+        while page.value.get == 1_u64
+          {% if flag?(:x86_64) %} asm("pause" :::: "volatile") {% end %}
+          {% if flag?(:aarch64) %} asm("yield" :::: "volatile") {% end %}
+        end
+      end
     end
 
     # A zeroed page from the kernel: the allocator's own mapping where
