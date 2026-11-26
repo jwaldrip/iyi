@@ -1126,12 +1126,13 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
     pending_visit_node("Assign to a target that is not a variable")
   end
   target = node.target.as(Var)
-  # The hosted codegen_assign declares the variable before it visits the value, so its alloca comes first.
   if param = low.current_context.vars[target.name]?
     if param.as(LowerVar).already_loaded
       raise "BUG: Assign to already_loaded parameter #{target.name} (hosted fun.cr: create_local_copy_of_arg)"
     end
-  else
+  end
+  # The hosted codegen_assign declares the variable before it visits the value, so its alloca comes first.
+  if low.current_context.vars[target.name]?.nil?
     declared = variable_storage_type(low, target)
     if !declared.nil? && !declared.as(Type).is_a?(NoReturnType)
       declare_assign_var(low, target.name, declared.as(Type))
@@ -1149,14 +1150,13 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
   raise "BUG: the analysed program has no type for the assigned value (hosted codegen.cr: codegen_assign)" if value_type.nil?
   vt = value_type.as(Type)
   return if vt.is_a?(NoReturnType)
-  var = low.current_context.vars[target.name]?
-  if var.nil?
+  if low.current_context.vars[target.name]?.nil?
     # The analysis gives the target no type: the variable takes the value's.
     declare_assign_var(low, target.name, vt)
-    var = low.current_context.vars[target.name]?
   end
+  var = low.current_context.vars[target.name]?
   v_var = var.as(LowerVar)
-  if v_var.closure_slot || (v_var.type.object_id != vt.object_id && v_var.type.full_name != vt.full_name)
+  if v_var.closure_slot || v_var.type.full_name != vt.full_name
     # A value of another type than the variable goes through the casts slice (the hosted upcast into a union).
     assign(low, v_var.pointer, v_var.type, vt, v)
   elsif !vt.is_a?(NilType)
