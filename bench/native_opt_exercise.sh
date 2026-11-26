@@ -1364,7 +1364,7 @@ prove_mutation 'R1C: a raise-path call adds no call-graph edge' src/compiler/ir/
   -- mutation_check R1C inline cold_edge_scc || fail 'R1C was not caught'
 mutation_result R1C
 prove_mutation 'R1K: no inlining into a raise path' src/compiler/ir/opt/inline.iyi \
-  '        next if owner_index < cold.size && cold[owner_index] && !source_mandated?(callee, site)' \
+  '        next if cold_by_block[block]? && !source_mandated?(callee, site)' \
   '        next if false # mutation R1K: raise paths take inlined copies' \
   -- mutation_check R1K inline cold_site || fail 'R1K was not caught'
 mutation_result R1K
@@ -1389,8 +1389,8 @@ prove_mutation 'R9P: release promotes before inlining allocations' src/compiler/
   -- mutation_check R9P release alloc_promote inline || fail 'R9P was not caught'
 mutation_result R9P
 prove_mutation 'R9C: the late group considers only allocation-funnel calls' src/compiler/ir/opt/inline.iyi \
-  '      block.insts.each { |inst| sites << inst if inst.op == Op::Call && (!budget.late || alloc_candidate?(inst, budget)) }' \
-  '      block.insts.each { |inst| sites << inst if inst.op == Op::Call }' \
+  '        if inst.op == Op::Call && (!budget.late || alloc_candidate?(inst, budget))' \
+  '        if inst.op == Op::Call' \
   -- mutation_check R9C "$R9_PASSES" alloc_entry_chain inline || fail 'R9C was not caught'
 mutation_result R9C
 prove_mutation 'R9X: calls exposed by an allocation entry join the funnel' src/compiler/ir/opt/inline.iyi \
