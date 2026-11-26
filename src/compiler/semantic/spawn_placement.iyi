@@ -217,6 +217,46 @@ def typed_beside(visitor : MainVisitor, definition : Def, name : String) : Def?
   finder.found
 end
 
+# A spawn or pool-start verdict needs a typed group or worker receiver, a
+# dispatch receiver, or an owner on a bound target. If none exists, neither
+# tree walk can record a site. Check the typing maps before walking the AST.
+def spawn_or_worker_type?(type : Type?, seen : Set(UInt64)) : Bool
+  return false unless type
+  id = type.object_id
+  return false if seen.includes?(id)
+  seen.add(id)
+  return true if group_type?(type)
+  if type.is_a?(MetaclassType)
+    return type.as(MetaclassType).instance_type.to_s == "IyiWorkers"
+  elsif type.is_a?(VirtualMetaclassType)
+    return type.as(VirtualMetaclassType).instance_type.base_type.to_s == "IyiWorkers"
+  end
+  false
+end
+
+def may_have_spawn_or_pool?(visitor : MainVisitor) : Bool
+  seen = Set(UInt64).new
+  visitor.call_target_defs.values.each do |definition|
+    next unless spawn_name?(definition.name) || definition.name == "start"
+    return true if spawn_or_worker_type?(visitor.program.def_owner(definition), seen)
+  end
+  visitor.call_dispatch_targets.values.each do |targets|
+    targets.each do |target|
+      definition = target.definition
+      next unless spawn_name?(definition.name) || definition.name == "start"
+      return true if spawn_or_worker_type?(target.receiver, seen)
+      return true if spawn_or_worker_type?(visitor.program.def_owner(definition), seen)
+    end
+  end
+  visitor.call_receivers.values.each do |type|
+    return true if spawn_or_worker_type?(type, seen)
+  end
+  visitor.node_types.values.each do |type|
+    return true if spawn_or_worker_type?(type, seen)
+  end
+  false
+end
+
 pub class SpawnAnalysis
   getter verdicts : NodeMap(SpawnVerdict)
   getter ordered : Array(SpawnVerdict)
@@ -253,6 +293,11 @@ pub class SpawnAnalysis
 
   def self.analyse(visitor : MainVisitor, root : ASTNode) : SpawnAnalysis
     analysis = SpawnAnalysis.new
+    if visitor.program.types.has_key?("IyiChaos")
+      analysis.proven("-Diyi_chaos: every loop checks for preemption (hosted codegen.cr 2999)")
+    end
+    return analysis unless may_have_spawn_or_pool?(visitor)
+
     share = ShareFacts.new
     threads = false
     if group = visitor.program.types["IyiGroup"]?
@@ -279,10 +324,6 @@ pub class SpawnAnalysis
       value.accept(SpawnSiteCollector.new(visitor, analysis, share, value, nil, nil, threads, true))
     end
     analysis.sort_sites
-
-    if visitor.program.types.has_key?("IyiChaos")
-      analysis.proven("-Diyi_chaos: every loop checks for preemption (hosted codegen.cr 2999)")
-    end
 
     reach = PoolReachWalk.new(visitor, analysis)
     root.accept(reach)
