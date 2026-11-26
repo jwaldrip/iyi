@@ -1,7 +1,7 @@
 module compiler/native/mir_clean
 
 import compiler/native/mir::{MFunction, MInst, MOp, OperandKind, Role}
-import compiler/native/target::{is_role?, invert_branch, isa_aarch64}
+import compiler/native/target::{is_role?, invert_branch}
 import std/env::{ENV}
 
 # Both passes share the same switch and reject misspellings rather than silently changing code generation.
@@ -130,66 +130,6 @@ pub def fold_result_copies(fn : MFunction) : Int32
   removed
 end
 
-# Only these comparisons have the same flag-setting semantics when repeated.
-def repeated_compare_candidate?(inst : MInst) : Bool
-  op = inst.opcode
-  count = 0
-  if op == MOp::Cmp.value.to_i32 || op == MOp::FCmp.value.to_i32
-    count = 2
-  elsif op == MOp::CmpImm.value.to_i32 || op == MOp::CmnImm.value.to_i32
-    count = 1
-  else
-    return false
-  end
-  return false unless inst.uses.size == count && inst.defs.empty? && inst.clobbers.empty?
-  return false if inst.call || inst.terminator || !inst.asm.nil?
-  inst.uses.each { |operand| return false unless operand.kind == OperandKind::Physical }
-  true
-end
-
-def same_compare?(first : MInst, second : MInst) : Bool
-  return false unless first.opcode == second.opcode && first.size == second.size &&
-                      first.fp == second.fp && first.imm == second.imm &&
-                      first.uses.size == second.uses.size
-  i = 0
-  while i < first.uses.size
-    return false unless first.uses[i].reg == second.uses[i].reg
-    i = i + 1
-  end
-  true
-end
-
-# After allocation, a comparison remains valid only along this block's
-# fallthrough path. Unknown instructions, including pseudo-ops, are barriers.
-def elide_repeated_compares(fn : MFunction) : Int32
-  return 0 unless fn.isa == isa_aarch64
-  removed = 0
-  fn.blocks.each do |block|
-    previous = nil.as(MInst?)
-    kept = 0
-    block.insts.each do |inst|
-      if repeated_compare_candidate?(inst)
-        if !previous.nil? && same_compare?(previous.as(MInst), inst)
-          removed = removed + 1
-          next
-        end
-        previous = inst
-      elsif (inst.opcode != MOp::Bcond.value.to_i32 &&
-             inst.opcode != MOp::Cbz.value.to_i32 && inst.opcode != MOp::Cbnz.value.to_i32 &&
-             inst.opcode != MOp::Tbz.value.to_i32 && inst.opcode != MOp::Tbnz.value.to_i32) ||
-            !inst.defs.empty? || !inst.clobbers.empty? || inst.call || !inst.asm.nil? # l1-compare-barrier
-        previous = nil
-      end
-      block.insts[kept] = inst
-      kept = kept + 1
-    end
-    while block.insts.size > kept
-      block.insts.pop
-    end
-  end
-  removed
-end
-
 # A table branch owns inline data. Unknown terminators and pseudo-operations
 # cannot be used as fallthrough entries, even when their block is adjacent.
 def known_fallthrough_entry?(inst : MInst) : Bool
@@ -251,5 +191,5 @@ pub def elide_fallthrough(fn : MFunction) : Int32
     next_nonempty = b unless block.insts.empty?
     b = b - 1
   end
-  removed + elide_repeated_compares(fn)
+  removed
 end

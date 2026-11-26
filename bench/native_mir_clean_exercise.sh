@@ -246,17 +246,17 @@ build_l1_contract() {
   ./bin/iyi build -o "$(native_path "$1")" "$(native_path "$FIX_CLEAN/l1_contract.iyi")" \
     >"$WORK/build.$(basename "$1").log" 2>&1
 }
-echo "== 1c. L1 fallthrough and comparison contracts"
+echo "== 1c. L1 fallthrough contracts"
 if build_l1_contract "$L1_CONTRACT"; then
   for setting in 0 1; do
-    for case_name in fallthrough branch nonempty compare redefined refusals; do
+    for case_name in fallthrough branch nonempty; do
       if ! IYI_NATIVE_MIR_CLEAN=$setting "$L1_CONTRACT" "$case_name" >"$WORK/l1.$setting.$case_name.log" 2>&1; then
         cat "$WORK/l1.$setting.$case_name.log"
         fail "L1 $case_name contract failed with cleanup=$setting"
       fi
     done
   done
-  echo "L1 contracts: 6 cases, cleanup enabled and disabled"
+  echo "L1 contracts: 3 cases, cleanup enabled and disabled"
 else
   cat "$WORK/build.$(basename "$L1_CONTRACT").log"
   fail "L1 contract fixture did not build"
@@ -900,17 +900,6 @@ prove_mutation "L1: a non-empty block is not fallthrough" src/compiler/native/mi
   '      last_fallthrough = next_nonempty < 0 ? b + 1 : next_nonempty + 1' \
   -- check_l1_mutant nonempty 'L1 contract: nonempty count' || fail "L1 nonempty mutation was not caught"
 
-prove_mutation "L1: redefining a compared operand invalidates flags" src/compiler/native/mir_clean.iyi \
-  '      elsif (inst.opcode != MOp::Bcond.value.to_i32 &&
-             inst.opcode != MOp::Cbz.value.to_i32 && inst.opcode != MOp::Cbnz.value.to_i32 &&
-             inst.opcode != MOp::Tbz.value.to_i32 && inst.opcode != MOp::Tbnz.value.to_i32) ||
-            !inst.defs.empty? || !inst.clobbers.empty? || inst.call || !inst.asm.nil? # l1-compare-barrier' \
-  '      elsif ((inst.opcode != MOp::Bcond.value.to_i32 &&
-              inst.opcode != MOp::Cbz.value.to_i32 && inst.opcode != MOp::Cbnz.value.to_i32 &&
-              inst.opcode != MOp::Tbz.value.to_i32 && inst.opcode != MOp::Tbnz.value.to_i32) &&
-             inst.opcode != MOp::Mov.value.to_i32) ||
-            (!inst.defs.empty? && inst.opcode != MOp::Mov.value.to_i32) || !inst.clobbers.empty? || inst.call || !inst.asm.nil? # l1-compare-barrier' \
-  -- check_l1_mutant redefined 'L1 contract: redefined operand' || fail "L1 operand mutation was not caught"
 prove_rotate_mutation() {
   local label=$1 old=$2 new=$3
   rm -f "$MUTATION_INVALID"

@@ -1,6 +1,6 @@
 module l1_contract
 
-import compiler/native/mir::{MBlock, MFunction, MInst, MOp, Operand, OperandKind}
+import compiler/native/mir::{MBlock, MFunction, MInst, MOp}
 import compiler/native/mir_clean::{elide_fallthrough}
 import compiler/native/aarch64/regs::{cond_eq, cond_ne}
 import std/env::{ENV}
@@ -26,16 +26,6 @@ end
 def branch(op : MOp, target : Int32) : MInst
   inst = ins(op)
   inst.target = target
-  inst
-end
-
-def compare(op : MOp, a : Int32 = 0, b : Int32 = 1) : MInst
-  inst = ins(op)
-  inst.uses << Operand.new(OperandKind::Physical, a)
-  if op == MOp::Cmp || op == MOp::FCmp
-    inst.uses << Operand.new(OperandKind::Physical, b)
-  end
-  inst.fp = op == MOp::FCmp
   inst
 end
 
@@ -90,80 +80,6 @@ def nonempty_between : Nil
   end
 end
 
-def repeated_cmp(enabled : Bool) : Nil
-  [MOp::Cmp, MOp::CmpImm, MOp::CmnImm, MOp::FCmp].each do |op|
-    fn = blocks("l1_repeated_cmp", 1)
-    first = compare(op)
-    first.size = 32
-    first.imm = 5_i64
-    second = compare(op)
-    second.size = 32
-    second.imm = 5_i64
-    third = compare(op)
-    third.size = 32
-    third.imm = 5_i64
-    fn.blocks[0].insts << first
-    fn.blocks[0].insts << branch(MOp::Bcond, 0)
-    fn.blocks[0].insts << second
-    fn.blocks[0].insts << branch(MOp::Bcond, 0)
-    fn.blocks[0].insts << third
-    fn.blocks[0].insts << ins(MOp::Ret)
-    require_case(elide_fallthrough(fn) == (enabled ? 2 : 0), "repeated count #{op}")
-    require_case(fn.blocks[0].insts.size == (enabled ? 4 : 6), "repeated size #{op}")
-  end
-end
-
-def cmp_operand_redefined : Nil
-  fn = blocks("l1_cmp_operand_redefined", 1)
-  fn.blocks[0].insts << compare(MOp::Cmp)
-  write = ins(MOp::Mov)
-  write.defs << Operand.new(OperandKind::Physical, 0)
-  write.uses << Operand.new(OperandKind::Physical, 2)
-  fn.blocks[0].insts << write
-  fn.blocks[0].insts << compare(MOp::Cmp)
-  fn.blocks[0].insts << ins(MOp::Ret)
-  require_case(elide_fallthrough(fn) == 0, "redefined operand count")
-  require_case(fn.blocks[0].insts.size == 4, "redefined operand")
-end
-
-def compare_refusals : Nil
-  kind = 0
-  while kind < 10
-    fn = blocks("l1_compare_refusal", 1)
-    first = compare(MOp::Cmp)
-    second = compare(MOp::Cmp)
-    between = branch(MOp::Bcond, 0)
-    if kind == 0
-      second.opcode = MOp::FCmp.value.to_i32
-    elsif kind == 1
-      second.size = 32
-    elsif kind == 2
-      second.imm = 1_i64
-    elsif kind == 3
-      second = compare(MOp::Cmp, 2, 1)
-    elsif kind == 4
-      second = compare(MOp::Cmp, 0, 2)
-    elsif kind == 5
-      first.uses[0] = Operand.new(OperandKind::Virtual, 0)
-      second.uses[0] = Operand.new(OperandKind::Virtual, 0)
-    elsif kind == 6
-      between = ins(MOp::Adds)
-    elsif kind == 7
-      between = ins(MOp::InlineAsm)
-    elsif kind == 8
-      between = ins(MOp::BrTable)
-    else
-      between.defs << Operand.new(OperandKind::Physical, 0)
-    end
-    fn.blocks[0].insts << first
-    fn.blocks[0].insts << between
-    fn.blocks[0].insts << second
-    fn.blocks[0].insts << ins(MOp::Ret)
-    require_case(elide_fallthrough(fn) == 0, "compare refusal #{kind}")
-    kind = kind + 1
-  end
-end
-
 enabled = ENV["IYI_NATIVE_MIR_CLEAN"]? != "0"
 case Program.args[0]
 when "fallthrough"
@@ -172,12 +88,6 @@ when "branch"
   branch_to_next(enabled)
 when "nonempty"
   nonempty_between
-when "compare"
-  repeated_cmp(enabled)
-when "redefined"
-  cmp_operand_redefined
-when "refusals"
-  compare_refusals
 else
   raise "unknown L1 contract"
 end
