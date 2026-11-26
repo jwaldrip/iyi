@@ -17,7 +17,6 @@ import compiler/native/mir_clean::{fold_result_copies, elide_fallthrough}
 import compiler/native/mir_const::{hoist_constants}
 import compiler/native/aarch64/regs::{reg_name}
 import compiler/native/target::{op_name}
-import compiler/native/jump_table::{declare_jump_tables, place_jump_tables, jump_table_section_name}
 import compiler/native/aarch64/isel::{select_function, IselError}
 import compiler/native/aarch64/encode::{encode_function, EncodedFunction, EncodeError}
 import compiler/native/regalloc::{allocate}
@@ -152,20 +151,17 @@ pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
   text = SectionWriter.new
   rodata = SectionWriter.new
   data = SectionWriter.new
-  jump_tables = SectionWriter.new
   bss_size = 0_i64
   mod.functions.each do |fn|
     next if fn.declaration?
     mf = function_mir(mod, fn, syms, darwin)
     return mf if mf.is_a?(String)
-    declare_jump_tables(obj, mf.as(MFunction))
     encoded = encode_function(mf.as(MFunction))
     return "#{fn.name}: #{encoded.as(EncodeError).message}" if encoded.is_a?(EncodeError)
     enc = encoded.as(EncodedFunction)
     text.pad_to(4_i64)
     base = text.append(enc.bytes, enc.relocs)
     index = syms[fn.name]
-    place_jump_tables(obj, mf.as(MFunction), index, enc.block_offsets, jump_tables)
     obj.symbols[index].value = base
     obj.symbols[index].size = enc.bytes.size.to_i64
     obj.symbols[index].section = 0
@@ -202,11 +198,7 @@ pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
   obj.sections << Section.new(".rodata", SectionKind::ReadOnly, 8, to_bytes(rodata.bytes), rodata.bytes.size.to_i64, rodata.relocs)
   obj.sections << Section.new(".data", SectionKind::Data, 8, to_bytes(data.bytes), data.bytes.size.to_i64, data.relocs)
   obj.sections << Section.new(".bss", SectionKind::ZeroFill, 8, to_bytes([] of UInt8), bss_size, [] of Reloc)
-  if jump_tables.bytes.size > 0
-    obj.sections << Section.new(jump_table_section_name, SectionKind::ReadOnly, 8, to_bytes(jump_tables.bytes), jump_tables.bytes.size.to_i64, jump_tables.relocs)
-  end
-  # The thread-local sections follow whatever is already there: the jump tables' section holds index 4 when a
-  # function has one, so the base is counted rather than assumed.
+  # Thread-local sections follow the four ordinary sections.
   tls = place_thread_locals(mod, obj, syms, desc.darwin, obj.sections.size)
   return tls if tls.is_a?(String)
   tls.as(Array(Section)).each do |s|

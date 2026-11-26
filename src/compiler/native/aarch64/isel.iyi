@@ -2604,9 +2604,9 @@ class Isel
     emit_edge_branch(i.targets[0].name)
   end
 
-  # A switch as a jump table (slice C3e, jump_table.iyi): the value less the lowest case indexes a table of block
-  # addresses. The unsigned compare sends a value outside the table to the default, and a hole in the range is an
-  # entry for the default. Each entry is an edge of the switch, so phi copies land on the path that takes it.
+  # A switch as a jump table: the value less the lowest case indexes signed block offsets from the table.
+  # The unsigned compare sends an out-of-range value to the default, and a hole names the default.
+  # Each entry is an edge of the switch, so phi copies land on the path that takes it.
   def lower_jump_table(i : Inst, plan : SwitchTable, keys : Array(Int64)) : Nil
     v = first_leaf(i.args[0])
     default_dest = edge_block(@cur_ir_name, i.targets[0].name, true)
@@ -2640,12 +2640,14 @@ class Isel
     addr.defs << vop(base)
     addr.table = table
     emit(addr)
-    target = gpr
-    load = mop(MOp::LdrIdx)
-    load.defs << vop(target)
+    offset = gpr
+    load = mop(MOp::LdrswIdx)
+    load.size = 32
+    load.defs << vop(offset)
     load.uses << vop(base)
     load.uses << vop(index)
     emit(load)
+    target = binop(MOp::Add, base, offset)
     branch_table = mop(MOp::BrTable)
     branch_table.uses << vop(target)
     branch_table.table = table

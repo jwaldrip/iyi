@@ -1,0 +1,9 @@
+module j1_relax
+
+def relax(test : Int64, selector : Int32) : Int32
+  return 42 if test < 0
+  return 7 if selector >= 0 && selector <= 8192
+  -7
+end
+
+puts "#{relax(-1_i64, 0)} #{relax(1_i64, 0)} #{relax(1_i64, 8192)} #{relax(1_i64, 8193)}"

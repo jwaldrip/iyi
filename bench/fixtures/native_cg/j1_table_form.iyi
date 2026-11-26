@@ -1,0 +1,39 @@
+module j1_table_form
+
+def dense(n : Int32) : Int32
+  case n
+  when -3 then 33
+  when -2 then 12
+  when 0 then 20
+  when 1 then 21
+  when 2 then 22
+  when 3 then 23
+  else -9
+  end
+end
+
+def two_tables(a : Int32, b : Int32) : Int32
+  case a
+  when 0, 1, 2, 3
+    case b
+    when 10 then 100
+    when 11 then 101
+    when 12 then 102
+    when 13 then 103
+    else -2
+    end
+  else -1
+  end
+end
+
+def recursive(n : Int32) : Int32
+  case n
+  when 1, 2, 3, 4 then n + recursive(n - 1)
+  else 0
+  end
+end
+
+puts "#{dense(-4)} #{dense(-3)} #{dense(-2)} #{dense(-1)}"
+puts "#{dense(0)} #{dense(3)} #{dense(4)} #{dense(2)}"
+puts "#{two_tables(0, 10)} #{two_tables(2, 13)} #{two_tables(5, 11)} #{two_tables(1, 9)}"
+puts "#{recursive(4)} #{recursive(1)} #{recursive(0)} #{recursive(5)}"

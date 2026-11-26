@@ -88,7 +88,7 @@ pub def aarch64_op(v : Int32) : MOp
   return MOp::Ret if v == MOp::Ret.value.to_i32
   return MOp::Brk if v == MOp::Brk.value.to_i32
   return MOp::AddrTable if v == MOp::AddrTable.value.to_i32
-  return MOp::LdrIdx if v == MOp::LdrIdx.value.to_i32
+  return MOp::LdrswIdx if v == MOp::LdrswIdx.value.to_i32
   return MOp::BrTable if v == MOp::BrTable.value.to_i32
   return MOp::Mrs if v == MOp::Mrs.value.to_i32
   return MOp::LoadTlvp if v == MOp::LoadTlvp.value.to_i32
