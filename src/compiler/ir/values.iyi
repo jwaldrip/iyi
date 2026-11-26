@@ -30,28 +30,52 @@ end
 # unnamed and is never claimed. The text parser registers the names it reads as written, so the
 # verifier still sees a duplicate that the text itself contains.
 pub class SymbolTable
+  @taken : Hash(String, Bool)?
+
   def initialize
-    @taken = Hash(String, Bool).new
+    @few = [] of String
+    @taken = nil
     @last_unique = 0
   end
 
   def taken?(name : String) : Bool
-    @taken.has_key?(name)
+    if taken = @taken
+      return taken.has_key?(name)
+    end
+    @few.includes?(name)
   end
 
   def register(name : String) : Nil
-    @taken[name] = true unless name.empty?
+    return if name.empty?
+    insert?(name)
+    nil
   end
 
   def claim(name : String) : String
     return name if name.empty?
     candidate = name
-    while taken?(candidate)
+    until insert?(candidate)
       @last_unique += 1
       candidate = "#{name}#{@last_unique}"
     end
-    register(candidate)
     candidate
+  end
+
+  # Most small functions do not need a hash table. Promote at the prelude Hash's initial capacity.
+  private def insert?(name : String) : Bool
+    if taken = @taken
+      return false if taken.has_key?(name)
+      taken[name] = true
+      return true
+    end
+    return false if @few.includes?(name)
+    @few << name
+    if @few.size == 8
+      taken = Hash(String, Bool).new
+      @few.each { |existing| taken[existing] = true }
+      @taken = taken
+    end
+    true
   end
 end
 
