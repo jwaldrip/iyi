@@ -3179,6 +3179,9 @@ class Isel
   end
 
   # The memory routines can contain intrinsics themselves. Keep their bodies on the native helpers to avoid cycles.
+  # Only that direct cycle is stopped: a module `memcpy` that calls a function whose large copy selects `memcpy`
+  # still recurses, and the module's routines are called without checking their signatures. LLVM makes the same
+  # two assumptions about a module that defines these routines.
   def memory_target(name : String, fallback : String) : String
     return fallback if @fn.name == "memcpy" || @fn.name == "memmove" || @fn.name == "memset" # copy-fill-cycle-guard
     if target = @module_ref.function?(name)
