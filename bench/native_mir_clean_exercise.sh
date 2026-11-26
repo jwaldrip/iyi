@@ -527,7 +527,7 @@ for dirname in dirs:
                     defects.append(f"{path.name} {name}: block {number} lost non-fallthrough edge to {target}")
             if path.name == "l1_fallthrough_empty.ir" and name == "choose":
                 if (before[0][-2:] != [("Bcond", 3), ("B", 4)] or
-                    before[1] != [("B", 2)] or before[2] != [("B", 3)] or
+                    before[1] or before[2] or
                     after[0][-1:] != [("Bcond", 4)] or after[1] or after[2]):
                     defects.append("l1_fallthrough_empty.ir choose: inversion over empty blocks differs")
 if not functions:
