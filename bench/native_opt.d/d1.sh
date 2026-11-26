@@ -23,14 +23,24 @@ else
 fi
 
 # Each arm returns directly, so parsing and relinking do not build a quadratic
-# predecessor list on a shared join. Compare CPU time with collector marker
-# parallelism held constant in both cases.
-if ! "$PY" - "$DRV" "$WORK" <<'PY'
+# predecessor list on a shared join. Compare the least of five CPU readings:
+# an occupied or efficiency core must not turn a linear pass into a false fail.
+d1_scale_check() {
+  local binary="$1"
+  "$PY" - "$binary" "$WORK" <<'PY'
 import os
-import resource
-import statistics
 import subprocess
 import sys
+
+if os.name == 'nt':
+    import ctypes
+    from ctypes import wintypes
+
+    get_times = ctypes.windll.kernel32.GetProcessTimes
+    get_times.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    get_times.restype = wintypes.BOOL
+else:
+    import resource
 
 binary, work = sys.argv[1:]
 header = '''; iyi-ir 1
@@ -54,34 +64,71 @@ def make(count):
         f.write('end:\n  unreachable\n}\n')
     return path
 
-paths = {n: make(n) for n in (2000, 4000)}
-times = {2000: [], 4000: []}
-env = dict(os.environ, GC_MARKERS='1', GC_NPROCS='1')
+def cpu_time(n, path, env):
+    if os.name != 'nt':
+        before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    proc = subprocess.Popen([binary, 'run', '--no-verify', 'switch-chain', path],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    try:
+        out, err = proc.communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+    if os.name == 'nt':
+        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        if not get_times(int(proc._handle), ctypes.byref(created), ctypes.byref(exited),
+                         ctypes.byref(kernel), ctypes.byref(user)):
+            raise OSError('GetProcessTimes failed')
+        def seconds(t):
+            return ((t.dwHighDateTime << 32) | t.dwLowDateTime) / 10000000.0
+        elapsed = seconds(kernel) + seconds(user)
+    else:
+        after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        elapsed = (after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime)
+    if proc.returncode != 0:
+        raise RuntimeError('scale optimizer failed: ' + err.decode('utf-8', 'replace'))
+    if b'switch i32 %x' not in out or b'br i1' in out:
+        raise RuntimeError('scale chain was not converted')
+    return elapsed
+
 try:
-    for _ in range(3):
+    paths = {n: make(n) for n in (2000, 4000)}
+    times = {2000: [], 4000: []}
+    env = dict(os.environ, GC_MARKERS='1', GC_NPROCS='1')
+    for _ in range(5):
         for n in (2000, 4000):
-            before = resource.getrusage(resource.RUSAGE_CHILDREN)
-            result = subprocess.run([binary, 'run', '--no-verify', 'switch-chain', paths[n]],
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, env=env)
-            after = resource.getrusage(resource.RUSAGE_CHILDREN)
-            if result.returncode != 0:
-                raise RuntimeError('scale optimizer failed: ' + result.stderr.decode('utf-8', 'replace'))
-            if b'switch i32 %x' not in result.stdout or b'br i1' in result.stdout:
-                raise RuntimeError('scale chain was not converted')
-            times[n].append((after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime))
-    small = statistics.median(times[2000])
-    large = statistics.median(times[4000])
+            times[n].append(cpu_time(n, paths[n], env))
+    small = min(times[2000])
+    large = min(times[4000])
     if small <= 0:
         raise RuntimeError('scale timer returned zero')
     ratio = large / small
-    print('  d1 scale: 2000=%.6fs 4000=%.6fs ratio=%.3f (median of 3 CPU runs)' % (small, large, ratio))
+    print('  d1 scale: 2000=%.6fs 4000=%.6fs ratio=%.3f (least of 5 CPU runs)' % (small, large, ratio))
     if ratio > 2.5:
-        raise RuntimeError('4000-arm chain exceeds the 2.5x CPU-time bound')
+        print('decisive: D1 scale ratio %.3f exceeds 2.5' % ratio)
+        sys.exit(1)
 except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
     print('FAIL: D1 scale:', exc, file=sys.stderr)
-    sys.exit(1)
+    sys.exit(2)
 PY
-then
+}
+
+d1_scale_mutation() {
+  if ! build_driver "$MUTANT"; then
+    echo "D1 scale mutant did not build" >&2
+    cat "$WORK/build.log" >&2
+    return 2
+  fi
+  d1_scale_check "$MUTANT"
+}
+
+if d1_scale_check "$DRV"; then
+  prove_mutation 'D1: a quadratic chain rescan exceeds the scale bound' src/compiler/ir/opt/switch_chain.iyi \
+    '      tests << next_test' \
+    $'      scan_round = 0\n      while scan_round < 16\n        scan = 0\n        while scan < tests.size\n          return false unless same_selector?(tests[scan].selector, first.selector)\n          scan = scan + 1\n        end\n        scan_round = scan_round + 1\n      end\n      tests << next_test' \
+    -- d1_scale_mutation || fail 'D1 scale mutation was not caught'
+else
   fail 'D1 scale contract failed'
 fi
 
