@@ -1,0 +1,30 @@
+; iyi-ir 1
+source_filename = "s1_parity"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i1 @signed_even(i32 %x) {
+entry:
+  %r = srem i32 %x, 2
+  %0 = and i32 %x, 1
+  %1 = icmp eq i32 %0, 0
+  ret i1 %1
+}
+
+define internal i1 @unsigned_multiple_four(i64 %x) {
+entry:
+  %r = urem i64 %x, 4
+  %0 = and i64 %x, 3
+  %1 = icmp ne i64 %0, 0
+  ret i1 %1
+}
+
+define internal i32 @remainder_still_used(i32 %x) {
+entry:
+  %r = srem i32 %x, 8
+  %0 = and i32 %x, 7
+  %1 = icmp eq i32 %0, 0
+  %n = zext i1 %1 to i32
+  %out = add i32 %r, %n
+  ret i32 %out
+}
+

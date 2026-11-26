@@ -10,7 +10,7 @@ import compiler/ir/builder::{Builder}
 import compiler/ir/opt/analysis::{DefUse, Use, local_value?}
 import compiler/ir/opt/effects::{opaque?}
 import compiler/ir/opt/edit::{new_inst}
-import compiler/ir/opt/fold::{int_value, canonical, fold_binary, fold_icmp, fold_cast}
+import compiler/ir/opt/fold::{int_value, canonical, fold_binary, fold_icmp, fold_cast, fold_int_compare}
 
 # Constants are not interned: equal incoming constants can be separate objects.
 def same_value?(a : Value, b : Value) : Bool
@@ -317,6 +317,48 @@ class Simplifier
     end
   end
 
+  # Only rewrite a checked operation when every use is an extraction. Keeping
+  # the aggregate otherwise preserves its other consumers and their semantics.
+  def neutral_overflow(inst : Inst, op : Op, id : IntrinsicId) : Bool
+    return false unless inst.args.size == 2
+    a = inst.args[0]
+    b = inst.args[1]
+    return false unless a.type.int? && a.type.bits <= 64 && a.type == b.type
+    result = nil.as(Value?)
+    if op == Op::Add
+      result = b if integer_is?(a, 0)
+      result = a if integer_is?(b, 0)
+    elsif op == Op::Sub
+      result = a if integer_is?(b, 0)
+    elsif op == Op::Mul
+      if integer_is?(a, 0) && !indeterminate?(b) && !pointer_derived?(b)
+        result = a
+      elsif integer_is?(b, 0) && !indeterminate?(a) && !pointer_derived?(a)
+        result = b
+      elsif !(a.type.bits == 1 && id == IntrinsicId::SMulOverflow) && integer_is?(a, 1)
+        result = b
+      elsif !(a.type.bits == 1 && id == IntrinsicId::SMulOverflow) && integer_is?(b, 1)
+        result = a
+      end
+    end
+    return false unless result
+    return false if indeterminate?(result)
+    uses = [] of Use
+    @du.uses(inst).each { |use| uses << use }
+    uses.each do |use|
+      extract = use.user
+      return false unless use.index == 0 && extract.op == Op::ExtractValue
+      return false unless extract.aux_int == 0_i64 || extract.aux_int == 1_i64
+    end
+    false_flag = @builder.const_int(@mod.types.int1, 0_i64)
+    uses.each do |use|
+      extract = use.user
+      replace(extract, extract.aux_int == 0_i64 ? result : false_flag)
+    end
+    erase_unused(inst)
+    true
+  end
+
   def lower_overflow(inst : Inst, op : Op) : Bool
     uses = [] of Use
     @du.uses(inst).each { |use| uses << use }
@@ -372,6 +414,62 @@ class Simplifier
     return value if value.is_a?(Global) || value.is_a?(Function)
     nil
   end
+  # Fold both constant outcomes with the original operand order, including
+  # signed predicates. A tainted condition is deliberately not discarded.
+  def compare_select(inst : Inst) : Value?
+    left = inst.args[0]
+    right = inst.args[1]
+    selected = left
+    constant = right
+    select_on_left = true
+    unless selected.is_a?(Inst) && selected.as(Inst).op == Op::Select
+      selected = right
+      constant = left
+      select_on_left = false
+    end
+    return nil unless selected.is_a?(Inst) && selected.as(Inst).op == Op::Select
+    sel = selected.as(Inst)
+    return nil unless selected.type.int? && selected.type.bits <= 64 && constant.type == selected.type
+    condition = sel.args[0]
+    return nil if indeterminate?(condition) || pointer_derived?(condition)
+    first = int_value(sel.args[1])
+    second = int_value(sel.args[2])
+    other = int_value(constant)
+    return nil if first.nil? || second.nil? || other.nil?
+    bits = selected.type.bits
+    yes = select_on_left ? fold_int_compare(inst.aux_int, bits, first, other) : fold_int_compare(inst.aux_int, bits, other, first)
+    no = select_on_left ? fold_int_compare(inst.aux_int, bits, second, other) : fold_int_compare(inst.aux_int, bits, other, second)
+    return nil if yes.nil? || no.nil?
+    return @builder.const_int(@mod.types.int1, yes ? 1_i64 : 0_i64) if yes == no
+    return condition if yes
+    inverted = new_inst(Op::Xor, @mod.types.int1, [condition, @builder.const_int(@mod.types.int1, 1_i64)] of Value)
+    insert_before(inst, inverted)
+    inverted
+  end
+
+  # A signed remainder and its dividend have the same low zero bits, even
+  # for negative dividends. Divisors must be positive powers of two.
+  def compare_remainder(inst : Inst) : Value?
+    return nil unless inst.aux_int == IntPredicate::EQ.value.to_i64 || inst.aux_int == IntPredicate::NE.value.to_i64
+    rem = inst.args[0]
+    zero = inst.args[1]
+    unless rem.is_a?(Inst) && (rem.as(Inst).op == Op::SRem || rem.as(Inst).op == Op::URem)
+      rem = inst.args[1]
+      zero = inst.args[0]
+    end
+    return nil unless rem.is_a?(Inst) && (rem.as(Inst).op == Op::SRem || rem.as(Inst).op == Op::URem)
+    return nil unless integer_is?(zero, 0)
+    remainder = rem.as(Inst)
+    return nil unless remainder.type.int? && remainder.type.bits <= 64
+    divisor = int_value(remainder.args[1])
+    return nil if divisor.nil? || divisor <= 1_i64 || (divisor & (divisor &- 1_i64)) != 0_i64
+    masked = new_inst(Op::And, remainder.type, [remainder.args[0], @builder.const_int(remainder.type, divisor &- 1_i64)] of Value)
+    insert_before(inst, masked)
+    compare = new_inst(Op::ICmp, inst.type, [masked, zero] of Value, inst.aux_int)
+    insert_before(inst, compare)
+    compare
+  end
+
 
   def simplify(inst : Inst) : Nil
     return if @removed[inst]? || opaque?(inst)
@@ -394,6 +492,8 @@ class Simplifier
       end
     when Op::ICmp
       value = fold_icmp(@builder, inst.aux_int, inst.args[0], inst.args[1])
+      value = compare_select(inst) unless value
+      value = compare_remainder(inst) unless value
       if !value && inst.args[0].type.int? && !wide_constant_pair?(inst.args[0], inst.args[1]) && same_value?(inst.args[0], inst.args[1]) && !indeterminate?(inst.args[0]) && !pointer_derived?(inst.args[0])
         value = reflexive_icmp(@builder, inst.aux_int)
       end
@@ -434,7 +534,7 @@ class Simplifier
         if intrinsic.id == IntrinsicId::ExpectI1
           replace(inst, inst.args[0]) if int_value(inst.args[0])
         elsif op = overflow_op(intrinsic.id)
-          lower_overflow(inst, op)
+          lower_overflow(inst, op) unless neutral_overflow(inst, op, intrinsic.id)
         end
       end
     end

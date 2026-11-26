@@ -8,6 +8,7 @@ import compiler/ir/opt/analysis::{Cfg, DefUse, Use}
 import compiler/ir/opt/edit::{new_inst}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/opt/fold::{int_value}
+import compiler/ir/opt/effects::{pure?}
 
 # A predecessor list is maintained while a batch of block edits is in flight.
 def replace_predecessor(block : Block, old : Block, replacement : Block) : Nil
@@ -498,6 +499,144 @@ end
 def thread_bool_phis(fn : Function) : Bool
   BoolPhiThreader.new(fn).run
 end
+# Match LICM's speculation boundary: neither a potentially trapping integer
+# division nor a load can be introduced on the other side of a branch.
+def select_arm_speculatable?(inst : Inst) : Bool
+  return false unless pure?(inst) && !inst.type.void?
+  return false if inst.op == Op::SDiv || inst.op == Op::UDiv || inst.op == Op::SRem || inst.op == Op::URem
+  if inst.op == Op::Intrinsic
+    return false unless inst.aux.is_a?(IntrinsicAux)
+    inst.aux.as(IntrinsicAux).param_attrs.each { |attrs| return false unless attrs.empty? }
+  end
+  inst.args.each do |arg|
+    if arg.is_a?(Inst)
+      op = arg.as(Inst).op
+      return false if op == Op::ConstUndef || op == Op::ConstPoison
+    end
+  end
+  true
+end
+
+class SelectDiamonds
+  def initialize(@mod : Module, @fn : Function)
+    @du = nil.as(DefUse?)
+    @removed = Hash(Block, Bool).new
+  end
+
+  # The sole predecessor requirement also excludes natural loop headers:
+  # a header reached from head has another incoming edge from its latch.
+  def arm_exit(arm : Block, head : Block) : Block?
+    return nil if arm == head || arm == @fn.blocks[0] || @removed[arm]?
+    return nil unless arm.preds.size == 1 && arm.preds[0] == head
+    return nil unless arm.terminated? && arm.insts.size <= 3 && arm.terminator.op == Op::Br
+    k = 0
+    while k + 1 < arm.insts.size
+      return nil unless select_arm_speculatable?(arm.insts[k])
+      k = k + 1
+    end
+    arm.terminator.targets[0]
+  end
+
+  def convert(head : Block) : Bool
+    return false if @removed[head]? || !head.terminated?
+    term = head.terminator
+    return false unless term.op == Op::CondBr && term.targets[0] != term.targets[1]
+    condition = term.args[0]
+    if condition.is_a?(Inst)
+      op = condition.as(Inst).op
+      return false if op == Op::ConstUndef || op == Op::ConstPoison
+    end
+    yes = term.targets[0]
+    no = term.targets[1]
+    yes_exit = arm_exit(yes, head)
+    no_exit = arm_exit(no, head)
+    join = nil.as(Block?)
+    yes_pred = yes
+    no_pred = no
+    if yes_exit == no
+      join = no
+      no_pred = head
+    elsif no_exit == yes
+      join = yes
+      yes_pred = head
+    elsif yes_exit && yes_exit == no_exit
+      join = yes_exit
+    end
+    return false unless join
+    return false if join == head || join == @fn.blocks[0] || @removed[join]?
+    return false unless join.preds.size == 2 && join.preds.includes?(yes_pred) && join.preds.includes?(no_pred)
+    phis = [] of Inst
+    phi_set = Hash(Inst, Bool).new
+    join.insts.each do |phi|
+      break unless phi.op == Op::Phi
+      return false if phi.type.struct? || phi.type.array? || phi.type.vector?
+      return false unless phi.args.size == 2 && sole_slot(phi.targets, yes_pred) >= 0 && sole_slot(phi.targets, no_pred) >= 0
+      phis << phi
+      phi_set[phi] = true
+    end
+    return false if phis.empty?
+    phis.each do |phi|
+      phi.args.each { |value| return false if value.is_a?(Inst) && phi_set[value.as(Inst)]? }
+    end
+    du = @du
+    unless du
+      du = DefUse.new(@fn)
+      @du = du
+    end
+    du.remove(term, 0)
+    head.insts.pop
+    if yes_pred == yes
+      k = 0
+      while k + 1 < yes.insts.size
+        head.insts << yes.insts[k]
+        k = k + 1
+      end
+      head.no_vectorize = true if yes.no_vectorize
+      @removed[yes] = true
+    end
+    if no_pred == no
+      k = 0
+      while k + 1 < no.insts.size
+        head.insts << no.insts[k]
+        k = k + 1
+      end
+      head.no_vectorize = true if no.no_vectorize
+      @removed[no] = true
+    end
+    phis.each do |phi|
+      choice = new_inst(Op::Select, phi.type, [condition, phi.args[sole_slot(phi.targets, yes_pred)], phi.args[sole_slot(phi.targets, no_pred)]] of Value)
+      head.insts << choice
+      k = 0
+      while k < choice.args.size
+        du.add(choice, k)
+        k = k + 1
+      end
+      du.uses(phi).each do |use|
+        du.remove(use.user, use.index)
+        use.user.args[use.index] = choice
+        du.add(use.user, use.index)
+      end
+      du.remove(phi, 0)
+      du.remove(phi, 1)
+    end
+    join.insts[0, phis.size] = [] of Inst
+    head.insts << new_inst(Op::Br, @mod.types.void, [] of Value, 0_i64, nil, [join] of Block)
+    join.preds[0, join.preds.size] = [head] of Block
+    true
+  end
+
+  def run : Bool
+    changed = false
+    @fn.blocks.each { |block| changed = true if convert(block) }
+    return false unless changed
+    kept = [] of Block
+    @fn.blocks.each { |block| kept << block unless @removed[block]? }
+    @fn.blocks[0, @fn.blocks.size] = kept
+    @fn.relink
+    true
+  end
+end
+
 
 pub def run_cfg_simplify(mod : Module, fn : Function) : Bool
   return false if fn.declaration?
@@ -507,7 +646,9 @@ pub def run_cfg_simplify(mod : Module, fn : Function) : Bool
     merged = BlockMerger.new(fn).run
     forwarded = EmptyBlockForwarder.new(fn).run
     threaded = thread_bool_phis(fn)
-    break unless merged || forwarded || threaded
+    selected = false
+    selected = SelectDiamonds.new(mod, fn).run unless merged || forwarded || threaded
+    break unless selected || merged || forwarded || threaded
     changed = true
   end
   changed

@@ -1,0 +1,41 @@
+class Node
+  @left : Node?
+  @right : Node?
+
+  def initialize(@left : Node?, @right : Node?)
+  end
+
+  def count : Int32
+    left = @left
+    right = @right
+    a = left.is_a?(Node) ? left.count : 0
+    b = right.is_a?(Node) ? right.count : 0
+    (a + 0) + (b + 0) + 1
+  end
+end
+
+def tree(depth : Int32) : Node
+  return Node.new(nil, nil) if depth == 0
+  Node.new(tree(depth - 1), tree(depth - 1))
+end
+
+def maximum(a : Int64, b : Int64) : Int64
+  a > b ? a : b
+end
+
+def even(value : Int64) : Bool
+  value % 2_i64 == 0_i64
+end
+
+def run : Nil
+  values = [-9223372036854775808_i64, -9_i64, -8_i64, -1_i64, 0_i64, 1_i64, 8_i64, 9223372036854775807_i64]
+  i = 0
+  while i < values.size
+    x = values[i]
+    puts "#{x} #{even(x)} #{maximum(x, -1_i64)} #{x + 0_i64}"
+    i = i + 1
+  end
+  puts "tree=#{tree(5).count}"
+end
+
+run
