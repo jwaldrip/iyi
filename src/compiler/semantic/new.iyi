@@ -185,22 +185,39 @@ pub def builtin_for_new?(program : SemanticProgram, type : Type) : Bool
   end
 end
 
+# The default-new pass only needs to know whether the lookup would find any
+# definitions. Stop at the first one instead of collecting every ancestor's
+# overloads, while keeping the same parent-walk rule as MethodLookup.all_defs.
+def has_new_or_initialize?(type : ModuleType, name : String) : Bool
+  if defs = MethodLookup.own_defs(type, name)
+    return true unless defs.empty?
+  end
+  return false unless MethodLookup.walks_parents?(type, name)
+  MethodLookup.parents_of(type).each do |parent|
+    next unless parent.is_a?(ModuleType)
+    return true if has_new_or_initialize?(parent.as(ModuleType), name)
+  end
+  false
+end
+
 # The default `new` for one non-generic class with no initialize in its ancestry. A
 # class whose ancestry has an initialize takes that one through the lookup walk, so
 # nothing is added. A generic class is handled by its own expansion (see
 # define_new_methods) and not given a default here.
 pub def define_default_new_single(program : SemanticProgram, type : NonGenericClassType) : Nil
   return if builtin_for_new?(program, type)
-  inits = MethodLookup.all_defs(type, "initialize", [] of Def)
-  news = MethodLookup.all_defs(type.metaclass, "new", [] of Def)
-  if inits.empty? && news.empty?
-    loc : Location? = nil
-    if locs = type.locations
-      loc = locs[0] if locs.size > 0
-    end
-    type.metaclass.add_def(argless_new(loc))
-    type.add_def(argless_initialize(loc))
+  has_initialize = has_new_or_initialize?(type, "initialize")
+  # Creating the metaclass also registers its allocate primitive, even when
+  # an inherited initialize means there is no default new to add.
+  metaclass = type.metaclass
+  return if has_initialize
+  return if has_new_or_initialize?(metaclass, "new")
+  loc : Location? = nil
+  if locs = type.locations
+    loc = locs[0] if locs.size > 0
   end
+  metaclass.add_def(argless_new(loc))
+  type.add_def(argless_initialize(loc))
   nil
 end
 

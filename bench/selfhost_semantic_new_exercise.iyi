@@ -108,6 +108,15 @@ module BenchSelfhostSemanticNewExercise
     node.accept(tl)
     tl.finish
     mv = MainVisitor.new(prog)
+    metaclass_line = ""
+    if filename.ends_with?("semnew_eager_metaclass.iyi")
+      child = prog.types["EagerNewChild"].as(ModuleType)
+      if meta = child.metaclass?
+        metaclass_line = "cached metaclass present=true allocate=#{meta.defs.has_key?("allocate")}\n"
+      else
+        metaclass_line = "cached metaclass present=false allocate=false\n"
+      end
+    end
     node.accept(mv)
 
     initial = prog.initial_type_names
@@ -133,6 +142,7 @@ module BenchSelfhostSemanticNewExercise
     end
 
     out = String::Builder.new
+    out << metaclass_line unless metaclass_line.empty?
     def_lines.sorted_by { |l| l }.each do |l|
       out << l << "\n"
     end

@@ -28,6 +28,11 @@ class Iyi::Compiler
     {program, node}
   end
 end
+class Iyi::Type
+  def new_oracle_cached_metaclass : Iyi::Type?
+    @metaclass
+  end
+end
 
 def type_text(t : Iyi::Type?) : String
   return "nil" if t.nil?
@@ -128,6 +133,15 @@ begin
   compiler.stderr = IO::Memory.new
   initial = Iyi::Program.new.types.keys.to_set
   program, node = compiler.new_oracle_program(Iyi::Compiler::Source.new(entry, File.read(entry)))
+  if path.ends_with?("semnew_eager_metaclass.iyi")
+    child = program.types["EagerNewChild"].as(Iyi::ModuleType)
+    if meta = child.new_oracle_cached_metaclass
+      allocate = meta.defs.try(&.has_key?("allocate")) || false
+      buffer << "cached metaclass present=true allocate=#{allocate}\n"
+    else
+      buffer << "cached metaclass present=false allocate=false\n"
+    end
+  end
 
   def_lines = [] of String
   program.types.each do |name, t|
