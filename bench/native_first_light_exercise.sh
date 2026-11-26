@@ -352,37 +352,50 @@ check_drop_helpers() {
   return 0
 }
 
+# Older macOS runners do not have dyld_info's -no_validate option. The mutant
+# deliberately has an invalid library ordinal, so use llvm-objdump's bind table
+# there rather than accepting a validation error as a successful mutation.
+printf_binding() {
+  local binary="$1" output="$2" objdump
+  if dyld_info -no_validate -imports "$binary" >"$output" 2>&1; then
+    :
+  elif grep -Fq 'unknown option: -no_validate' "$output"; then
+    objdump="$(xcrun --find llvm-objdump)" || return 2
+    "$objdump" --macho --bind "$binary" >"$output" 2>&1 || return 2
+  else
+    return 2
+  fi
+  awk '
+    $NF == "_printf" { binding = $(NF-1); n++; next }
+    $(NF-2) == "_printf" && $(NF-1) == "(from" {
+      binding = $NF; gsub(/[()]/, "", binding); n++
+    }
+    END { if (n == 1) print binding; else exit 1 }
+  ' "$output"
+}
+
 check_no_library() {
   local b="$work/mut-tool$EXE" baseline="$work/native/arith" baseline_bind mutant_bind
   if ! grep -Eq '^arith[[:space:]]+PASS[[:space:]]' "$table"; then
     echo "INVALID: arith did not pass the unmutated native run"; return 2
   fi
-  if ! dyld_info -no_validate -imports "$baseline" >"$work/arith.bind" 2>&1; then
-    cat "$work/arith.bind"; return 2
-  fi
-  baseline_bind="$(awk '{ for (i = 1; i <= NF; i++) if ($i == "_printf") { line = $0; n++; break } } END { if (n == 1) print line; else exit 1 }' "$work/arith.bind")" || {
-    echo "INVALID: baseline does not have exactly one _printf binding"; cat "$work/arith.bind"; return 2
+  baseline_bind="$(printf_binding "$baseline" "$work/arith.bind")" || {
+    echo "INVALID: could not inspect exactly one baseline _printf binding"; cat "$work/arith.bind"; return 2
   }
-  case "$baseline_bind" in
-    *"(from libSystem)") ;;
-    *) echo "INVALID: baseline _printf is not bound to libSystem: $baseline_bind"; return 2 ;;
-  esac
+  if [ "$baseline_bind" != libSystem ]; then
+    echo "INVALID: baseline _printf is not bound to libSystem: $baseline_bind"; return 2
+  fi
   "$iyi" build -o "$(native_path "$b")" "$REPO_NATIVE/$TOOL_SRC" >"$work/mut-build.log" 2>&1 || { cat "$work/mut-build.log"; return 2; }
   if ! "$b" "$REPO_NATIVE/$FIX/arith.ir" -o "$work_native/mut-arith" >"$work/mut-link.log" 2>&1; then
     cat "$work/mut-link.log"; return 2
   fi
   native_signature_ok "$work/mut-arith" || return 2
-  if ! dyld_info -no_validate -imports "$work/mut-arith" >"$work/mut-arith.bind" 2>&1; then
-    cat "$work/mut-arith.bind"; return 2
-  fi
-  mutant_bind="$(awk '{ for (i = 1; i <= NF; i++) if ($i == "_printf") { line = $0; n++; break } } END { if (n == 1) print line; else exit 1 }' "$work/mut-arith.bind")" || {
-    echo "INVALID: mutant does not have exactly one _printf binding"; cat "$work/mut-arith.bind"; return 2
+  mutant_bind="$(printf_binding "$work/mut-arith" "$work/mut-arith.bind")" || {
+    echo "INVALID: could not inspect exactly one mutant _printf binding"; cat "$work/mut-arith.bind"; return 2
   }
-  case "$mutant_bind" in
-    *"(from libSystem)") return 0 ;;
-    *"(from "*) echo "decisive: _printf binding changed: $mutant_bind"; return 1 ;;
-    *) echo "INVALID: unrecognized mutant _printf binding: $mutant_bind"; return 2 ;;
-  esac
+  if [ "$mutant_bind" = libSystem ]; then return 0; fi
+  echo "decisive: _printf binding changed to $mutant_bind"
+  return 1
 }
 
 # A C import libSystem does not export must stop the link, by name. Unmutated, the tool refuses the fixture (the
