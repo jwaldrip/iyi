@@ -2677,9 +2677,12 @@ require "./file"
 
       @[NoInline]
       @[Effect(:collector)]; def self.first_touch : UInt64
-        # A caller that supplies its own C main bypasses the prelude's main.
-        # Open the statistics page before the first heap lock in that case.
-        IyiStat.open
+        # A caller that supplies its own C main bypasses the prelude's main,
+        # which is what opens the statistics page; open it here before the
+        # first heap lock on the targets that have one (IyiStat's condition).
+        {% if (!flag?(:gc_none) && !flag?(:gc_boehm) && ((flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || flag?(:darwin) || flag?(:win32))) || (flag?(:linux) && (flag?(:x86_64) || flag?(:aarch64))) || (flag?(:darwin) && flag?(:aarch64)) || (flag?(:win32) && flag?(:x86_64)) %}
+          IyiStat.open
+        {% end %}
         page = __iyi_mmap(DIR_LEN).address
         lock
         # The shared pages, made under the same lock the first time any
