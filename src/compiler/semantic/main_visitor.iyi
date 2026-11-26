@@ -3990,29 +3990,39 @@ pub class MainVisitor < TypeNodeHost
         parts << "?"
       end
     end
-    key = "#{rec_type.full_name}##{target_def.name}(#{parts.join(",")})"
-    restrictions = [] of String
-    target_def.args.each do |param|
-      if restriction = param.restriction
+    key = String::Builder.new
+    key << rec_type.full_name << "#" << target_def.name << "("
+    i = 0
+    while i < parts.size
+      key << "," if i > 0
+      key << parts[i]
+      i += 1
+    end
+    key << ")|signature("
+    i = 0
+    while i < target_def.args.size
+      key << "," if i > 0
+      if restriction = target_def.args[i].restriction
         text = restriction.as(ASTNode).to_s
-        restrictions << "#{text.bytesize}:#{text}"
+        key << text.bytesize << ":" << text
       else
-        restrictions << "0:"
+        key << "0:"
       end
+      i += 1
     end
-    key = key + "|signature(" + restrictions.join(",") + ")"
+    key << ")"
     if index = target_def.splat_index
-      key = key + "|splat=#{index}"
+      key << "|splat=" << index
     end
-    key = key + "|double-splat" unless target_def.double_splat.nil?
-    key = key + "|block-arg" unless target_def.block_arg.nil?
+    key << "|double-splat" unless target_def.double_splat.nil?
+    key << "|block-arg" unless target_def.block_arg.nil?
     if owner = @program.def_owner(target_def)
-      key = key + "^#{owner.full_name}"
+      key << "^" << owner.full_name
     end
     if blk = block
-      key = key + block_key(target_def, blk, call_node)
+      key << block_key(target_def, blk, call_node)
     end
-    key
+    key.to_s
   end
 
   # Hosted DefInstanceKey includes named argument names and types in written
@@ -4033,24 +4043,33 @@ pub class MainVisitor < TypeNodeHost
     if owner = @program.def_owner(origin)
       key_owner = owner if owner.iyi_unit
     end
-    key = "#{origin.node_id}|#{key_owner.full_name}(#{parts.join(",")})"
+    key = String::Builder.new
+    key << origin.node_id << "|" << key_owner.full_name << "("
+    i = 0
+    while i < parts.size
+      key << "," if i > 0
+      key << parts[i]
+      i += 1
+    end
+    key << ")"
     if named = call_node.named_args
-      entries = [] of String
+      key << "|named("
       j = 0
       while j < named.size
         named_type = child_type(named[j].value)
         return nil if named_type.nil?
         arg_name = named[j].name
         text = named_type.full_name
-        entries << "#{arg_name.bytesize}:#{arg_name}=#{text.bytesize}:#{text}"
+        key << "," if j > 0
+        key << arg_name.bytesize << ":" << arg_name << "=" << text.bytesize << ":" << text
         j = j + 1
       end
-      key = key + "|named(" + entries.join(",") + ")"
+      key << ")"
     end
     if blk = block
-      key = key + block_key(origin, blk, call_node)
+      key << block_key(origin, blk, call_node)
     end
-    key
+    key.to_s
   end
 
   # A call wraps &proc in a fresh Block on each visit. A capturing def uses the
