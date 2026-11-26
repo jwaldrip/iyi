@@ -1,0 +1,32 @@
+; iyi-ir 1
+source_filename = "d1_default_phis"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i32 @dispatch(i32 %x, i1 %choose) {
+entry:
+  br i1 %choose, label %head, label %external
+external:
+  br label %default
+head:
+  %c0 = icmp eq i32 %x, 0
+  br i1 %c0, label %merge, label %b1
+b1:
+  %c1 = icmp eq i32 1, %x
+  br i1 %c1, label %merge, label %b2
+b2:
+  %c2 = icmp eq i32 %x, 2
+  br i1 %c2, label %arm2, label %b3
+b3:
+  %c3 = icmp eq i32 %x, 3
+  br i1 %c3, label %arm3, label %default
+merge:
+  %m = phi i32 [ 99, label %head ], [ 99, label %b1 ]
+  ret i32 %m
+arm2:
+  ret i32 2
+arm3:
+  ret i32 3
+default:
+  %p = phi i32 [ 77, label %external ], [ 42, label %b3 ]
+  ret i32 %p
+}

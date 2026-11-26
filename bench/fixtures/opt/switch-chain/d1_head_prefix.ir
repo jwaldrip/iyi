@@ -1,0 +1,29 @@
+; iyi-ir 1
+source_filename = "d1_head_prefix"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i32 @dispatch(i32 %x) {
+entry:
+  %s = add i32 %x, 1
+  %c0 = icmp eq i32 %s, -1
+  br i1 %c0, label %a0, label %b1
+b1:
+  %c1 = icmp eq i32 %s, 0
+  br i1 %c1, label %a1, label %b2
+b2:
+  %c2 = icmp eq i32 1, %s
+  br i1 %c2, label %a2, label %b3
+b3:
+  %c3 = icmp eq i32 %s, 2
+  br i1 %c3, label %a3, label %default
+a0:
+  ret i32 0
+a1:
+  ret i32 1
+a2:
+  ret i32 2
+a3:
+  ret i32 3
+default:
+  ret i32 9
+}

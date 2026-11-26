@@ -1,0 +1,17 @@
+; iyi-ir 1
+source_filename = "d1_phi_wide_same"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i128 @dispatch(i32 %x) {
+entry:
+  switch i32 %x, label %default [ i32 0, label %merge, i32 1, label %merge, i32 2, label %a2, i32 3, label %a3 ]
+merge:
+  %p = phi i128 [ 18446744073709551617, label %entry ]
+  ret i128 %p
+a2:
+  ret i128 2
+a3:
+  ret i128 3
+default:
+  unreachable
+}

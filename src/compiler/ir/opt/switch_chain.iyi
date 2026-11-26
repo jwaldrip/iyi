@@ -1,0 +1,285 @@
+module compiler/ir/opt/switch_chain
+
+import compiler/ir/values::{Value}
+import compiler/ir/inst::{Op, Inst, Block, IntPredicate, GepAux}
+import compiler/ir/function::{Function}
+import compiler/ir/module::{Module}
+import compiler/ir/opt/fold::{int_value}
+import compiler/ir/opt/analysis::{local_value?}
+
+MIN_CHAIN = 4 # mutation D1-threshold: at least four tests
+
+# The compare must be immediately before its branch, including in the first block.
+struct ChainTest
+  getter block : Block
+  getter compare : Inst
+  getter selector : Value
+  getter key : Int64
+
+  def initialize(@block : Block, @compare : Inst, @selector : Value, @key : Int64)
+  end
+end
+
+def chain_test(block : Block) : ChainTest?
+  return nil unless block.insts.size >= 2 && block.terminated?
+  branch = block.terminator
+  return nil unless branch.op == Op::CondBr && branch.args.size == 1 && branch.targets.size == 2
+  cmp = block.insts[block.insts.size - 2]
+  return nil unless cmp.op == Op::ICmp && cmp.aux_int == IntPredicate::EQ.value.to_i64 && cmp.args.size == 2
+  return nil unless branch.args[0] == cmp
+  left = cmp.args[0]
+  right = cmp.args[1]
+  return nil unless left.type == right.type && left.type.int? && left.type.bits <= 64
+  lkey = int_value(left)
+  rkey = int_value(right)
+  if !lkey.nil? && rkey.nil? && local_value?(right)
+    return ChainTest.new(block, cmp, right, lkey)
+  elsif !rkey.nil? && lkey.nil? && local_value?(left)
+    return ChainTest.new(block, cmp, left, rkey)
+  end
+  nil
+end
+
+def same_selector?(a : Value, b : Value) : Bool
+  a == b # mutation D1-selector: require one SSA selector
+end
+
+# Different constant objects with the same bit pattern are the same phi value.
+def same_phi_value?(a : Value, b : Value) : Bool
+  return true if a == b
+  return false unless a.type == b.type && a.is_a?(Inst) && b.is_a?(Inst)
+  x = a.as(Inst)
+  y = b.as(Inst)
+  return false unless x.op == y.op
+  case x.op
+  when Op::ConstInt
+    if x.type.bits <= 64
+      int_value(x) == int_value(y)
+    else
+      x.int_words(x.type.bits) == y.int_words(y.type.bits)
+    end
+  when Op::ConstFloat, Op::ConstNull, Op::ConstZero, Op::ConstUndef, Op::ConstPoison
+    x.aux_int == y.aux_int
+  when Op::ConstAggregate, Op::ConstBytes, Op::GlobalAddr, Op::FunctionAddr, Op::ConstExpr
+    return false unless x.aux_int == y.aux_int && x.args.size == y.args.size
+    if x.aux.is_a?(GepAux)
+      return false unless y.aux.is_a?(GepAux)
+      left_gep = x.aux.as(GepAux)
+      right_gep = y.aux.as(GepAux)
+      return false unless left_gep.source_type == right_gep.source_type && left_gep.inbounds == right_gep.inbounds
+    elsif !x.aux.nil? || !y.aux.nil?
+      return false
+    end
+    k = 0
+    while k < x.args.size
+      return false unless same_phi_value?(x.args[k], y.args[k])
+      k = k + 1
+    end
+    true
+  else
+    false
+  end
+end
+
+class SwitchChains
+  def initialize(@mod : Module, @fn : Function)
+    @uses = Hash(Inst, Int32).new
+    @removed = Hash(Block, Bool).new
+  end
+
+  def usable_test(block : Block) : ChainTest?
+    test = chain_test(block)
+    return nil unless test
+    return nil unless @uses[test.compare]? == 1
+    test
+  end
+
+  # Test heads have no immediately preceding member of the same chain.
+  def continuation?(test : ChainTest) : Bool
+    block = test.block
+    return false unless block.insts.size == 2 && block.preds.size == 1
+    pred = block.preds[0]
+    return false if @removed[pred]?
+    previous = usable_test(pred)
+    return false unless previous
+    same_selector?(previous.selector, test.selector) && pred.terminator.targets[1] == block
+  end
+
+  def has_phis?(block : Block) : Bool
+    !block.insts.empty? && block.insts[0].op == Op::Phi
+  end
+
+  # Every original edge that becomes one edge out of the head must carry the
+  # same phi value. Visit a shared target and each of its phi inputs once.
+  def compatible_phis?(targets : Array(Block), members : Hash(Block, Bool)) : Bool
+    targets.each do |target|
+      target.insts.each do |phi|
+        break unless phi.op == Op::Phi
+        first = nil.as(Value?)
+        k = 0
+        while k < phi.targets.size
+          if members[phi.targets[k]]?
+            value = phi.args[k]
+            if existing = first
+              return false unless same_phi_value?(existing, value)
+            else
+              first = value
+            end
+          end
+          k = k + 1
+        end
+      end
+    end
+    true
+  end
+
+  def rename_phis(targets : Array(Block), members : Hash(Block, Bool), head : Block) : Nil
+    targets.each do |target|
+      target.insts.each do |phi|
+        break unless phi.op == Op::Phi
+        values = [] of Value
+        blocks = [] of Block
+        added = false
+        k = 0
+        while k < phi.targets.size
+          from = phi.targets[k]
+          if members[from]?
+            unless added
+              values << phi.args[k]
+              blocks << head # mutation D1-phi: the incoming predecessor is the head
+              added = true
+            end
+          else
+            values << phi.args[k]
+            blocks << from
+          end
+          k = k + 1
+        end
+        phi.args[0, phi.args.size] = values
+        phi.targets[0, phi.targets.size] = blocks
+      end
+    end
+  end
+
+  def convert(first : ChainTest) : Bool
+    tests = [first] of ChainTest
+    members = Hash(Block, Bool).new
+    members[first.block] = true
+    current = first
+    loop do
+      next_block = current.block.terminator.targets[1]
+      break if members[next_block]? || @removed[next_block]?
+      next_test = usable_test(next_block)
+      break unless next_test && next_block.insts.size == 2 && next_block.preds.size == 1 && next_block.preds[0] == current.block
+      break unless same_selector?(next_test.selector, first.selector)
+      tests << next_test
+      members[next_block] = true
+      current = next_test
+    end
+    return false if tests.size < MIN_CHAIN
+
+    default = current.block.terminator.targets[1]
+    # No edge in the replacement can name a block being deleted.
+    return false if default != first.block && members[default]?
+    targets = [] of Block
+    unique_targets = Hash(Block, Bool).new
+    if has_phis?(default)
+      targets << default
+      unique_targets[default] = true
+    end
+    keys = Hash(Int64, Bool).new
+    cases = [] of Int64
+    switch_targets = [default] of Block
+    tests.each do |test|
+      target = test.block.terminator.targets[0]
+      return false if target != first.block && members[target]?
+      if keys[test.key]?
+        return false if has_phis?(target) # the dropped duplicate edge may not carry a phi value
+        next
+      end
+      keys[test.key] = true
+      cases << test.key
+      switch_targets << target
+      if has_phis?(target) && !unique_targets[target]?
+        unique_targets[target] = true
+        targets << target
+      end
+    end
+    return false unless compatible_phis?(targets, members)
+
+    head = first.block
+    rename_phis(targets, members, head)
+    old_term = head.insts.pop
+    head.insts.pop # the compare is used only by the branch
+    switch = Inst.new(Op::Switch, @mod.types.void, [first.selector] of Value, 0_i64, nil, switch_targets, cases, "")
+    switch.loc = old_term.loc
+    head.insts << switch
+    i = 1
+    while i < tests.size
+      block = tests[i].block
+      head.no_vectorize = true if block.no_vectorize
+      @removed[block] = true
+      i = i + 1
+    end
+    true
+  end
+
+  def run : Bool
+    # Avoid any pass-wide allocation for the overwhelmingly common tiny function.
+    return false if @fn.blocks.size < 4
+    # Index only comparison results, then count their uses in one walk.
+    @fn.blocks.each do |block|
+      if test = chain_test(block)
+        @uses[test.compare] = 0
+      end
+    end
+    return false if @uses.size < MIN_CHAIN
+    @fn.blocks.each do |block|
+      block.insts.each do |inst|
+        inst.args.each do |arg|
+          if arg.is_a?(Inst)
+            count = @uses[arg.as(Inst)]?
+            @uses[arg.as(Inst)] = count + 1 if count
+          end
+        end
+      end
+    end
+
+    changed = false
+    @fn.blocks.each do |block|
+      next if @removed[block]?
+      test = usable_test(block)
+      next unless test
+      next if continuation?(test)
+      changed = true if convert(test)
+    end
+    return false unless changed
+    kept = [] of Block
+    @fn.blocks.each { |block| kept << block unless @removed[block]? }
+    @fn.blocks[0, @fn.blocks.size] = kept
+    @fn.relink
+    true
+  end
+end
+
+pub def run_switch_chain(mod : Module, fn : Function) : Bool
+  return false if fn.blocks.size < 4
+  # Most functions have no four-test chain. Probe at most MIN_CHAIN blocks
+  # per candidate before allocating the use index and mutation state.
+  fn.blocks.each do |block|
+    first = chain_test(block)
+    next unless first
+    current = block
+    count = 1
+    while count < MIN_CHAIN
+      following = current.terminator.targets[1]
+      break unless following.insts.size == 2 && following.preds.size == 1 && following.preds[0] == current
+      test = chain_test(following)
+      break unless test && same_selector?(test.selector, first.selector)
+      count = count + 1
+      current = following
+    end
+    return SwitchChains.new(mod, fn).run if count >= MIN_CHAIN
+  end
+  false
+end

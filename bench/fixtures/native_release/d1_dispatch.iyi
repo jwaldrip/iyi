@@ -1,0 +1,253 @@
+abstract class D1Base
+  abstract def value : Int32
+end
+
+class D1Case00 < D1Base
+  def value : Int32
+    0
+  end
+end
+
+class D1Case01 < D1Base
+  def value : Int32
+    1
+  end
+end
+
+class D1Case02 < D1Base
+  def value : Int32
+    2
+  end
+end
+
+class D1Case03 < D1Base
+  def value : Int32
+    3
+  end
+end
+
+class D1Case04 < D1Base
+  def value : Int32
+    4
+  end
+end
+
+class D1Case05 < D1Base
+  def value : Int32
+    5
+  end
+end
+
+class D1Case06 < D1Base
+  def value : Int32
+    6
+  end
+end
+
+class D1Case07 < D1Base
+  def value : Int32
+    7
+  end
+end
+
+class D1Case08 < D1Base
+  def value : Int32
+    8
+  end
+end
+
+class D1Case09 < D1Base
+  def value : Int32
+    9
+  end
+end
+
+class D1Case10 < D1Base
+  def value : Int32
+    10
+  end
+end
+
+class D1Case11 < D1Base
+  def value : Int32
+    11
+  end
+end
+
+class D1Case12 < D1Base
+  def value : Int32
+    12
+  end
+end
+
+class D1Case13 < D1Base
+  def value : Int32
+    13
+  end
+end
+
+class D1Case14 < D1Base
+  def value : Int32
+    14
+  end
+end
+
+class D1Case15 < D1Base
+  def value : Int32
+    15
+  end
+end
+
+class D1Case16 < D1Base
+  def value : Int32
+    16
+  end
+end
+
+class D1Case17 < D1Base
+  def value : Int32
+    17
+  end
+end
+
+class D1Case18 < D1Base
+  def value : Int32
+    18
+  end
+end
+
+class D1Case19 < D1Base
+  def value : Int32
+    19
+  end
+end
+
+class D1Case20 < D1Base
+  def value : Int32
+    20
+  end
+end
+
+class D1Case21 < D1Base
+  def value : Int32
+    21
+  end
+end
+
+class D1Case22 < D1Base
+  def value : Int32
+    22
+  end
+end
+
+class D1Case23 < D1Base
+  def value : Int32
+    23
+  end
+end
+
+def d1_case(kind : Int32) : D1Base
+  case kind
+  when  0 then D1Case00.new
+  when  1 then D1Case01.new
+  when  2 then D1Case02.new
+  when  3 then D1Case03.new
+  when  4 then D1Case04.new
+  when  5 then D1Case05.new
+  when  6 then D1Case06.new
+  when  7 then D1Case07.new
+  when  8 then D1Case08.new
+  when  9 then D1Case09.new
+  when 10 then D1Case10.new
+  when 11 then D1Case11.new
+  when 12 then D1Case12.new
+  when 13 then D1Case13.new
+  when 14 then D1Case14.new
+  when 15 then D1Case15.new
+  when 16 then D1Case16.new
+  when 17 then D1Case17.new
+  when 18 then D1Case18.new
+  when 19 then D1Case19.new
+  when 20 then D1Case20.new
+  when 21 then D1Case21.new
+  when 22 then D1Case22.new
+  else D1Case23.new
+  end
+end
+
+abstract class D1Node
+end
+class D1BeforeA < D1Node
+end
+class D1BeforeB < D1Node
+end
+abstract class D1Range < D1Node
+end
+class D1RangeA < D1Range
+end
+class D1RangeB < D1Range
+end
+class D1AfterA < D1Node
+end
+class D1AfterB < D1Node
+end
+
+def d1_classify(node : D1BeforeA) : Int32
+  11
+end
+def d1_classify(node : D1BeforeB) : Int32
+  12
+end
+def d1_classify(node : D1Range) : Int32
+  20
+end
+def d1_classify(node : D1AfterA) : Int32
+  31
+end
+def d1_classify(node : D1AfterB) : Int32
+  32
+end
+
+def d1_node(kind : Int32) : D1Node
+  case kind
+  when 0 then D1BeforeA.new
+  when 1 then D1BeforeB.new
+  when 2 then D1RangeA.new
+  when 3 then D1RangeB.new
+  when 4 then D1AfterA.new
+  else D1AfterB.new
+  end
+end
+
+entries = [] of D1Base
+nodes = [] of D1Node
+index = 0
+while index < 24
+  entries << d1_case(index)
+  index = index + 1
+end
+index = 0
+while index < 6
+  nodes << d1_node(index)
+  index = index + 1
+end
+sum = 0_i64
+round = 0
+while round < 12
+  index = 0
+  while index < entries.size
+    result = entries[index].value
+    puts "case=#{index} value=#{result}" if round == 0
+    sum = sum + result
+    index = index + 1
+  end
+  index = 0
+  while index < nodes.size
+    result = d1_classify(nodes[index])
+    puts "node=#{index} value=#{result}" if round == 0
+    sum = sum + result
+    index = index + 1
+  end
+  round = round + 1
+end
+puts "sum=#{sum}"

@@ -1,0 +1,58 @@
+; iyi-ir 1
+source_filename = "d1_concrete"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i32 @dispatch(i32 %x, i32 %y) {
+entry:
+  switch i32 %x, label %default [ i32 0, label %arm0, i32 1, label %arm1, i32 2, label %arm2, i32 3, label %arm3, i32 4, label %arm4, i32 5, label %arm5, i32 6, label %arm6, i32 7, label %arm7, i32 8, label %arm8, i32 9, label %arm9, i32 10, label %arm10, i32 11, label %arm11, i32 12, label %arm12, i32 13, label %arm13, i32 14, label %arm14, i32 15, label %arm15, i32 16, label %arm16, i32 17, label %arm17, i32 18, label %arm18, i32 19, label %arm19, i32 20, label %arm20, i32 21, label %arm21, i32 22, label %arm22, i32 23, label %arm23 ]
+arm0:
+  ret i32 0
+arm1:
+  ret i32 1
+arm2:
+  ret i32 2
+arm3:
+  ret i32 3
+arm4:
+  ret i32 4
+arm5:
+  ret i32 5
+arm6:
+  ret i32 6
+arm7:
+  ret i32 7
+arm8:
+  ret i32 8
+arm9:
+  ret i32 9
+arm10:
+  ret i32 10
+arm11:
+  ret i32 11
+arm12:
+  ret i32 12
+arm13:
+  ret i32 13
+arm14:
+  ret i32 14
+arm15:
+  ret i32 15
+arm16:
+  ret i32 16
+arm17:
+  ret i32 17
+arm18:
+  ret i32 18
+arm19:
+  ret i32 19
+arm20:
+  ret i32 20
+arm21:
+  ret i32 21
+arm22:
+  ret i32 22
+arm23:
+  ret i32 23
+default:
+  unreachable
+}
