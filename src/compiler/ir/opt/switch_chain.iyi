@@ -5,6 +5,7 @@ import compiler/ir/inst::{Op, Inst, Block, IntPredicate, GepAux}
 import compiler/ir/function::{Function}
 import compiler/ir/module::{Module}
 import compiler/ir/opt/fold::{int_value}
+import compiler/ir/opt/analysis::{local_value?}
 
 MIN_CHAIN = 4 # mutation D1-threshold: at least four tests
 
@@ -31,9 +32,9 @@ def chain_test(block : Block) : ChainTest?
   return nil unless left.type == right.type && left.type.int? && left.type.bits <= 64
   lkey = int_value(left)
   rkey = int_value(right)
-  if !lkey.nil? && rkey.nil?
+  if !lkey.nil? && rkey.nil? && local_value?(right)
     return ChainTest.new(block, cmp, right, lkey)
-  elsif !rkey.nil? && lkey.nil?
+  elsif !rkey.nil? && lkey.nil? && local_value?(left)
     return ChainTest.new(block, cmp, left, rkey)
   end
   nil

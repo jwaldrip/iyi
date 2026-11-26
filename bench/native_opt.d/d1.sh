@@ -4,7 +4,7 @@ for name in d1_concrete d1_head_prefix d1_default_phis d1_duplicate d1_phi_wide_
   fixture_check switch-chain "$name" changed
 done
 for name in d1_three d1_two_selectors d1_range_arm d1_extra_inst d1_used_compare d1_wide \
-            d1_duplicate_phi d1_phi_conflict d1_phi_wide_conflict d1_phi_undef_mixed d1_nonconstant d1_multi_dispatch d1_multiple_predecessors; do
+            d1_duplicate_phi d1_phi_conflict d1_phi_wide_conflict d1_phi_undef_mixed d1_nonconstant d1_literal_selector d1_multi_dispatch d1_multiple_predecessors; do
   fixture_check switch-chain "$name" keep
 done
 fixture_stats switch-chain "$FIXTURES/switch-chain/d1_concrete.ir"
