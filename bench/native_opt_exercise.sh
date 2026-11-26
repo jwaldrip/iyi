@@ -302,6 +302,8 @@ for name in thread_shared_succ thread_two_phis thread_side_effect thread_phi_use
 for name in straight_line diamond loop nested_loops uninitialized_read pointer_slot i1_slot null_uninitialized unreachable_predecessor; do fixture_check mem2reg "$name" changed; done
 for name in escaping_slot volatile_slot aggregate_slot atomic_slot tls_slot stored_address unreachable_slot_use; do fixture_check mem2reg "$name" keep; done
 for name in fold_int fold_icmp_signed identities trivial_phi condbr_const overflow_flag_unused fold_double power_of_two switch_const expect_const fold_cast fold_divrem fold_double_ops trivial_self_phi constant_global; do fixture_check simplify "$name" changed; done
+fixture_check simplify review_fold_unsigned_equal changed
+fixture_check simplify review_fold_xor_overlap changed
 for name in float32_keep div_by_zero_keep fold_safety_keep ptrtoint_mul_keep constant_global_keep; do fixture_check simplify "$name" keep; done
 for name in dead_arith dead_phi_cycle dead_plain_load; do fixture_check dce "$name" changed; done
 for name in keep_store keep_call keep_volatile_load keep_marking_load_used keep_call_unreachable keep_atomic; do fixture_check dce "$name" keep; done
@@ -622,8 +624,10 @@ echo '== 5. diamond-chain scaling'
 # diamonds. A verified smaller copy checks the generator outside the timing.
 # Each size is run three times and the least figure is kept: the child's CPU
 # time where the host reports it, so other jobs on the machine do not stretch
-# it, and elapsed time elsewhere.
-if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" "${NATIVE_OPT_SCALE_K:-2048}" "${NATIVE_OPT_RELEASE_SCALE_K:-4096}" "${NATIVE_OPT_LOOP_SCALE_K:-2048}" "${NATIVE_OPT_ALLOC_SCALE_K:-2048}" "${NATIVE_OPT_INDEGREE_SCALE_K:-2048}" "${NATIVE_OPT_CALLBACK_SCALE_K:-2048}" <<'PY'
+# it, and elapsed time elsewhere. The allocation shape starts at 4096: at 2048
+# its 2K run took 0.493 s of CPU on a CI Linux runner, under the 0.5 s a ratio
+# needs to mean anything.
+if ! "$PY" - "$(native_path "$DRV")" "$(native_path "$WORK")" "${NATIVE_OPT_SCALE_K:-2048}" "${NATIVE_OPT_RELEASE_SCALE_K:-4096}" "${NATIVE_OPT_LOOP_SCALE_K:-2048}" "${NATIVE_OPT_ALLOC_SCALE_K:-4096}" "${NATIVE_OPT_INDEGREE_SCALE_K:-2048}" "${NATIVE_OPT_CALLBACK_SCALE_K:-2048}" <<'PY'
 import os, subprocess, sys, time
 try:
     import resource
@@ -1007,6 +1011,16 @@ prove_mutation 'M5: signed integer comparison' src/compiler/ir/opt/fold.iyi \
   '    return lhs_value.unsafe_to_u64 < rhs_value.unsafe_to_u64 # mutation M5: signed comparison' \
   -- mutation_check M5 simplify fold_icmp_signed || fail 'M5 was not caught'
 mutation_result M5
+prove_mutation 'ESCULE: an unsigned less-or-equal of equal operands folds as less-than' src/compiler/ir/opt/fold.iyi \
+  'au <= cu' \
+  'au < cu' \
+  -- mutation_check ESCULE simplify review_fold_unsigned_equal || fail 'ESCULE was not caught'
+mutation_result ESCULE
+prove_mutation 'ESCXOR: an exclusive or folds as an inclusive or' src/compiler/ir/opt/fold.iyi \
+  'when Op::Xor then a ^ c' \
+  'when Op::Xor then a | c' \
+  -- mutation_check ESCXOR simplify review_fold_xor_overlap || fail 'ESCXOR was not caught'
+mutation_result ESCXOR
 prove_mutation 'M6: argument mapping' src/compiler/ir/opt/inline.iyi \
   '    values[callee.params[k]] = call.args[k + 1] # mutation S6-arg: actual argument to parameter' \
   '    values[callee.params[k]] = call.args[callee.params.size - k] # mutation S6-arg: actual argument to parameter' \
