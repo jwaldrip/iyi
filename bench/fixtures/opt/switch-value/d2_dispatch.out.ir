@@ -1,0 +1,21 @@
+; iyi-ir 1
+source_filename = "d2_dispatch"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i64 @dispatch(ptr %p) {
+entry:
+  %obj = load ptr, ptr %p, align 8
+  %type_id = getelementptr inbounds i8, ptr %obj, i32 -4
+  %t = load i32, ptr %type_id, align 4
+  %switch.selector = freeze i32 %t
+  %switch.index = sub i32 %switch.selector, 45
+  %switch.affine.in_range = icmp ule i32 %switch.index, 23
+  br i1 %switch.affine.in_range, label %exit, label %next_def54
+next_def54:
+  unreachable
+exit:
+  %value = phi i32 [ %switch.index, label %entry ]
+  %wide = sext i32 %value to i64
+  ret i64 %wide
+}
+

@@ -1,0 +1,18 @@
+; iyi-ir 1
+source_filename = "d2_i1_affine"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i1 @dispatch(i32 %x) {
+entry:
+  %switch.selector = freeze i32 %x
+  %switch.index = sub i32 %switch.selector, 10
+  %switch.affine.in_range = icmp ule i32 %switch.index, 3
+  %switch.index.truncate = trunc i32 %switch.index to i1
+  br i1 %switch.affine.in_range, label %join, label %otherwise
+otherwise:
+  ret i1 false
+join:
+  %result = phi i1 [ %switch.index.truncate, label %entry ]
+  ret i1 %result
+}
+

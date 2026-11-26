@@ -1,0 +1,23 @@
+; iyi-ir 1
+source_filename = "d2_no_phi"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+@dummy = internal global i32 0
+@effect = internal global i32 0
+
+define external i32 @dispatch(i32 %x) {
+entry:
+  switch i32 %x, label %otherwise [ i32 10, label %a0, i32 11, label %a1, i32 12, label %a2, i32 13, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+otherwise:
+  unreachable
+join:
+  ret i32 0
+}

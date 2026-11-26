@@ -1,0 +1,20 @@
+; iyi-ir 1
+source_filename = "d2_high"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i32 @dispatch(i64 %x) {
+entry:
+  %switch.selector = freeze i64 %x
+  %switch.index = sub i64 %switch.selector, -4
+  %switch.affine.in_range = icmp ule i64 %switch.index, 3
+  %switch.index.truncate = trunc i64 %switch.index to i32
+  %switch.affine.multiply = mul i32 %switch.index.truncate, 2
+  %switch.affine.add = add i32 %switch.affine.multiply, 3
+  br i1 %switch.affine.in_range, label %join, label %otherwise
+otherwise:
+  ret i32 0
+join:
+  %result = phi i32 [ %switch.affine.add, label %entry ]
+  ret i32 %result
+}
+

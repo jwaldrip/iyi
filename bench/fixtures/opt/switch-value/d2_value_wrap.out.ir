@@ -1,0 +1,19 @@
+; iyi-ir 1
+source_filename = "d2_value_wrap"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i64 @dispatch(i32 %x) {
+entry:
+  %switch.selector = freeze i32 %x
+  %switch.index = sub i32 %switch.selector, 10
+  %switch.affine.in_range = icmp ule i32 %switch.index, 3
+  %switch.index.extend = zext i32 %switch.index to i64
+  %switch.affine.add = add i64 %switch.index.extend, 9223372036854775806
+  br i1 %switch.affine.in_range, label %join, label %otherwise
+otherwise:
+  ret i64 0
+join:
+  %result = phi i64 [ %switch.affine.add, label %entry ]
+  ret i64 %result
+}
+

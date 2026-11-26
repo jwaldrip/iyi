@@ -1,0 +1,19 @@
+; iyi-ir 1
+source_filename = "d2_default_join"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i32 @dispatch(i32 %x) {
+entry:
+  switch i32 %x, label %join [ i32 20, label %a0, i32 21, label %a1, i32 23, label %a2, i32 24, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+join:
+  %result = phi i32 [ 10, label %a0 ], [ 20, label %a1 ], [ 50, label %a2 ], [ 60, label %a3 ], [ 40, label %entry ]
+  ret i32 %result
+}

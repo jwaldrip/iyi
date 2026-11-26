@@ -1,0 +1,21 @@
+; iyi-ir 1
+source_filename = "d2_external_pred"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i32 @dispatch(i1 %gate, i32 %x, i32 %other_value) {
+entry:
+  br i1 %gate, label %head, label %other
+head:
+  %switch.selector = freeze i32 %x
+  %switch.index = sub i32 %switch.selector, 10
+  %switch.affine.in_range = icmp ule i32 %switch.index, 3
+  br i1 %switch.affine.in_range, label %join, label %otherwise
+other:
+  br label %join
+otherwise:
+  ret i32 -1
+join:
+  %result = phi i32 [ %other_value, label %other ], [ %switch.index, label %head ]
+  ret i32 %result
+}
+

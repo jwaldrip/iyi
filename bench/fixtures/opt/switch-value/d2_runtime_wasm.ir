@@ -1,0 +1,354 @@
+; iyi-ir 1
+source_filename = "d2_runtime"
+target triple = "wasm32-wasi"
+target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20"
+@input32 = internal global i32 0
+@input64 = internal global i64 0
+@writes = internal global i32 0
+declare external void @__iyi_print_i64(i64)
+
+define internal i64 @affine() {
+entry:
+  %x = load i32, ptr @input32, align 4
+  switch i32 %x, label %otherwise [ i32 10, label %a0, i32 11, label %a1, i32 12, label %a2, i32 13, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+otherwise:
+  ret i64 -100
+join:
+  %v = phi i64 [ 7, label %a0 ], [ 9, label %a1 ], [ 11, label %a2 ], [ 13, label %a3 ]
+  ret i64 %v
+}
+
+define internal i64 @holes() {
+entry:
+  %x = load i32, ptr @input32, align 4
+  switch i32 %x, label %otherwise [ i32 30, label %a0, i32 31, label %a1, i32 33, label %a2, i32 34, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+otherwise:
+  br label %join
+join:
+  %v = phi i64 [ 10, label %a0 ], [ 20, label %a1 ], [ 50, label %a2 ], [ 60, label %a3 ], [ 40, label %otherwise ]
+  ret i64 %v
+}
+
+define internal i64 @holes_effect() {
+entry:
+  %x = load i32, ptr @input32, align 4
+  switch i32 %x, label %otherwise [ i32 40, label %a0, i32 41, label %a1, i32 43, label %a2, i32 44, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+otherwise:
+  store i32 9, ptr @writes, align 4
+  ret i64 -333
+join:
+  %v = phi i64 [ 10, label %a0 ], [ 20, label %a1 ], [ 50, label %a2 ], [ 60, label %a3 ]
+  ret i64 %v
+}
+
+define internal i64 @high() {
+entry:
+  %x = load i64, ptr @input64, align 8
+  switch i64 %x, label %otherwise [ i64 -4, label %a0, i64 -3, label %a1, i64 -2, label %a2, i64 -1, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+otherwise:
+  ret i64 -100
+join:
+  %v = phi i64 [ 3, label %a0 ], [ 5, label %a1 ], [ 7, label %a2 ], [ 9, label %a3 ]
+  ret i64 %v
+}
+
+define internal i64 @sign_wrap() {
+entry:
+  %x = load i32, ptr @input32, align 4
+  switch i32 %x, label %otherwise [ i32 -2, label %a0, i32 -1, label %a1, i32 0, label %a2, i32 1, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+otherwise:
+  ret i64 -100
+join:
+  %v = phi i64 [ 20, label %a0 ], [ 21, label %a1 ], [ 22, label %a2 ], [ 23, label %a3 ]
+  ret i64 %v
+}
+
+define internal i64 @arm_effect() {
+entry:
+  %x = load i32, ptr @input32, align 4
+  switch i32 %x, label %otherwise [ i32 50, label %a0, i32 51, label %a1, i32 52, label %a2, i32 53, label %a3 ]
+a0:
+  br label %join
+a1:
+  store i32 123, ptr @writes, align 4
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+otherwise:
+  ret i64 -100
+join:
+  %v = phi i64 [ 10, label %a0 ], [ 11, label %a1 ], [ 12, label %a2 ], [ 13, label %a3 ]
+  ret i64 %v
+}
+
+define internal i64 @default_join() {
+entry:
+  %x = load i32, ptr @input32, align 4
+  switch i32 %x, label %join [ i32 60, label %a0, i32 61, label %a1, i32 63, label %a2, i32 64, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+join:
+  %v = phi i64 [ 10, label %a0 ], [ 20, label %a1 ], [ 50, label %a2 ], [ 60, label %a3 ], [ 40, label %entry ]
+  ret i64 %v
+}
+
+define internal i64 @shared_default() {
+entry:
+  %x = load i32, ptr @input32, align 4
+  switch i32 %x, label %a0 [ i32 70, label %a0, i32 71, label %a1, i32 72, label %a2, i32 73, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+join:
+  %v = phi i64 [ 5, label %a0 ], [ 6, label %a1 ], [ 7, label %a2 ], [ 8, label %a3 ]
+  ret i64 %v
+}
+
+define internal i64 @two_phis() {
+entry:
+  %x = load i32, ptr @input32, align 4
+  switch i32 %x, label %otherwise [ i32 20, label %a0, i32 21, label %a1, i32 22, label %a2, i32 23, label %a3 ]
+a0:
+  br label %join
+a1:
+  br label %join
+a2:
+  br label %join
+a3:
+  br label %join
+otherwise:
+  ret i64 -200
+join:
+  %v = phi i32 [ 41, label %a0 ], [ -4, label %a1 ], [ 7, label %a2 ], [ 92, label %a3 ]
+  %b = phi i1 [ true, label %a0 ], [ false, label %a1 ], [ true, label %a2 ], [ true, label %a3 ]
+  %v64 = sext i32 %v to i64
+  %b64 = zext i1 %b to i64
+  %sum = add i64 %v64, %b64
+  ret i64 %sum
+}
+
+define external i32 @main() {
+entry:
+  store i32 9, ptr @input32, align 4
+  %r0 = call i64 () @affine()
+  call void (i64) @__iyi_print_i64(i64 %r0)
+  store i32 10, ptr @input32, align 4
+  %r1 = call i64 () @affine()
+  call void (i64) @__iyi_print_i64(i64 %r1)
+  store i32 11, ptr @input32, align 4
+  %r2 = call i64 () @affine()
+  call void (i64) @__iyi_print_i64(i64 %r2)
+  store i32 12, ptr @input32, align 4
+  %r3 = call i64 () @affine()
+  call void (i64) @__iyi_print_i64(i64 %r3)
+  store i32 13, ptr @input32, align 4
+  %r4 = call i64 () @affine()
+  call void (i64) @__iyi_print_i64(i64 %r4)
+  store i32 14, ptr @input32, align 4
+  %r5 = call i64 () @affine()
+  call void (i64) @__iyi_print_i64(i64 %r5)
+  store i32 19, ptr @input32, align 4
+  %r6 = call i64 () @two_phis()
+  call void (i64) @__iyi_print_i64(i64 %r6)
+  store i32 20, ptr @input32, align 4
+  %r7 = call i64 () @two_phis()
+  call void (i64) @__iyi_print_i64(i64 %r7)
+  store i32 21, ptr @input32, align 4
+  %r8 = call i64 () @two_phis()
+  call void (i64) @__iyi_print_i64(i64 %r8)
+  store i32 22, ptr @input32, align 4
+  %r9 = call i64 () @two_phis()
+  call void (i64) @__iyi_print_i64(i64 %r9)
+  store i32 23, ptr @input32, align 4
+  %r10 = call i64 () @two_phis()
+  call void (i64) @__iyi_print_i64(i64 %r10)
+  store i32 24, ptr @input32, align 4
+  %r11 = call i64 () @two_phis()
+  call void (i64) @__iyi_print_i64(i64 %r11)
+  store i32 29, ptr @input32, align 4
+  %r12 = call i64 () @holes()
+  call void (i64) @__iyi_print_i64(i64 %r12)
+  store i32 30, ptr @input32, align 4
+  %r13 = call i64 () @holes()
+  call void (i64) @__iyi_print_i64(i64 %r13)
+  store i32 31, ptr @input32, align 4
+  %r14 = call i64 () @holes()
+  call void (i64) @__iyi_print_i64(i64 %r14)
+  store i32 32, ptr @input32, align 4
+  %r15 = call i64 () @holes()
+  call void (i64) @__iyi_print_i64(i64 %r15)
+  store i32 33, ptr @input32, align 4
+  %r16 = call i64 () @holes()
+  call void (i64) @__iyi_print_i64(i64 %r16)
+  store i32 34, ptr @input32, align 4
+  %r17 = call i64 () @holes()
+  call void (i64) @__iyi_print_i64(i64 %r17)
+  store i32 35, ptr @input32, align 4
+  %r18 = call i64 () @holes()
+  call void (i64) @__iyi_print_i64(i64 %r18)
+  store i32 39, ptr @input32, align 4
+  %r19 = call i64 () @holes_effect()
+  call void (i64) @__iyi_print_i64(i64 %r19)
+  store i32 40, ptr @input32, align 4
+  %r20 = call i64 () @holes_effect()
+  call void (i64) @__iyi_print_i64(i64 %r20)
+  store i32 41, ptr @input32, align 4
+  %r21 = call i64 () @holes_effect()
+  call void (i64) @__iyi_print_i64(i64 %r21)
+  store i32 42, ptr @input32, align 4
+  %r22 = call i64 () @holes_effect()
+  call void (i64) @__iyi_print_i64(i64 %r22)
+  store i32 43, ptr @input32, align 4
+  %r23 = call i64 () @holes_effect()
+  call void (i64) @__iyi_print_i64(i64 %r23)
+  store i32 44, ptr @input32, align 4
+  %r24 = call i64 () @holes_effect()
+  call void (i64) @__iyi_print_i64(i64 %r24)
+  store i32 45, ptr @input32, align 4
+  %r25 = call i64 () @holes_effect()
+  call void (i64) @__iyi_print_i64(i64 %r25)
+  store i64 -5, ptr @input64, align 8
+  %r26 = call i64 () @high()
+  call void (i64) @__iyi_print_i64(i64 %r26)
+  store i64 -4, ptr @input64, align 8
+  %r27 = call i64 () @high()
+  call void (i64) @__iyi_print_i64(i64 %r27)
+  store i64 -3, ptr @input64, align 8
+  %r28 = call i64 () @high()
+  call void (i64) @__iyi_print_i64(i64 %r28)
+  store i64 -2, ptr @input64, align 8
+  %r29 = call i64 () @high()
+  call void (i64) @__iyi_print_i64(i64 %r29)
+  store i64 -1, ptr @input64, align 8
+  %r30 = call i64 () @high()
+  call void (i64) @__iyi_print_i64(i64 %r30)
+  store i64 0, ptr @input64, align 8
+  %r31 = call i64 () @high()
+  call void (i64) @__iyi_print_i64(i64 %r31)
+  store i32 -3, ptr @input32, align 4
+  %r32 = call i64 () @sign_wrap()
+  call void (i64) @__iyi_print_i64(i64 %r32)
+  store i32 -2, ptr @input32, align 4
+  %r33 = call i64 () @sign_wrap()
+  call void (i64) @__iyi_print_i64(i64 %r33)
+  store i32 -1, ptr @input32, align 4
+  %r34 = call i64 () @sign_wrap()
+  call void (i64) @__iyi_print_i64(i64 %r34)
+  store i32 0, ptr @input32, align 4
+  %r35 = call i64 () @sign_wrap()
+  call void (i64) @__iyi_print_i64(i64 %r35)
+  store i32 1, ptr @input32, align 4
+  %r36 = call i64 () @sign_wrap()
+  call void (i64) @__iyi_print_i64(i64 %r36)
+  store i32 2, ptr @input32, align 4
+  %r37 = call i64 () @sign_wrap()
+  call void (i64) @__iyi_print_i64(i64 %r37)
+  store i32 50, ptr @input32, align 4
+  %r38 = call i64 () @arm_effect()
+  call void (i64) @__iyi_print_i64(i64 %r38)
+  store i32 51, ptr @input32, align 4
+  %r39 = call i64 () @arm_effect()
+  call void (i64) @__iyi_print_i64(i64 %r39)
+  store i32 52, ptr @input32, align 4
+  %r40 = call i64 () @arm_effect()
+  call void (i64) @__iyi_print_i64(i64 %r40)
+  store i32 53, ptr @input32, align 4
+  %r41 = call i64 () @arm_effect()
+  call void (i64) @__iyi_print_i64(i64 %r41)
+  store i32 59, ptr @input32, align 4
+  %r42 = call i64 () @default_join()
+  call void (i64) @__iyi_print_i64(i64 %r42)
+  store i32 60, ptr @input32, align 4
+  %r43 = call i64 () @default_join()
+  call void (i64) @__iyi_print_i64(i64 %r43)
+  store i32 61, ptr @input32, align 4
+  %r44 = call i64 () @default_join()
+  call void (i64) @__iyi_print_i64(i64 %r44)
+  store i32 62, ptr @input32, align 4
+  %r45 = call i64 () @default_join()
+  call void (i64) @__iyi_print_i64(i64 %r45)
+  store i32 63, ptr @input32, align 4
+  %r46 = call i64 () @default_join()
+  call void (i64) @__iyi_print_i64(i64 %r46)
+  store i32 64, ptr @input32, align 4
+  %r47 = call i64 () @default_join()
+  call void (i64) @__iyi_print_i64(i64 %r47)
+  store i32 65, ptr @input32, align 4
+  %r48 = call i64 () @default_join()
+  call void (i64) @__iyi_print_i64(i64 %r48)
+  store i32 69, ptr @input32, align 4
+  %r49 = call i64 () @shared_default()
+  call void (i64) @__iyi_print_i64(i64 %r49)
+  store i32 70, ptr @input32, align 4
+  %r50 = call i64 () @shared_default()
+  call void (i64) @__iyi_print_i64(i64 %r50)
+  store i32 71, ptr @input32, align 4
+  %r51 = call i64 () @shared_default()
+  call void (i64) @__iyi_print_i64(i64 %r51)
+  store i32 72, ptr @input32, align 4
+  %r52 = call i64 () @shared_default()
+  call void (i64) @__iyi_print_i64(i64 %r52)
+  store i32 73, ptr @input32, align 4
+  %r53 = call i64 () @shared_default()
+  call void (i64) @__iyi_print_i64(i64 %r53)
+  store i32 74, ptr @input32, align 4
+  %r54 = call i64 () @shared_default()
+  call void (i64) @__iyi_print_i64(i64 %r54)
+  %w = load i32, ptr @writes, align 4
+  %w64 = sext i32 %w to i64
+  call void (i64) @__iyi_print_i64(i64 %w64)
+  ret i32 0
+}
