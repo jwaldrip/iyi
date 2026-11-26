@@ -198,7 +198,7 @@ class Verifier
   def check_instructions(f : Function, dom : Dominance, reachable : Array(Bool), index : BlockIndex) : Nil
     # A single identity table keeps both the first and last placement of an instruction.
     # The first is used for phi edges, including void instructions; ordinary uses need the last.
-    positions = ValuePositions.new(f)
+    positions = Hash(Value, Tuple(Int32, Int32)).new
     f.params.each { |p| positions[p] = {-1, -1} }
     f.blocks.each_with_index do |b, bi|
       b.insts.each_with_index do |i, k|
@@ -245,7 +245,7 @@ class Verifier
   end
 
   # A use must be dominated by its definition: earlier in the same block, or in a block that dominates this one.
-  def check_use(f : Function, v : Value, bi : Int32, k : Int32, positions : ValuePositions, dom : Dominance) : Nil
+  def check_use(f : Function, v : Value, bi : Int32, k : Int32, positions : Hash(Value, Tuple(Int32, Int32)), dom : Dominance) : Nil
     placement = positions[v]?
     if placement.nil? || (v.is_a?(Inst) && v.type.void?)
       report("dominance", "an instruction uses a value that no instruction defines", f)
@@ -261,7 +261,7 @@ class Verifier
     end
   end
 
-  def check_phi(f : Function, phi : Inst, index : BlockIndex, dom : Dominance, bi : Int32, reachable : Array(Bool), positions : ValuePositions) : Nil
+  def check_phi(f : Function, phi : Inst, index : BlockIndex, dom : Dominance, bi : Int32, reachable : Array(Bool), positions : Hash(Value, Tuple(Int32, Int32))) : Nil
     block = f.blocks[bi]
     expected = block.preds.map { |p| p.name }.sorted
     got = phi.targets.map { |t| t.name }.sorted
@@ -487,72 +487,6 @@ class Verifier
     return false unless v.is_a?(Inst)
     i = v.as(Inst)
     i.op == Op::ThreadLocalAddr || i.op == Op::ThreadPointer
-  end
-end
-
-# An identity table sized for all definitions in one function. Slots hold dense indices into the two
-# arrays, so neither table grows while the verifier visits the function. The probe uses Hash's
-# existing key hash and mixing, and a fallback handles counts that cannot fit its slot array.
-class ValuePositions
-  @fallback : Hash(Value, Tuple(Int32, Int32))?
-  @slots : Array(Int32)
-  @values : Array(Value)
-  @positions : Array(Tuple(Int32, Int32))
-
-  def initialize(f : Function)
-    count = f.params.size.to_i64
-    f.blocks.each { |b| count += b.insts.size.to_i64 }
-    if count > 536870912_i64
-      @fallback = Hash(Value, Tuple(Int32, Int32)).new
-      @slots = [] of Int32
-      @values = [] of Value
-      @positions = [] of Tuple(Int32, Int32)
-      return
-    end
-    capacity = 8
-    while capacity.to_i64 < count * 2_i64
-      capacity *= 2
-    end
-    @fallback = nil
-    @slots = Array(Int32).new(capacity, -1)
-    @values = Array(Value).new(count.to_i32)
-    @positions = Array(Tuple(Int32, Int32)).new(count.to_i32)
-  end
-
-  def []?(value : Value) : Tuple(Int32, Int32)?
-    if fallback = @fallback
-      return fallback[value]?
-    end
-    return nil if @values.empty?
-    entry = @slots[slot_for(value)]
-    entry < 0 ? nil : @positions[entry]
-  end
-
-  def []=(value : Value, position : Tuple(Int32, Int32)) : Tuple(Int32, Int32)
-    if fallback = @fallback
-      return fallback[value] = position
-    end
-    slot = slot_for(value)
-    entry = @slots[slot]
-    if entry < 0
-      @slots[slot] = @values.size
-      @values << value
-      @positions << position
-    else
-      @positions[entry] = position
-    end
-    position
-  end
-
-  private def slot_for(value : Value) : Int32
-    mask = @slots.size - 1
-    h = value.hash &* -1640531535
-    slot = (h ^ h.unsafe_shr(16)) & mask
-    loop do
-      entry = @slots[slot]
-      return slot if entry < 0 || @values[entry] == value
-      slot = (slot + 1) & mask
-    end
   end
 end
 
