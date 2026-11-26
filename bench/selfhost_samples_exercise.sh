@@ -76,16 +76,21 @@ print(line.replace('\t', ' '))
 PY
 }
 
-# Both programs run without arguments or input, in separate scratch directories.
-# A timeout or inability to start is an error, never a matching pair of results.
+# The hosted reference runs for every built sample, including a stage-one
+# refusal. When both build, run them in separate scratch directories.
+# A timeout or inability to start is an error, never a matching result.
 run_pair() {
-  local hosted="$1" stage="$2" label="$3"
+  local hosted="$1" stage="$2" label="$3" stage_native=""
   mkdir -p "$WORK/runs/$label-hosted" "$WORK/runs/$label-stage1" || return 1
-  "$PY" - "$(native_path "$hosted")" "$(native_path "$stage")" \
+  [ -z "$stage" ] || stage_native="$(native_path "$stage")" || return 1
+  "$PY" - "$(native_path "$hosted")" "$stage_native" \
     "$(native_path "$WORK/runs/$label-hosted")" "$(native_path "$WORK/runs/$label-stage1")" <<'PY'
 import subprocess, sys
 runs = []
-for exe, cwd in ((sys.argv[1], sys.argv[3]), (sys.argv[2], sys.argv[4])):
+programs = [(sys.argv[1], sys.argv[3])]
+if sys.argv[2]:
+    programs.append((sys.argv[2], sys.argv[4]))
+for exe, cwd in programs:
     try:
         run = subprocess.run([exe], cwd=cwd, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
@@ -93,7 +98,9 @@ for exe, cwd in ((sys.argv[1], sys.argv[3]), (sys.argv[2], sys.argv[4])):
         print('error\t' + type(exc).__name__ + ': ' + str(exc).replace('\t', ' ').replace('\n', ' '))
         sys.exit(0)
     runs.append((run.returncode, run.stdout, run.stderr))
-if runs[0] == runs[1]:
+if len(runs) == 1:
+    print('reference\t')
+elif runs[0] == runs[1]:
     print('same\t')
 else:
     print('different\texit/stdout/stderr differ (hosted exit %s, stage1 exit %s)' % (runs[0][0], runs[1][0]))
@@ -102,9 +109,7 @@ PY
 
 # Emit one result: path, class, diagnostic, stage-one-build-success (0 or 1).
 measure_sample() {
-  local stage="$1" sample="$2" tag="$3" name hosted built rc note outcome kind
-  name="${sample##*/}"
-  name="${name%.iyi}"
+  local stage="$1" sample="$2" tag="$3" hosted built note outcome kind stage_for_run=""
   hosted="$WORK/bin/$tag-hosted$EXE"
   built="$WORK/bin/$tag-stage1$EXE"
   rm -f "$hosted" "$built"
@@ -116,15 +121,20 @@ measure_sample() {
     printf '%s\terror\thosted build failed (exit %s): %s\t%s\n' "$sample" "$hosted_rc" "$note" "$([ "$stage_rc" -eq 0 ] && [ -f "$built" ] && echo 1 || echo 0)"
     return
   fi
+  if [ "$stage_rc" -eq 0 ] && [ -f "$built" ]; then stage_for_run="$built"; fi
+  outcome="$(run_pair "$hosted" "$stage_for_run" "$tag")" || outcome=$'error\truntime comparison failed'
+  kind="${outcome%%$'\t'*}"
+  note="${outcome#*$'\t'}"
+  [ "$kind" = "$outcome" ] && note=""
+  if [ "$kind" = error ]; then
+    printf '%s\terror\t%s\t%s\n' "$sample" "$note" "$([ -n "$stage_for_run" ] && echo 1 || echo 0)"
+    return
+  fi
   if [ "$stage_rc" -eq 0 ]; then
-    if [ ! -f "$built" ]; then
+    if [ -z "$stage_for_run" ]; then
       printf '%s\terror\tstage one exited 0 without an executable\t0\n' "$sample"
       return
     fi
-    outcome="$(run_pair "$hosted" "$built" "$tag")" || outcome=$'error\truntime comparison failed'
-    kind="${outcome%%$'\t'*}"
-    note="${outcome#*$'\t'}"
-    [ "$kind" = "$outcome" ] && note=""
     printf '%s\t%s\t%s\t1\n' "$sample" "$kind" "$note"
   elif [ "$stage_rc" -eq 1 ]; then
     note="$(first_diagnostic "$WORK/$tag-stage1.build")"
@@ -228,6 +238,8 @@ rows = [line.rstrip('\r\n').split('\t') for line in open(sys.argv[1], encoding='
 print('  %-34s %-10s %s' % ('sample', 'class', 'first stage-one diagnostic'))
 for sample, state, note, built in rows:
     print('  %-34s %-10s %s' % (sample, state, note))
+print('  hosted references completed: %d/%d classified samples' %
+      (sum(row[1] in ('same', 'refused', 'different') for row in rows), len(rows)))
 print('  totals: %d samples, %d built, %d same, %d refused' %
       (len(rows), sum(row[3] == '1' for row in rows),
        sum(row[1] == 'same' for row in rows), sum(row[1] == 'refused' for row in rows)))
@@ -265,6 +277,22 @@ floor_control 'same becomes refused, even in raise mode' same '' refused 'Error:
 floor_control 'refused becomes same without a raise' refused 'Error: refusal' same '' 'RAISE THE FLOOR:' 0 || status=1
 floor_control 'refusal diagnostic changes without a raise' refused 'Error: before' refused 'Error: after' 'REFUSAL CHANGED:' 0 || status=1
 floor_control 'different output is never allowed' same '' different 'exit/stdout/stderr differ' 'DIFFERENT:' 1 || status=1
+
+# A raise must actually record either an improvement or a changed refusal.
+raise_control() {
+  local state="$1" note="$2" expected="$3"
+  printf 'samples/iyi/proof.iyi\trefused\tError: before\n' > "$WORK/control.floor"
+  printf 'samples/iyi/proof.iyi\t%s\t%s\t0\n' "$state" "$note" > "$WORK/control.results"
+  if ! check_floor "$WORK/control.floor" "$WORK/control.results" 1 "$WORK/control.new" > "$WORK/control.log" 2>&1 ||
+     ! grep -Fxq "$expected" "$WORK/control.new"; then
+    echo "  FAIL: raise mode did not record $state"
+    cat "$WORK/control.log"
+    return 1
+  fi
+  echo "  passed: raise mode records $state"
+}
+raise_control same '' $'samples/iyi/proof.iyi\tsame' || status=1
+raise_control refused 'Error: after' $'samples/iyi/proof.iyi\trefused\tError: after' || status=1
 
 # Mutate a scratch copy of the entry point, not the checkout. The mutant must
 # compile, refuse hello in the intended way, and be rejected by the real floor.
