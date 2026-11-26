@@ -31,7 +31,7 @@ import compiler/types/restrictions::{TypeRestrictions}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature, CallMatch}
-import compiler/semantic/match::{Match, NumericAutocast}
+import compiler/semantic/match::{Match, NumericAutocast, YieldFinder}
 import compiler/semantic/method_lookup::{ArmWalk, Matches, MethodLookup}
 import compiler/semantic/cover::{CallCover}
 import compiler/semantic/call::{CallRecalculation}
@@ -525,6 +525,7 @@ pub class MainVisitor < TypeNodeHost
   property untyped_locals : Hash(String, String)
   property fun_inline_file : String?
   @literal_expander : LiteralExpander
+  @yield_finder : YieldFinder? = nil
 
   def initialize(@program : SemanticProgram, @speculation : SpeculationLedger = SpeculationLedger.new, prepare_new_methods : Bool = true)
     @literal_expander = LiteralExpander.new(@program.normalizer)
@@ -3392,6 +3393,18 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # Definitions can be rewritten during typing, so walk their current bodies
+  # each time while reusing the state object for successive checks.
+  def definition_yields?(definition : Def) : Bool
+    return true if definition.block_arg || definition.macro_yields
+    finder = @yield_finder
+    if finder.nil?
+      finder = YieldFinder.new
+      @yield_finder = finder
+    end
+    finder.scan(definition.body)
+  end
+
   def trace_arg_dispatch(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, found : Matches, shortcut : Def?) : Nil
     return nil unless ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
     interesting = false
@@ -3601,7 +3614,7 @@ pub class MainVisitor < TypeNodeHost
         if call_node.named_args.nil? && definition.splat_index.nil?
           next if args.size > definition.args.size || args.size < min_args_count(definition)
         end
-        next unless CallMatch.yields?(definition) == !call_node.block.nil?
+        next unless definition_yields?(definition) == !call_node.block.nil?
         old_imports = @program.current_imports
         old_defs = @program.current_import_defs
         old_type = @current_type
@@ -3685,7 +3698,7 @@ pub class MainVisitor < TypeNodeHost
     write_at = 0
     read_at = 0
     while read_at < candidates.size
-      keep = CallMatch.yields?(candidates[read_at]) == wants_block
+      keep = definition_yields?(candidates[read_at]) == wants_block
       if keep
         candidates[write_at] = candidates[read_at]
         write_at += 1
@@ -3845,7 +3858,7 @@ pub class MainVisitor < TypeNodeHost
     # different block arity before listing the expected sizes.
     named = call_node.named_args
     if named.nil? || named.empty?
-      compatible = candidates.select { |d| CallMatch.yields?(d) == !call_node.block.nil? }
+      compatible = candidates.select { |d| definition_yields?(d) == !call_node.block.nil? }
       method_name = format_method_display_name(diagnostic_type, name)
       if wrong = CallError.wrong_number_for(method_name, args.size, compatible, candidates.size)
         refuse_call(call_node, wrong)
@@ -5960,7 +5973,7 @@ pub class MainVisitor < TypeNodeHost
   def super_declares?(owner : ModuleType, name : String) : Bool
     if definitions = owner.defs[name]?
       definitions.each do |definition|
-        return true unless CallMatch.yields?(definition)
+        return true unless definition_yields?(definition)
       end
     end
     false
