@@ -414,8 +414,10 @@ pub abstract class ModuleType < NamedType
 
   def all_instance_vars : Hash(String, MetaTypeVar)
     all_ivars = Hash(String, MetaTypeVar).new
+    superclass : Type? = nil
     if self.is_a?(ClassType)
-      if sc = self.as(ClassType).superclass
+      superclass = self.as(ClassType).superclass
+      if sc = superclass
         if sc.is_a?(ModuleType)
           sc.as(ModuleType).all_instance_vars.each do |k, v|
             all_ivars[k] = v
@@ -425,7 +427,14 @@ pub abstract class ModuleType < NamedType
         end
       end
     end
-    @parents.each do |p|
+    @parents.each_with_index do |p, i|
+      # A class normally stores its superclass as its first parent too. The
+      # immediately repeated merge cannot change values or insertion order.
+      if i == 0
+        if sc = superclass
+          next if sc.object_id == p.object_id
+        end
+      end
       if p.is_a?(ModuleType)
         p.as(ModuleType).all_instance_vars.each do |k, v|
           all_ivars[k] = v
