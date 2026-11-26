@@ -5890,9 +5890,15 @@ pub class MainVisitor < TypeNodeHost
         instantiated_def = hit.definition
         ret_t = hit.return_type
       else
-        instantiated_def = target_def.clone
+        # A call expansion has already built a fresh wrapper and body.
+        instantiated_def = target_def
+        if target_def.object_id == original_def.object_id
+          instantiated_def = target_def.clone
+        end
         defaults_bind_splat(original_def, instantiated_def, supplied_args)
-        @program.copy_def_owner(target_def, instantiated_def)
+        if instantiated_def.object_id != target_def.object_id
+          @program.copy_def_owner(target_def, instantiated_def)
+        end
         @call_target_defs[node] = instantiated_def
         ret_t = type_method_body(instantiated_def, union_instance_owner, arguments, node.block, node, dkey, node)
         instantiated_def = @call_target_defs[node]? || instantiated_def
@@ -6034,9 +6040,15 @@ pub class MainVisitor < TypeNodeHost
       @call_target_defs[node] = instantiated_def
       body_ret = hit.return_type
     else
-      instantiated_def = target_def.clone
+      # Only a declaration needs a clone; a call expansion is already private.
+      instantiated_def = target_def
+      if target_def.object_id == original_def.object_id
+        instantiated_def = target_def.clone
+      end
       defaults_bind_splat(original_def, instantiated_def, node.args)
-      @program.copy_def_owner(target_def, instantiated_def)
+      if instantiated_def.object_id != target_def.object_id
+        @program.copy_def_owner(target_def, instantiated_def)
+      end
       @call_target_defs[node] = instantiated_def
       if blk = node.block
         @block_breaks[blk] = [] of Type?
