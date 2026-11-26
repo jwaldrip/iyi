@@ -1,0 +1,27 @@
+; iyi-ir 1
+source_filename = "d1_phi_undef_mixed"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i128 @dispatch(i32 %x) {
+entry:
+  %c0 = icmp eq i32 %x, 0
+  br i1 %c0, label %merge, label %b1
+b1:
+  %c1 = icmp eq i32 %x, 1
+  br i1 %c1, label %merge, label %b2
+b2:
+  %c2 = icmp eq i32 %x, 2
+  br i1 %c2, label %a2, label %b3
+b3:
+  %c3 = icmp eq i32 %x, 3
+  br i1 %c3, label %a3, label %default
+merge:
+  %p = phi i128 [ undef, label %entry ], [ poison, label %b1 ]
+  ret i128 %p
+a2:
+  ret i128 2
+a3:
+  ret i128 3
+default:
+  unreachable
+}
