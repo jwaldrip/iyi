@@ -85,12 +85,6 @@ pub class YieldFinder < Visitor
     @found = false
   end
 
-  def scan(body : ASTNode) : Bool
-    @found = false
-    body.accept(self)
-    @found
-  end
-
   def visit(node : Yield) : Bool
     @found = true
     true
@@ -124,7 +118,9 @@ pub class CallMatch
 
   def self.yields?(definition : Def) : Bool
     return true if definition.block_arg || definition.macro_yields
-    YieldFinder.new.scan(definition.body)
+    finder = YieldFinder.new
+    definition.body.accept(finder)
+    finder.found
   end
 
   # A lookup that already checked the block can reuse that result for this attempt.
