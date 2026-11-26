@@ -6312,6 +6312,10 @@ require "./file"
       # report on the mark is put together - the collector writes no
       # line from its own heap (`say_mark`).
       W_ASSISTS = 96_u64
+      # Sixty-four pairs of type id and layout entry, in the unused end
+      # of this worker's page before W_LINE. The page starts zeroed, and
+      # type id zero is never looked up.
+      W_LAYOUT_CACHE = 1024_u64
       W_LINE = 2048_u64
       @@worker_pages : UInt64 = 0_u64
 
@@ -6717,11 +6721,22 @@ require "./file"
 
       # The entry's address for a type id, or zero: zero id, no table, and
       # an id the table does not carry all answer zero, and every zero means
-      # the same thing to `scan` — word-scan conservatively.
+      # the same thing to `scan` (word-scan conservatively). The layout
+      # table is immutable, so each worker can keep both hits and misses.
+      # Its last entry serves repeated types; the direct-mapped table avoids
+      # a binary search when the scan alternates between types.
       def self.layout_entry(w : UInt64, type_id : UInt64) : UInt64
         return 0_u64 if type_id == 0
         return IyiHeap.read64(w + W_LAST_ENTRY) if type_id == IyiHeap.read64(w + W_LAST_TYPE)
-        entry = layout_search(type_id)
+        slot = w &+ W_LAYOUT_CACHE &+ (type_id & 63_u64) &* 16_u64
+        entry = 0_u64
+        if IyiHeap.read64(slot) == type_id
+          entry = IyiHeap.read64(slot &+ 8_u64)
+        else
+          entry = layout_search(type_id)
+          IyiHeap.write64(slot &+ 8_u64, entry)
+          IyiHeap.write64(slot, type_id)
+        end
         IyiHeap.write64(w + W_LAST_TYPE, type_id)
         IyiHeap.write64(w + W_LAST_ENTRY, entry)
         entry
