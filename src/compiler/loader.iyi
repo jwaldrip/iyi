@@ -75,16 +75,12 @@ pub class IyiPath
   # `module calc/parser` in `/p/calc/parser.iyi` -> `/p`.
   def self.header_root_of(path : String, text : String) : String?
     header : String? = nil
-    offset = 0
-    while offset <= text.bytesize
-      line_end = text.byte_index("\n", offset) || text.bytesize
-      trimmed = text[offset, line_end - offset].strip
-      unless trimmed.empty? || trimmed.starts_with?('#')
-        header = trimmed
-        break
-      end
-      break if line_end == text.bytesize
-      offset = line_end + 1
+    lines = text.split('\n')
+    lines.each do |line|
+      trimmed = line.strip
+      next if trimmed.empty? || trimmed.starts_with?('#')
+      header = trimmed
+      break
     end
     if h = header
       if h.starts_with?("module ")
