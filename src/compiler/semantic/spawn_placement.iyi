@@ -361,12 +361,10 @@ class SpawnSiteCollector < Visitor
   end
 
   def visit(node : Call) : Bool
-    if spawn_call?(@visitor, node)
-      unless @analysis.verdicts.has_key?(node)
+    unless @analysis.verdicts.has_key?(node)
+      if spawn_call?(@visitor, node)
         @analysis.record(node, classify(node))
-      end
-    elsif unresolved_group_spawn?(@visitor, node)
-      unless @analysis.verdicts.has_key?(node)
+      elsif unresolved_group_spawn?(@visitor, node)
         @analysis.record(node, SpawnVerdict.new(SpawnTarget::Unproven, placement_text(node), "the spawn target was not typed", spawn_site(node)))
       end
     end
