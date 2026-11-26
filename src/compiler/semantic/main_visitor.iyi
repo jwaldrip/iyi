@@ -3984,25 +3984,34 @@ pub class MainVisitor < TypeNodeHost
   # Written blocks and blocks run by yielding defs keep their node identity.
   # A captured forwarded proc is identified by its component types instead.
   def instance_key(rec_type : Type, target_def : Def, args : Array(ASTNode), block : Block?, call_node : Call?) : String
-    parts = [] of String
-    args.each do |a|
-      if at = child_type(a)
-        parts << at.full_name
-      else
-        parts << "?"
+    key = ""
+    if args.empty?
+      key = "#{rec_type.full_name}##{target_def.name}()"
+    else
+      parts = [] of String
+      args.each do |a|
+        if at = child_type(a)
+          parts << at.full_name
+        else
+          parts << "?"
+        end
       end
+      key = "#{rec_type.full_name}##{target_def.name}(#{parts.join(",")})"
     end
-    key = "#{rec_type.full_name}##{target_def.name}(#{parts.join(",")})"
-    restrictions = [] of String
-    target_def.args.each do |param|
-      if restriction = param.restriction
-        text = restriction.as(ASTNode).to_s
-        restrictions << "#{text.bytesize}:#{text}"
-      else
-        restrictions << "0:"
+    if target_def.args.empty?
+      key = key + "|signature()"
+    else
+      restrictions = [] of String
+      target_def.args.each do |param|
+        if restriction = param.restriction
+          text = restriction.as(ASTNode).to_s
+          restrictions << "#{text.bytesize}:#{text}"
+        else
+          restrictions << "0:"
+        end
       end
+      key = key + "|signature(" + restrictions.join(",") + ")"
     end
-    key = key + "|signature(" + restrictions.join(",") + ")"
     if index = target_def.splat_index
       key = key + "|splat=#{index}"
     end
@@ -4023,6 +4032,13 @@ pub class MainVisitor < TypeNodeHost
   def def_instance_key(origin : Def, rec_type : Type, call_node : Call) : String?
     block = call_node.block
     return nil if block && origin.block_arg.nil?
+    if call_node.args.empty? && call_node.named_args.nil? && block.nil?
+      key_owner = rec_type
+      if owner = @program.def_owner(origin)
+        key_owner = owner if owner.iyi_unit
+      end
+      return "#{origin.node_id}|#{key_owner.full_name}()"
+    end
     parts = [] of String
     i = 0
     while i < call_node.args.size
