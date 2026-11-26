@@ -1,0 +1,7 @@
+class EagerNewBase
+  def initialize(value : Int32)
+  end
+end
+
+class EagerNewChild < EagerNewBase
+end

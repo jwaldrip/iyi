@@ -54,6 +54,11 @@ for fixture in "$REPO"/bench/fixtures/semnew_*.iyi; do
     fixture_bad=$((fixture_bad + 1))
     continue
   fi
+  if [ "$name" = semnew_eager_metaclass.iyi ] && ! grep -Fxq 'cached metaclass present=true allocate=true' "$WORK/o.txt"; then
+    echo "  ORACLE MISSED EAGER METACLASS: $name"
+    fixture_bad=$((fixture_bad + 1))
+    continue
+  fi
   if ! "$WORK/port$EXE" "$(native_path "$fixture")" > "$WORK/p.txt" 2> "$WORK/pe.txt"; then
     echo "  PORT FAILED $name: $(head -1 "$WORK/pe.txt")"
     fixture_bad=$((fixture_bad + 1))
@@ -144,6 +149,19 @@ prove_mutation "explicit initialize is left public" "$NEW_FILE" \
   "    if ex.original.visibility == Visibility::Public" \
   "    if false" \
   -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+if grep -Fq '  has_initialize = has_new_or_initialize?(type, "initialize")' "$NEW_FILE"; then
+  prove_mutation "inherited initialize skips eager metaclass" "$NEW_FILE" \
+    $'  metaclass = type.metaclass\n  return if has_initialize' \
+    $'  return if has_initialize\n  metaclass = type.metaclass' \
+    -- check_new_diverge || status=1
+else
+  prove_mutation "inherited initialize skips eager metaclass" "$NEW_FILE" \
+    '  news = MethodLookup.all_defs(type.metaclass, "new", [] of Def)' \
+    $'  return unless inits.empty?\n  news = MethodLookup.all_defs(type.metaclass, "new", [] of Def)' \
+    -- check_new_diverge || status=1
+fi
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # The binding moved out of MainVisitor#restriction_type into ArgRestriction.lookup_bound, which
