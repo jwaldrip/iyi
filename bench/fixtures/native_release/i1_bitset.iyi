@@ -1,0 +1,41 @@
+def i1_bit?(row : Array(UInt64), value : Int32) : Bool
+  (row[value // 64] & 1_u64.unsafe_shl((value & 63).to_u64)) != 0_u64
+end
+
+# Three bit tests per value, from three sites in nested loops; the masks keep every index inside the row.
+def i1_bitset_count(rows : Array(Array(UInt64)), limit : Int32) : Int64
+  sum = 0_i64
+  pass = 0
+  while pass < 3
+    r = 0
+    while r < rows.size
+      row = rows[r]
+      value = 0
+      while value < limit
+        sum = sum + 1_i64 if i1_bit?(row, value)
+        sum = sum + 2_i64 if i1_bit?(row, (value + 17) & (limit - 1))
+        sum = sum + 3_i64 if i1_bit?(row, (value + 257) & (limit - 1))
+        value = value + 1
+      end
+      r = r + 1
+    end
+    pass = pass + 1
+  end
+  sum
+end
+
+rows = [] of Array(UInt64)
+state = 88172645463325252_u64
+r = 0
+while r < 16
+  row = [] of UInt64
+  word = 0
+  while word < 8
+    state = (state &* 6364136223846793005_u64) &+ 1442695040888963407_u64
+    row << state
+    word = word + 1
+  end
+  rows << row
+  r = r + 1
+end
+puts "bits=#{i1_bitset_count(rows, 512)}"

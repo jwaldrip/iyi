@@ -1,0 +1,74 @@
+class I1Node
+  def initialize(@value : Int32)
+  end
+end
+
+# Int32 keys: inserts that grow the table during the run, lookups in loops, deletes that leave tombstones,
+# and inserts after the deletes.
+def i1_int_table(count : Int32) : Int64
+  table = {} of Int32 => Int32
+  i = 0
+  while i < count
+    table[i * 7] = i
+    i = i + 1
+  end
+  sum = 0_i64
+  pass = 0
+  while pass < 3
+    i = 0
+    while i < count * 2
+      sum = sum + table.fetch(i, -1).to_i64
+      i = i + 1
+    end
+    pass = pass + 1
+  end
+  i = 0
+  while i < count
+    table.delete(i * 7) if i % 3 == 0
+    i = i + 1
+  end
+  i = 0
+  while i < count
+    table[i * 11 + 1] = i + 5 if i % 2 == 0
+    i = i + 1
+  end
+  i = 0
+  while i < count * 4
+    sum = sum + 1_i64 if table.has_key?(i)
+    i = i + 1
+  end
+  sum + table.size.to_i64 + table.keys.size.to_i64
+end
+
+# Object keys (identity hashes): inserts, lookups by value in loops, deletes, and membership afterwards.
+def i1_object_table(count : Int32) : Int64
+  nodes = [] of I1Node
+  table = {} of I1Node => Int32
+  i = 0
+  while i < count
+    node = I1Node.new(i)
+    nodes << node
+    table[node] = i
+    i = i + 1
+  end
+  sum = 0_i64
+  i = 0
+  while i < nodes.size
+    sum = sum + table[nodes[i]].to_i64
+    i = i + 1
+  end
+  i = 0
+  while i < nodes.size
+    table.delete(nodes[i]) if i % 4 == 1
+    i = i + 1
+  end
+  missing = 0
+  i = 0
+  while i < nodes.size
+    missing = missing + 1 if table.has_key?(nodes[i])
+    i = i + 1
+  end
+  sum + missing.to_i64 + table.size.to_i64
+end
+
+puts "int=#{i1_int_table(300)} object=#{i1_object_table(200)}"

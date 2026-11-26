@@ -1,0 +1,675 @@
+; iyi-ir 1
+source_filename = "i1_hot_cap"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external void @sink()
+
+define internal i64 @work(i64 %x) {
+entry:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %a1 = add i64 %x, 1
+  %a2 = add i64 %a1, 2
+  %a3 = add i64 %a2, 3
+  %a4 = add i64 %a3, 4
+  %a5 = add i64 %a4, 5
+  %a6 = add i64 %a5, 6
+  %a7 = add i64 %a6, 7
+  %a8 = add i64 %a7, 8
+  %a9 = add i64 %a8, 9
+  ret i64 %a9
+}
+
+define external i64 @loop13(i64 %n) {
+entry:
+  br label %head
+head:
+  %i = phi i64 [ 0, label %entry ], [ %next, label %inline.cont23 ]
+  %acc = phi i64 [ 0, label %entry ], [ %acc3, label %inline.cont23 ]
+  %c = icmp slt i64 %i, %n
+  br i1 %c, label %body, label %done
+body:
+  br label %entry1
+done:
+  ret i64 %acc
+entry1:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %0 = add i64 %i, 1
+  %1 = add i64 %0, 2
+  %2 = add i64 %1, 3
+  %3 = add i64 %2, 4
+  %4 = add i64 %3, 5
+  %5 = add i64 %4, 6
+  %6 = add i64 %5, 7
+  %7 = add i64 %6, 8
+  %8 = add i64 %7, 9
+  br label %inline.cont
+inline.cont:
+  %9 = phi i64 [ %8, label %entry1 ]
+  br label %entry2
+entry2:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %10 = add i64 %9, 1
+  %11 = add i64 %10, 2
+  %12 = add i64 %11, 3
+  %13 = add i64 %12, 4
+  %14 = add i64 %13, 5
+  %15 = add i64 %14, 6
+  %16 = add i64 %15, 7
+  %17 = add i64 %16, 8
+  %18 = add i64 %17, 9
+  br label %inline.cont3
+inline.cont3:
+  %19 = phi i64 [ %18, label %entry2 ]
+  br label %entry4
+entry4:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %20 = add i64 %19, 1
+  %21 = add i64 %20, 2
+  %22 = add i64 %21, 3
+  %23 = add i64 %22, 4
+  %24 = add i64 %23, 5
+  %25 = add i64 %24, 6
+  %26 = add i64 %25, 7
+  %27 = add i64 %26, 8
+  %28 = add i64 %27, 9
+  br label %inline.cont5
+inline.cont5:
+  %29 = phi i64 [ %28, label %entry4 ]
+  br label %entry6
+entry6:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %30 = add i64 %29, 1
+  %31 = add i64 %30, 2
+  %32 = add i64 %31, 3
+  %33 = add i64 %32, 4
+  %34 = add i64 %33, 5
+  %35 = add i64 %34, 6
+  %36 = add i64 %35, 7
+  %37 = add i64 %36, 8
+  %38 = add i64 %37, 9
+  br label %inline.cont7
+inline.cont7:
+  %39 = phi i64 [ %38, label %entry6 ]
+  br label %entry8
+entry8:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %40 = add i64 %39, 1
+  %41 = add i64 %40, 2
+  %42 = add i64 %41, 3
+  %43 = add i64 %42, 4
+  %44 = add i64 %43, 5
+  %45 = add i64 %44, 6
+  %46 = add i64 %45, 7
+  %47 = add i64 %46, 8
+  %48 = add i64 %47, 9
+  br label %inline.cont9
+inline.cont9:
+  %49 = phi i64 [ %48, label %entry8 ]
+  br label %entry10
+entry10:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %50 = add i64 %49, 1
+  %51 = add i64 %50, 2
+  %52 = add i64 %51, 3
+  %53 = add i64 %52, 4
+  %54 = add i64 %53, 5
+  %55 = add i64 %54, 6
+  %56 = add i64 %55, 7
+  %57 = add i64 %56, 8
+  %58 = add i64 %57, 9
+  br label %inline.cont11
+inline.cont11:
+  %59 = phi i64 [ %58, label %entry10 ]
+  br label %entry12
+entry12:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %60 = add i64 %59, 1
+  %61 = add i64 %60, 2
+  %62 = add i64 %61, 3
+  %63 = add i64 %62, 4
+  %64 = add i64 %63, 5
+  %65 = add i64 %64, 6
+  %66 = add i64 %65, 7
+  %67 = add i64 %66, 8
+  %68 = add i64 %67, 9
+  br label %inline.cont13
+inline.cont13:
+  %69 = phi i64 [ %68, label %entry12 ]
+  br label %entry14
+entry14:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %70 = add i64 %69, 1
+  %71 = add i64 %70, 2
+  %72 = add i64 %71, 3
+  %73 = add i64 %72, 4
+  %74 = add i64 %73, 5
+  %75 = add i64 %74, 6
+  %76 = add i64 %75, 7
+  %77 = add i64 %76, 8
+  %78 = add i64 %77, 9
+  br label %inline.cont15
+inline.cont15:
+  %79 = phi i64 [ %78, label %entry14 ]
+  br label %entry16
+entry16:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %80 = add i64 %79, 1
+  %81 = add i64 %80, 2
+  %82 = add i64 %81, 3
+  %83 = add i64 %82, 4
+  %84 = add i64 %83, 5
+  %85 = add i64 %84, 6
+  %86 = add i64 %85, 7
+  %87 = add i64 %86, 8
+  %88 = add i64 %87, 9
+  br label %inline.cont17
+inline.cont17:
+  %89 = phi i64 [ %88, label %entry16 ]
+  br label %entry18
+entry18:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %90 = add i64 %89, 1
+  %91 = add i64 %90, 2
+  %92 = add i64 %91, 3
+  %93 = add i64 %92, 4
+  %94 = add i64 %93, 5
+  %95 = add i64 %94, 6
+  %96 = add i64 %95, 7
+  %97 = add i64 %96, 8
+  %98 = add i64 %97, 9
+  br label %inline.cont19
+inline.cont19:
+  %99 = phi i64 [ %98, label %entry18 ]
+  br label %entry20
+entry20:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %100 = add i64 %99, 1
+  %101 = add i64 %100, 2
+  %102 = add i64 %101, 3
+  %103 = add i64 %102, 4
+  %104 = add i64 %103, 5
+  %105 = add i64 %104, 6
+  %106 = add i64 %105, 7
+  %107 = add i64 %106, 8
+  %108 = add i64 %107, 9
+  br label %inline.cont21
+inline.cont21:
+  %109 = phi i64 [ %108, label %entry20 ]
+  br label %entry22
+entry22:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %110 = add i64 %109, 1
+  %111 = add i64 %110, 2
+  %112 = add i64 %111, 3
+  %113 = add i64 %112, 4
+  %114 = add i64 %113, 5
+  %115 = add i64 %114, 6
+  %116 = add i64 %115, 7
+  %117 = add i64 %116, 8
+  %118 = add i64 %117, 9
+  br label %inline.cont23
+inline.cont23:
+  %119 = phi i64 [ %118, label %entry22 ]
+  %v13 = call i64 (i64) @work(i64 %119)
+  %acc3 = add i64 %acc, %v13
+  %next = add i64 %i, 1
+  br label %head
+}
+
+define external i64 @padding(i64 %x) {
+entry:
+  %p0 = add i64 %x, 0
+  %p1 = add i64 %x, 1
+  %p2 = add i64 %x, 2
+  %p3 = add i64 %x, 3
+  %p4 = add i64 %x, 4
+  %p5 = add i64 %x, 5
+  %p6 = add i64 %x, 6
+  %p7 = add i64 %x, 7
+  %p8 = add i64 %x, 8
+  %p9 = add i64 %x, 9
+  %p10 = add i64 %x, 10
+  %p11 = add i64 %x, 11
+  %p12 = add i64 %x, 12
+  %p13 = add i64 %x, 13
+  %p14 = add i64 %x, 14
+  %p15 = add i64 %x, 15
+  %p16 = add i64 %x, 16
+  %p17 = add i64 %x, 17
+  %p18 = add i64 %x, 18
+  %p19 = add i64 %x, 19
+  %p20 = add i64 %x, 20
+  %p21 = add i64 %x, 21
+  %p22 = add i64 %x, 22
+  %p23 = add i64 %x, 23
+  %p24 = add i64 %x, 24
+  %p25 = add i64 %x, 25
+  %p26 = add i64 %x, 26
+  %p27 = add i64 %x, 27
+  %p28 = add i64 %x, 28
+  %p29 = add i64 %x, 29
+  %p30 = add i64 %x, 30
+  %p31 = add i64 %x, 31
+  %p32 = add i64 %x, 32
+  %p33 = add i64 %x, 33
+  %p34 = add i64 %x, 34
+  %p35 = add i64 %x, 35
+  %p36 = add i64 %x, 36
+  %p37 = add i64 %x, 37
+  %p38 = add i64 %x, 38
+  %p39 = add i64 %x, 39
+  %p40 = add i64 %x, 40
+  %p41 = add i64 %x, 41
+  %p42 = add i64 %x, 42
+  %p43 = add i64 %x, 43
+  %p44 = add i64 %x, 44
+  %p45 = add i64 %x, 45
+  %p46 = add i64 %x, 46
+  %p47 = add i64 %x, 47
+  %p48 = add i64 %x, 48
+  %p49 = add i64 %x, 49
+  %p50 = add i64 %x, 50
+  %p51 = add i64 %x, 51
+  %p52 = add i64 %x, 52
+  %p53 = add i64 %x, 53
+  %p54 = add i64 %x, 54
+  %p55 = add i64 %x, 55
+  %p56 = add i64 %x, 56
+  %p57 = add i64 %x, 57
+  %p58 = add i64 %x, 58
+  %p59 = add i64 %x, 59
+  %p60 = add i64 %x, 60
+  %p61 = add i64 %x, 61
+  %p62 = add i64 %x, 62
+  %p63 = add i64 %x, 63
+  %p64 = add i64 %x, 64
+  %p65 = add i64 %x, 65
+  %p66 = add i64 %x, 66
+  %p67 = add i64 %x, 67
+  %p68 = add i64 %x, 68
+  %p69 = add i64 %x, 69
+  %p70 = add i64 %x, 70
+  %p71 = add i64 %x, 71
+  %p72 = add i64 %x, 72
+  %p73 = add i64 %x, 73
+  %p74 = add i64 %x, 74
+  %p75 = add i64 %x, 75
+  %p76 = add i64 %x, 76
+  %p77 = add i64 %x, 77
+  %p78 = add i64 %x, 78
+  %p79 = add i64 %x, 79
+  %p80 = add i64 %x, 80
+  %p81 = add i64 %x, 81
+  %p82 = add i64 %x, 82
+  %p83 = add i64 %x, 83
+  %p84 = add i64 %x, 84
+  %p85 = add i64 %x, 85
+  %p86 = add i64 %x, 86
+  %p87 = add i64 %x, 87
+  %p88 = add i64 %x, 88
+  %p89 = add i64 %x, 89
+  %p90 = add i64 %x, 90
+  %p91 = add i64 %x, 91
+  %p92 = add i64 %x, 92
+  %p93 = add i64 %x, 93
+  %p94 = add i64 %x, 94
+  %p95 = add i64 %x, 95
+  %p96 = add i64 %x, 96
+  %p97 = add i64 %x, 97
+  %p98 = add i64 %x, 98
+  %p99 = add i64 %x, 99
+  %p100 = add i64 %x, 100
+  %p101 = add i64 %x, 101
+  %p102 = add i64 %x, 102
+  %p103 = add i64 %x, 103
+  %p104 = add i64 %x, 104
+  %p105 = add i64 %x, 105
+  %p106 = add i64 %x, 106
+  %p107 = add i64 %x, 107
+  %p108 = add i64 %x, 108
+  %p109 = add i64 %x, 109
+  %p110 = add i64 %x, 110
+  %p111 = add i64 %x, 111
+  %p112 = add i64 %x, 112
+  %p113 = add i64 %x, 113
+  %p114 = add i64 %x, 114
+  %p115 = add i64 %x, 115
+  %p116 = add i64 %x, 116
+  %p117 = add i64 %x, 117
+  %p118 = add i64 %x, 118
+  %p119 = add i64 %x, 119
+  %p120 = add i64 %x, 120
+  %p121 = add i64 %x, 121
+  %p122 = add i64 %x, 122
+  %p123 = add i64 %x, 123
+  %p124 = add i64 %x, 124
+  %p125 = add i64 %x, 125
+  %p126 = add i64 %x, 126
+  %p127 = add i64 %x, 127
+  %p128 = add i64 %x, 128
+  %p129 = add i64 %x, 129
+  %p130 = add i64 %x, 130
+  %p131 = add i64 %x, 131
+  %p132 = add i64 %x, 132
+  %p133 = add i64 %x, 133
+  %p134 = add i64 %x, 134
+  %p135 = add i64 %x, 135
+  %p136 = add i64 %x, 136
+  %p137 = add i64 %x, 137
+  %p138 = add i64 %x, 138
+  %p139 = add i64 %x, 139
+  %p140 = add i64 %x, 140
+  %p141 = add i64 %x, 141
+  %p142 = add i64 %x, 142
+  %p143 = add i64 %x, 143
+  %p144 = add i64 %x, 144
+  %p145 = add i64 %x, 145
+  %p146 = add i64 %x, 146
+  %p147 = add i64 %x, 147
+  %p148 = add i64 %x, 148
+  %p149 = add i64 %x, 149
+  %p150 = add i64 %x, 150
+  %p151 = add i64 %x, 151
+  %p152 = add i64 %x, 152
+  %p153 = add i64 %x, 153
+  %p154 = add i64 %x, 154
+  %p155 = add i64 %x, 155
+  %p156 = add i64 %x, 156
+  %p157 = add i64 %x, 157
+  %p158 = add i64 %x, 158
+  %p159 = add i64 %x, 159
+  %p160 = add i64 %x, 160
+  %p161 = add i64 %x, 161
+  %p162 = add i64 %x, 162
+  %p163 = add i64 %x, 163
+  %p164 = add i64 %x, 164
+  %p165 = add i64 %x, 165
+  %p166 = add i64 %x, 166
+  %p167 = add i64 %x, 167
+  %p168 = add i64 %x, 168
+  %p169 = add i64 %x, 169
+  %p170 = add i64 %x, 170
+  %p171 = add i64 %x, 171
+  %p172 = add i64 %x, 172
+  %p173 = add i64 %x, 173
+  %p174 = add i64 %x, 174
+  %p175 = add i64 %x, 175
+  %p176 = add i64 %x, 176
+  %p177 = add i64 %x, 177
+  %p178 = add i64 %x, 178
+  %p179 = add i64 %x, 179
+  %p180 = add i64 %x, 180
+  %p181 = add i64 %x, 181
+  %p182 = add i64 %x, 182
+  %p183 = add i64 %x, 183
+  %p184 = add i64 %x, 184
+  %p185 = add i64 %x, 185
+  %p186 = add i64 %x, 186
+  %p187 = add i64 %x, 187
+  %p188 = add i64 %x, 188
+  %p189 = add i64 %x, 189
+  %p190 = add i64 %x, 190
+  %p191 = add i64 %x, 191
+  %p192 = add i64 %x, 192
+  %p193 = add i64 %x, 193
+  %p194 = add i64 %x, 194
+  %p195 = add i64 %x, 195
+  %p196 = add i64 %x, 196
+  %p197 = add i64 %x, 197
+  %p198 = add i64 %x, 198
+  %p199 = add i64 %x, 199
+  %p200 = add i64 %x, 200
+  %p201 = add i64 %x, 201
+  %p202 = add i64 %x, 202
+  %p203 = add i64 %x, 203
+  %p204 = add i64 %x, 204
+  %p205 = add i64 %x, 205
+  %p206 = add i64 %x, 206
+  %p207 = add i64 %x, 207
+  %p208 = add i64 %x, 208
+  %p209 = add i64 %x, 209
+  %p210 = add i64 %x, 210
+  %p211 = add i64 %x, 211
+  %p212 = add i64 %x, 212
+  %p213 = add i64 %x, 213
+  %p214 = add i64 %x, 214
+  %p215 = add i64 %x, 215
+  %p216 = add i64 %x, 216
+  %p217 = add i64 %x, 217
+  %p218 = add i64 %x, 218
+  %p219 = add i64 %x, 219
+  %p220 = add i64 %x, 220
+  %p221 = add i64 %x, 221
+  %p222 = add i64 %x, 222
+  %p223 = add i64 %x, 223
+  %p224 = add i64 %x, 224
+  %p225 = add i64 %x, 225
+  %p226 = add i64 %x, 226
+  %p227 = add i64 %x, 227
+  %p228 = add i64 %x, 228
+  %p229 = add i64 %x, 229
+  %p230 = add i64 %x, 230
+  %p231 = add i64 %x, 231
+  %p232 = add i64 %x, 232
+  %p233 = add i64 %x, 233
+  %p234 = add i64 %x, 234
+  %p235 = add i64 %x, 235
+  %p236 = add i64 %x, 236
+  %p237 = add i64 %x, 237
+  %p238 = add i64 %x, 238
+  %p239 = add i64 %x, 239
+  %p240 = add i64 %x, 240
+  %p241 = add i64 %x, 241
+  %p242 = add i64 %x, 242
+  %p243 = add i64 %x, 243
+  %p244 = add i64 %x, 244
+  %p245 = add i64 %x, 245
+  %p246 = add i64 %x, 246
+  %p247 = add i64 %x, 247
+  %p248 = add i64 %x, 248
+  %p249 = add i64 %x, 249
+  %p250 = add i64 %x, 250
+  %p251 = add i64 %x, 251
+  %p252 = add i64 %x, 252
+  %p253 = add i64 %x, 253
+  %p254 = add i64 %x, 254
+  %p255 = add i64 %x, 255
+  %p256 = add i64 %x, 256
+  %p257 = add i64 %x, 257
+  %p258 = add i64 %x, 258
+  %p259 = add i64 %x, 259
+  %p260 = add i64 %x, 260
+  %p261 = add i64 %x, 261
+  %p262 = add i64 %x, 262
+  %p263 = add i64 %x, 263
+  %p264 = add i64 %x, 264
+  %p265 = add i64 %x, 265
+  %p266 = add i64 %x, 266
+  %p267 = add i64 %x, 267
+  %p268 = add i64 %x, 268
+  %p269 = add i64 %x, 269
+  %p270 = add i64 %x, 270
+  %p271 = add i64 %x, 271
+  %p272 = add i64 %x, 272
+  %p273 = add i64 %x, 273
+  %p274 = add i64 %x, 274
+  %p275 = add i64 %x, 275
+  %p276 = add i64 %x, 276
+  %p277 = add i64 %x, 277
+  %p278 = add i64 %x, 278
+  %p279 = add i64 %x, 279
+  %p280 = add i64 %x, 280
+  %p281 = add i64 %x, 281
+  %p282 = add i64 %x, 282
+  %p283 = add i64 %x, 283
+  %p284 = add i64 %x, 284
+  %p285 = add i64 %x, 285
+  %p286 = add i64 %x, 286
+  %p287 = add i64 %x, 287
+  %p288 = add i64 %x, 288
+  %p289 = add i64 %x, 289
+  %p290 = add i64 %x, 290
+  %p291 = add i64 %x, 291
+  %p292 = add i64 %x, 292
+  %p293 = add i64 %x, 293
+  %p294 = add i64 %x, 294
+  %p295 = add i64 %x, 295
+  %p296 = add i64 %x, 296
+  %p297 = add i64 %x, 297
+  %p298 = add i64 %x, 298
+  %p299 = add i64 %x, 299
+  %p300 = add i64 %x, 300
+  %p301 = add i64 %x, 301
+  %p302 = add i64 %x, 302
+  %p303 = add i64 %x, 303
+  %p304 = add i64 %x, 304
+  %p305 = add i64 %x, 305
+  %p306 = add i64 %x, 306
+  %p307 = add i64 %x, 307
+  %p308 = add i64 %x, 308
+  %p309 = add i64 %x, 309
+  %p310 = add i64 %x, 310
+  %p311 = add i64 %x, 311
+  %p312 = add i64 %x, 312
+  %p313 = add i64 %x, 313
+  %p314 = add i64 %x, 314
+  %p315 = add i64 %x, 315
+  %p316 = add i64 %x, 316
+  %p317 = add i64 %x, 317
+  %p318 = add i64 %x, 318
+  %p319 = add i64 %x, 319
+  %p320 = add i64 %x, 320
+  %p321 = add i64 %x, 321
+  %p322 = add i64 %x, 322
+  %p323 = add i64 %x, 323
+  %p324 = add i64 %x, 324
+  %p325 = add i64 %x, 325
+  %p326 = add i64 %x, 326
+  %p327 = add i64 %x, 327
+  %p328 = add i64 %x, 328
+  %p329 = add i64 %x, 329
+  %p330 = add i64 %x, 330
+  %p331 = add i64 %x, 331
+  %p332 = add i64 %x, 332
+  %p333 = add i64 %x, 333
+  %p334 = add i64 %x, 334
+  %p335 = add i64 %x, 335
+  %p336 = add i64 %x, 336
+  %p337 = add i64 %x, 337
+  %p338 = add i64 %x, 338
+  %p339 = add i64 %x, 339
+  %p340 = add i64 %x, 340
+  %p341 = add i64 %x, 341
+  %p342 = add i64 %x, 342
+  %p343 = add i64 %x, 343
+  %p344 = add i64 %x, 344
+  %p345 = add i64 %x, 345
+  %p346 = add i64 %x, 346
+  %p347 = add i64 %x, 347
+  %p348 = add i64 %x, 348
+  %p349 = add i64 %x, 349
+  %p350 = add i64 %x, 350
+  %p351 = add i64 %x, 351
+  %p352 = add i64 %x, 352
+  %p353 = add i64 %x, 353
+  %p354 = add i64 %x, 354
+  %p355 = add i64 %x, 355
+  %p356 = add i64 %x, 356
+  %p357 = add i64 %x, 357
+  %p358 = add i64 %x, 358
+  %p359 = add i64 %x, 359
+  %p360 = add i64 %x, 360
+  %p361 = add i64 %x, 361
+  %p362 = add i64 %x, 362
+  %p363 = add i64 %x, 363
+  %p364 = add i64 %x, 364
+  %p365 = add i64 %x, 365
+  %p366 = add i64 %x, 366
+  %p367 = add i64 %x, 367
+  %p368 = add i64 %x, 368
+  %p369 = add i64 %x, 369
+  %p370 = add i64 %x, 370
+  %p371 = add i64 %x, 371
+  %p372 = add i64 %x, 372
+  %p373 = add i64 %x, 373
+  %p374 = add i64 %x, 374
+  %p375 = add i64 %x, 375
+  %p376 = add i64 %x, 376
+  %p377 = add i64 %x, 377
+  %p378 = add i64 %x, 378
+  %p379 = add i64 %x, 379
+  %p380 = add i64 %x, 380
+  %p381 = add i64 %x, 381
+  %p382 = add i64 %x, 382
+  %p383 = add i64 %x, 383
+  %p384 = add i64 %x, 384
+  %p385 = add i64 %x, 385
+  %p386 = add i64 %x, 386
+  %p387 = add i64 %x, 387
+  %p388 = add i64 %x, 388
+  %p389 = add i64 %x, 389
+  %p390 = add i64 %x, 390
+  %p391 = add i64 %x, 391
+  %p392 = add i64 %x, 392
+  %p393 = add i64 %x, 393
+  %p394 = add i64 %x, 394
+  %p395 = add i64 %x, 395
+  %p396 = add i64 %x, 396
+  %p397 = add i64 %x, 397
+  %p398 = add i64 %x, 398
+  %p399 = add i64 %x, 399
+  ret i64 %x
+}
+

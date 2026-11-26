@@ -1,0 +1,134 @@
+; iyi-ir 1
+source_filename = "i1_hot_straight"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external void @sink()
+define internal i64 @work(i64 %x) {
+entry:
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  call void () @sink()
+  %a1 = add i64 %x, 1
+  %a2 = add i64 %a1, 2
+  %a3 = add i64 %a2, 3
+  %a4 = add i64 %a3, 4
+  %a5 = add i64 %a4, 5
+  %a6 = add i64 %a5, 6
+  %a7 = add i64 %a6, 7
+  %a8 = add i64 %a7, 8
+  %a9 = add i64 %a8, 9
+  ret i64 %a9
+}
+define external i64 @straight3(i64 %n) {
+entry:
+  %v1 = call i64 (i64) @work(i64 %n)
+  %v2 = call i64 (i64) @work(i64 %v1)
+  %v3 = call i64 (i64) @work(i64 %v2)
+  ret i64 %v3
+}
+define external i64 @padding(i64 %x) {
+entry:
+  %p0 = add i64 %x, 0
+  %p1 = add i64 %x, 1
+  %p2 = add i64 %x, 2
+  %p3 = add i64 %x, 3
+  %p4 = add i64 %x, 4
+  %p5 = add i64 %x, 5
+  %p6 = add i64 %x, 6
+  %p7 = add i64 %x, 7
+  %p8 = add i64 %x, 8
+  %p9 = add i64 %x, 9
+  %p10 = add i64 %x, 10
+  %p11 = add i64 %x, 11
+  %p12 = add i64 %x, 12
+  %p13 = add i64 %x, 13
+  %p14 = add i64 %x, 14
+  %p15 = add i64 %x, 15
+  %p16 = add i64 %x, 16
+  %p17 = add i64 %x, 17
+  %p18 = add i64 %x, 18
+  %p19 = add i64 %x, 19
+  %p20 = add i64 %x, 20
+  %p21 = add i64 %x, 21
+  %p22 = add i64 %x, 22
+  %p23 = add i64 %x, 23
+  %p24 = add i64 %x, 24
+  %p25 = add i64 %x, 25
+  %p26 = add i64 %x, 26
+  %p27 = add i64 %x, 27
+  %p28 = add i64 %x, 28
+  %p29 = add i64 %x, 29
+  %p30 = add i64 %x, 30
+  %p31 = add i64 %x, 31
+  %p32 = add i64 %x, 32
+  %p33 = add i64 %x, 33
+  %p34 = add i64 %x, 34
+  %p35 = add i64 %x, 35
+  %p36 = add i64 %x, 36
+  %p37 = add i64 %x, 37
+  %p38 = add i64 %x, 38
+  %p39 = add i64 %x, 39
+  %p40 = add i64 %x, 40
+  %p41 = add i64 %x, 41
+  %p42 = add i64 %x, 42
+  %p43 = add i64 %x, 43
+  %p44 = add i64 %x, 44
+  %p45 = add i64 %x, 45
+  %p46 = add i64 %x, 46
+  %p47 = add i64 %x, 47
+  %p48 = add i64 %x, 48
+  %p49 = add i64 %x, 49
+  %p50 = add i64 %x, 50
+  %p51 = add i64 %x, 51
+  %p52 = add i64 %x, 52
+  %p53 = add i64 %x, 53
+  %p54 = add i64 %x, 54
+  %p55 = add i64 %x, 55
+  %p56 = add i64 %x, 56
+  %p57 = add i64 %x, 57
+  %p58 = add i64 %x, 58
+  %p59 = add i64 %x, 59
+  %p60 = add i64 %x, 60
+  %p61 = add i64 %x, 61
+  %p62 = add i64 %x, 62
+  %p63 = add i64 %x, 63
+  %p64 = add i64 %x, 64
+  %p65 = add i64 %x, 65
+  %p66 = add i64 %x, 66
+  %p67 = add i64 %x, 67
+  %p68 = add i64 %x, 68
+  %p69 = add i64 %x, 69
+  %p70 = add i64 %x, 70
+  %p71 = add i64 %x, 71
+  %p72 = add i64 %x, 72
+  %p73 = add i64 %x, 73
+  %p74 = add i64 %x, 74
+  %p75 = add i64 %x, 75
+  %p76 = add i64 %x, 76
+  %p77 = add i64 %x, 77
+  %p78 = add i64 %x, 78
+  %p79 = add i64 %x, 79
+  %p80 = add i64 %x, 80
+  %p81 = add i64 %x, 81
+  %p82 = add i64 %x, 82
+  %p83 = add i64 %x, 83
+  %p84 = add i64 %x, 84
+  %p85 = add i64 %x, 85
+  %p86 = add i64 %x, 86
+  %p87 = add i64 %x, 87
+  %p88 = add i64 %x, 88
+  %p89 = add i64 %x, 89
+  %p90 = add i64 %x, 90
+  %p91 = add i64 %x, 91
+  %p92 = add i64 %x, 92
+  %p93 = add i64 %x, 93
+  %p94 = add i64 %x, 94
+  %p95 = add i64 %x, 95
+  %p96 = add i64 %x, 96
+  %p97 = add i64 %x, 97
+  %p98 = add i64 %x, 98
+  %p99 = add i64 %x, 99
+  ret i64 %x
+}
