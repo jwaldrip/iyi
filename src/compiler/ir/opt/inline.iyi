@@ -383,13 +383,17 @@ def mapped_value(value : Value, values : Hash(Value, Value)) : Value
   found ? found : value
 end
 
-# Only call sites present at the start of a round need use lists. New clones
-# register their uses too, since they can refer to a later site in that round.
-def track_site_uses(inst : Inst, users : Hash(Inst, Array(Inst))) : Nil
+# Only direct, non-void sites need use lists. Store all lists in flat arrays
+# so indexing a function does not allocate an array for every call.
+def track_site_uses(inst : Inst, site_ids : Hash(Inst, Int32), heads : Array(Int32), users : Array(Inst), links : Array(Int32), round_start : Int32) : Nil
   inst.args.each do |arg|
     if arg.is_a?(Inst)
-      if list = users[arg.as(Inst)]?
-        list << inst
+      if id = site_ids[arg.as(Inst)]?
+        if id >= round_start
+          links << heads[id]
+          users << inst
+          heads[id] = users.size - 1
+        end
       end
     end
   end
@@ -399,16 +403,14 @@ end
 # The old terminator moves to a newly appended continuation. Preserve the
 # predecessor order that a full relink in block order would have produced.
 def move_predecessor(target : Block, old : Block, replacement : Block) : Nil
-  preds = [] of Block
-  target.preds.each { |pred| preds << pred unless pred == old }
-  preds << replacement unless preds.any? { |pred| pred == replacement }
-  target.preds[0, target.preds.size] = preds
+  target.preds.delete(old)
+  target.add_pred(replacement)
   nil
 end
 
 # Clone the entire callee at one call site. Phis are filled only after every
 # instruction has an identity, so backedges and forward references are safe.
-def inline_one(mod : Module, fn : Function, block : Block, at : Int32, call : Inst, callee : Function, budget : InlineBudget, owners : Hash(Inst, Block), users : Hash(Inst, Array(Inst))) : Int32
+def inline_one(mod : Module, fn : Function, block : Block, at : Int32, call : Inst, callee : Function, budget : InlineBudget, site_ids : Hash(Inst, Int32), heads : Array(Int32), users : Array(Inst), links : Array(Int32), round_start : Int32, site_id : Int32) : Block
   values = Hash(Value, Value).new
   k = 0
   while k < callee.params.size
@@ -469,14 +471,13 @@ def inline_one(mod : Module, fn : Function, block : Block, at : Int32, call : In
     copy = clones[k]
     original.args.each { |arg| copy.args << mapped_value(arg, values) }
     original.targets.each { |target| copy.targets << blocks[target] }
-    track_site_uses(copy, users)
+    track_site_uses(copy, site_ids, heads, users, links, round_start)
     k = k + 1
   end
 
   suffix = block.insts[at + 1, block.insts.size - at - 1]
   prefix = block.insts[0, at]
   continuation.insts[0, continuation.insts.size] = suffix
-  suffix.each { |inst| owners[inst] = continuation if owners.has_key?(inst) }
   old_term = continuation.terminator
   old_term.targets.each do |target|
     move_predecessor(target, block, continuation)
@@ -510,19 +511,20 @@ def inline_one(mod : Module, fn : Function, block : Block, at : Int32, call : In
     dest.terminator.targets.each { |target| target.add_pred(dest) }
   end
   if result = phi
-    track_site_uses(result, users)
+    track_site_uses(result, site_ids, heads, users, links, round_start)
     continuation.insts[0, 0] = [result]
-    if uses = users[call]?
-      uses.each do |inst|
-        j = 0
-        while j < inst.args.size
-          inst.args[j] = result if inst.args[j] == call
-          j = j + 1
-        end
+    use = heads[site_id]
+    while use >= 0
+      inst = users[use]
+      j = 0
+      while j < inst.args.size
+        inst.args[j] = result if inst.args[j] == call
+        j = j + 1
       end
+      use = links[use]
     end
   end
-  instruction_count(callee) + (call.type.void? ? 0 : 1)
+  continuation
 end
 
 pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : InlineBudget) : Bool
@@ -530,36 +532,47 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
   changed = false
   round = 0
   relinked = false
+  sites = [] of Inst
+  site_blocks = [] of Int32
+  heads = [] of Int32
+  users = [] of Inst
+  links = [] of Int32
+  site_ids = Hash(Inst, Int32).new
   while round < budget.rounds
     budget.round = round
-    sites = [] of Inst
-    owners = Hash(Inst, Block).new
-    users = Hash(Inst, Array(Inst)).new
-    fn.blocks.each do |block|
+    round_start = sites.size
+    block_index = 0
+    while block_index < fn.blocks.size
+      block = fn.blocks[block_index]
       block.insts.each do |inst|
         if inst.op == Op::Call && (!budget.late || alloc_candidate?(inst, budget))
           sites << inst
-          owners[inst] = block
-          users[inst] = [] of Inst
+          site_blocks << block_index
+          heads << -1
         end
       end
+      block_index = block_index + 1
     end
     # The late group does no work in a function with no candidate call.
-    break if sites.empty?
-    # Raise paths are cold. Blocks an inline creates later in this round have no entry and count as hot.
+    break if sites.size == round_start
+    # Raise paths are cold. A continuation made in this round counts as hot.
     cold = cold_blocks(fn)
-    cold_by_block = Hash(Block, Bool).new
-    k = 0
-    while k < cold.size
-      cold_by_block[fn.blocks[k]] = cold[k]
-      k = k + 1
-    end
     indexed_users = false
     round_changed = false
-    sites.each do |site|
+    original_index = -1
+    current_block = nil.as(Block?)
+    site_id = round_start
+    while site_id < sites.size
+      site = sites[site_id]
+      block_index = site_blocks[site_id]
+      if original_index != block_index
+        original_index = block_index
+        current_block = fn.blocks[block_index]
+      end
+      site_id = site_id + 1
       next if site.args.empty? || !site.args[0].is_a?(Function)
       callee = site.args[0].as(Function)
-      if block = owners[site]?
+      if block = current_block
         position = 0
         while position < block.insts.size && block.insts[position] != site
           position = position + 1
@@ -574,17 +587,29 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
         end
         next if after_alloca
         # A raise path is cold: only source-mandated inlining may copy into it.
-        next if cold_by_block[block]? && !source_mandated?(callee, site)
+        owner_index = block == fn.blocks[original_index] ? original_index : cold.size
+        next if owner_index < cold.size && cold[owner_index] && !source_mandated?(callee, site)
         next unless call_allowed?(fn, block, site, callee, graph, budget)
         unless indexed_users
-          fn.blocks.each { |owner| owner.insts.each { |inst| track_site_uses(inst, users) } }
+          index = round_start
+          while index < sites.size
+            candidate = sites[index]
+            if !candidate.type.void? && !candidate.args.empty? && candidate.args[0].is_a?(Function)
+              site_ids[candidate] = index
+            end
+            index = index + 1
+          end
+          fn.blocks.each do |owner|
+            owner.insts.each { |inst| track_site_uses(inst, site_ids, heads, users, links, round_start) }
+          end
           indexed_users = true
         end
         unless relinked
           fn.relink
           relinked = true
         end
-        budget.used = budget.used + inline_one(mod, fn, block, position, site, callee, budget, owners, users)
+        current_block = inline_one(mod, fn, block, position, site, callee, budget, site_ids, heads, users, links, round_start, site_id - 1)
+        budget.used = budget.used + instruction_count(callee) + (site.type.void? ? 0 : 1)
         changed = true
         round_changed = true
       end
