@@ -241,6 +241,27 @@ else
   fail "MIR contract fixture did not build"
 fi
 
+L1_CONTRACT="$WORK/l1-contract$EXE"
+build_l1_contract() {
+  ./bin/iyi build -o "$(native_path "$1")" "$(native_path "$FIX_CLEAN/l1_contract.iyi")" \
+    >"$WORK/build.$(basename "$1").log" 2>&1
+}
+echo "== 1c. L1 fallthrough and comparison contracts"
+if build_l1_contract "$L1_CONTRACT"; then
+  for setting in 0 1; do
+    for case_name in fallthrough branch nonempty compare redefined refusals; do
+      if ! IYI_NATIVE_MIR_CLEAN=$setting "$L1_CONTRACT" "$case_name" >"$WORK/l1.$setting.$case_name.log" 2>&1; then
+        cat "$WORK/l1.$setting.$case_name.log"
+        fail "L1 $case_name contract failed with cleanup=$setting"
+      fi
+    done
+  done
+  echo "L1 contracts: 6 cases, cleanup enabled and disabled"
+else
+  cat "$WORK/build.$(basename "$L1_CONTRACT").log"
+  fail "L1 contract fixture did not build"
+fi
+
 # A nonzero driver exit is a refusal (1); missing input or output is invalid (2).
 emit_obj() {
   local drv=$1 clean=$2 ir=$3 obj=$4 log=$5 native_ir native_obj
@@ -443,6 +464,10 @@ def dump(path, name, enabled):
         return None
     return blocks
 
+def is_fallthrough(blocks, number, target):
+    return (target in blocks and target > number and
+            all(not blocks.get(i) for i in range(number + 1, target)))
+
 for dirname in dirs:
     directory = Path(dirname)
     paths = sorted(directory.glob("*.ir"))
@@ -477,9 +502,10 @@ for dirname in dirs:
             if not custom:
                 continue
             for number, instructions in after.items():
-                for op, target in instructions:
-                    if op == "B" and target == number + 1:
-                        defects.append(f"{path.name} {name}: block {number} branches to its successor")
+                if instructions:
+                    op, target = instructions[-1]
+                    if op in ("B", "Bcond", "Cbz", "Cbnz", "Tbz", "Tbnz") and is_fallthrough(after, number, target):
+                        defects.append(f"{path.name} {name}: block {number} branches to fallthrough")
             for number, instructions in before.items():
                 if not instructions or instructions[-1][0] != "B":
                     continue
@@ -489,15 +515,21 @@ for dirname in dirs:
                     continue
                 if target < number:
                     backedges += 1
-                if target == number + 1:
+                if is_fallthrough(after, number, target):
                     continue
-                inverted = len(instructions) > 1 and instructions[-2] == ("Bcond", number + 1)
+                inverted = (len(instructions) > 1 and instructions[-2][0] == "Bcond" and
+                            is_fallthrough(after, number, instructions[-2][1]))
                 if inverted:
                     inversions += 1
                 expected = ("Bcond" if inverted else "B", target)
                 current = after[number]
                 if not current or current[-1] != expected:
                     defects.append(f"{path.name} {name}: block {number} lost non-fallthrough edge to {target}")
+            if path.name == "l1_fallthrough_empty.ir" and name == "choose":
+                if (before[0][-2:] != [("Bcond", 3), ("B", 4)] or
+                    before[1] != [("B", 2)] or before[2] != [("B", 3)] or
+                    after[0][-1:] != [("Bcond", 4)] or after[1] or after[2]):
+                    defects.append("l1_fallthrough_empty.ir choose: inversion over empty blocks differs")
 if not functions:
     errors.append("no functions could be checked")
 if mode == "custom" and (not backedges or not inversions):
@@ -844,8 +876,41 @@ else
 fi
 prove_clean_mutation "branch: drop an unconditional branch regardless of its target" \
   src/compiler/native/mir_clean.iyi \
-  '        if tail.target == block.index + 1 # fallthrough-branch' \
+  '        if tail.target > b && tail.target <= last_fallthrough # fallthrough-branch' \
   '        if true # fallthrough-branch' branch
+
+check_l1_mutant() {
+  local case_name=$1 expected=$2 mutant="$WORK/l1-mutant$EXE" result=0
+  if ! build_l1_contract "$mutant"; then
+    cat "$WORK/build.$(basename "$mutant").log"
+    return 2
+  fi
+  IYI_NATIVE_MIR_CLEAN=1 "$mutant" "$case_name" >"$WORK/l1-mutant.log" 2>&1 || result=$?
+  if [ "$result" -eq 0 ]; then return 0; fi
+  if grep -Fq "$expected" "$WORK/l1-mutant.log"; then
+    echo "decisive: $case_name rejected the mutant ($expected)"
+    return 1
+  fi
+  cat "$WORK/l1-mutant.log"
+  return 2
+}
+
+prove_mutation "L1: a non-empty block is not fallthrough" src/compiler/native/mir_clean.iyi \
+  '      last_fallthrough = next_nonempty < 0 ? b + 1 : next_nonempty' \
+  '      last_fallthrough = next_nonempty < 0 ? b + 1 : next_nonempty + 1' \
+  -- check_l1_mutant nonempty 'L1 contract: nonempty count' || fail "L1 nonempty mutation was not caught"
+
+prove_mutation "L1: redefining a compared operand invalidates flags" src/compiler/native/mir_clean.iyi \
+  '      elsif (inst.opcode != MOp::Bcond.value.to_i32 &&
+             inst.opcode != MOp::Cbz.value.to_i32 && inst.opcode != MOp::Cbnz.value.to_i32 &&
+             inst.opcode != MOp::Tbz.value.to_i32 && inst.opcode != MOp::Tbnz.value.to_i32) ||
+            !inst.defs.empty? || !inst.clobbers.empty? || inst.call || !inst.asm.nil? # l1-compare-barrier' \
+  '      elsif ((inst.opcode != MOp::Bcond.value.to_i32 &&
+              inst.opcode != MOp::Cbz.value.to_i32 && inst.opcode != MOp::Cbnz.value.to_i32 &&
+              inst.opcode != MOp::Tbz.value.to_i32 && inst.opcode != MOp::Tbnz.value.to_i32) &&
+             inst.opcode != MOp::Mov.value.to_i32) ||
+            (!inst.defs.empty? && inst.opcode != MOp::Mov.value.to_i32) || !inst.clobbers.empty? || inst.call || !inst.asm.nil? # l1-compare-barrier' \
+  -- check_l1_mutant redefined 'L1 contract: redefined operand' || fail "L1 operand mutation was not caught"
 prove_rotate_mutation() {
   local label=$1 old=$2 new=$3
   rm -f "$MUTATION_INVALID"
