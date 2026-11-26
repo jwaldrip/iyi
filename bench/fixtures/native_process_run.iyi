@@ -5,7 +5,9 @@ def fail(message : String) : NoReturn
   __iyi_exit(1)
 end
 
-flood = Process.run("/bin/sh", ["-c", "/usr/bin/yes o | /usr/bin/head -c 262144; /usr/bin/yes e | /usr/bin/head -c 262144 1>&2; exit 7"])
+# Read finite streams directly: an inherited ignored SIGPIPE makes `yes |
+# head` append broken-pipe diagnostics to the stderr stream.
+flood = Process.run("/bin/sh", ["-c", "/usr/bin/head -c 262144 /dev/zero; /usr/bin/head -c 262144 /dev/zero 1>&2; exit 7"])
 fail("streams did not return a result") unless flood.is_a?(ProcessResult)
 streams = flood.as(ProcessResult)
 unless streams.stdout.bytesize == 262144 && streams.stderr.bytesize == 262144 && streams.exit_code == 7

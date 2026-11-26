@@ -92,6 +92,26 @@ else
   echo "  FAIL: the oracle rewriter does not write the quoted callee's type (lower_oracle.sh CALL_TYPES)"
   status=1
 fi
+
+landingpad_check() {
+  local got
+  got="$(printf '%s\n' \
+    'define void @f() personality ptr @handler {' \
+    '  %pad = landingpad %landing_pad' \
+    '          cleanup' \
+    '          catch ptr null' \
+    '  ret void' \
+    '}' | ( . "$REPO/bench/lib/lower_oracle.sh"; awk "$CALL_TYPES" ))" || return 1
+  printf '%s\n' "$got" | grep -Fxq '  %pad = landingpad %landing_pad personality ptr @handler cleanup catch ptr null'
+}
+echo "== 0b. The oracle rewriter preserves landing-pad personality and clauses"
+if landingpad_check; then
+  prove_mutation "a landing pad loses its function personality" "$REPO/bench/lib/lower_oracle.sh" \
+    'pending_pad = $0 " personality ptr " personality' 'pending_pad = $0' -- landingpad_check || status=1
+else
+  echo "FAIL: the oracle rewriter did not normalize the landing pad"
+  status=1
+fi
 echo
 
 # A prose line for each fixture verdict, so the summary can be read without the logs.

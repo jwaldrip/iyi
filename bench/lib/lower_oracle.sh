@@ -171,7 +171,31 @@ function atomic_memory(line,   p, suffix, prefix, words) {
   }
   return prefix ", align " words[3] " atomic " words[1]
 }
+# LLVM gives a landing pad its function personality and writes cleanup/catch
+# clauses on following lines. The port text form carries that
+# personality and the clauses on the instruction itself.
+function flush_pad() {
+  if (pending_pad != "") { print pending_pad; pending_pad = "" }
+}
 {
+  if (pending_pad != "") {
+    if ($0 ~ /^[[:space:]]*cleanup[[:space:]]*$/) { pending_pad = pending_pad " cleanup"; next }
+    if ($0 ~ /^[[:space:]]*catch[[:space:]]/) {
+      clause = $0; sub(/^[[:space:]]*/, "", clause)
+      pending_pad = pending_pad " " clause
+      next
+    }
+    flush_pad()
+  }
+  if ($0 ~ /^define /) {
+    personality = ""
+    if (match($0, /personality ptr @("[^"]+"|[^ ,{]+)/))
+      personality = substr($0, RSTART + length("personality ptr "), RLENGTH - length("personality ptr "))
+  }
+  if (index($0, " landingpad ") && !index($0, " personality ") && personality != "") {
+    pending_pad = $0 " personality ptr " personality
+    next
+  }
   $0 = atomic_memory($0)
   if ($0 ~ /^define .* @"[*~]/ || $0 ~ /^define .* @(__crystal_main|__iyi_main)\(/) $0 = cc_define($0)
   if ($0 ~ /^declare .*@llvm\./) next
@@ -179,4 +203,5 @@ function atomic_memory(line,   p, suffix, prefix, words) {
   if (index($0, "@llvm.") > 0 && index($0, " call ") > 0) { print intrinsic_line($0); next }
   if (index($0, " call ") > 0 || index($0, " invoke ") > 0) print call_types($0); else print
 }
+END { flush_pad() }
 '
