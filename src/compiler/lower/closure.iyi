@@ -46,17 +46,8 @@ def captured_self_type(low : Lowerer, context : LowerContext) : Type
 end
 
 pub def allocate_closure(low : Lowerer, frame : ClosureFrame, parent : LowerContext? = nil) : Nil
-  names = [] of String
-  types = [] of Type
-  pointerful = false
-  frame.closured.each do |var|
-    names << var.name
-    types << var.type
-    pointerful = true if has_inner_pointers?(var.type)
-  end
-  context = low.current_context
-  self_type = frame.self_closured ? captured_self_type(low, context) : nil
-  if names.empty? && self_type.nil?
+  if frame.closured.empty? && !frame.self_closured
+    context = low.current_context
     if outer = parent
       context.closure_type = outer.closure_type
       context.closure_ptr = outer.closure_ptr
@@ -67,6 +58,16 @@ pub def allocate_closure(low : Lowerer, frame : ClosureFrame, parent : LowerCont
     end
     return
   end
+  names = [] of String
+  types = [] of Type
+  pointerful = false
+  frame.closured.each do |var|
+    names << var.name
+    types << var.type
+    pointerful = true if has_inner_pointers?(var.type)
+  end
+  context = low.current_context
+  self_type = frame.self_closured ? captured_self_type(low, context) : nil
   context.closure_names = names
   context.closure_types = types
   has_parent = !parent.nil? && !parent.closure_ptr.nil?
