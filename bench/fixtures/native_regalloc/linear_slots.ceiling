@@ -11,6 +11,9 @@ calls_both ihelp 0
 calls_both fhelp 0
 calls_both mix 0
 calls_both main 0
+const_pressure step 0
+const_pressure churn 54
+const_pressure main 0
 diamond pick 0
 diamond main 0
 fixed_staging staged 0
@@ -40,7 +43,7 @@ pointer_fp_call churn 0
 pointer_fp_call main 1
 pressure_fpr fwork 8
 pressure_fpr main 0
-pressure_gpr work 6
+pressure_gpr work 0
 pressure_gpr main 0
 straight_line chain 0
 straight_line main 0
