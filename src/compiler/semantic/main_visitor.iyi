@@ -39,6 +39,8 @@ import compiler/semantic/call_error::{CallError}
 import compiler/semantic/new::{define_new_methods, expand_new_default_arguments}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 
+ARGDISPATCH_TRACE = ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
+
 # One construct the body typing could not type or refused, as the pipeline's
 # refusal table reads it. `file` is nil and `line` and `column` are 0 when the
 # node has no location. `def_name` is the def whose body was being typed, named
@@ -3393,7 +3395,7 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def trace_arg_dispatch(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, found : Matches, shortcut : Def?) : Nil
-    return nil unless ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
+    return nil unless ARGDISPATCH_TRACE
     interesting = false
     args.each do |arg|
       if arg_type = child_type(arg)
@@ -3643,7 +3645,7 @@ pub class MainVisitor < TypeNodeHost
   # the error, total mode records it on the call and returns nil.
   def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, pinned : Array(Def)? = nil, infer_class_vars : Bool = false) : Def?
     result = lookup_method_matching_impl(rec_type, name, args, call_node, pinned, infer_class_vars)
-    if ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
+    if ARGDISPATCH_TRACE
       found = lookup_call_arms(rec_type, rec_type, name, args, call_node, ArmWalk::Parents)
       trace_arg_dispatch(rec_type, name, args, call_node, found, result)
     end
