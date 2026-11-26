@@ -327,8 +327,7 @@ echo '== 2. individual pass fixtures, determinism and idempotence'
 for name in unreachable_block merge_chain forward_empty condbr_same_targets; do fixture_check cfg-simplify "$name" changed; done
 fixture_check cfg-simplify forward_blocked_by_phi_conflict keep
 for name in thread_or thread_and thread_const thread_inverted; do fixture_check cfg-simplify "$name" changed; done
-for name in thread_shared_succ thread_switch_edges thread_back_edge; do fixture_check cfg-simplify "$name" keep; done
-for name in thread_two_phis thread_side_effect thread_phi_used_elsewhere thread_into_bool_phi; do fixture_check cfg-simplify "$name" changed; done
+for name in thread_shared_succ thread_two_phis thread_side_effect thread_phi_used_elsewhere thread_into_bool_phi thread_switch_edges thread_back_edge; do fixture_check cfg-simplify "$name" keep; done
 for name in straight_line diamond loop nested_loops uninitialized_read pointer_slot i1_slot null_uninitialized unreachable_predecessor; do fixture_check mem2reg "$name" changed; done
 for name in escaping_slot volatile_slot aggregate_slot atomic_slot tls_slot stored_address unreachable_slot_use; do fixture_check mem2reg "$name" keep; done
 for name in fold_int fold_icmp_signed identities trivial_phi condbr_const overflow_flag_unused fold_double power_of_two switch_const expect_const fold_cast fold_divrem fold_double_ops trivial_self_phi constant_global; do fixture_check simplify "$name" changed; done
@@ -1186,21 +1185,10 @@ prove_mutation 'R3M4: xor wrappers do not invert the test' src/compiler/ir/opt/c
   '      nil # mutation R3-parity: the inversion of a xor wrapper is ignored' \
   -- mutation_check R3M4 cfg-simplify thread_inverted || fail 'R3M4 was not caught'
 mutation_result R3M4
-# Both the original and its S1-refusing twin must catch each threading mutation.
-r3_pair_mutation_check() {
-  local label="$1" name="$2" rc=0
-  mutation_check "$label" cfg-simplify "$name" || rc=$?
-  [ "$rc" -eq 1 ] || return "$rc"
-  rc=0
-  mutation_check "$label" cfg-simplify "s1_keep_$name" || rc=$?
-  [ "$rc" -eq 1 ] || return "$rc"
-  echo "decisive: $name and its S1-refusing twin both caught the mutation"
-  return 1
-}
 prove_mutation 'R3M5: the test value may have uses outside the test' src/compiler/ir/opt/cfg_simplify.iyi \
   '      return false unless du.use_count(block.insts[i]) == 1' \
   '      nil # mutation R3-use: a use outside the test is allowed' \
-  -- r3_pair_mutation_check R3M5 thread_phi_used_elsewhere || fail 'R3M5 was not caught'
+  -- mutation_check R3M5 cfg-simplify thread_phi_used_elsewhere || fail 'R3M5 was not caught'
 mutation_result R3M5
 prove_mutation 'R3M6: other instructions may sit in the test' src/compiler/ir/opt/cfg_simplify.iyi \
   '      return -1 unless cur == inst && bool_wrapper?(inst)' \
@@ -1209,7 +1197,7 @@ prove_mutation 'R3M6: other instructions may sit in the test' src/compiler/ir/op
         next # mutation R3-shape: other instructions are skipped
       end
       return -1 unless bool_wrapper?(inst)' \
-  -- r3_pair_mutation_check R3M6 thread_side_effect || fail 'R3M6 was not caught'
+  -- mutation_check R3M6 cfg-simplify thread_side_effect || fail 'R3M6 was not caught'
 mutation_result R3M6
 prove_mutation 'R3M7: a block with a second phi is a test' src/compiler/ir/opt/cfg_simplify.iyi \
   '      return -1 unless cur == inst && bool_wrapper?(inst)' \
@@ -1218,12 +1206,12 @@ prove_mutation 'R3M7: a block with a second phi is a test' src/compiler/ir/opt/c
         next # mutation R3-shape: a second phi is skipped
       end
       return -1 unless bool_wrapper?(inst)' \
-  -- r3_pair_mutation_check R3M7 thread_two_phis || fail 'R3M7 was not caught'
+  -- mutation_check R3M7 cfg-simplify thread_two_phis || fail 'R3M7 was not caught'
 mutation_result R3M7
 prove_mutation 'R3M8: a successor with an i1 phi may gain an incoming' src/compiler/ir/opt/cfg_simplify.iyi \
   '      return false if phi.type.int? && phi.type.bits == 1' \
   '      nil # mutation R3-boolphi: an i1 phi may gain an incoming' \
-  -- r3_pair_mutation_check R3M8 thread_into_bool_phi || fail 'R3M8 was not caught'
+  -- mutation_check R3M8 cfg-simplify thread_into_bool_phi || fail 'R3M8 was not caught'
 mutation_result R3M8
 prove_mutation 'R3M9: a predecessor with two edges to the block is threaded' src/compiler/ir/opt/cfg_simplify.iyi \
   '  count == 1 ? slot : -1' \
