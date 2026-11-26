@@ -1276,15 +1276,15 @@ else
   fail "the proof helper accepted a mutation that changes nothing"
 fi
 if [ "$HOST_ID" = darwin-arm64 ]; then
-  expected_checked=34
+  expected_checked=38
   expected_limited=0
 else
   expected_checked=6
-  expected_limited=28
+  expected_limited=32
 fi
 printf 'mutations: %s total, %s checked, %s caught, %s host-limited\n' \
   "$mutation_total" "$mutation_checked" "$mutation_caught" "$mutation_limited"
-[ "$mutation_total" -eq 34 ] || fail "the mutation inventory is not 34"
+[ "$mutation_total" -eq 38 ] || fail "the mutation inventory is not 38"
 [ "$mutation_checked" -eq "$expected_checked" ] || fail "the expected mutations were not all checked"
 [ "$mutation_caught" -eq "$expected_checked" ] || fail "not every checked mutation was caught"
 [ "$mutation_limited" -eq "$expected_limited" ] || fail "the host-limited mutation inventory is incomplete"
