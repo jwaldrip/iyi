@@ -449,6 +449,5 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
     break unless round_changed
     round = round + 1
   end
-  budget.invalidate(fn) if changed
   changed
 end
