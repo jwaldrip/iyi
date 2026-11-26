@@ -1,0 +1,153 @@
+; iyi-ir 1
+; Eight dependent flag diamonds exceed the six late cleanup rounds.
+source_filename = "alloc_cleanup_bound"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+declare external void @tick()
+; Preserve enough module instructions to admit the allocation inline.
+define external void @padding() {
+entry:
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  call void () @tick()
+  ret void
+}
+define external ptr @__iyi_new(i64 %size, i64 %type_id, i64 %flags) {
+entry:
+  %bit = and i64 %flags, 1
+  %test0 = icmp ne i64 %bit, 0
+  br i1 %test0, label %headed0, label %headless0
+headed0:
+  br label %join0
+headless0:
+  br label %join0
+join0:
+  %header0 = phi i64 [ 32, label %headed0 ], [ 0, label %headless0 ]
+  %test1 = icmp ne i64 %header0, 0
+  br i1 %test1, label %headed1, label %headless1
+headed1:
+  br label %join1
+headless1:
+  br label %join1
+join1:
+  %header1 = phi i64 [ 32, label %headed1 ], [ 0, label %headless1 ]
+  %test2 = icmp ne i64 %header1, 0
+  br i1 %test2, label %headed2, label %headless2
+headed2:
+  br label %join2
+headless2:
+  br label %join2
+join2:
+  %header2 = phi i64 [ 32, label %headed2 ], [ 0, label %headless2 ]
+  %test3 = icmp ne i64 %header2, 0
+  br i1 %test3, label %headed3, label %headless3
+headed3:
+  br label %join3
+headless3:
+  br label %join3
+join3:
+  %header3 = phi i64 [ 32, label %headed3 ], [ 0, label %headless3 ]
+  %test4 = icmp ne i64 %header3, 0
+  br i1 %test4, label %headed4, label %headless4
+headed4:
+  br label %join4
+headless4:
+  br label %join4
+join4:
+  %header4 = phi i64 [ 32, label %headed4 ], [ 0, label %headless4 ]
+  %test5 = icmp ne i64 %header4, 0
+  br i1 %test5, label %headed5, label %headless5
+headed5:
+  br label %join5
+headless5:
+  br label %join5
+join5:
+  %header5 = phi i64 [ 32, label %headed5 ], [ 0, label %headless5 ]
+  %test6 = icmp ne i64 %header5, 0
+  br i1 %test6, label %headed6, label %headless6
+headed6:
+  br label %join6
+headless6:
+  br label %join6
+join6:
+  %header6 = phi i64 [ 32, label %headed6 ], [ 0, label %headless6 ]
+  %test7 = icmp ne i64 %header6, 0
+  br i1 %test7, label %headed7, label %headless7
+headed7:
+  br label %join7
+headless7:
+  br label %join7
+join7:
+  %header7 = phi i64 [ 32, label %headed7 ], [ 0, label %headless7 ]
+  %test8 = icmp ne i64 %header7, 0
+  br i1 %test8, label %with_header, label %without_header
+with_header:
+  %bytes = add i64 %size, 32
+  %with = inttoptr i64 %bytes to ptr
+  ret ptr %with
+without_header:
+  %without = inttoptr i64 %size to ptr
+  ret ptr %without
+}
+define external ptr @bound_use() {
+entry:
+  %p = call ptr (i64, i64, i64) @__iyi_new(i64 16, i64 69, i64 2)
+  ret ptr %p
+}

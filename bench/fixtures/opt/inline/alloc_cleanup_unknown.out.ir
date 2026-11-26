@@ -1,0 +1,68 @@
+; iyi-ir 1
+source_filename = "alloc_cleanup_unknown"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define external i64 @padding(i64 %x) {
+entry:
+  %a0 = add i64 %x, 1
+  %a1 = add i64 %a0, 2
+  %a2 = add i64 %a1, 3
+  %a3 = add i64 %a2, 4
+  %a4 = add i64 %a3, 5
+  %a5 = add i64 %a4, 6
+  %a6 = add i64 %a5, 7
+  %a7 = add i64 %a6, 8
+  %a8 = add i64 %a7, 9
+  %a9 = add i64 %a8, 10
+  %a10 = add i64 %a9, 11
+  %a11 = add i64 %a10, 12
+  ret i64 %a11
+}
+
+define external ptr @__iyi_new(i64 %size, i64 %type_id, i64 %flags) {
+entry:
+  %bit = and i64 %flags, 1
+  %headed = icmp ne i64 %bit, 0
+  br i1 %headed, label %headed_arm, label %headless_arm
+headless_arm:
+  br label %join
+headed_arm:
+  br label %join
+join:
+  %header = phi i64 [ 32, label %headed_arm ], [ 0, label %headless_arm ]
+  %has_header = icmp ne i64 %header, 0
+  br i1 %has_header, label %with_header, label %without_header
+without_header:
+  %p = inttoptr i64 %size to ptr
+  ret ptr %p
+with_header:
+  %bytes = add i64 %size, %header
+  %p_with = inttoptr i64 %bytes to ptr
+  ret ptr %p_with
+}
+
+define external ptr @unknown_use(i64 %flags) {
+entry:
+  %0 = and i64 %flags, 1
+  %1 = icmp ne i64 %0, 0
+  br i1 %1, label %headed_arm, label %headless_arm
+headless_arm:
+  br label %join
+headed_arm:
+  br label %join
+join:
+  %2 = phi i64 [ 32, label %headed_arm ], [ 0, label %headless_arm ]
+  %3 = icmp ne i64 %2, 0
+  br i1 %3, label %with_header, label %without_header
+without_header:
+  %4 = inttoptr i64 16 to ptr
+  br label %inline.cont
+with_header:
+  %5 = add i64 16, %2
+  %6 = inttoptr i64 %5 to ptr
+  br label %inline.cont
+inline.cont:
+  %7 = phi ptr [ %6, label %with_header ], [ %4, label %without_header ]
+  ret ptr %7
+}
+

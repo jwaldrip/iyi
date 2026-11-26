@@ -1,0 +1,49 @@
+; iyi-ir 1
+; A headless 16-byte allocation with a constant flag. The headed arm is dead, so the join's constant decides the
+; test after it. Folding the flag branch exposes the join; the join's fold exposes the test. Each takes a round.
+source_filename = "alloc_cleanup"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+; Keep the module's inlining budget large enough for the allocation funnel.
+define external i64 @padding(i64 %x) {
+entry:
+  %a0 = add i64 %x, 1
+  %a1 = add i64 %a0, 2
+  %a2 = add i64 %a1, 3
+  %a3 = add i64 %a2, 4
+  %a4 = add i64 %a3, 5
+  %a5 = add i64 %a4, 6
+  %a6 = add i64 %a5, 7
+  %a7 = add i64 %a6, 8
+  %a8 = add i64 %a7, 9
+  %a9 = add i64 %a8, 10
+  %a10 = add i64 %a9, 11
+  %a11 = add i64 %a10, 12
+  ret i64 %a11
+}
+define external ptr @__iyi_new(i64 %size, i64 %type_id, i64 %flags) {
+entry:
+  %bit = and i64 %flags, 1
+  %headed = icmp ne i64 %bit, 0
+  br i1 %headed, label %headed_arm, label %headless_arm
+headed_arm:
+  br label %join
+headless_arm:
+  br label %join
+join:
+  %header = phi i64 [ 32, label %headed_arm ], [ 0, label %headless_arm ]
+  %has_header = icmp ne i64 %header, 0
+  br i1 %has_header, label %with_header, label %without_header
+with_header:
+  %bytes = add i64 %size, %header
+  %p_with = inttoptr i64 %bytes to ptr
+  ret ptr %p_with
+without_header:
+  %p = inttoptr i64 %size to ptr
+  ret ptr %p
+}
+define external ptr @alloc_use() {
+entry:
+  %p = call ptr (i64, i64, i64) @__iyi_new(i64 16, i64 69, i64 2)
+  ret ptr %p
+}

@@ -266,21 +266,6 @@ def in_loop?(fn : Function, block : Block) : Bool
   loops.depth(id) > 0
 end
 
-# Per block of the current function: whether it sits in a loop. Computed once per round of the late group.
-def loop_blocks(fn : Function) : Array(Bool)
-  fn.relink
-  cfg = Cfg.new(fn)
-  dom = DomTree.new(cfg)
-  loops = LoopInfo.new(cfg, dom)
-  flags = [] of Bool
-  k = 0
-  while k < cfg.size
-    flags << (loops.depth(k) > 0)
-    k = k + 1
-  end
-  flags
-end
-
 # A dispatch link has exactly one conditional successor continuing the chain,
 # and one arm containing exactly one call. The original classifier counts
 # only chains whose continuing edge eventually reaches unreachable.
@@ -357,7 +342,7 @@ def alloc_candidate?(site : Inst, budget : InlineBudget) : Bool
   budget.entries_ok && alloc_entry?(site.args[0].as(Function))
 end
 
-def call_allowed?(fn : Function, block : Block, call : Inst, callee : Function, graph : CallGraph, budget : InlineBudget, loop_ok : Bool) : Bool
+def call_allowed?(fn : Function, block : Block, call : Inst, callee : Function, graph : CallGraph, budget : InlineBudget) : Bool
   return false unless call.aux.is_a?(CallAux)
   aux = call.aux.as(CallAux)
   return false unless aux.fn_type == callee.fn_type && aux.cc == callee.cc
@@ -376,7 +361,6 @@ def call_allowed?(fn : Function, block : Block, call : Inst, callee : Function, 
   return false if budget.round > 0 && !budget.late && graph.recursive?(callee)
   always = source_mandated?(callee, call)
   return false if top_level?(fn) && !always && !in_loop?(fn, block)
-  return false unless loop_ok || always
   # Source-mandated inlining is exempt from the cost-model size limits.
   # inline_one still charges its growth, so later ordinary calls see it.
   return true if always
@@ -524,7 +508,6 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
     break if sites.empty?
     # Raise paths are cold. Blocks an inline creates later in this round have no entry and count as hot.
     cold = cold_blocks(fn)
-    in_loops = budget.late && late_loops_only? ? loop_blocks(fn) : [] of Bool
     round_changed = false
     sites.each do |site|
       next if site.args.empty? || !site.args[0].is_a?(Function)
@@ -558,8 +541,7 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
         next if after_alloca
         # A raise path is cold: only source-mandated inlining may copy into it.
         next if owner_index < cold.size && cold[owner_index] && !source_mandated?(callee, site)
-        loop_ok = !budget.late || !late_loops_only? || (owner_index < in_loops.size && in_loops[owner_index])
-        next unless call_allowed?(fn, block, site, callee, graph, budget, loop_ok)
+        next unless call_allowed?(fn, block, site, callee, graph, budget)
         budget.used = budget.used + inline_one(mod, fn, block, position, site, callee, budget)
         changed = true
         round_changed = true
@@ -570,11 +552,6 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
   end
   budget.invalidate(fn) if changed
   changed
-end
-
-# Whether the late group also keeps only calls inside loops.
-def late_loops_only? : Bool
-  false
 end
 
 # ---- Constant-argument costing (late group). ----------------------------------------------------------------
