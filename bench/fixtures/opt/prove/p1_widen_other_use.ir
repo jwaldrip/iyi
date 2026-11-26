@@ -1,0 +1,19 @@
+; iyi-ir 1
+source_filename = "p1_widen_other_use"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i64 @other_use(i32 %x, ptr %out) {
+entry:
+  %value = and i32 %x, 2147483647
+  %rem = urem i32 %value, 7
+  store i32 %rem, ptr %out, align 4
+  %wide = zext i32 %rem to i64
+  ret i64 %wide
+}
+define internal i64 @variable_divisor(i32 %x, i32 %d) {
+entry:
+  %value = and i32 %x, 2147483647
+  %rem = urem i32 %value, %d
+  %wide = zext i32 %rem to i64
+  ret i64 %wide
+}

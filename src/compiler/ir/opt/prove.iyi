@@ -35,6 +35,15 @@ struct Guard
   end
 end
 
+struct MergedCheck
+  getter term : Inst
+  getter index : Value
+  getter bound : Value
+
+  def initialize(@term : Inst, @index : Value, @bound : Value)
+  end
+end
+
 def min_int(bits : Int32) : Int64
   return -9223372036854775807_i64 - 1_i64 if bits == 64
   -(1_i64 << (bits - 1))
@@ -188,6 +197,9 @@ class Prover
     @known = Hash(Value, Bool).new
     @known_undo = [] of Value
     @unsigned_divs = [] of Inst
+    @widened_divs = [] of Inst
+    @merged_checks = Hash(Int32, MergedCheck).new
+    @merge_order = [] of MergedCheck
     @wraps = [] of Inst
     @branch_terms = [] of Inst
     @branch_truths = [] of Bool
@@ -683,6 +695,44 @@ class Prover
     @undo << value
   end
 
+  # On the comparison edge an unwrapped positive offset is strictly greater
+  # than its input. Checked additions need their own no-overflow edge here.
+  def push_offset(pred : Int64, left : Value, right : Value, compare : Inst) : Nil
+    signed = pred == IntPredicate::SLT.value.to_i64 || pred == IntPredicate::SLE.value.to_i64
+    unsigned = pred == IntPredicate::ULT.value.to_i64 || pred == IntPredicate::ULE.value.to_i64
+    return unless signed || unsigned
+    return unless left.is_a?(Inst)
+    offset = left.as(Inst)
+    args = offset.args
+    if offset.op == Op::Add
+      flag = signed ? 2_i64 : 1_i64
+      return if (offset.aux_int & flag) == 0_i64
+    elsif offset.op == Op::ExtractValue && offset.aux_int == 0_i64 && args.size == 1 && args[0].is_a?(Inst)
+      pair = args[0].as(Inst)
+      return unless pair.op == Op::Intrinsic && pair.aux.is_a?(IntrinsicAux)
+      id = pair.aux.as(IntrinsicAux).id
+      return unless (signed && id == IntrinsicId::SAddOverflow) || (unsigned && id == IntrinsicId::UAddOverflow)
+      successor = @checked[pair]?
+      return unless successor && @dom.dominates?(successor, owner_block(compare))
+      args = pair.args
+    else
+      return
+    end
+    return unless args.size == 2
+    x = canonical_value(args[0])
+    amount = int_value(args[1])
+    if amount.nil?
+      amount = int_value(args[0])
+      x = canonical_value(args[1])
+    end
+    return if amount.nil? || amount <= 0_i64 # mutation P1-offset: zero does not imply strict inequality
+    return if indeterminate?(x) || same?(x, right)
+    strict = signed ? IntPredicate::SLT.value.to_i64 : IntPredicate::ULT.value.to_i64
+    fact = Fact.new(strict, x, right)
+    push_one(x, fact)
+    push_one(right, fact)
+  end
+
   def push_facts(value : Value, truth : Bool, depth : Int32) : Nil
     return if depth > 4
     v = canonical_value(value)
@@ -707,6 +757,11 @@ class Prover
       fact = Fact.new(pred, left, right)
       push_one(left, fact)
       push_one(right, fact)
+      if pred == IntPredicate::SGT.value.to_i64 || pred == IntPredicate::SGE.value.to_i64 || pred == IntPredicate::UGT.value.to_i64 || pred == IntPredicate::UGE.value.to_i64
+        push_offset(swap_pred(pred), right, left, inst)
+      else
+        push_offset(pred, left, right, inst)
+      end
     end
   end
 
@@ -873,6 +928,102 @@ class Prover
     true
   end
 
+  # Widen only when the original unsigned result has no narrow observers.
+  # A nonnegative dividend makes both the quotient and remainder nonnegative,
+  # so signed and unsigned extensions of the result agree.
+  def widen_division?(inst : Inst) : Bool
+    return false unless supported?(inst) && inst.type.bits < 64
+    return false if indeterminate?(inst.args[0]) || indeterminate?(inst.args[1])
+    divisor = int_value(inst.args[1])
+    return false if divisor.nil? || divisor <= 0_i64
+    dividend = range_at(inst.args[0])
+    return false if dividend.lo < 0_i64 || dividend.lo > dividend.hi # mutation P1-widen: the operand is nonnegative
+    uses = @du.uses(inst)
+    return false if uses.empty?
+    uses.each do |use|
+      user = use.user
+      return false unless (user.op == Op::SExt || user.op == Op::ZExt) && user.type.int? && user.type.bits == 64
+    end
+    true
+  end
+
+  def apply_widened_division(editor : Editor, inst : Inst) : Nil
+    uses = @du.uses(inst)
+    return if uses.empty?
+    number = int_value(inst.args[1])
+    return if number.nil?
+    wide = @mod.types.int64
+    x = new_inst(Op::SExt, wide, [inst.args[0]] of Value)
+    divisor = @builder.const_int(wide, number)
+    op = inst.op == Op::SDiv ? Op::UDiv : inst.op == Op::SRem ? Op::URem : inst.op
+    result = new_inst(op, wide, [x, divisor] of Value, inst.aux_int)
+    editor.insert_before(inst, x)
+    editor.insert_before(inst, result)
+    uses.each do |use|
+      cast = use.user
+      editor.replace_all_uses(cast, result)
+      editor.erase(cast)
+    end
+    editor.erase(inst)
+  end
+
+  # The shared failure block may contain phis, but the two old edges must
+  # supply the same value: merging must not change the reported index.
+  def same_failure_values?(failure : Int32, first : Int32, middle : Int32) : Bool
+    @cfg.block(failure).insts.each do |phi|
+      break unless phi.op == Op::Phi
+      a = nil.as(Value?)
+      b = nil.as(Value?)
+      k = 0
+      while k < phi.targets.size
+        from = @cfg.index(phi.targets[k])
+        a = phi.args[k] if from == first
+        b = phi.args[k] if from == middle
+        k = k + 1
+      end
+      return false unless a && b && same?(a, b)
+    end
+    true
+  end
+
+  # Both branches must go to the same failure on true, with no intervening
+  # instruction or other predecessor that could observe the old check.
+  def record_merged_check(block : Int32) : Nil
+    term = @cfg.block(block).terminator
+    return unless term.op == Op::CondBr && term.targets[0] != term.targets[1]
+    return unless term.args[0].is_a?(Inst)
+    first = term.args[0].as(Inst)
+    return unless first.op == Op::ICmp && first.args.size == 2
+    return if condition(first, 0) >= 0
+    failure = @cfg.index(term.targets[0])
+    middle = @cfg.index(term.targets[1])
+    return unless @cfg.preds(middle).size == 1 && @cfg.preds(middle)[0] == block
+    insts = @cfg.block(middle).insts
+    return unless insts.size == 2
+    second = insts[0]
+    next_term = insts[1]
+    return unless second.op == Op::ICmp && second.args.size == 2 && next_term.op == Op::CondBr
+    return unless next_term.args[0] == second && @cfg.index(next_term.targets[0]) == failure && next_term.targets[0] != next_term.targets[1]
+    low = first
+    high = second
+    if first.aux_int == IntPredicate::SGE.value.to_i64
+      low = second
+      high = first
+    end
+    return unless low.aux_int == IntPredicate::SLT.value.to_i64 && high.aux_int == IntPredicate::SGE.value.to_i64
+    x = canonical_value(low.args[0])
+    n = canonical_value(high.args[1])
+    return unless supported?(x) && x.type == n.type && same?(x, canonical_value(high.args[0]))
+    return unless int_value(low.args[1]) == 0_i64
+    return if indeterminate?(x) || indeterminate?(n)
+    bound = range_at(n)
+    return if bound.lo < 0_i64 || bound.lo > bound.hi # mutation P1-bound: the bound is nonnegative
+    return unless same_failure_values?(failure, block, middle)
+    check = MergedCheck.new(term, x, n)
+    @merged_checks[middle] = check
+    @merge_order << check
+  end
+
   # The truth of a value on the edge into a block with one predecessor. The first record for a value wins.
   def record_known(value : Value, truth : Bool, depth : Int32) : Nil
     return if depth > 4
@@ -991,6 +1142,14 @@ class Prover
         end
       end
     end
+    if merged = @merged_checks[block]?
+      zero = @builder.const_int(merged.index.type, 0_i64)
+      nonnegative = Fact.new(IntPredicate::SGE.value.to_i64, merged.index, zero)
+      below = Fact.new(IntPredicate::SLT.value.to_i64, merged.index, merged.bound)
+      push_one(merged.index, nonnegative)
+      push_one(merged.index, below)
+      push_one(merged.bound, below)
+    end
     exit_term = @cfg.block(block).terminator
     if exit_term.op == Op::CondBr && exit_term.targets[0] != exit_term.targets[1]
       known = known_truth(exit_term.args[0], 0)
@@ -1008,14 +1167,23 @@ class Prover
         result = 0
       elsif inst.op == Op::Intrinsic && inst.aux.is_a?(IntrinsicAux) && pair_safe?(inst) # mutation R5-nsw: only a pair safe at its own block gets nsw
         @wraps << inst
-      elsif (inst.op == Op::SDiv || inst.op == Op::SRem) && unsigned_division?(inst)
-        @unsigned_divs << inst
+      elsif inst.op == Op::SDiv || inst.op == Op::SRem
+        if unsigned_division?(inst)
+          if widen_division?(inst)
+            @widened_divs << inst
+          else
+            @unsigned_divs << inst
+          end
+        end
+      elsif (inst.op == Op::UDiv || inst.op == Op::URem) && widen_division?(inst)
+        @widened_divs << inst
       end
       if result >= 0
         @folded[inst] = result
         @fold_order << inst
       end
     end
+    record_merged_check(block)
     true
   end
 
@@ -1063,12 +1231,20 @@ class Prover
         known_marks.pop
       end
     end
-    return false if @fold_order.empty? && @unsigned_divs.empty? && @wraps.empty? && @branch_terms.empty?
+    return false if @fold_order.empty? && @unsigned_divs.empty? && @widened_divs.empty? && @wraps.empty? && @branch_terms.empty? && @merge_order.empty?
     editor = Editor.new(@fn, @du)
+    @merge_order.each do |check|
+      cmp = new_inst(Op::ICmp, @mod.types.int1, [check.index, check.bound] of Value, IntPredicate::UGE.value.to_i64)
+      editor.insert_before(check.term, cmp)
+      editor.set_operand(check.term, 0, cmp)
+    end
     @fold_order.each do |inst|
       result = @folded[inst]
       editor.replace_all_uses(inst, @builder.const_int(inst.type, result.to_i64))
       editor.erase(inst)
+    end
+    @widened_divs.each do |inst|
+      apply_widened_division(editor, inst)
     end
     @unsigned_divs.each do |inst|
       op = inst.op == Op::SDiv ? Op::UDiv : Op::URem
@@ -1097,7 +1273,7 @@ pub def run_prove(mod : Module, fn : Function) : Bool
   interesting = false
   fn.blocks.each do |block|
     block.insts.each do |inst|
-      interesting = true if inst.op == Op::ICmp || (inst.op == Op::ExtractValue && inst.aux_int == 1_i64) || inst.op == Op::SDiv || inst.op == Op::SRem
+      interesting = true if inst.op == Op::ICmp || (inst.op == Op::ExtractValue && inst.aux_int == 1_i64) || inst.op == Op::SDiv || inst.op == Op::SRem || inst.op == Op::UDiv || inst.op == Op::URem
     end
   end
   return false unless interesting

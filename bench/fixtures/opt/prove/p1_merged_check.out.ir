@@ -1,0 +1,31 @@
+; iyi-ir 1
+source_filename = "p1_merged_check"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i32 @negative_first(i32 %x, i32 %n) {
+entry:
+  %size = and i32 %n, 2147483647
+  %neg = icmp slt i32 %x, 0
+  %0 = icmp uge i32 %x, %size
+  br i1 %0, label %fail, label %middle
+middle:
+  br i1 false, label %fail, label %ok
+fail:
+  %asked = phi i32 [ %x, label %entry ], [ %x, label %middle ]
+  ret i32 %asked
+ok:
+  ret i32 %size
+}
+define internal i32 @upper_first(i32 %x, i32 %n) {
+entry:
+  %size = and i32 %n, 2147483647
+  %above = icmp sge i32 %x, %size
+  %0 = icmp uge i32 %x, %size
+  br i1 %0, label %fail, label %middle
+middle:
+  br i1 false, label %fail, label %ok
+fail:
+  ret i32 %x
+ok:
+  ret i32 %size
+}

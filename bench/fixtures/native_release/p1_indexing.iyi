@@ -1,0 +1,45 @@
+@[NoInline]
+def shift(values : Array(Int32)) : Int64
+  i = 0
+  total = 0_i64
+  while i + 1 < values.size
+    values[i] = values[i + 1]
+    total = total + (i % 7).to_i64
+    i = i + 1
+  end
+  total
+end
+
+@[NoInline]
+def failure(values : Array(Int32), index : Int32, write : Bool) : Nil
+  message = "no panic"
+  group do |g|
+    task = g.spawn do
+      if write
+        values[index] = 99
+      else
+        values[index]
+      end
+      0
+    end
+    result = task.value
+    message = result.message if result.is_a?(Panicked)
+    0
+  end
+  puts message
+  expected = "index #{index} out of range for #{values.size} elements"
+  __iyi_exit(1) unless message == expected
+end
+
+empty = [] of Int32
+values = [10, 20, 30]
+puts "negative-valid=#{values[-1]}"
+puts "shift=#{shift(values)} values=#{values[0]},#{values[1]},#{values[2]}"
+[false, true].each do |write|
+  failure(empty, -1, write)
+  failure(empty, 0, write)
+  failure(empty, 999, write)
+  failure(values, -4, write)
+  failure(values, 3, write)
+  failure(values, 999, write)
+end

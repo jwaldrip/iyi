@@ -1,0 +1,30 @@
+; iyi-ir 1
+source_filename = "p1_offset_unsigned"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i1 @unsigned_offset(i32 %i, i32 %size) {
+entry:
+  %next = add nuw i32 1, %i
+  %more = icmp uge i32 %size, %next
+  br i1 %more, label %body, label %done
+body:
+  %check = icmp ult i32 %i, %size
+  ret i1 %check
+done:
+  ret i1 false
+}
+define internal i1 @checked_unsigned(i32 %i, i32 %size) {
+entry:
+  %pair = intrinsic llvm.uadd.with.overflow.i32(i32 %i, i32 1)
+  %overflow = extractvalue { i32, i1 } %pair, 1
+  br i1 %overflow, label %done, label %ok
+ok:
+  %next = extractvalue { i32, i1 } %pair, 0
+  %more = icmp ult i32 %next, %size
+  br i1 %more, label %body, label %done
+body:
+  %check = icmp ult i32 %i, %size
+  ret i1 %check
+done:
+  ret i1 false
+}

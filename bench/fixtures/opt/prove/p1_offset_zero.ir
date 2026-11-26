@@ -1,0 +1,59 @@
+; iyi-ir 1
+source_filename = "p1_offset_zero"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i1 @zero(i32 %i, i32 %size) {
+entry:
+  %next = add nsw i32 %i, 0
+  %more = icmp sle i32 %next, %size
+  br i1 %more, label %body, label %done
+body:
+  %check = icmp slt i32 %i, %size
+  ret i1 %check
+done:
+  ret i1 false
+}
+define internal i1 @negative(i32 %i, i32 %size) {
+entry:
+  %next = add nsw i32 %i, -1
+  %more = icmp sle i32 %next, %size
+  br i1 %more, label %body, label %done
+body:
+  %check = icmp slt i32 %i, %size
+  ret i1 %check
+done:
+  ret i1 false
+}
+define internal i1 @wrapping(i32 %i, i32 %size) {
+entry:
+  %next = add i32 %i, 1
+  %more = icmp slt i32 %next, %size
+  br i1 %more, label %body, label %done
+body:
+  %check = icmp slt i32 %i, %size
+  ret i1 %check
+done:
+  ret i1 false
+}
+define internal i1 @signed_flag_is_not_unsigned(i32 %i, i32 %size) {
+entry:
+  %next = add nsw i32 %i, 1
+  %more = icmp ult i32 %next, %size
+  br i1 %more, label %body, label %done
+body:
+  %check = icmp ult i32 %i, %size
+  ret i1 %check
+done:
+  ret i1 false
+}
+define internal i1 @unsigned_flag_is_not_signed(i32 %i, i32 %size) {
+entry:
+  %next = add nuw i32 %i, 1
+  %more = icmp slt i32 %next, %size
+  br i1 %more, label %body, label %done
+body:
+  %check = icmp slt i32 %i, %size
+  ret i1 %check
+done:
+  ret i1 false
+}

@@ -1,0 +1,33 @@
+; iyi-ir 1
+source_filename = "p1_widen_urem"
+target triple = "aarch64-apple-darwin"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+define internal i64 @remainder(i32 %x) {
+entry:
+  %nonnegative = icmp sge i32 %x, 0
+  br i1 %nonnegative, label %body, label %done
+body:
+  %rem = urem i32 %x, 7
+  %wide = zext i32 %rem to i64
+  ret i64 %wide
+done:
+  ret i64 0
+}
+define internal i64 @signed_remainder(i32 %x) {
+entry:
+  %nonnegative = icmp sge i32 %x, 0
+  br i1 %nonnegative, label %body, label %done
+body:
+  %rem = srem i32 %x, 7
+  %wide = sext i32 %rem to i64
+  ret i64 %wide
+done:
+  ret i64 0
+}
+define internal i64 @quotient(i32 %x) {
+entry:
+  %value = and i32 %x, 2147483647
+  %quotient = udiv i32 %value, 7
+  %wide = sext i32 %quotient to i64
+  ret i64 %wide
+}
