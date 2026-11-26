@@ -262,7 +262,7 @@ pub class CallMatch
       end
       mandatory[i] = true
       if allowed.nil?
-        declared << ts.program.types["Object"].as(Type)
+        declared << ts.program.object_type
       else
         declared << allowed.as(Type)
       end
