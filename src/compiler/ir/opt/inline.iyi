@@ -596,11 +596,7 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
           while index < sites.size
             candidate = sites[index]
             unless candidate.type.void?
-              target = candidate.args[0].as(Function)
-              recursive_later = budget.round > 0 && !budget.late && graph.recursive?(target)
-              if target != fn && !recursive_later && !graph.same_component?(fn, target) && budget.callee_allowed(target)
-                site_ids[candidate] = index
-              end
+              site_ids[candidate] = index
             end
             index = index + 1
           end
