@@ -13,6 +13,7 @@ import compiler/platform/target::{Target}
 import compiler/native/obj/object::{ObjectFile, ObjFormat, Section, SectionKind, Symbol, SymbolKind, SymbolBinding, BuildVersion, Reloc, DebugFunc, FrameDesc}
 import compiler/native/obj/macho::{write_object}
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/mir_clean::{fold_result_copies, elide_fallthrough}
 import compiler/native/aarch64/regs::{reg_name}
 import compiler/native/target::{op_name}
 import compiler/native/jump_table::{declare_jump_tables, place_jump_tables, jump_table_section_name}
@@ -123,6 +124,7 @@ pub def function_mir(mod : Module, fn : Function, syms : Hash(String, Int32), da
     return selected.as(IselError).message
   end
   mf = selected.as(MFunction)
+  fold_result_copies(mf)
   allocate(mf)
   if mf.naked
     if mf.frame.slots.size > 0 || mf.frame.callee_saved.size > 0
@@ -131,6 +133,7 @@ pub def function_mir(mod : Module, fn : Function, syms : Hash(String, Int32), da
     return mf
   end
   lay_out(mf, aarch64_target(darwin).stack_align)
+  elide_fallthrough(mf)
   mf
 end
 
@@ -295,6 +298,7 @@ def dump_inst(isa : Int32, inst : MInst) : String
   text = text + "f" if inst.fp
   text = text + " " + parts.join(", ") unless parts.empty?
   text = text + " #imm=#{inst.imm}" if inst.imm != 0_i64
+  text = text + " cond=#{inst.cond}" if inst.opcode == MOp::Bcond.value.to_i32 # dump-branch-condition
   text = text + " target=#{inst.target}" if inst.target >= 0
   text = text + " table=#{inst.table}" if inst.table >= 0
   text = text + " sym=#{inst.sym}" if inst.sym >= 0

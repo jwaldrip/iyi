@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Wasm SIMD128 speeds up AES-GCM.** `UInt64x2` processes two independent
+  64-bit lanes, and `--mattr +simd128` uses them for eight AES counter
+  blocks at a time. On Apple M5 Max, opening 16 and 64 MiB in headless
+  Chrome went from 204 and 203 MB/s scalar to 257 and 266 MB/s SIMD;
+  WebCrypto measured 3,290 and 3,424 MB/s. SPEC.md III.12.1 has the
+  spreads and the slower GHASH experiment. The predefined `UInt64x2`
+  primitive is available on wasm32; an external ABI cannot accept it.
+
 - **iyi is a self-hosting project.** The owner accepted Jason Waldrip's
   proposal (#172) on 2026-11-24, reversing Appendix B #10: the compiler is
   ported to iyi and gets its own back end and linker, so that iyi is built
@@ -126,6 +134,45 @@
   produce their expected IR deterministically and idempotently, checks the
   driver's command-line contract and that a diamond chain twice as long
   takes less than three times the CPU time, and catches 5 broken copies.
+- **A release tier for the IR optimizer: inlining, scalar replacement and
+  dead-function removal (#252).** 1,212 lines of iyi in four new files under
+  `src/compiler/ir/opt/` (`callgraph`, `inline`, `sroa`, `deadfn`).
+  `OptTier::Release` runs `cfg-simplify, sroa, mem2reg, simplify, dce,
+  cfg-simplify`, then `inline`, that cleanup twice more, then `deadfn`;
+  `OptTier::Default` still runs #225's five passes. The inliner takes a
+  callee of cost 40 or less, an internal callee with one call site up to
+  400, and anything `alwaysinline`, within a 3,000-instruction caller and
+  one and a half times the module's starting size, and refuses what it
+  cannot clone safely (recursion, varargs, `byval`/`sret`, exception
+  handling, non-entry allocas, `returns_twice`, `noreturn` and the entry
+  frames among them). Scalar replacement splits a stack aggregate only when
+  every use is a constant-offset field access, never one whose address
+  escapes or that a volatile or atomic access touches.
+  `src/compiler/ir/module.iyi` gains `remove_functions` and `iyi-opt`
+  accepts `run release`. `bench/native_opt_exercise.sh` goes from 49 to 72
+  fixtures and from 5 to 11 broken copies caught, and checks the entry
+  frames and the growth limits. Only `iyi-opt` runs either tier.
+- **Common subexpressions, range proofs, loop-invariant code motion and
+  block layout in the IR optimizer's release tier (#253).** 2,046 lines of
+  iyi in four new files under `src/compiler/ir/opt/` (`cse`, `prove`,
+  `licm`, `layout`). CSE reuses a dominating identical computation and
+  forwards a stored or loaded value to a later load of the same address
+  until a store, call, atomic, fence or opaque access, or a join whose paths
+  disagree; `prove` folds a comparison or overflow check the dominating
+  branch edges or a counted loop's induction range already decide, and
+  skips irreducible control flow, wide integers and counters that may wrap;
+  LICM moves pure computations other than integer division to a loop's
+  preheader; layout keeps loops contiguous and puts cold and `unreachable`
+  blocks last. `simplify` folds a load from a constant global with a
+  definitive initializer. Each release round becomes `cfg-simplify, sroa,
+  simplify, cse, dce, cfg-simplify`, followed by `prove, simplify, dce,
+  cfg-simplify`, `licm`, `layout` and `deadfn`.
+  `bench/native_opt_exercise.sh` goes from 72 to 176 fixtures and from 11
+  to 20 broken copies caught, and adds scale checks for sequential and
+  nested loops (2K/K under 3.0 CPU). Among the fixtures,
+  `cse/join_clean_first_keep` keeps a load after a join whose clean arm is
+  the first predecessor, so a disagreeing join cannot pass for an agreeing
+  one. Only `iyi-opt` runs either tier.
 - **The module artifact reader and writer in iyi:
   `src/compiler/artifact/iyimod.iyi` (#196).** 3,554 lines of iyi read and
   write `.iyimod` format v65; `src/compiler/tools/mod.iyi` is the `iyi-mod`
@@ -135,7 +182,35 @@
   declarations and JSON to match the hosted reader's, and 11 damaged
   artifacts to be refused with the same verdict, and catches 16 broken
   copies.
-- These six gates run in the same three jobs through
+- **The macro engine and syntax normalizer in iyi: `src/compiler/macros/`
+  and `src/compiler/semantic/normalizer.iyi` (#210).** 3,285 lines of iyi
+  parse and expand macros, with a 384-line table of the macro methods the
+  hosted compiler answers (`answers.iyi`, generated from its source and
+  checked by `bench/macro_method_table.py`), and 780 lower `unless`,
+  `until`, operator assignment, interpolation, chained comparisons, `defer`,
+  `recover` and the rest to the hosted front end's trees.
+  `bench/selfhost_macros_exercise.sh` requires 61 fixtures' expansions (279
+  sites) to print byte for byte as the hosted compiler does, 2 refusals by
+  name, 31 file-method and env cases to match the hosted confinement rule
+  (2 more differ by design), and `bench/macro_sites.py`'s census of the
+  prelude and the port's own source to find at least the
+  `bench/macro_sites.floor` count of identical sites (150 of 165 today, the
+  floor 70), and catches 53 broken copies.
+  `bench/selfhost_normalizer_exercise.sh` requires 11 fixtures (620 nodes)
+  to normalise as the front end does and catches 8. Hosted commands are
+  unchanged.
+- **The formatter in iyi: `src/compiler/tools/formatter.iyi` (#195).**
+  2,783 lines of iyi format source as `iyi tool format` does;
+  `src/compiler/tools/format.iyi` is the standalone `iyi-format` driver.
+  `bench/selfhost_formatter_exercise.sh` requires 32 files to format byte
+  for byte as the hosted formatter does, through a path and through stdin,
+  and a second pass to change nothing, and catches 18 broken copies. Of the
+  338 `.iyi` files that select the self-host jobs, the port formats 140 as
+  the hosted formatter does, formats 34 differently and refuses 164; each
+  of the 140 listed in `bench/selfhost_formatter_parity.floor` must keep
+  matching, and `bench/selfhost_formatter_differs.ceiling` must list exactly
+  the files it formats differently. Hosted commands are unchanged.
+- These nine gates run in the same three jobs through
   `bench/selfhost_gates.sh`; `bench/native_elf_run.sh` runs in
   `selfhost-linux-arm64`.
 - **AArch64 code generation and register allocation in iyi:
@@ -202,8 +277,81 @@
   stderr; the address fixture must change its addresses between runs); and
   catches 4 broken copies. AArch64 execution reports as host-limited on the
   current runners.
+- **A freestanding wasm32 target, `wasm32-unknown-unknown`, and its host
+  loader (#199).** A program builds to a WebAssembly module with no libc and
+  no WASI: `wasm-ld --no-entry` links it, and the only imports are the five
+  host calls of module `iyi` (`write`, `read`, `exit`, `clock_ns`,
+  `random`) that the program reaches. It exports `memory`, a one-shot
+  `iyi_start`, and `iyi_alloc`/`iyi_free` for buffers pinned across
+  collections. The installed `share/iyi/src/iyi/wasm/iyi.mjs` instantiates
+  it in Node or a browser, refuses user imports in the reserved `iyi`
+  module and reads the host's cryptographic random source. Files are
+  refused by name, the environment is empty, and `-Diyi_chaos` is a compile
+  error, as on WASI (#205 later added tasks). SPEC.md III.12.1 is the
+  contract. `bench/wasm_freestanding_exercise.sh` builds `hello`, `format`
+  and `io` natively and for the target, requires the same output in Node
+  and in isolated headless Chrome, runs the contract in both, and catches 5
+  broken copies; the `wasm-freestanding` job runs it and gates a release.
+  `bench/dependency_floor.sh` allows exactly `@[Link(wasm_import_module:
+  "iyi")]` and checks that another host module is refused, and the object
+  audit reads eight targets.
+- **Tasks on freestanding wasm, on JSPI hosts (#205).** `group`, `spawn`,
+  channels, `select`, cancellation, joins and `sleep` compile for
+  `wasm32-unknown-unknown` and run on the native single-thread scheduler;
+  JavaScript Promise Integration suspends the wasm call at a switch, with no
+  Asyncify rewrite. Each fiber gets a 256 KiB shadow stack in linear memory
+  with a canary at its low end checked at every switch, the collector scans
+  each parked fiber's saved range, and finished stacks go back to a pool
+  (at most 13,107, wasm32's page limit over five pages a stack) whose idle
+  stacks are not roots. A program with no path that can park carries none
+  of it: the `swap`, `idle` and `fiber_exit` imports and the
+  `__stack_pointer` and `iyi_fiber_entry` exports appear only with a task
+  path. The loader's `start` and `call` are now asynchronous and refuse
+  overlapping calls; a host without JSPI runs code that never parks, and the
+  first park ends the program with `iyi: JSPI is required to park a task on
+  wasm32-unknown-unknown`. `spawn(unit: :new)` and `-Diyi_chaos` are refused
+  on this target, and WASI keeps its refusals (SPEC.md III.4.12a).
+  Native code is unchanged: the scheduler and collector changes are behind
+  `flag?(:wasm32)`. `bench/wasm_tasks_exercise.sh` compares the task
+  exercise with native output plain and `--release` in Node and headless
+  Chrome, checks the no-JSPI refusal, deadlock, panic and canary reports
+  and bounded memory over 2,000 fibers, and catches 4 broken copies
+  (parked-root scan removed, canary check removed, stack reuse disabled,
+  and the parked main fiber's stack left unscanned, which a box only the
+  main fiber holds across a task's collection now proves);
+  the `wasm-freestanding` job runs it. `bench/thread_exercise.sh` and
+  `bench/parallel_exercise.sh` re-anchor their mutations to the native
+  switch and poll paths.
+- **Allocation escape analysis and write-barrier elision in the IR
+  optimizer (#259).** `src/compiler/ir/opt/escape.iyi` moves an
+  `__iyi_new` whose object never leaves its function to a 16-aligned stack
+  slot, zeroed at the allocation site each time it runs: a constant size of
+  1 to 512 bytes, at most 2,048 bytes of slots per function, and never in a
+  call cycle, a `returns_twice` caller, an entry frame or a module that uses
+  the partitioned heap. `src/compiler/ir/opt/barrier.iyi` removes the
+  `__iyi_marking` test and barrier around stores that all land in stack
+  slots (`barrier-stack`) or that cover the shaded words with constants
+  holding no pointer (`barrier`), and merges adjacent barriers on one
+  object into one. The release tier repeats `escape, barrier-stack, sroa,
+  simplify, dce` while `escape` changes something and runs `barrier` after
+  `licm`. Nothing on master lowers a program to these shapes yet, so only
+  `iyi-opt` and the fixtures run them; the LLVM backend stays the default.
+  `bench/native_opt_exercise.sh` gains sections 2g and 2h and goes from 25
+  to 101 broken copies caught.
 
 ### Changed
+
+- **A freestanding wasm `--release` drops DWARF and keeps function names
+  (#221).** The link adds `wasm-ld --strip-debug` when `--release` was given
+  without `-d`, including `--release -O z`; the name section host stack
+  traces read stays. Plain builds, `--release -d` and `wasm32-wasi` keep
+  their debug information. `bench/wasm_size_exercise.sh` holds the release
+  and direct-build `hello` under 36,000 bytes with names present and DWARF
+  absent, checks that plain and `--release -d` keep DWARF and that the
+  host sees a named stack, and catches a release relinked without
+  `--strip-debug`; `bench/wasm_freestanding_exercise.sh` now runs the host
+  and collector contract on release builds as well. The
+  `wasm-freestanding` job runs both.
 
 - **A build that writes `.iyimod` artifacts compiles each module once, not
   once per type.** A module's travelling code carries private copies of the
@@ -348,7 +496,194 @@
   now written after optimisation and the preemption checks and before the
   object, as a cross-compile always wrote it.
 
+- **The IR verifier computes dominance once per function (#250).**
+  `src/compiler/ir/verifier.iyi` (528 to 633 lines) built a block-by-block
+  dominance matrix and scanned a block for every phi operand; it now builds
+  one `Dominance` value (reverse post-order, Cooper-Harvey-Kennedy immediate
+  dominators, dominator-tree intervals, every walk iterative) and a table
+  of first positions. Verdicts and messages are unchanged.
+  `bench/native_ir_exercise.sh` requires a generated 20,000-block function
+  (6,666 chained diamonds) to verify, verifies 11 valid fixtures (a
+  thread-local address used across a forward edge among them), refuses 23
+  malformed fixtures (19 before; a use of a value defined in an unreachable
+  block and a thread-local address used after a two-block loop's back-edge
+  among them) and catches 32 broken copies (29 before).
+
+- **The AArch64 backend folds result copies and elides fallthrough branches
+  (#251).** `src/compiler/native/mir_clean.iyi` (160 lines) runs from
+  `function_mir`: before register allocation a value copied exactly once
+  is written by its producer into the copy's destination, and after frame
+  layout an unconditional branch to the next block goes and a conditional
+  branch to it is inverted. `IYI_NATIVE_MIR_CLEAN=0` turns both off and any
+  value other than 0 or 1 is refused. The new
+  `bench/native_mir_clean_exercise.sh` emits 61 fixtures in both modes,
+  requires deterministic objects, the same blocks and no more instructions
+  per function (153 functions), and on macOS arm64 runs them against hosted
+  twins and catches 3 broken copies (1 off macOS, the other 2
+  host-limited). It runs in the self-host jobs through
+  `bench/selfhost_gates.sh`.
+
+- **The AArch64 selector folds immediates, offsets and compares (#254).**
+  `src/compiler/native/aarch64/fold.iyi` (86 lines) says which constants
+  fit which field; the selector folds add, subtract, logical, shift and
+  compare immediates, a single-use constant address offset into the load
+  or store (a frame object as slot plus offset), a comparison or overflow
+  check that only feeds its branch into `cmp`/`cmn` with `b.cond`, `cbz`,
+  `cbnz`, `tbz` or `tbnz`, and declines each fold that a second use or an
+  out-of-range value rules out. The encoder gains ten forms and relaxes a
+  conditional branch whose target is out of range. The new
+  `bench/native_isel_fold_exercise.sh` checks branch bounds and relaxation
+  and 41 selected-MIR shapes on every host (an unsigned `i8` compare with
+  200 must select `cmp #200`, not `cmn #56`), and on macOS arm64 runs 5
+  fixtures against hosted twins and catches 5 broken copies;
+  `bench/native_encode_exercise.sh` goes from 100 to 110 forms. It runs in
+  the self-host jobs through `bench/selfhost_gates.sh`.
+
+- **The IR optimizer's inliner caches callee facts and scalar replacement
+  skips functions without aggregates (#255).** `InlineBudget` keeps each
+  callee's eligibility and cost; the inliner drops a function's entries when
+  it changes it, and the pass driver drops them when that function's own
+  cleanup finishes, so a later caller sees its final size. The dispatch rule
+  (a compare chain of more than four single-call arms ending in
+  `unreachable`) walks back from the call's block instead of scanning every
+  block of the caller per call, and `run_sroa` returns before building
+  def-use, the CFG and the position index when the function has no
+  aggregate slot. The IR that comes out is the same.
+  `bench/native_opt_exercise.sh` gains section 2e (four-arm, five-arm and
+  cycling dispatch chains, and a callee that shrinks during its own cleanup)
+  and goes from 20 to 23 broken copies caught.
+
+- **The AArch64 selector calls the module's own `memcpy`, `memmove` and
+  `memset` (#256).** A copy, move or fill the selector does not expand
+  inline (a constant length over 64 bytes, or a variable one) calls the
+  module's routine when the module defines it, and the native helper
+  (`__iyi_native_memcpy` and its siblings) when the module only declares it
+  or lacks it; inside the three routines themselves the helper is always
+  used. The new `bench/native_copy_fill_exercise.sh` checks on every host
+  which symbol 78 selected copies, moves and fills call and, in 36 more,
+  that each passes destination, source or byte, and length in order; on
+  macOS arm64 it runs five modules against hosted twins and catches 3
+  broken copies. It runs in the self-host jobs through
+  `bench/selfhost_gates.sh`.
+
+- **The AArch64 linear-scan allocator coalesces copies, spills by loop
+  weight, reuses reloads and keeps floats in callee-saved registers
+  (#260).** A copy's destination takes its source's register when the
+  source dies there, and identity moves are dropped; the interval evicted is
+  the one with the least loop-weighted use count; a spilled value stays in
+  a scratch register for the rest of its block until a write to that
+  register, a call, an inline assembly body or a redefinition; and a
+  floating-point value that crosses a call may live in d8 to d15, which the
+  frame saves and restores on every return. No value that may carry a
+  pointer lives in a floating-point register across a call or an inline
+  assembly body, asserted on the final homes. The MIR dump prints a
+  conditional branch's condition. `bench/native_regalloc_exercise.sh` goes
+  from 56 to 63 fixtures emitted and from 7 to 38 broken copies caught, and
+  pins each allocator fixture function's spill slots
+  (`native_regalloc/linear_slots.ceiling`, exact in both directions). On
+  every host it also reads each exclusive store in the atomic fixtures'
+  MIR and refuses a status register that is also the value or the address
+  register: a copy that let one share passed the gate everywhere, the
+  hosted twins on Apple silicon included.
+  `bench/native_mir_clean_exercise.sh` goes from 3 to 9.
+- **The macro engine's string methods count characters, Win32 file errors
+  use the system's message, and the macro-site census is exact (#261).**
+  In `src/compiler/macros/`, `StringLiteral#size` answered the byte count
+  where the hosted compiler counts characters; `size`, range `[]`, `tr`
+  (deletion sets included) and `upcase`, `downcase`, `capitalize`,
+  `camelcase` and `underscore` now work by character, and `MacroId` and
+  `SymbolLiteral` forward the string methods as the hosted compiler does.
+  `bench/fixtures/macro_unicode_methods.iyi` (27 sites) must expand byte
+  for byte as the hosted compiler expands it. A `read_file` error on Windows
+  formats the open or read error code with `FormatMessageW`, as
+  `WinError#message` does, and an open error escapes its file name as
+  `File::Error` does on every host, so the two confinement cases excluded on
+  Windows run there. `bench/macro_sites.py`'s census reads every file (316
+  sites, 0 unpaired, 0 unreadable) and lists its 2 differing sites by file,
+  kind, context and ordinal in `bench/macro_sites.floor`; an unlisted
+  difference and a listed one that no longer occurs both fail. The port's
+  parser records the `[` of an index call as its name location, as hosted
+  does. `bench/selfhost_macros_exercise.sh` requires 66 fixtures (313
+  sites; `macro_unicode_case_tr.iyi` adds titlecase and a short `tr`
+  replacement list) and catches 60 broken copies.
+
 ### Gates
+
+- **std/autocert's and std/acme's gates draw challtestsrv's DNS port free
+  for UDP as well as TCP, std/autocert's says what did not come up when
+  Pebble does not start, and eleven gates' failure output no longer dies
+  in `tail`.** Windows CI jobs 139064806332, 139108403121 and
+  139260265084 stopped at "the Pebbles or challtestsrv's DNS did not come
+  up in 30 s:", and the three logs meant to say why were lost to "tail:
+  option used in invalid context -- 3": `tail -3` is the old form GNU tail
+  takes for one file only, so with two or three files Git bash's tail
+  refused it, as GNU tail on Linux does; darwin's tail takes it.
+  `bench/enum_exercise.sh`, `number_exercise.sh`, `release_cores.sh` and
+  the std/acme, std/aead, std/autocert, std/compress, std/curve25519,
+  std/idna, std/math and std/password gates used it on their failure
+  paths, and use `tail -n` now (`tail -q -n 1` where one last line is
+  wanted). The startup failed in 3 of 190 Windows runs from 11-16 to
+  11-25 and in none of 183 on Linux and darwin. On a Windows 11 machine
+  it failed once in 1,000 startups (300 idle, 300 beside 24 busy
+  processes with CI's Python 3.14.10, 400 four at a time): both Pebbles
+  answered and challtestsrv's DNS did not, its log ending "listen udp
+  127.0.0.1:51592: bind: An attempt was made to access a socket in a way
+  forbidden by its access permissions", and netstat showed UDP
+  0.0.0.0:51592 and [::]:51592 held by the svchost of the DNS Client
+  service, whose [::]:51592 had been bound 18 hours before. The gates drew
+  that port as a free TCP port, which says nothing of UDP; challtestsrv
+  binds it for both, logs the refused UDP bind and goes on serving DNS
+  over TCP alone, and Pebble and the wait ask over UDP. The port is now
+  drawn with a UDP bind on it as well, and drawn again while that is
+  refused. Beside a process holding a random half of the UDP ephemeral
+  range on 0.0.0.0, the old draw failed 17 of 40 startups on Linux and the
+  new one none of 40; on Windows such a process of the same account does
+  not block challtestsrv's bind on 127.0.0.1 (40 of 40 startups came up
+  either way), only another account's does, as the DNS Client's. That
+  CI's three failures were this collision is not shown - their logs were
+  lost - but the wait ran its 30 s in each, as it does here. So that the
+  next failure says which, the gate now names what did not answer - a
+  Pebble's directory, with the addresses `localhost` names, or
+  challtestsrv's DNS on its UDP port - with its last error and the times
+  it waited between, and says of challtestsrv and each Pebble whether it
+  is running or exited with which status, beside its log's last five
+  lines.
+
+- **The LSP gates read a Windows process's children by when it was
+  created, and `bench/lsp_orphan_negative.py` no longer hangs or dies on
+  its way out.** Windows CI job 139176708533 sat in "The language server
+  holds its session, on Windows" for 51 minutes, from the session gate's
+  last line to the job's limit: `lsp_orphan_negative.py`, run next,
+  printed nothing. Before its first line it walks the held worker's
+  processes (`descendants`), and that walk took kernel32's snapshot at its
+  word on each process's parent. The snapshot names a parent by pid, and
+  Windows hands a pid on once its process is gone, so a process whose
+  parent has exited lists as the child of whatever has that pid now. Once
+  the `cmd` a held compile starts is handed the pid that one of the gate's
+  own ancestors, its parent gone, still names as its parent, the walk goes
+  round for ever. On Windows 11 every gate process's chain of named
+  parents ended at the free pid 14104; in 604 runs of the negative control
+  (ten at once), one held compile's `cmd` was handed 14104, and that run
+  hung exactly as CI's did, silent, its one thread in `descendants` at
+  60 s and at 120 s, two hundred processes listed under it, `wininit.exe`
+  among them. A `ping` handed its parent's exited parent's pid made the
+  same cycle on purpose. The same reading put processes no step started
+  among a proxy's children (the owner's `firefox.exe`), where the gate's
+  kills land. A child now counts only if it was created no earlier than
+  its parent, and a killed worker's are asked after by when it was
+  created: the made cycle lists one child and ends. Step 60e kills the
+  proxy's workers only: it killed every child, a console-less CI step's
+  `conhost.exe` among them, and job 138159371238 stopped at that kill
+  with "Access is denied". The negative control runs under the session's
+  watchdog, which now prints the gate's own threads, every process under
+  each live server and the server's last stderr lines (a server that
+  never answers ends the negative control in 185 s with all three);
+  `lsp_artifacts.py`'s builds are under it too. And a reader the orphan
+  steps stopped waiting for no longer prints as the interpreter exits:
+  job 138828714339's negative control died at "could not acquire lock for
+  <_io.BufferedWriter name='<stdout>'> at interpreter shutdown" (exit
+  127). Such readers stay quiet, and the negative control joins them, and
+  each server's stderr reader, before it exits.
 
 - **`bench/packages_resolve.sh` loses every fetch's race to another build
   (#246).** A `git` that finishes the other build's checkout while this
@@ -441,7 +776,51 @@
   expected verdict now follows the oracle's `zstd_version_info`. iyi still
   has to refuse the frame with its sentence.
 
+- **The self-host gates catch the broken copies their merge reviews found
+  (#262).** Twelve gates gain 23 checks, each with a mutation proof, for
+  the copies of #184, #185, #186, #191, #194, #207, #208, #209, #225 and
+  #254 that passed them: a Mach-O `ldst16` `PAGEOFF12` site read as
+  `ldst32`, a two-digit octal escape, an `Or`'s end, `RangeLiteral`'s
+  `exclusive`, the asm census's branch shapes, x86-64 start code's
+  `environ`, `trunc` to the same width, swapped `icmp`/`fcmp` predicates,
+  `icmp ule` of equal operands and `xor` folds, AArch64 unsigned condition
+  codes, frame rounding and narrow `lsr`, the x86-64 imm8 boundaries and
+  caller-saved tables, and the command driver's `-Oz` and `--threads`.
+  `native_elf` already caught an executable `PT_GNU_STACK`.
+- **The formatter parity floor holds the files #259, #260 and #262 added.**
+  `src/compiler/ir/opt/escape.iyi` and 20 of the new fixtures format as the
+  hosted formatter does, so `bench/selfhost_formatter_parity.floor` lists
+  them: 142 files become 163. `escape.iyi` and `regalloc_linear.iyi` keep
+  each trailing comment on its own line and each condition on one line,
+  which both formatters leave as written.
+
 ### Fixed
+
+- **Vector unions use the heap's eight-byte alignment (#202).** A mixed
+  union represents its payload as wide integers, so treating only visible
+  LLVM vectors as eight-aligned left nil stores, closure captures and copies
+  promising sixteen-byte alignment on eight-aligned heap addresses.
+  Integers wider than 64 bits take the same cap, so an `Int128` field,
+  union member or closure capture is loaded and stored at `align 8` where
+  it was `align 16`. Measured on x86-64 Linux, AArch64 macOS and x86-64
+  Windows, the machine code of such a program is unchanged, and
+  `bench/uint64x2_exercise.sh` holds the `align 8`. `UInt64x2` is also
+  shareable across threads, including in immutable records and `@[Share]`
+  generic values.
+
+- **wasm32 large objects keep their arena header (#198).** A large
+  object's three header words were written over its arena's link, size and
+  page count, so a sweep could follow a payload size as a pointer, and a
+  pointer into any page after the first did not resolve to its object. The
+  object header now follows the arena header (the payload begins at offset
+  72), and an interior pointer resolves through the large-object list
+  before a page's bytes are read as an arena header. `bench/wasm32_exercise.sh`
+  holds twelve 1,048,592-byte strings across collections and an object
+  reached only through a pointer into its third page, and catches the
+  overlapping header and a first-page-only lookup. Native targets are
+  unchanged: the code is the wasm32 collector's. A swept large object's
+  pages are still not reused, so linear memory grows with each large
+  allocation.
 
 - **`iyi test` on a package with a dependency builds in a cold module
   cache (#246).** Its builds run at once (`-p`, six on twelve cores), and
@@ -29965,7 +30344,7 @@ the same flags.
 
 - **`samples/iyi/calc`: a language, in the language.** Three modules — a
   scanner, a parser and an evaluator — reading a program from standard input,
-  written against iyi's own 36,598-line library and nothing else. Every other
+  written against iyi's own 37,121-line library and nothing else. Every other
   sample is a page long, and a language that has only been used for pages has
   not been used.
 
