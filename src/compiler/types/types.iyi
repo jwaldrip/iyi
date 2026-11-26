@@ -672,7 +672,7 @@ pub class PointerInstanceType < GenericClassInstanceType
   end
 
   def full_name : String
-    composed_name("Pointer(", @element_type.full_name, ")")
+    "Pointer(#{@element_type.full_name})"
   end
 
   def to_s : String
@@ -730,7 +730,7 @@ pub class NilableType < UnionType
   end
 
   def full_name : String
-    composed_name("(", arg_full_name, ")")
+    "(#{arg_full_name})"
   end
 
   def to_s : String
