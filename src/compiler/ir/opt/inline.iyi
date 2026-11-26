@@ -13,6 +13,13 @@ import compiler/ir/opt/edit::{new_inst, new_phi}
 import compiler/ir/opt/fold::{int_value, canonical, unsigned_value, fold_int_binary, fold_int_compare, fold_int_cast}
 import compiler/ir/opt/escape::{sizeof_value}
 
+# Inline constants (C9). Past the ordinary gate (40), a site inside a loop takes a callee of at most HOT_GATE, and any site
+# takes a leaf of at most LEAF_GATE. A callee is copied at most HOT_COPIES times by those rules, and their growth stays
+# within the group's hot allowance.
+HOT_GATE = 80
+LEAF_GATE = 60
+HOT_COPIES = 12
+
 pub class InlineBudget
   getter limit : Int32
   property used : Int32
@@ -22,6 +29,9 @@ pub class InlineBudget
   # expose. Its calls are costed with their constant arguments folded in, and its gate is wider.
   getter late : Bool
   getter entries_ok : Bool
+  # The hot allowance (I1): growth the hot rules admitted this group, and its cap, max(2048, initial total // 16).
+  getter hot_limit : Int32
+  getter hot_used : Int32
 
   def initialize(mod : Module, late : Bool = false, entries_ok : Bool = false)
     total = 0
@@ -38,6 +48,11 @@ pub class InlineBudget
     @costs = Hash(Function, Int32).new
     @folded = Hash(Function, Hash(String, Int32)).new
     @exposed = Hash(Inst, Bool).new
+    @hot_limit = total // 16
+    @hot_limit = 2048 if @hot_limit < 2048
+    @hot_used = 0
+    @copies = Hash(Function, Int32).new
+    @leaves = Hash(Function, Int32).new
   end
 
   # Functions can still change while their own pipeline is running. The
@@ -107,6 +122,7 @@ pub class InlineBudget
     @eligible.delete(fn)
     @costs.delete(fn)
     @folded.delete(fn)
+    @leaves.delete(fn)
     nil
   end
 
@@ -115,6 +131,50 @@ pub class InlineBudget
   def settle(start_used : Int32, start_size : Int32, fn : Function) : Nil
     @used = start_used + (instruction_count(fn) - start_size)
     nil
+  end
+
+  # The copies and growth the hot rules have admitted for a callee, and whether one more copy fits the caps.
+  def hot_copies(callee : Function) : Int32
+    @copies[callee]? || 0
+  end
+
+  def hot_room?(callee : Function, growth : Int32) : Bool
+    hot_copies(callee) < HOT_COPIES && @hot_used + growth <= @hot_limit
+  end
+
+  def note_hot(callee : Function, growth : Int32) : Nil
+    @copies[callee] = hot_copies(callee) + 1
+    @hot_used = @hot_used + growth
+    nil
+  end
+
+  # A leaf calls nothing outside its cold regions and has no loop. Cached until the callee changes.
+  def leaf?(callee : Function) : Bool
+    if cached = @leaves[callee]?
+      return cached == 1
+    end
+    leaf = leaf_callee?(callee)
+    @leaves[callee] = leaf ? 1 : 0
+    leaf
+  end
+end
+
+# The loop depths of the caller one inline round works on. The round reads them the first time a site needs one, by the
+# block index it started with: inlining only appends blocks, so a block that was there when the round began keeps its loop.
+class RoundLoops
+  def initialize(@fn : Function)
+    @loops = nil.as(LoopInfo?)
+  end
+
+  def depth(index : Int32) : Int32
+    if known = @loops
+      return known.depth(index)
+    end
+    @fn.relink
+    cfg = Cfg.new(@fn)
+    fresh = LoopInfo.new(cfg, DomTree.new(cfg))
+    @loops = fresh
+    fresh.depth(index)
   end
 end
 
@@ -253,6 +313,27 @@ def inline_cost(fn : Function) : Int32
   cost
 end
 
+# A leaf calls nothing outside its cold regions and has no loop. A call in a cold region is a raise path, which a copy may keep.
+def leaf_callee?(callee : Function) : Bool
+  return false if callee.declaration?
+  cold = cold_blocks(callee)
+  k = 0
+  while k < callee.blocks.size
+    unless cold[k]
+      callee.blocks[k].insts.each { |inst| return false if inst.op == Op::Call }
+    end
+    k = k + 1
+  end
+  cfg = Cfg.new(callee)
+  loops = LoopInfo.new(cfg, DomTree.new(cfg))
+  k = 0
+  while k < cfg.size
+    return false if loops.depth(k) > 0
+    k = k + 1
+  end
+  true
+end
+
 def top_level?(fn : Function) : Bool
   fn.name == "__iyi_main" || fn.name == "__crystal_main"
 end
@@ -342,7 +423,16 @@ def alloc_candidate?(site : Inst, budget : InlineBudget) : Bool
   budget.entries_ok && alloc_entry?(site.args[0].as(Function))
 end
 
-def call_allowed?(fn : Function, block : Block, call : Inst, callee : Function, graph : CallGraph, budget : InlineBudget) : Bool
+# The hot rules (I1). Past the ordinary gate, a site inside a loop takes a callee of at most HOT_GATE, and any site takes a
+# leaf of at most LEAF_GATE. Both are for the ordinary group only: the late group admits nothing new. The site's block is
+# not cold, which run_inline has already required. The loop depth is read only when the leaf rule does not decide.
+def hot_admitted?(callee : Function, cost : Int32, origin : Int32, loops : RoundLoops, budget : InlineBudget) : Bool
+  return false if budget.late
+  return true if cost <= LEAF_GATE && budget.leaf?(callee)
+  cost <= HOT_GATE && loops.depth(origin) >= 1
+end
+
+def call_allowed?(fn : Function, block : Block, call : Inst, callee : Function, graph : CallGraph, budget : InlineBudget, loops : RoundLoops, origin : Int32) : Bool
   return false unless call.aux.is_a?(CallAux)
   aux = call.aux.as(CallAux)
   return false unless aux.fn_type == callee.fn_type && aux.cc == callee.cc
@@ -367,14 +457,21 @@ def call_allowed?(fn : Function, block : Block, call : Inst, callee : Function, 
   cost = budget.call_cost(callee, call)
   match_helper = callee.name.includes?("~match<")
   return false if !match_helper && cost > 10 && dispatch_over_four?(block)
-  unless match_helper || cost <= budget.gate || (callee.linkage == Linkage::Internal && graph.call_sites(callee) == 1 && cost <= 400)
-    return false
-  end
+  ordinary = match_helper || cost <= budget.gate || (callee.linkage == Linkage::Internal && graph.call_sites(callee) == 1 && cost <= 400)
   # Removing the call and adding the entry branch cancel; cloning preserves
   # the body's instruction count, plus a result phi for non-void calls.
   growth = instruction_count(callee) + (call.type.void? ? 0 : 1)
+  hot = false
+  unless ordinary
+    return false unless hot_admitted?(callee, cost, origin, loops, budget)
+    hot = true
+  end
   return false if instruction_count(fn) + growth > 3000
   return false if budget.used + growth > budget.limit
+  if hot
+    return false unless budget.hot_room?(callee, growth)
+    budget.note_hot(callee, growth)
+  end
   true
 end
 
@@ -540,6 +637,7 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
   site_ids = Hash(Inst, Int32).new
   while round < budget.rounds
     budget.round = round
+    loops = RoundLoops.new(fn)
     round_start = sites.size
     block_index = 0
     while block_index < fn.blocks.size
@@ -590,7 +688,7 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
         # A raise path is cold: only source-mandated inlining may copy into it.
         owner_index = block == fn.blocks[original_index] ? original_index : cold.size
         next if owner_index < cold.size && cold[owner_index] && !source_mandated?(callee, site)
-        next unless call_allowed?(fn, block, site, callee, graph, budget)
+        next unless call_allowed?(fn, block, site, callee, graph, budget, loops, original_index)
         unless indexed_users
           index = site_id - 1
           while index < sites.size
