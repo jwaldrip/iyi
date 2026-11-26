@@ -22,12 +22,6 @@ pub class InlineBudget
   # expose. Its calls are costed with their constant arguments folded in, and its gate is wider.
   getter late : Bool
   getter entries_ok : Bool
-  getter sites : Array(Inst)
-  getter site_blocks : Array(Int32)
-  getter heads : Array(Int32)
-  getter users : Array(Inst)
-  getter links : Array(Int32)
-  getter site_ids : Hash(Inst, Int32)
 
   def initialize(mod : Module, late : Bool = false, entries_ok : Bool = false)
     total = 0
@@ -44,35 +38,6 @@ pub class InlineBudget
     @costs = Hash(Function, Int32).new
     @folded = Hash(Function, Hash(String, Int32)).new
     @exposed = Hash(Inst, Bool).new
-    @sites = [] of Inst
-    @site_blocks = [] of Int32
-    @heads = [] of Int32
-    @users = [] of Inst
-    @links = [] of Int32
-    @site_ids = Hash(Inst, Int32).new
-    @sentinel = Inst.new(Op::ConstInt, mod.types.int1, [] of Value, 0_i64, nil, [] of Block, [] of Int64, "")
-  end
-
-  # Reuse the function-local scratch buffers across the inline group. Clear
-  # pointer slots before truncation so their backing storage retains no IR.
-  def reset_scratch : Nil
-    k = 0
-    while k < @sites.size
-      @sites[k] = @sentinel
-      k = k + 1
-    end
-    k = 0
-    while k < @users.size
-      @users[k] = @sentinel
-      k = k + 1
-    end
-    @sites.truncate(0, 0)
-    @site_blocks.truncate(0, 0)
-    @heads.truncate(0, 0)
-    @users.truncate(0, 0)
-    @links.truncate(0, 0)
-    @site_ids.clear
-    nil
   end
 
   # Functions can still change while their own pipeline is running. The
@@ -567,13 +532,12 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
   changed = false
   round = 0
   relinked = false
-  budget.reset_scratch
-  sites = budget.sites
-  site_blocks = budget.site_blocks
-  heads = budget.heads
-  users = budget.users
-  links = budget.links
-  site_ids = budget.site_ids
+  sites = [] of Inst
+  site_blocks = [] of Int32
+  heads = [] of Int32
+  users = [] of Inst
+  links = [] of Int32
+  site_ids = Hash(Inst, Int32).new
   while round < budget.rounds
     budget.round = round
     round_start = sites.size
@@ -582,9 +546,11 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
       block = fn.blocks[block_index]
       block.insts.each do |inst|
         if inst.op == Op::Call && (!budget.late || alloc_candidate?(inst, budget))
-          sites << inst
-          site_blocks << block_index
-          heads << -1
+          unless inst.args.empty? || !inst.args[0].is_a?(Function)
+            sites << inst
+            site_blocks << block_index
+            heads << -1
+          end
         end
       end
       block_index = block_index + 1
@@ -606,7 +572,6 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
         current_block = fn.blocks[block_index]
       end
       site_id = site_id + 1
-      next if site.args.empty? || !site.args[0].is_a?(Function)
       callee = site.args[0].as(Function)
       if block = current_block
         position = 0
@@ -627,11 +592,15 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
         next if owner_index < cold.size && cold[owner_index] && !source_mandated?(callee, site)
         next unless call_allowed?(fn, block, site, callee, graph, budget)
         unless indexed_users
-          index = round_start
+          index = site_id - 1
           while index < sites.size
             candidate = sites[index]
-            if !candidate.type.void? && !candidate.args.empty? && candidate.args[0].is_a?(Function)
-              site_ids[candidate] = index
+            unless candidate.type.void?
+              target = candidate.args[0].as(Function)
+              recursive_later = budget.round > 0 && !budget.late && graph.recursive?(target)
+              if target != fn && !recursive_later && !graph.same_component?(fn, target) && budget.callee_allowed(target)
+                site_ids[candidate] = index
+              end
             end
             index = index + 1
           end
