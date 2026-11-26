@@ -22,6 +22,12 @@ pub class InlineBudget
   # expose. Its calls are costed with their constant arguments folded in, and its gate is wider.
   getter late : Bool
   getter entries_ok : Bool
+  getter sites : Array(Inst)
+  getter site_blocks : Array(Int32)
+  getter heads : Array(Int32)
+  getter users : Array(Inst)
+  getter links : Array(Int32)
+  getter site_ids : Hash(Inst, Int32)
 
   def initialize(mod : Module, late : Bool = false, entries_ok : Bool = false)
     total = 0
@@ -38,6 +44,35 @@ pub class InlineBudget
     @costs = Hash(Function, Int32).new
     @folded = Hash(Function, Hash(String, Int32)).new
     @exposed = Hash(Inst, Bool).new
+    @sites = [] of Inst
+    @site_blocks = [] of Int32
+    @heads = [] of Int32
+    @users = [] of Inst
+    @links = [] of Int32
+    @site_ids = Hash(Inst, Int32).new
+    @sentinel = Inst.new(Op::ConstInt, mod.types.int1, [] of Value, 0_i64, nil, [] of Block, [] of Int64, "")
+  end
+
+  # Reuse the function-local scratch buffers across the inline group. Clear
+  # pointer slots before truncation so their backing storage retains no IR.
+  def reset_scratch : Nil
+    k = 0
+    while k < @sites.size
+      @sites[k] = @sentinel
+      k = k + 1
+    end
+    k = 0
+    while k < @users.size
+      @users[k] = @sentinel
+      k = k + 1
+    end
+    @sites.truncate(0, 0)
+    @site_blocks.truncate(0, 0)
+    @heads.truncate(0, 0)
+    @users.truncate(0, 0)
+    @links.truncate(0, 0)
+    @site_ids.clear
+    nil
   end
 
   # Functions can still change while their own pipeline is running. The
@@ -532,12 +567,13 @@ pub def run_inline(mod : Module, fn : Function, graph : CallGraph, budget : Inli
   changed = false
   round = 0
   relinked = false
-  sites = [] of Inst
-  site_blocks = [] of Int32
-  heads = [] of Int32
-  users = [] of Inst
-  links = [] of Int32
-  site_ids = Hash(Inst, Int32).new
+  budget.reset_scratch
+  sites = budget.sites
+  site_blocks = budget.site_blocks
+  heads = budget.heads
+  users = budget.users
+  links = budget.links
+  site_ids = budget.site_ids
   while round < budget.rounds
     budget.round = round
     round_start = sites.size
