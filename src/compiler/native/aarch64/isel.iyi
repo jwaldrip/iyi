@@ -25,6 +25,7 @@ import compiler/ir/layout::{DataLayout}
 import compiler/native/const_expr::{ConstAddress, reduce_const}
 import compiler/ir/intrinsics::{IntrinsicId, intrinsic_stem}
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, JumpTable, AsmBody}
+import compiler/native/value_numbers::{ValueNumbers}
 import compiler/native/obj/object::{RelocKind}
 import compiler/native/jump_table::{SwitchTable, switch_table_plan}
 import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le, reg_name, callee_saved_gprs}
@@ -104,8 +105,8 @@ class Isel
   getter syms : Hash(String, Int32)
   getter darwin : Bool
   getter desc : TargetDesc
-  getter values : Array(Value)
-  getter leaves : Array(Array(Int32))
+  getter leaves : Array(Array(Int32)?)
+  property value_numbers : ValueNumbers?
   getter block_index : Hash(String, Int32)
   getter edge_count : Int32
   getter failure : String?
@@ -118,9 +119,8 @@ class Isel
     @module_ref = module_ref
     @layout = module_ref.layout
     @mf = MFunction.new(@fn.name)
-    @values = [] of Value
-    @leaves = [] of Array(Int32)
-    @index = Hash(Value, Int32).new
+    @leaves = Array(Array(Int32)?).new
+    @value_numbers = nil
     @uses = Hash(Value, Int32).new
     @users = Hash(Value, Array(Inst)).new
     @inst_blocks = Hash(Value, Int32).new
@@ -166,16 +166,14 @@ class Isel
   end
 
   def bind(value : Value, regs : Array(Int32)) : Nil
-    @index[value] = @values.size unless @index.has_key?(value)
-    @values << value
-    @leaves << regs
+    number = @value_numbers.as(ValueNumbers).number(value)
+    @leaves[number] = regs if @leaves[number].nil?
   end
 
   def lookup(value : Value) : Array(Int32)?
-    if k = @index[value]?
-      return @leaves[k]
-    end
-    nil
+    number = @value_numbers.as(ValueNumbers).number(value)
+    return nil if number < 0
+    @leaves[number]
   end
 
   def emit(inst : MInst) : Nil
@@ -834,6 +832,9 @@ class Isel
       return @mf
     end
     return run_naked if naked_fn?
+    numbers = ValueNumbers.new(@fn)
+    @value_numbers = numbers
+    @leaves = Array(Array(Int32)?).new(numbers.size, nil)
     plan_folds
     # One MIR block per IR block, in order, so block indices agree with the IR's.
     @fn.blocks.each do |b|
