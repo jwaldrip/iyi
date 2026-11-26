@@ -1674,8 +1674,8 @@ tuple_entry_check() {
   fi
   if [ "$HOST_ID" != darwin-arm64 ]; then
     host_limited 'tuple entry: AArch64 Mach-O runtime calling convention requires macOS arm64; inspecting IR convention'
-    grep -Eq '^define .*@__iyi_main\(' "$WORK/tuple-entry.ir" || { echo 'INVALID: no program entry in tuple IR'; return 2; }
-    grep -Eq '^define .*iyicc .*@__iyi_main\(' "$WORK/tuple-entry.ir"
+    grep -Eq '^define .*@__crystal_main\(' "$WORK/tuple-entry.ir" || { echo 'INVALID: no program entry in tuple IR'; return 2; }
+    grep -Eq '^define .*iyicc .*@__crystal_main\(' "$WORK/tuple-entry.ir"
     return $?
   fi
   codesign -v --strict "$WORK/tuple-entry.native" > /dev/null 2>&1 || { echo "  lower_tuple: FAIL, native signature invalid"; return 2; }
