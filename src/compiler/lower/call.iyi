@@ -548,9 +548,10 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
       end
       i += 1
     end
-    blocks = low.new_blocks(["current_def", "next_def"])
-    low.builder.cond_br(matches, blocks[0], blocks[1])
-    low.builder.position_at_end(blocks[0])
+    current_def_block = low.new_block("current_def")
+    next_def_block = low.new_block("next_def")
+    low.builder.cond_br(matches, current_def_block, next_def_block)
+    low.builder.position_at_end(current_def_block)
     self_value = receiver
     if arm.receiver.is_a?(SemanticProgram) && node.obj.nil?
       self_value = nil
@@ -608,7 +609,7 @@ def codegen_dispatch(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Ty
       end
       phi.add(low, low.last, false)
     end
-    low.builder.position_at_end(blocks[1])
+    low.builder.position_at_end(next_def_block)
   end
   low.builder.unreachable
   phi.close(low)
