@@ -844,9 +844,8 @@ def nonmixed_type_id_of_value(low : Lowerer, value : Value, rt : Type) : Value
     return object_type_id(low, value)
   end
   if rt.is_a?(NilableReferenceUnionType)
-    blocks = low.new_blocks(["nil", "not_nil"])
-    nil_block = blocks[0]
-    not_nil_block = blocks[1]
+    nil_block = low.new_block("nil")
+    not_nil_block = low.new_block("not_nil")
     is_null = low.builder.icmp(IntPredicate::EQ, value, low.builder.const_null_pointer)
     low.builder.cond_br(is_null, nil_block, not_nil_block)
     phi = LowerPhi.new(true, low.module.types.int32)

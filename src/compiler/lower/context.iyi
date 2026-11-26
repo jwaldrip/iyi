@@ -269,22 +269,14 @@ pub class Lowerer
     current_fun.append_basic_block(name)
   end
 
-  # The hosted `new_blocks`: one block per name, appended in order.
-  def new_blocks(names : Array(String)) : Array(Block)
-    blocks = [] of Block
-    names.each do |name|
-      blocks << new_block(name)
-    end
-    blocks
-  end
-
   # The hosted `new_entry_block`: the alloca block and the entry block, in that
   # order, with the builder positioned at the entry block.
   def new_entry_block : Nil
-    blocks = new_blocks(["alloca", "entry"])
-    @alloca_block = blocks[0]
-    @entry_block = blocks[1]
-    @builder.position_at_end(blocks[1])
+    alloca = new_block("alloca")
+    entry = new_block("entry")
+    @alloca_block = alloca
+    @entry_block = entry
+    @builder.position_at_end(entry)
   end
 
   # The hosted `alloca_block`: the block allocas go into. Raises when there is none.
