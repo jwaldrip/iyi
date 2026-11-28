@@ -130,7 +130,7 @@ src/compiler/native/aarch64/abi.iyi 2
 src/compiler/native/aarch64/asm.iyi 78
 src/compiler/native/aarch64/encode.iyi 57
 src/compiler/native/aarch64/fold.iyi 15
-src/compiler/native/aarch64/isel.iyi 195
+src/compiler/native/aarch64/isel.iyi 196
 src/compiler/native/aarch64/opcodes.iyi 5
 src/compiler/native/aarch64/regs.iyi 36
 src/compiler/native/amd64/abi.iyi 28
@@ -214,7 +214,7 @@ src/compiler/tools/link_macho.iyi 16
 src/compiler/tools/mod.iyi 4
 src/compiler/tools/native_amd64.iyi 28
 src/compiler/tools/native_asm.iyi 44
-src/compiler/tools/native_cg.iyi 26
+src/compiler/tools/native_cg.iyi 27
 src/compiler/tools/obj_elf.iyi 10
 src/compiler/tools/obj_macho.iyi 12
 src/compiler/tools/parse.iyi 5
