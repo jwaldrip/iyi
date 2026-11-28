@@ -179,7 +179,7 @@ src/compiler/semantic/instance_vars.iyi 93
 src/compiler/semantic/lib_call.iyi 54
 src/compiler/semantic/literal_expander.iyi 75
 src/compiler/semantic/macro_bindings.iyi 22
-src/compiler/semantic/main_visitor.iyi 495
+src/compiler/semantic/main_visitor.iyi 497
 src/compiler/semantic/match.iyi 73
 src/compiler/semantic/math_interpreter.iyi 65
 src/compiler/semantic/method_lookup.iyi 44
@@ -189,7 +189,7 @@ src/compiler/semantic/recursive_struct_checker.iyi 14
 src/compiler/semantic/restrictions.iyi 53
 src/compiler/semantic/share.iyi 45
 src/compiler/semantic/spawn_placement.iyi 128
-src/compiler/semantic/top_level.iyi 563
+src/compiler/semantic/top_level.iyi 564
 src/compiler/semantic/type_node_host.iyi 23
 src/compiler/semantic/type_nodes.iyi 42
 src/compiler/semantic/typed.iyi 4
@@ -230,7 +230,7 @@ src/compiler/types/rendering.iyi 21
 src/compiler/types/restrictions.iyi 21
 src/compiler/types/to_restriction.iyi 27
 src/compiler/types/type_system.iyi 58
-src/compiler/types/types.iyi 243
+src/compiler/types/types.iyi 249
 src/compiler/types/unification.iyi 19
 src/iyi/array.iyi 117
 src/iyi/atomic.iyi 9
