@@ -36,10 +36,9 @@ pub class MacroAnswers
     offset = 0
     while index = names.byte_index(name, offset)
       finish = index + name.bytesize
-      if (index == 0 || names.byte_at(index - 1) == 32_u8) &&
-         (finish == names.bytesize || names.byte_at(finish) == 32_u8)
-        return true
-      end
+      starts = index == 0 || names.byte_at(index - 1) == 32_u8
+      ends = finish == names.bytesize || names.byte_at(finish) == 32_u8
+      return true if starts && ends
       offset = index + 1
     end
     false
