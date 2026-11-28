@@ -408,6 +408,8 @@ pub class MainVisitor < TypeNodeHost
   property def_instances : Hash(String, DefInstance)
   # Per-concrete-type initializers, shared by every visitor typing this program.
   property instance_var_initializer_lists : Hash(UInt64, Array(InstanceVarInitializer))
+  # Filename spellings are stable; import tables themselves are read on every entry.
+  property normalized_file_paths : Hash(String, String)
 
   # The values the body being typed returns (`return`), and the values a `break` (of the call
   # whose block it is) and a `next` (of that block) carry while they are collected. nil where
@@ -558,6 +560,7 @@ pub class MainVisitor < TypeNodeHost
     @typed_instances = [] of TypedInstance
     @def_instances = Hash(String, DefInstance).new
     @instance_var_initializer_lists = Hash(UInt64, Array(InstanceVarInitializer)).new
+    @normalized_file_paths = Hash(String, String).new
   end
 
   def set_type(node : ASTNode, type : Type) : Type
@@ -4294,9 +4297,17 @@ pub class MainVisitor < TypeNodeHost
   # no location (a generated def) keeps the scope it is typed from.
   def enter_file_scope(node : ASTNode, required : Bool = false) : Nil
     if loc = node.location
-      filename = normalize_path(loc.filename)
-      imports = @program.file_imports[loc.filename]? || @program.file_imports[filename]?
-      defs = @program.file_import_defs[loc.filename]? || @program.file_import_defs[filename]?
+      imports = @program.file_imports[loc.filename]?
+      defs = @program.file_import_defs[loc.filename]?
+      if imports.nil? || defs.nil?
+        filename = @normalized_file_paths[loc.filename]?
+        if filename.nil?
+          filename = normalize_path(loc.filename)
+          @normalized_file_paths[loc.filename] = filename
+        end
+        imports = imports || @program.file_imports[filename]?
+        defs = defs || @program.file_import_defs[filename]?
+      end
       if required && (imports.nil? || defs.nil?)
         raise("missing import table for #{loc.filename}")
       end
@@ -6392,6 +6403,7 @@ pub class MainVisitor < TypeNodeHost
     inner.typed_instances = @typed_instances
     inner.def_instances = @def_instances
     inner.instance_var_initializer_lists = @instance_var_initializer_lists
+    inner.normalized_file_paths = @normalized_file_paths
     inner.def_var_unions = @def_var_unions
     inner.def_nil_resets = @def_nil_resets
     inner.def_free_types = @def_free_types

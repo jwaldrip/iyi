@@ -4260,6 +4260,27 @@ end
 # A path is normalised by dropping `.` segments and resolving `..`, so two spellings
 # of one file compare equal.
 pub def normalize_path(path : String) : String
+  # Most locations already have a canonical path. Return it directly instead
+  # of splitting and joining every segment on each lookup.
+  return path if path.empty? || path == "/"
+  segment_start = path.starts_with?("/") ? 1 : 0
+  i = segment_start
+  normal = true
+  while i <= path.bytesize
+    if i == path.bytesize || path.byte_at(i) == 47_u8
+      size = i - segment_start
+      dot = size >= 1 && path.byte_at(segment_start) == 46_u8
+      dots = size == 2 && dot && path.byte_at(segment_start + 1) == 46_u8
+      if size == 0 || (size == 1 && dot) || dots
+        normal = false
+        break
+      end
+      segment_start = i + 1
+    end
+    i += 1
+  end
+  return path if normal
+
   parts = [] of String
   path.split("/").each do |seg|
     if seg == ".."
