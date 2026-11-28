@@ -33,8 +33,12 @@ def group_type?(type : Type?) : Bool
   type.devirtualize.to_s == "IyiGroup"
 end
 
+def spawn_name?(name : String) : Bool
+  name == "spawn" || name.starts_with?("spawn:")
+end
+
 def spawn_target?(visitor : MainVisitor, definition : Def, receiver : Type?) : Bool
-  return false unless definition.name.split(':')[0] == "spawn"
+  return false unless spawn_name?(definition.name)
   return true if group_type?(receiver)
   group_type?(visitor.program.def_owner(definition))
 end
@@ -59,7 +63,7 @@ end
 
 # Missing call bindings cannot establish either hosted's target or placement.
 def unresolved_group_spawn?(visitor : MainVisitor, call : Call) : Bool
-  return false unless call.name.split(':')[0] == "spawn"
+  return false unless spawn_name?(call.name)
   return false if visitor.target_def?(call)
   if targets = visitor.dispatch_targets?(call)
     return false unless targets.empty?
@@ -279,6 +283,7 @@ pub class SpawnAnalysis
     if visitor.program.types.has_key?("IyiChaos")
       analysis.proven("-Diyi_chaos: every loop checks for preemption (hosted codegen.cr 2999)")
     end
+
     reach = PoolReachWalk.new(visitor, analysis)
     root.accept(reach)
     constants.each do |constant|
