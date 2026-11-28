@@ -3618,10 +3618,10 @@ pub class MainVisitor < TypeNodeHost
       level_start = matches.size
       ordered.each do |definition|
         next if definition.abstract && !owner.is_a?(TraitType)
-        next unless CallMatch.yields?(definition) == !call_node.block.nil?
         if call_node.named_args.nil? && definition.splat_index.nil?
-          next if args.size < min_args_count(definition) || args.size > definition.args.size
+          next if args.size > definition.args.size || args.size < min_args_count(definition)
         end
+        next unless CallMatch.yields?(definition) == !call_node.block.nil?
         old_imports = @program.current_imports
         old_defs = @program.current_import_defs
         old_type = @current_type
@@ -3634,7 +3634,7 @@ pub class MainVisitor < TypeNodeHost
           instance = owner.as(MetaclassType).instance_type
           match_owner = instance if instance.is_a?(GenericInstanceType)
         end
-        attempt = CallMatch.attempt(type_node_system(@program), signature, definition, match_owner, defining)
+        attempt = CallMatch.attempt(type_node_system(@program), signature, definition, match_owner, defining, true)
         @current_type = old_type
         @program.current_imports = old_imports
         @program.current_import_defs = old_defs
