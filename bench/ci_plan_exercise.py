@@ -130,6 +130,10 @@ for files, what in [
     (["bench/native_ir_exercise.sh"], "a native compiler gate"),
     (["bench/lib/host.sh"], "the shared test-host helper"),
     (["bench/fixtures/compile_stdout.iyi"], "a fixture the self-host gates read"),
+    (["samples/iyi/hello.iyi"], "a self-host sample"),
+    (["samples/iyi/calc/parser.iyi"], "a sample's imported module"),
+    (["src/iyi/string.iyi"], "a prelude dependency of the self-host samples"),
+    (["src/std/time.iyi"], "a standard-library dependency of the self-host samples"),
     (["bench/selfhost_gates.sh", "src/compiler/syntax/lexer.iyi"], "a mixed change to the self-host gates and the compiler"),
     (["src/compiler/ir/builder.iyi"], "an IR compiler source"),
     (["bench/" + "native_ir" + "_exercise.sh"], "the native IR gate"),
@@ -152,10 +156,6 @@ for files, what in [
           {"selfhost", "selfhost-darwin", "selfhost-windows", "selfhost-linux-arm64"} <= jobs,
           f"{reason}: {sorted(jobs)}")
 
-reason, jobs = planned("src/iyi/string.iyi")
-check("an ordinary prelude change does not select component-only jobs",
-      not {"selfhost", "selfhost-darwin", "selfhost-windows", "selfhost-linux-arm64"} & jobs,
-      f"{reason}: {sorted(jobs)}")
 
 stale_jobs = {
     "iyi", "compiler-specs", "stale-rg3", "stale-callpath", "stale-equivalence", "stale-fresh",

@@ -150,8 +150,29 @@ prove_fails "warm chunks not cleared" dirtywarm "warm:" \
 
 # The allocation's fast path handing out a list chunk without clearing it:
 # every chunk after a refill's first comes that way.
-prove_fails "the fast path does not clear" dirtyfast "warm:" \
-  '{ if ($0 ~ /^                write64\(word, 0_u64\)$/) { print "                # removed"; next } print }'
+if ! awk '
+  /^      @\[Effect\(:collector\)\]; def self\.take\(size : UInt64, clear : Bool, bits : UInt64, type_id : UInt64\) : UInt64$/ { inside = 1; methods++ }
+  inside && /^      end$/ { inside = 0; closes++ }
+  inside && $0 == "                write64(head, 0_u64)" { h0++ }
+  inside && $0 == "                write64(head &+ 8_u64, 0_u64)" { h1++ }
+  inside && $0 == "                write64(head &+ 16_u64, 0_u64) if index >= 1" { h2++ }
+  inside && $0 == "                write64(head &+ 24_u64, 0_u64) if index >= 2" { h3++ }
+  inside && $0 == "                  write64(word, 0_u64)" { loop++ }
+  END { exit !(methods == 1 && closes == 1 && h0 == 1 && h1 == 1 && h2 == 1 && h3 == 1 && loop == 1) }
+' "$REPO/src/iyi/prelude.iyi"; then
+  echo "  the fast path does not clear: zeroing anchors are missing or ambiguous"
+  status=1
+else
+  prove_fails "the fast path does not clear" dirtyfast "warm:" \
+    '{ if ($0 ~ /^      @\[Effect\(:collector\)\]; def self\.take\(size : UInt64, clear : Bool, bits : UInt64, type_id : UInt64\) : UInt64$/) inside = 1
+       if (inside && $0 ~ /^      end$/) inside = 0
+       if (inside && $0 == "                write64(head, 0_u64)") { print "                nil"; next }
+       if (inside && ($0 == "                write64(head &+ 8_u64, 0_u64)" ||
+                      $0 == "                write64(head &+ 16_u64, 0_u64) if index >= 1" ||
+                      $0 == "                write64(head &+ 24_u64, 0_u64) if index >= 2" ||
+                      $0 == "                  write64(word, 0_u64)")) { print "                  # removed"; next }
+       print }'
+fi
 
 # The carve not counted as the class's take: an epoch that carves what
 # its warm pages fell short of keeps no more warm the epoch after - the
