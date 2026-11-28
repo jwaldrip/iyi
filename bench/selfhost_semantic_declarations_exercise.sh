@@ -20,6 +20,9 @@
 # Verifies:
 #   1. The oracle and the port's driver build.
 #   2. Every bench/fixtures/semdecl_*.iyi is dumped byte-identical by both sides.
+#   2g. bench/fixtures/deep_class_chain.iyi, a class chain 32 deep, is dumped
+#        identically by both sides, and by the port within a time bound: a
+#        variable walk that asks a superclass twice doubles at every level.
 #   3-5. Corpora burn-down: the port's own source (src/compiler), the prelude
 #        (src/iyi), std (src/std) and the samples (samples/iyi). Each file's
 #        agreeing-record count is checked against the committed floor
@@ -70,6 +73,7 @@ status=0
 : > "$RESULTS"
 
 . "$REPO/bench/lib/mutation.sh"
+. "$REPO/bench/lib/bounded_run.sh"
 # The gate's own environment decides what the driver and the oracle see: a define set by the caller would make
 # every fixture run below carry it, and a proof that depends on its absence would pass or fail by accident.
 unset IYI_DECLARATION_FLAGS IYI_DECLARATION_MODE
@@ -166,6 +170,32 @@ for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi "$REPO"/bench/fixtures/semde
   fi
 done
 echo "  Parity summary: $((fixture_count - fixture_bad))/$fixture_count fixtures identical ($total_matched declarations compared)"
+
+echo "== 2g. A class chain 32 deep is declared identically by both sides, by the port within a bound"
+# A variable walk that asks a superclass and then asks it again through `parents` doubles at
+# every level of the chain, so the port's run is bounded. The file is not a semdecl_* fixture:
+# no other run of the port in this gate is left waiting on a copy that walks twice.
+DEEP_CHAIN_SECONDS=20
+DEEP_CHAIN="$REPO_NATIVE/bench/fixtures/deep_class_chain.iyi"
+deep_chain_ok=0
+if ! "$ORACLE" "$DEEP_CHAIN" > "$WORK/deep_o.txt" 2> "$WORK/deep_oe.txt"; then
+  echo "  ORACLE REJECTS the deep chain: $(head -n 1 "$WORK/deep_oe.txt")"
+elif ! bounded_run "$DEEP_CHAIN_SECONDS" "$PORT" "$WORK/deep_p" "$DEEP_CHAIN"; then
+  if [ -e "$WORK/deep_p.timeout" ]; then
+    echo "  the port did not declare the deep chain within $DEEP_CHAIN_SECONDS seconds"
+  else
+    echo "  the port's run on the deep chain could not be observed"
+  fi
+elif [ "$(cat "$WORK/deep_p.status")" != 0 ]; then
+  echo "  PORT REJECTS the deep chain: $(head -n 1 "$WORK/deep_p.err")"
+elif ! cmp -s "$WORK/deep_o.txt" "$WORK/deep_p.out"; then
+  echo "  the deep chain's DECLARATIONS DIFFER"
+  diff "$WORK/deep_o.txt" "$WORK/deep_p.out" | head -n 20
+else
+  echo "  identical ($(agreeing "$WORK/deep_o.txt" "$WORK/deep_p.out") declarations), within the $DEEP_CHAIN_SECONDS second bound"
+  deep_chain_ok=1
+fi
+[ "$deep_chain_ok" -eq 1 ] || status=1
 
 echo "== Entry class-variable types are still checked in the declaration phase"
 missing_cvar="$REPO_NATIVE/bench/fixtures/cvar_import/missing_entry.iyi"
@@ -844,6 +874,18 @@ check_reresolve_diverge() {
   return 0
 }
 
+check_deep_chain_unbounded() {
+  # The mutant is caught by the bound, not by its dump: it prints what the port prints, later.
+  local probe="$WORK/mut_deep_port$EXE"
+  "$IYI" build -o "$(native_path "$probe")" "$REPO_NATIVE/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || { echo "INVALID MUTANT: declaration driver did not build"; cat "$WORK/mut_build.log"; return 0; }
+  bounded_run "$DEEP_CHAIN_SECONDS" "$probe" "$WORK/mut_deep" "$DEEP_CHAIN"
+  case $? in
+    0) return 0 ;;
+    1) echo "decisive: deep_class_chain.iyi: the declaration pass did not end within $DEEP_CHAIN_SECONDS seconds"; return 1 ;;
+    *) echo "INVALID MUTANT: the bounded run could not be observed"; return 0 ;;
+  esac
+}
+
 echo "== 6b. A -D define reaches the port's enum body conditions"
 flag_fixture="$REPO_NATIVE/bench/fixtures/semdecl_define_flags.iyi"
 flag_bad=0
@@ -1296,6 +1338,16 @@ prove_mutation "a generic alias loses its instantiated arguments" "$MUT_SEM" \
   '      if @value.is_a?(Generic)' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+if [ "$deep_chain_ok" -eq 1 ]; then
+  prove_mutation "a variable walk asks a superclass again through its parents" "$MUT_SEM" \
+    '      return sc.object_id == parent.object_id' \
+    '      return false' \
+    -- check_deep_chain_unbounded || status=1
+  MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+else
+  echo "  NOT RUN: the deep class chain baseline did not hold"
+  status=1
+fi
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
 
