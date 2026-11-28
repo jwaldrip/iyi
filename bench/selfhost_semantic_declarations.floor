@@ -128,9 +128,9 @@ src/compiler/macros/target_flags.iyi 8
 src/compiler/macros/type_facts.iyi 24
 src/compiler/native/aarch64/abi.iyi 2
 src/compiler/native/aarch64/asm.iyi 78
-src/compiler/native/aarch64/encode.iyi 55
-src/compiler/native/aarch64/fold.iyi 7
-src/compiler/native/aarch64/isel.iyi 179
+src/compiler/native/aarch64/encode.iyi 57
+src/compiler/native/aarch64/fold.iyi 15
+src/compiler/native/aarch64/isel.iyi 195
 src/compiler/native/aarch64/opcodes.iyi 5
 src/compiler/native/aarch64/regs.iyi 36
 src/compiler/native/amd64/abi.iyi 28
@@ -141,7 +141,7 @@ src/compiler/native/asm/inventory.iyi 88
 src/compiler/native/const_expr.iyi 11
 src/compiler/native/driver.iyi 13
 src/compiler/native/emit.iyi 17
-src/compiler/native/frame.iyi 7
+src/compiler/native/frame.iyi 8
 src/compiler/native/jump_table.iyi 12
 src/compiler/native/link/codesign.iyi 22
 src/compiler/native/link/elf_exe.iyi 128
@@ -150,7 +150,7 @@ src/compiler/native/link/imports.iyi 12
 src/compiler/native/link/link.iyi 133
 src/compiler/native/link/macho_exe.iyi 153
 src/compiler/native/lower.iyi 48
-src/compiler/native/mir.iyi 218
+src/compiler/native/mir.iyi 224
 src/compiler/native/mir_clean.iyi 4
 src/compiler/native/obj/elf.iyi 138
 src/compiler/native/obj/macho.iyi 174
