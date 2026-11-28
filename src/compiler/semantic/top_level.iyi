@@ -363,18 +363,33 @@ pub abstract class ModuleType < NamedType
     @macros = Hash(String, Array(Macro)).new
   end
 
+  # A class holds its superclass twice: as `superclass` and in `parents` (appended when it
+  # is set; an included module goes in front of it). A walk that asks the superclass and
+  # then every parent asks it twice, and twice again at each level above it: 2^depth
+  # questions for a class `depth` levels down. True for the parent already asked.
+  def walked_superclass?(superclass : Type?, parent : Type) : Bool
+    if sc = superclass
+      return sc.object_id == parent.object_id
+    end
+    false
+  end
+
   def lookup_instance_var?(var_name : String) : MetaTypeVar?
     if iv = @instance_vars[var_name]?
       return iv
     end
+    superclass : Type? = nil
     if self.is_a?(ClassType)
-      if sc = self.as(ClassType).superclass
+      superclass = self.as(ClassType).superclass
+      if sc = superclass
         if iv = sc.lookup_instance_var?(var_name)
           return iv
         end
       end
     end
     @parents.each do |p|
+      # The superclass has just answered nil, and asking again cannot change that.
+      next if walked_superclass?(superclass, p)
       if iv = p.lookup_instance_var?(var_name)
         return iv
       end
@@ -393,8 +408,10 @@ pub abstract class ModuleType < NamedType
     if cv = @class_vars[var_name]?
       return cv
     end
+    superclass : Type? = nil
     if self.is_a?(ClassType)
-      if sc = self.as(ClassType).superclass
+      superclass = self.as(ClassType).superclass
+      if sc = superclass
         if sc.is_a?(ModuleType)
           if cv = sc.as(ModuleType).lookup_class_var?(var_name)
             return cv
@@ -403,6 +420,7 @@ pub abstract class ModuleType < NamedType
       end
     end
     @parents.each do |p|
+      next if walked_superclass?(superclass, p)
       if p.is_a?(ModuleType)
         if cv = p.as(ModuleType).lookup_class_var?(var_name)
           return cv
@@ -412,21 +430,32 @@ pub abstract class ModuleType < NamedType
     nil
   end
 
+  # The superclass's table is built once and merged again where the superclass comes up
+  # among the parents, so a module included in front of it is still overridden by it,
+  # as when the table was built twice.
   def all_instance_vars : Hash(String, MetaTypeVar)
     all_ivars = Hash(String, MetaTypeVar).new
+    superclass : Type? = nil
+    inherited : Hash(String, MetaTypeVar)? = nil
     if self.is_a?(ClassType)
-      if sc = self.as(ClassType).superclass
+      superclass = self.as(ClassType).superclass
+      if sc = superclass
         if sc.is_a?(ModuleType)
-          sc.as(ModuleType).all_instance_vars.each do |k, v|
-            all_ivars[k] = v
-          end
-        elsif vars = sc.all_instance_vars?
-          vars.each { |k, v| all_ivars[k] = v }
+          inherited = sc.as(ModuleType).all_instance_vars
+        else
+          inherited = sc.all_instance_vars?
         end
       end
     end
+    if vars = inherited
+      vars.each { |k, v| all_ivars[k] = v }
+    end
     @parents.each do |p|
-      if p.is_a?(ModuleType)
+      if walked_superclass?(superclass, p)
+        if vars = inherited
+          vars.each { |k, v| all_ivars[k] = v }
+        end
+      elsif p.is_a?(ModuleType)
         p.as(ModuleType).all_instance_vars.each do |k, v|
           all_ivars[k] = v
         end
@@ -442,17 +471,25 @@ pub abstract class ModuleType < NamedType
 
   def all_class_vars : Hash(String, MetaTypeVar)
     all_cvars = Hash(String, MetaTypeVar).new
+    superclass : Type? = nil
+    inherited : Hash(String, MetaTypeVar)? = nil
     if self.is_a?(ClassType)
-      if sc = self.as(ClassType).superclass
+      superclass = self.as(ClassType).superclass
+      if sc = superclass
         if sc.is_a?(ModuleType)
-          sc.as(ModuleType).all_class_vars.each do |k, v|
-            all_cvars[k] = v
-          end
+          inherited = sc.as(ModuleType).all_class_vars
         end
       end
     end
+    if vars = inherited
+      vars.each { |k, v| all_cvars[k] = v }
+    end
     @parents.each do |p|
-      if p.is_a?(ModuleType)
+      if walked_superclass?(superclass, p)
+        if vars = inherited
+          vars.each { |k, v| all_cvars[k] = v }
+        end
+      elsif p.is_a?(ModuleType)
         p.as(ModuleType).all_class_vars.each do |k, v|
           all_cvars[k] = v
         end
@@ -4267,6 +4304,27 @@ end
 # A path is normalised by dropping `.` segments and resolving `..`, so two spellings
 # of one file compare equal.
 pub def normalize_path(path : String) : String
+  # Most locations already have a canonical path. Return it directly instead
+  # of splitting and joining every segment on each lookup.
+  return path if path.empty? || path == "/"
+  segment_start = path.starts_with?("/") ? 1 : 0
+  i = segment_start
+  normal = true
+  while i <= path.bytesize
+    if i == path.bytesize || path.byte_at(i) == 47_u8
+      size = i - segment_start
+      dot = size >= 1 && path.byte_at(segment_start) == 46_u8
+      dots = size == 2 && dot && path.byte_at(segment_start + 1) == 46_u8
+      if size == 0 || (size == 1 && dot) || dots
+        normal = false
+        break
+      end
+      segment_start = i + 1
+    end
+    i += 1
+  end
+  return path if normal
+
   parts = [] of String
   path.split("/").each do |seg|
     if seg == ".."

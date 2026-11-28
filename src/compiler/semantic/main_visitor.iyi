@@ -39,6 +39,8 @@ import compiler/semantic/call_error::{CallError}
 import compiler/semantic/new::{define_new_methods, expand_new_default_arguments}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 
+ARGDISPATCH_TRACE = ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
+
 # One construct the body typing could not type or refused, as the pipeline's
 # refusal table reads it. `file` is nil and `line` and `column` are 0 when the
 # node has no location. `def_name` is the def whose body was being typed, named
@@ -408,6 +410,8 @@ pub class MainVisitor < TypeNodeHost
   property def_instances : Hash(String, DefInstance)
   # Per-concrete-type initializers, shared by every visitor typing this program.
   property instance_var_initializer_lists : Hash(UInt64, Array(InstanceVarInitializer))
+  # Filename spellings are stable; import tables themselves are read on every entry.
+  property normalized_file_paths : Hash(String, String)
 
   # The values the body being typed returns (`return`), and the values a `break` (of the call
   # whose block it is) and a `next` (of that block) carry while they are collected. nil where
@@ -524,12 +528,14 @@ pub class MainVisitor < TypeNodeHost
   property fun_inline_file : String?
   @literal_expander : LiteralExpander
 
-  def initialize(@program : SemanticProgram, @speculation : SpeculationLedger = SpeculationLedger.new)
+  def initialize(@program : SemanticProgram, @speculation : SpeculationLedger = SpeculationLedger.new, prepare_new_methods : Bool = true)
     @program.resolve_deferred_class_vars
     @literal_expander = LiteralExpander.new(@program.normalizer)
     # The generated `new` methods are completed before any body is typed: the
-    # declarations pass has recorded the expansions, and this consumes them (idempotent).
-    define_new_methods(@program)
+    # declarations pass has recorded the expansions, and this consumes them. Each call
+    # also walks every class for a default `new`, so a nested visitor (a fun body's),
+    # which types inside the program its outer visitor completed, does not repeat it.
+    define_new_methods(@program) if prepare_new_methods
     @current_type = @program
     @scope = nil
     @vars = Hash(String, Type).new
@@ -556,6 +562,7 @@ pub class MainVisitor < TypeNodeHost
     @typed_instances = [] of TypedInstance
     @def_instances = Hash(String, DefInstance).new
     @instance_var_initializer_lists = Hash(UInt64, Array(InstanceVarInitializer)).new
+    @normalized_file_paths = Hash(String, String).new
   end
 
   def set_type(node : ASTNode, type : Type) : Type
@@ -3408,7 +3415,7 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def trace_arg_dispatch(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, found : Matches, shortcut : Def?) : Nil
-    return nil unless ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
+    return nil unless ARGDISPATCH_TRACE
     interesting = false
     args.each do |arg|
       if arg_type = child_type(arg)
@@ -3613,10 +3620,10 @@ pub class MainVisitor < TypeNodeHost
       level_start = matches.size
       ordered.each do |definition|
         next if definition.abstract && !owner.is_a?(TraitType)
-        next unless CallMatch.yields?(definition) == !call_node.block.nil?
         if call_node.named_args.nil? && definition.splat_index.nil?
-          next if args.size < min_args_count(definition) || args.size > definition.args.size
+          next if args.size > definition.args.size || args.size < min_args_count(definition)
         end
+        next unless CallMatch.yields?(definition) == !call_node.block.nil?
         old_imports = @program.current_imports
         old_defs = @program.current_import_defs
         old_type = @current_type
@@ -3629,7 +3636,7 @@ pub class MainVisitor < TypeNodeHost
           instance = owner.as(MetaclassType).instance_type
           match_owner = instance if instance.is_a?(GenericInstanceType)
         end
-        attempt = CallMatch.attempt(type_node_system(@program), signature, definition, match_owner, defining)
+        attempt = CallMatch.attempt(type_node_system(@program), signature, definition, match_owner, defining, true)
         @current_type = old_type
         @program.current_imports = old_imports
         @program.current_import_defs = old_defs
@@ -3658,7 +3665,7 @@ pub class MainVisitor < TypeNodeHost
   # the error, total mode records it on the call and returns nil.
   def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call, pinned : Array(Def)? = nil, infer_class_vars : Bool = false) : Def?
     result = lookup_method_matching_impl(rec_type, name, args, call_node, pinned, infer_class_vars)
-    if ENV["IYI_ARGDISPATCH_TRACE"]? == "1"
+    if ARGDISPATCH_TRACE
       found = lookup_call_arms(rec_type, rec_type, name, args, call_node, ArmWalk::Parents)
       trace_arg_dispatch(rec_type, name, args, call_node, found, result)
     end
@@ -4292,9 +4299,17 @@ pub class MainVisitor < TypeNodeHost
   # no location (a generated def) keeps the scope it is typed from.
   def enter_file_scope(node : ASTNode, required : Bool = false) : Nil
     if loc = node.location
-      filename = normalize_path(loc.filename)
-      imports = @program.file_imports[loc.filename]? || @program.file_imports[filename]?
-      defs = @program.file_import_defs[loc.filename]? || @program.file_import_defs[filename]?
+      imports = @program.file_imports[loc.filename]?
+      defs = @program.file_import_defs[loc.filename]?
+      if imports.nil? || defs.nil?
+        filename = @normalized_file_paths[loc.filename]?
+        if filename.nil?
+          filename = normalize_path(loc.filename)
+          @normalized_file_paths[loc.filename] = filename
+        end
+        imports = imports || @program.file_imports[filename]?
+        defs = defs || @program.file_import_defs[filename]?
+      end
       if required && (imports.nil? || defs.nil?)
         raise("missing import table for #{loc.filename}")
       end
@@ -6369,7 +6384,7 @@ pub class MainVisitor < TypeNodeHost
 
   # The visitor of a fun body: its own locals, sharing the maps lowering reads.
   def sub_visitor(vars : Hash(String, Type)) : TypeNodeHost
-    inner = MainVisitor.new(@program, @speculation)
+    inner = MainVisitor.new(@program, @speculation, false)
     inner.vars = vars
     inner.scope = @program
     inner.current_type = @current_type
@@ -6390,6 +6405,7 @@ pub class MainVisitor < TypeNodeHost
     inner.typed_instances = @typed_instances
     inner.def_instances = @def_instances
     inner.instance_var_initializer_lists = @instance_var_initializer_lists
+    inner.normalized_file_paths = @normalized_file_paths
     inner.def_var_unions = @def_var_unions
     inner.def_nil_resets = @def_nil_resets
     inner.def_free_types = @def_free_types

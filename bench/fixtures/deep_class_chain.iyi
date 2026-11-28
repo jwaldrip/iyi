@@ -1,0 +1,208 @@
+# A class chain 32 levels deep. Every class declares one instance variable, every fourth
+# includes a module in front of its superclass, and the last one reads the variable at the
+# top of the chain and its own.
+#
+# The port holds a superclass twice, as `superclass` and among `parents`. A variable lookup
+# that asks both asks every ancestor twice per level: 2^32 lookups here for a variable no
+# ancestor declares. bench/selfhost_semantic_declarations_exercise.sh declares this file
+# under a time bound, and proves the bound catches the doubled walk.
+module DeepChainMixin4
+  def mixin4 : Int32
+    4
+  end
+end
+
+module DeepChainMixin8
+  def mixin8 : Int32
+    8
+  end
+end
+
+module DeepChainMixin12
+  def mixin12 : Int32
+    12
+  end
+end
+
+module DeepChainMixin16
+  def mixin16 : Int32
+    16
+  end
+end
+
+module DeepChainMixin20
+  def mixin20 : Int32
+    20
+  end
+end
+
+module DeepChainMixin24
+  def mixin24 : Int32
+    24
+  end
+end
+
+module DeepChainMixin28
+  def mixin28 : Int32
+    28
+  end
+end
+
+module DeepChainMixin32
+  def mixin32 : Int32
+    32
+  end
+end
+
+class DeepChain0
+  @@made : Int32 = 0
+  @level0 : Int32 = 0
+end
+
+class DeepChain1 < DeepChain0
+  @level1 : Int32 = 1
+end
+
+class DeepChain2 < DeepChain1
+  @level2 : Int32 = 2
+end
+
+class DeepChain3 < DeepChain2
+  @level3 : Int32 = 3
+end
+
+class DeepChain4 < DeepChain3
+  include DeepChainMixin4
+  @level4 : Int32 = 4
+end
+
+class DeepChain5 < DeepChain4
+  @level5 : Int32 = 5
+end
+
+class DeepChain6 < DeepChain5
+  @level6 : Int32 = 6
+end
+
+class DeepChain7 < DeepChain6
+  @level7 : Int32 = 7
+end
+
+class DeepChain8 < DeepChain7
+  include DeepChainMixin8
+  @level8 : Int32 = 8
+end
+
+class DeepChain9 < DeepChain8
+  @level9 : Int32 = 9
+end
+
+class DeepChain10 < DeepChain9
+  @level10 : Int32 = 10
+end
+
+class DeepChain11 < DeepChain10
+  @level11 : Int32 = 11
+end
+
+class DeepChain12 < DeepChain11
+  include DeepChainMixin12
+  @level12 : Int32 = 12
+end
+
+class DeepChain13 < DeepChain12
+  @level13 : Int32 = 13
+end
+
+class DeepChain14 < DeepChain13
+  @level14 : Int32 = 14
+end
+
+class DeepChain15 < DeepChain14
+  @level15 : Int32 = 15
+end
+
+class DeepChain16 < DeepChain15
+  include DeepChainMixin16
+  @level16 : Int32 = 16
+end
+
+class DeepChain17 < DeepChain16
+  @level17 : Int32 = 17
+end
+
+class DeepChain18 < DeepChain17
+  @level18 : Int32 = 18
+end
+
+class DeepChain19 < DeepChain18
+  @level19 : Int32 = 19
+end
+
+class DeepChain20 < DeepChain19
+  include DeepChainMixin20
+  @level20 : Int32 = 20
+end
+
+class DeepChain21 < DeepChain20
+  @level21 : Int32 = 21
+end
+
+class DeepChain22 < DeepChain21
+  @level22 : Int32 = 22
+end
+
+class DeepChain23 < DeepChain22
+  @level23 : Int32 = 23
+end
+
+class DeepChain24 < DeepChain23
+  include DeepChainMixin24
+  @level24 : Int32 = 24
+end
+
+class DeepChain25 < DeepChain24
+  @level25 : Int32 = 25
+end
+
+class DeepChain26 < DeepChain25
+  @level26 : Int32 = 26
+end
+
+class DeepChain27 < DeepChain26
+  @level27 : Int32 = 27
+end
+
+class DeepChain28 < DeepChain27
+  include DeepChainMixin28
+  @level28 : Int32 = 28
+end
+
+class DeepChain29 < DeepChain28
+  @level29 : Int32 = 29
+end
+
+class DeepChain30 < DeepChain29
+  @level30 : Int32 = 30
+end
+
+class DeepChain31 < DeepChain30
+  @level31 : Int32 = 31
+end
+
+class DeepChain32 < DeepChain31
+  include DeepChainMixin32
+  @level32 : Int32 = 32
+
+  def sum : Int32
+    @level0 + mixin4 + @level32
+  end
+
+  def self.made : Int32
+    @@made
+  end
+end
+
+deepest = DeepChain32.new
+deepest.sum
+DeepChain32.made

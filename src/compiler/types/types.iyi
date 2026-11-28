@@ -138,6 +138,9 @@ pub abstract class GenericInstanceType < Type
   property generic_type : Type
   property type_vars : Hash(String, Type)
   property type_args : Array(Type)
+  @cached_name_base : String? = nil
+  @cached_name_args : Array(String)? = nil
+  @cached_generic_name : String? = nil
 
   def initialize(program : SemanticProgram, @generic_type : Type, @type_vars : Hash(String, Type), @type_args : Array(Type) = [] of Type)
     super(program, @generic_type.namespace, @generic_type.name)
@@ -159,8 +162,27 @@ pub abstract class GenericInstanceType < Type
   end
 
   def full_name : String
+    base = @generic_type.base_full_name
+    if cached_base = @cached_name_base
+      if cached_args = @cached_name_args
+        if result = @cached_generic_name
+          if cached_base == base && cached_args.size == @type_args.size
+            i = 0
+            while i < @type_args.size
+              break if cached_args[i] != @type_args[i].devirtualize.arg_full_name
+              i = i + 1
+            end
+            return result if i == @type_args.size
+          end
+        end
+      end
+    end
     args_strs = @type_args.map { |a| a.devirtualize.arg_full_name }
-    "#{@generic_type.base_full_name}(#{args_strs.join(", ")})"
+    result = "#{base}(#{args_strs.join(", ")})"
+    @cached_name_base = base
+    @cached_name_args = args_strs
+    @cached_generic_name = result
+    result
   end
 
   def to_s : String

@@ -123,7 +123,8 @@ pub class CallMatch
     finder.found
   end
 
-  def self.attempt(ts : TypeSystem, signature : CallSignature, definition : Def, owner : Type, defining : ModuleType) : MatchAttempt
+  # A lookup that already checked the block can reuse that result for this attempt.
+  def self.attempt(ts : TypeSystem, signature : CallSignature, definition : Def, owner : Type, defining : ModuleType, block_checked : Bool = false) : MatchAttempt
     free_names = [] of String
     if definition.free_vars
       free_names = definition.free_vars.as(Array(String))
@@ -142,7 +143,7 @@ pub class CallMatch
     if dsplat
       return MatchAttempt.failed("a restricted double splat parameter is not ported") if dsplat.restriction
     end
-    if CallMatch.yields?(definition) != signature.block
+    if !block_checked && CallMatch.yields?(definition) != signature.block
       return MatchAttempt.none
     end
 
