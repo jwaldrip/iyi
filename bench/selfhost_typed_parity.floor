@@ -52,7 +52,7 @@ src/compiler/ir/layout.iyi 28
 src/compiler/ir/module.iyi 45
 src/compiler/ir/opt/analysis.iyi 85
 src/compiler/ir/opt/barrier.iyi 103
-src/compiler/ir/opt/callgraph.iyi 24
+src/compiler/ir/opt/callgraph.iyi 27
 src/compiler/ir/opt/cfg_simplify.iyi 34
 src/compiler/ir/opt/cse.iyi 48
 src/compiler/ir/opt/dce.iyi 14
@@ -62,7 +62,7 @@ src/compiler/ir/opt/effects.iyi 25
 src/compiler/ir/opt/escape.iyi 133
 src/compiler/ir/opt/fold.iyi 22
 # file shrank: the file holds 44 nodes and every one matches; this row was 45 while the file held more
-src/compiler/ir/opt/inline.iyi 44
+src/compiler/ir/opt/inline.iyi 47
 src/compiler/ir/opt/layout.iyi 30
 src/compiler/ir/opt/licm.iyi 28
 src/compiler/ir/opt/mem2reg.iyi 46

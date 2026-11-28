@@ -63,7 +63,7 @@ src/compiler/ir/opt/effects.iyi 16
 src/compiler/ir/opt/escape.iyi 141
 src/compiler/ir/opt/fold.iyi 11
 # file shrank: the file holds 25 declarations and every one agrees; this row was 26 while the file held more
-src/compiler/ir/opt/inline.iyi 25
+src/compiler/ir/opt/inline.iyi 28
 src/compiler/ir/opt/layout.iyi 27
 src/compiler/ir/opt/licm.iyi 27
 src/compiler/ir/opt/mem2reg.iyi 30
