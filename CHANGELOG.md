@@ -213,6 +213,35 @@
 - These nine gates run in the same three jobs through
   `bench/selfhost_gates.sh`; `bench/native_elf_run.sh` runs in
   `selfhost-linux-arm64`.
+- **Semantic analysis and type operations in iyi: `src/compiler/semantic/`
+  and `src/compiler/types/` (#217).** 24,389 lines of iyi port the hosted
+  front end's top-level and declaration passes, method lookup and overload
+  order, call, block and body typing, closures, literal expansion, `new` and
+  default arguments, and the type system's merge, filters, restrictions,
+  intersection and unification; a build's `-D` defines reach every macro
+  expansion site. `src/compiler/tools/typed_dump.iyi` prints each typed node,
+  and `src/compiler/semantic/typed.iyi` with `src/compiler/lower/CONTRACT.md`
+  is the typed tree's contract with lowering. Seventeen gates compare it with
+  the hosted compiler. `bench/selfhost_typed_parity_exercise.sh` types every
+  file of the prelude, std, `samples/iyi` and `src/compiler` with both and
+  holds each file's count of identically typed nodes to
+  `bench/selfhost_typed_parity.floor`, a drop and an unrecorded gain alike
+  (29,616 of 31,576 nodes in 329 files on Linux; a host whose platform arms
+  type differently has its own row).
+  `bench/selfhost_semantic_declarations_exercise.sh` does the same for
+  declarations (24,561 of 25,550 in 330 files; a file the hosted oracle
+  cannot analyse fails the gate, and a file the port refuses must be listed
+  with its reason in `bench/selfhost_semantic_declarations.refusals`) and
+  requires the port's declaration pass to complete all 180 compiler and
+  prelude files. `bench/selfhost_typed_bodies_exercise.sh` compares the
+  typed nodes of each fixture's entry and of every method body it
+  instantiates, each count held exactly (1,309 of 1,657 body nodes in 128
+  fixtures). The others compare declaration and typed-expression fixtures,
+  refusals, call resolution, `new`, closures, type operations and the
+  transforms, and hold broken copies of the port to failing. The self-host
+  jobs now run as four shards on each host, dealt by measured weight
+  (`bench/selfhost_gates.weights`). Hosted commands are unchanged; nothing
+  uses the port yet.
 - **AArch64 code generation and register allocation in iyi:
   `src/compiler/native/` (#194).** 6,582 lines of iyi select AArch64
   instructions from `compiler/ir`, lower calls, frames, switches, atomics,
@@ -340,6 +369,55 @@
   to 101 broken copies caught.
 
 ### Changed
+
+- **The iyi parser builds a literal's text once (#264).** A string literal
+  made of several pieces is joined in one `String.build` instead of one
+  concatenation per piece, and a single piece is used as it is; the newline
+  lookahead for a `.` call reuses the lexer's spare token instead of
+  allocating one; and the macro lexer matches a one-byte delimiter without
+  building a string from the character. On macOS arm64 the release-built
+  `compiler/tools/parse` takes 3.4 % less time on the 158 files of
+  `src/compiler` and 5.9 % less on a generated 56,646-line, 121-file
+  project (median of 5 interleaved runs). The parser and lexer drivers' AST
+  and token dumps of the 28 samples and six large compiler and std files are
+  byte-identical to master's. A broken copy whose macro lexer matched an
+  escaped closing delimiter against the opening one passed every syntax and
+  macro gate; `bench/fixtures/syntax_macro_escaped_close.iyi`, compared
+  with the hosted parser, and a proof in `bench/selfhost_parser_exercise.sh`
+  now hold it to failing.
+
+- **IR instructions allocate their operand lists on first use, and the
+  verifier indexes a function once (#265).** `Inst` keeps `args`,
+  `targets`, `cases` and the wide-constant words nilable; the getters create
+  an array the instruction owns the first time one is asked for, so a
+  constant or a terminator with no successors allocates nothing. The
+  verifier builds one block index (by identity, falling back to the name for
+  malformed modules) and one table of each value's first and last placement
+  per function, instead of rebuilding a name index in each check, and
+  `TypeTable#int` caches its integer types. On macOS arm64, on a generated
+  132,005-line IR module, `ir_core verify` takes 31 % less time,
+  `ir_core print` 5.3 % less and `native_cg obj` 5.4 % less (median of 5
+  interleaved runs). The printed IR, verifier verdicts, `drop-unwind`
+  output and `ir_opt run release` output of all 106 IR fixtures and the
+  generated module, the native objects of the 48 codegen fixtures and the
+  generated module, and the six Builder fixture modules are byte-identical
+  to master's. Two broken copies passed every IR and native gate, because
+  the gates verified a Builder module only after printing and parsing it
+  again: a targets getter that handed every instruction one shared list, and
+  a verifier that accepted a void instruction's result as an operand.
+  `ir_core emit` now verifies the module as built, a new `void_use` Builder
+  fixture must be refused as `dominance`, and `bench/native_ir_exercise.sh`
+  proves both, and an operand list not kept on first use, to failing.
+
+- **The self-hosted front end's instance-variable pass is linear in the
+  classes.** `declare_guessed_instance_vars` scanned every pending instance
+  variable per owner and searched the owner list linearly at every
+  superclass level, so it grew as size^1.9 and took 3.3 s of a 4.6 s front
+  end on a 113k-line generated program. An owner table indexed by full name
+  and a set of owner-and-name keys make it 22 ms there; `TopLevelVisitor#finish`
+  keeps its explicit names in a `Set`. On tmac the front end over 57k lines
+  goes from 1,358 to 607 ms (2.74× the hosted front end, from 6.14×); the
+  typed dump is unchanged on 1,068 inputs.
 
 - **A freestanding wasm `--release` drops DWARF and keeps function names
   (#221).** The link adds `wasm-ld --strip-debug` when `--release` was given
@@ -607,7 +685,54 @@
   sites; `macro_unicode_case_tr.iyi` adds titlecase and a short `tr`
   replacement list) and catches 60 broken copies.
 
+- **The AArch64 back end allocates less per function; the objects are the
+  same bytes (#263).** `drop_unreferenced_helpers` scans the module's
+  declarations only for an undefined runtime helper it would drop, not for
+  every object symbol; the linear-scan allocator orders intervals with a
+  bottom-up merge over one scratch array, compacts its active set in place
+  (in order, so victim tie-breaking is unchanged), reads occupied registers
+  from a bitmask built in the same pass and reuses its general-register
+  pool; `rewrite_spills` reuses its per-instruction reload and store
+  buffers; the AArch64 target description is built once per module and
+  shared by selection and frame layout; and a scalar's selector leaves and
+  a scalar call argument no longer go through a one-entry flattened array.
+  On macOS arm64 the collector-free `native_cg obj` retires 10 to 12 % fewer
+  instructions in the back end on six self-hosted modules, and its objects
+  are byte-identical to the previous ones. `native_regalloc/active_order`
+  (spill table row: 6) lets two values die ahead of live ones in the active
+  set under register pressure, so an in-place compaction that keeps a dead
+  interval in place of a live one now fails the spill table on every host,
+  not only the hosted twins on macOS arm64. `native_cg/iyiwide` passes i128
+  arguments under the internal convention, one with its high half on the
+  stack; no fixture did, so a scalar call-argument path that gave an i128 one
+  register passed every gate, and the hosted twins on macOS arm64 now catch
+  it.
+
+- **The AArch64 target description and a call's clobbers cannot be
+  changed.** Since #263 one `TargetDesc` serves every function of a module,
+  and every call it selects shares the description's caller-saved list as
+  its clobbers, but the register sets were plain arrays: a broken copy that
+  popped `caller_saved` once per function compiled, passed every gate on
+  Linux and macOS arm64, and went wrong only after about 24 functions. The
+  sets and `MInst#clobbers` are now a `RegList` (`compiler/native/mir.iyi`),
+  a copy with `size`, `[]`, `empty?` and `each` and nothing that writes, so
+  `pop`, `[]=`, `<<` or `reverse_in_place` on one does not compile. An
+  instruction that is not a call no longer allocates an empty clobber
+  array: on macOS arm64 the collector-free `native_cg obj` retires 1.2 to
+  1.7 % fewer back-end instructions on five self-hosted modules (median of
+  5 interleaved runs, wall time unchanged), and its objects are
+  byte-identical to #263's.
+
 ### Gates
+
+- **The AArch64 codegen gate bounds every program it runs.**
+  `bench/native_codegen_exercise.sh` ran its native fixtures, their hosted
+  twins, the runtime-helper and thread-pointer programs and each broken
+  copy's fixture with no time bound, so one that never ended (a broken
+  copy's `wide.native` did) held the macOS job to its timeout. Each now runs
+  under 20 s and fails by name when the bound ends it. The bound is the
+  Perl alarm the regalloc, MIR-clean and isel-fold gates already used, now
+  one `bench/lib/bounded_run.sh` that all four source.
 
 - **std/autocert's and std/acme's gates draw challtestsrv's DNS port free
   for UDP as well as TCP, std/autocert's says what did not come up when
@@ -795,6 +920,26 @@
   which both formatters leave as written.
 
 ### Fixed
+
+- **The formatter port no longer changes `b.@v` or `{ a; b }`.** The
+  formatter in iyi (`src/compiler/tools/formatter.iyi`, #195) had no
+  visitor for an instance variable read through a receiver, so `c = b.@v`
+  came back as `c = b`, and it dropped the `;` between statements on one
+  line, so `run { d; n }` came back as `run { dn }`. Both changed the
+  program. Four layout differences from `iyi tool format` are fixed with
+  them: `-> { x }` lost the space after `{`; the body of an `if` assigned
+  to a variable was indented from the line start instead of aligned under
+  the `if`; an enum body lost its blank lines and the blank line before a
+  `def`; and the `=` of consecutive constants and valued enum members was
+  not aligned, nor their numbers right-aligned. Four regression fixtures
+  (`bench/fixtures/formatter_ivar_and_semicolons.iyi`,
+  `formatter_proc_literal.iyi`, `formatter_assign_if.iyi` and
+  `formatter_enum_body.fixture`) join the short corpus and the parity
+  floor, and `bench/selfhost_formatter_exercise.sh` holds 7 more broken
+  copies to failing, 25 in all. The port now formats 176 of the 365 files
+  that select the self-host jobs as the hosted formatter does, up from 161:
+  the floor lists all 176, and the 11 files that stopped differing leave
+  the ceiling, which lists 23.
 
 - **Vector unions use the heap's eight-byte alignment (#202).** A mixed
   union represents its payload as wide integers, so treating only visible
