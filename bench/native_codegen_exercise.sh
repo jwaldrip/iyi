@@ -12,6 +12,7 @@ if [ -z "$PY" ]; then
   exit 1
 fi
 source "$REPO/bench/floor_base.sh" || exit 1
+source "$REPO/bench/lib/bounded_run.sh" || exit 1
 if [ "$HOST_OS" = darwin ]; then
   export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:"$PATH"
   export LIBRARY_PATH=${LIBRARY_PATH:-/opt/homebrew/opt/bdw-gc/lib}
@@ -72,6 +73,18 @@ trap 'exit 143' TERM
 
 failed=0
 fail() { echo "FAIL: $*"; failed=1; }
+# Every program this gate runs, native or hosted, runs under one bound, so a program that never ends (a broken
+# copy's wide.native once looped and held the job to its timeout) fails here, by name, within RUN_SECONDS.
+RUN_SECONDS=20
+# run_program EXE PREFIX: bounded_run under RUN_SECONDS, saying which program the bound ended.
+run_program() {
+  local rc
+  bounded_run "$RUN_SECONDS" "$1" "$2"
+  rc=$?
+  [ "$rc" -ne 1 ] || echo "TIMEOUT: $(basename "$1") did not finish within $RUN_SECONDS s"
+  [ "$rc" -ne 2 ] || echo "NOT RUN: $(basename "$1") could not be started or observed"
+  return "$rc"
+}
 FIX="$REPO/bench/fixtures/native_cg"
 IYI="$REPO/bin/iyi"
 if [ -x "$REPO/.build/iyi.exe" ]; then
@@ -213,6 +226,105 @@ done
 [ "$fixture_total" -gt 0 ] || fail "no codegen fixtures found"
 [ "$emitted" -eq "$fixture_total" ] || fail "not every fixture produced a Darwin object"
 echo "emitted $emitted of $fixture_total Darwin-target fixture objects"
+# ARM's condition-code table gives CC=3 (unsigned <), LS=9 (<=),
+# HI=8 (>) and CS=2 (>=). A branch to the false block uses the inverse.
+check_unsigned_conditions() {
+  "$PY" - "$(native_path "$1")" "$(native_path "$FIX/unsigned_conditions.ir")" <<'PY'
+import os
+import subprocess
+import sys
+
+driver, fixture = sys.argv[1:]
+expected = {"ult": 3, "ule": 9, "ugt": 8, "uge": 2}
+checks = 0
+for clean in ("0", "1"):
+    for predicate, cond in expected.items():
+        for kind in ("set", "branch"):
+            name = f"{kind}_{predicate}"
+            env = dict(os.environ, IYI_NATIVE_MIR_CLEAN=clean)
+            try:
+                proc = subprocess.run([driver, "conditions", fixture, name], env=env,
+                                      capture_output=True, text=True, timeout=60)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                print(f"INVALID {name}: {exc}")
+                sys.exit(124)
+            if proc.returncode:
+                print(f"INVALID {name}: {proc.stderr}")
+                sys.exit(124)
+            blocks, instructions = {}, []
+            for line in proc.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) == 3 and parts[0] == "block":
+                    blocks[int(parts[1])] = parts[2]
+                elif parts[0] in ("set", "branch"):
+                    instructions.append(parts)
+            if len(instructions) != 1 or instructions[0][0] != kind:
+                print(f"{name} clean={clean}: expected one {kind}, got {instructions}")
+                sys.exit(1)
+            inst = instructions[0]
+            want = cond
+            if kind == "branch":
+                target = blocks.get(int(inst[2]))
+                if target == "no":
+                    want ^= 1
+                elif target != "yes":
+                    print(f"{name} clean={clean}: unexpected target {target!r}")
+                    sys.exit(1)
+            if int(inst[1]) != want:
+                print(f"{name} clean={clean}: condition {inst[1]}, expected {want}")
+                sys.exit(1)
+            checks += 1
+print(f"unsigned conditions: {checks} materialized/branch and layout checks")
+PY
+}
+if ! check_unsigned_conditions "$DRV"; then
+  fail "unsigned condition selection"
+fi
+check_frame_alignment() {
+  local driver=$1
+  sed -e 's/^target triple = .*/target triple = "aarch64-unknown-linux-gnu"/' \
+      -e 's/^target datalayout = .*/target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32"/' \
+      "$FIX/unsigned_conditions.ir" >"$WORK/frame-alignment.linux.ir" || return 124
+  "$PY" - "$(native_path "$driver")" "$(native_path "$FIX/unsigned_conditions.ir")" \
+    "$(native_path "$WORK/frame-alignment.linux.ir")" <<'PY'
+import os
+import re
+import subprocess
+import sys
+
+driver, *fixtures = sys.argv[1:]
+checks = 0
+for fixture in fixtures:
+    for size, expected in ((8, 16), (24, 32)):
+        name = f"frame_align_{size}"
+        try:
+            proc = subprocess.run([driver, "mir", fixture, name],
+                                  env=dict(os.environ, IYI_NATIVE_REGALLOC="linear"),
+                                  capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"INVALID {name}: {exc}")
+            sys.exit(124)
+        match = re.search(r"^  frame size=(\d+) outgoing=(\d+) saves=(\d+) slots=(\d+)$",
+                          proc.stdout, re.MULTILINE)
+        if proc.returncode or not match:
+            print(f"INVALID {name}: {proc.stderr or proc.stdout}")
+            sys.exit(124)
+        actual, outgoing, saves, slots = map(int, match.groups())
+        if (outgoing, saves, slots) != (0, 0, 1):
+            print(f"INVALID {name}: unexpected frame shape {match.group(0)}")
+            sys.exit(124)
+        if actual != expected:
+            print(f"{name}: frame size {actual}, expected {expected}")
+            sys.exit(1)
+        checks += 1
+print(f"frame alignment: {checks} Darwin/Linux 8- and 24-byte slot checks")
+PY
+}
+if ! check_frame_alignment "$DRV"; then
+  fail "AArch64 frame alignment"
+fi
+
+
 
 RTF="$REPO/bench/fixtures/native_first_light"
 if ! "$DRV" obj "$(native_path "$REPO/bench/fixtures/native_tp/threadpointer.ir")" "$(native_path "$WORK/tp.o")" >"$WORK/tp.obj.log" 2>&1 \
@@ -250,15 +362,19 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       fail "$base: native signature or executable identity failed"
       continue
     fi
-    "$WORK/$base.native" >"$WORK/$base.native.out" 2>"$WORK/$base.native.err"
-    echo $? >"$WORK/$base.native.status"
+    if ! run_program "$WORK/$base.native" "$WORK/$base.native"; then
+      fail "$base: $base.native did not run to its end"
+      continue
+    fi
     if ! "$IYI" build -o "$(native_path "$WORK/$base.hosted$EXE")" "$(native_path "$iy")" >"$WORK/$base.hosted.log" 2>&1; then
       tail -20 "$WORK/$base.hosted.log"
       fail "$base: the hosted compiler does not build $base.iyi"
       continue
     fi
-    "$WORK/$base.hosted$EXE" >"$WORK/$base.hosted.out" 2>"$WORK/$base.hosted.err"
-    echo $? >"$WORK/$base.hosted.status"
+    if ! run_program "$WORK/$base.hosted$EXE" "$WORK/$base.hosted"; then
+      fail "$base: the hosted twin did not run to its end"
+      continue
+    fi
     printf '%s native stdout:\n' "$base"; cat "$WORK/$base.native.out"
     printf '%s native stderr:\n' "$base"; cat "$WORK/$base.native.err"
     printf '%s hosted stderr:\n' "$base"; cat "$WORK/$base.hosted.err"
@@ -279,7 +395,9 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
     fail "threadpointer: cc did not link the native object"
   elif ! record_executable "$WORK/tp.bin"; then
     fail "threadpointer: native signature or executable identity failed"
-  elif ! "$WORK/tp.bin" >"$WORK/tp.out" 2>"$WORK/tp.err"; then
+  elif ! run_program "$WORK/tp.bin" "$WORK/tp"; then
+    fail "threadpointer: tp.bin did not run to its end"
+  elif [ "$(cat "$WORK/tp.status")" != 0 ]; then
     cat "$WORK/tp.out" "$WORK/tp.err"
     fail "threadpointer: the masked thread pointer is zero, unaligned, or differs between reads"
   else
@@ -373,15 +491,18 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
      && cc "$WORK/rth.o" "$WORK/rt_stub.o" -o "$WORK/rth_stub" >"$WORK/rth_stub.link.log" 2>&1 \
      && "$IYI" build -o "$(native_path "$WORK/rth_hosted$EXE")" "$(native_path "$RTF/rt_helpers.iyi")" >"$WORK/rth_hosted.log" 2>&1 \
      && record_executable "$WORK/rth_native" && record_executable "$WORK/rth_stub"; then
-    "$WORK/rth_native" >"$WORK/rth_native.out" 2>"$WORK/rth_native.err"; s1=$?
-    "$WORK/rth_stub" >"$WORK/rth_stub.out" 2>"$WORK/rth_stub.err"; s2=$?
-    "$WORK/rth_hosted$EXE" >"$WORK/rth_hosted.out" 2>"$WORK/rth_hosted.err"; s3=$?
+    run_program "$WORK/rth_native" "$WORK/rth_native"; r1=$?
+    run_program "$WORK/rth_stub" "$WORK/rth_stub"; r2=$?
+    run_program "$WORK/rth_hosted$EXE" "$WORK/rth_hosted"; r3=$?
+    s1=$(cat "$WORK/rth_native.status"); s2=$(cat "$WORK/rth_stub.status"); s3=$(cat "$WORK/rth_hosted.status")
     printf 'rt_helpers native stdout:\n'; cat "$WORK/rth_native.out"
     for variant in native stub hosted; do
       printf 'rt_helpers %s stderr:\n' "$variant"
       cat "$WORK/rth_$variant.err"
     done
-    if [ "$s1" -ne 0 ] || [ "$s2" -ne 0 ] || [ "$s3" -ne 0 ]; then
+    if [ "$r1$r2$r3" != 000 ]; then
+      fail "rt_helpers: a program did not run to its end (native, stub, hosted: $r1 $r2 $r3)"
+    elif [ "$s1" -ne 0 ] || [ "$s2" -ne 0 ] || [ "$s3" -ne 0 ]; then
       fail "rt_helpers: exit statuses $s1 $s2 $s3 (native, stub, hosted)"
     elif ! cmp -s "$WORK/rth_native.out" "$WORK/rth_stub.out"; then
       cat "$WORK/rth_stub.out"
@@ -690,8 +811,9 @@ check_fixture() {
   record_executable "$WORK/m.$base.bin"
   identity_status=$?
   [ "$identity_status" -eq 0 ] || return "$identity_status"
-  "$WORK/m.$base.bin" >"$WORK/m.$base.out" 2>"$WORK/m.$base.err"
-  status=$?
+  run_program "$WORK/m.$base.bin" "$WORK/m.$base"
+  [ "$?" -ne 2 ] || return 124
+  status=$(cat "$WORK/m.$base.status") || return 124
   expected=$(cat "$WORK/$base.hosted.status") || return 124
   printf '%s detector status %s, hosted status %s; stdout:\n' "$base" "$status" "$expected"
   cat "$WORK/m.$base.out"
@@ -770,8 +892,63 @@ check_narrow_param() { check_fixture "$1" narrow_param; }
 check_narrow_asm() { check_fixture "$1" narrow_asm; }
 check_narrow_argext() { check_fixture "$1" narrow_argext; }
 check_narrow_signext() { check_fixture "$1" narrow_signext; }
+# Use the shared mutation helper while refusing compiler or detector setup failures.
+check_shared_codegen_mutant() {
+  local check=$1 mutant="$WORK/shared-mutant.$mutation_total$EXE" rc=0
+  if ! build_driver "$mutant"; then
+    cat "$WORK/build.$(basename "$mutant").log"
+    touch "$WORK/shared-codegen-invalid"
+    return 0
+  fi
+  "$check" "$mutant" || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    touch "$WORK/shared-codegen-invalid"
+    return 0
+  fi
+  return "$rc"
+}
+
+prove_shared_codegen_mutation() {
+  local name=$1 file=$2 old=$3 new=$4 check=$5 rc=0
+  mutation_total=$((mutation_total + 1))
+  mutation_checked=$((mutation_checked + 1))
+  "$check" "$DRV" >"$WORK/shared-codegen-baseline.log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    cat "$WORK/shared-codegen-baseline.log"
+    fail "mutation $name: INVALID pristine detector (status $rc)"
+    return 1
+  fi
+  rm -f "$WORK/shared-codegen-invalid"
+  if (
+    trap - EXIT INT TERM
+    . "$REPO/bench/lib/mutation.sh"
+    prove_mutation "$name" "$file" "$old" "$new" -- check_shared_codegen_mutant "$check"
+  ); then
+    mutation_caught=$((mutation_caught + 1))
+  else
+    fail "mutation $name was not caught"
+  fi
+  [ ! -e "$WORK/shared-codegen-invalid" ] || fail "mutation $name: INVALID mutant or detector"
+}
+
 
 echo "== 6. mutations are each caught"
+prove_shared_codegen_mutation "unsigned comparisons: swap ult and ule condition codes" \
+  src/compiler/native/aarch64/isel.iyi \
+  '  elsif ordinal == 4_i64
+    return cond_cc
+  elsif ordinal == 5_i64
+    return cond_ls' \
+  '  elsif ordinal == 4_i64
+    return cond_ls
+  elsif ordinal == 5_i64
+    return cond_cc' \
+  check_unsigned_conditions
+prove_shared_codegen_mutation "frame: round stack size to 8 instead of 16 bytes" \
+  src/compiler/native/frame.iyi \
+  '  f.frame_size = round_up(offset, stack_align)' \
+  '  f.frame_size = round_up(offset, 8_i64)' \
+  check_frame_alignment
 prove_mutation "call: do not sign-extend an attributed i1 argument" \
   src/compiler/native/aarch64/isel.iyi \
   '            vals[j] = signed_value(vals[j], loc.leaf_type)' \
@@ -906,8 +1083,8 @@ prove_mutation "thread-local: the TLV page is reached through the GOT's relocati
   check_tlvp_kind
 prove_mutation "thread-local: the thunk's clobbers lose x16 and x17" \
   src/compiler/native/aarch64/isel.iyi \
-  '    [0, 16, 17, 30]' \
-  '    [0, 30]' \
+  '    RegList.new([0, 16, 17, 30])' \
+  '    RegList.new([0, 30])' \
   check_tls_clobbers
 prove_mutation "thread-local: a zero initialiser is placed in __thread_data, not __thread_bss" \
   src/compiler/native/thread_locals.iyi \
@@ -958,15 +1135,15 @@ else
   fail "the proof helper accepted a mutation that changes nothing"
 fi
 if [ "$HOST_ID" = darwin-arm64 ]; then
-  expected_checked=32
+  expected_checked=34
   expected_limited=0
 else
-  expected_checked=6
+  expected_checked=8
   expected_limited=26
 fi
 printf 'mutations: %s total, %s checked, %s caught, %s host-limited\n' \
   "$mutation_total" "$mutation_checked" "$mutation_caught" "$mutation_limited"
-[ "$mutation_total" -eq 32 ] || fail "the mutation inventory is not 32"
+[ "$mutation_total" -eq 34 ] || fail "the mutation inventory is not 34"
 [ "$mutation_checked" -eq "$expected_checked" ] || fail "the expected mutations were not all checked"
 [ "$mutation_caught" -eq "$expected_checked" ] || fail "not every checked mutation was caught"
 [ "$mutation_limited" -eq "$expected_limited" ] || fail "the host-limited mutation inventory is incomplete"

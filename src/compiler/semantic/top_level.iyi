@@ -1625,7 +1625,7 @@ pub class SemanticProgram < NonGenericModuleType
   getter declared_ivars : Array(DeclaredIvar)
   getter pending_ivars : Array(PendingIvar) = [] of PendingIvar
   getter declared_cvars : Array(DeclaredIvar)
-  property deferred_class_vars : Bool = false
+  getter deferred_cvars : Array(DeferredClassVar) = [] of DeferredClassVar
   getter instance_var_initializers : Array(InstanceVarInitializer)
   getter pending_generic_superclasses : Array(PendingGenericSuperclass)
   getter pending_generic_includes : Array(PendingGenericInclude)
@@ -1932,6 +1932,24 @@ pub class SemanticProgram < NonGenericModuleType
     nil
   end
 
+  # Imported units are spliced into the program after the top-level pass. Resolve
+  # their class variables at the type-declaration phase, with their own imports.
+  def resolve_deferred_class_vars : Nil
+    saved = @current_imports
+    @deferred_cvars.each do |dc|
+      @current_imports = dc.imports
+      resolved = lookup_type_node(dc.restriction, dc.owner)
+      mv = MetaTypeVar.new(dc.name, resolved, dc.initializer)
+      mv.owner = dc.owner
+      mv.thread_local = dc.thread_local
+      dc.owner.class_vars[dc.name] = mv
+      @declared_cvars << DeclaredIvar.new(dc.owner, dc.name, dc.restriction, dc.initializer, true, dc.imports)
+    end
+    @deferred_cvars.clear
+    @current_imports = saved
+    nil
+  end
+
   # iyi: the declaration pass resolves a generic type node to its base only, since no type system is
   # installed while the program is declared. Installing one (TypeSystem.new) calls this to resolve the
   # lib funs again through it, in the scope and imports of the file that declared each one, so
@@ -2008,28 +2026,6 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
     @current_imports = saved
-    nil
-  end
-
-  # A type system can already exist when an imported restriction is recorded.
-  # Retry those restrictions when the declaring visitor finishes a later file.
-  def resolve_deferred_class_vars : Nil
-    return if !@deferred_class_vars || @merge_hook.nil?
-    saved = @current_imports
-    remaining = false
-    @declared_cvars.each do |dc|
-      if mv = dc.owner.class_vars[dc.name]?
-        next unless mv.var_type.is_a?(UnresolvedType)
-        @current_imports = dc.imports
-        if t = declared_ivar_type?(dc.restriction, dc.owner, true)
-          mv.var_type = t
-        else
-          remaining = true
-        end
-      end
-    end
-    @current_imports = saved
-    @deferred_class_vars = remaining
     nil
   end
 
@@ -2810,6 +2806,18 @@ pub class DeclaredIvar
   end
 end
 
+pub class DeferredClassVar
+  getter owner : ModuleType
+  getter name : String
+  getter restriction : ASTNode
+  getter initializer : ASTNode?
+  getter imports : Hash(String, Type)
+  getter thread_local : Bool
+
+  def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode?, @imports : Hash(String, Type), @thread_local : Bool)
+  end
+end
+
 # A `self.new` the declarations pass added for an instance `initialize` (the hosted
 # new_expansions table). `expanded` is the new on the metaclass, `original` the
 # initialize it came from, `owner` the instance type. define_new_methods fills the
@@ -2830,6 +2838,9 @@ pub class TopLevelVisitor < Visitor
   getter pending_ivars : Array(PendingIvar)
   @file : String?
   property unit : ModuleType? = nil
+  property imported_unit : Bool = false
+  property defer_class_vars : Bool = false
+  property defer_instance_vars : Bool = false
   @enum_flags : Bool = false
   @pending_flags : Bool = false
   # The annotations written since the last declaration (hosted process_annotations).
@@ -2847,12 +2858,16 @@ pub class TopLevelVisitor < Visitor
       pi.imports = saved if pi.imports.nil?
       @program.pending_ivars << pi
     end
+    if @defer_instance_vars
+      @pending_ivars.clear
+      return nil
+    end
     # An explicit `@x : T` decides the type of `@x`. An inferred record for the same name (an
     # initialize argument's restriction) does not replace it, as the hosted pass skips a guess for a
     # variable that exists.
-    explicit = [] of String
+    explicit = Set(String).new
     @pending_ivars.each do |found|
-      explicit << "#{found.owner.full_name} #{found.name}" if found.explicit
+      explicit.add("#{found.owner.full_name} #{found.name}") if found.explicit
     end
     # The hosted processor declares explicit variables before guessed ones for each owner.
     [true, false].each do |explicit_pass|
@@ -2873,7 +2888,6 @@ pub class TopLevelVisitor < Visitor
     end
     @program.current_imports = saved
     @pending_ivars.clear
-    @program.resolve_deferred_class_vars
   end
 
   # A file that `load_file` reads hands its pending instance variables to the file that
@@ -2889,7 +2903,7 @@ pub class TopLevelVisitor < Visitor
     taken
   end
 
-  def initialize(@program : SemanticProgram, @file : String? = nil, @imported : Bool = false)
+  def initialize(@program : SemanticProgram, @file : String? = nil)
     @current_type = @program
     @exp_nest = 0
     @pending_ivars = [] of PendingIvar
@@ -2921,9 +2935,7 @@ pub class TopLevelVisitor < Visitor
     @exp_nest = @exp_nest + 1
     has_inline = node.expressions.any? { |exp| exp.is_a?(MacroIf) || exp.is_a?(MacroFor) || exp.is_a?(MacroExpression) }
     if has_inline
-      # The hosted path lookup is the site's lexical scope, and a constant
-      # answers its initializer AST (interpreter.cr:555-568). Capture the
-      # scope, not @current_type, which nested declarations temporarily change.
+      # Resolve constants in the site's lexical scope, in declaration order.
       scope = @current_type
       lookup = ->(path : Path) : ASTNode? do
         found = @program.lookup_type_path?(path, scope)
@@ -2961,7 +2973,7 @@ pub class TopLevelVisitor < Visitor
     if here = @file
       base = dir_of(here)
     end
-    load_file(normalize_path("#{base}/#{name}.iyi"))
+    load_file(normalize_path("#{base}/#{name}.iyi"), @imported_unit)
     false
   end
 
@@ -2977,7 +2989,7 @@ pub class TopLevelVisitor < Visitor
     unless file
       refuse_port("can't find module '#{written}'")
     end
-    unit = load_file(file.as(String))
+    unit = load_file(file.as(String), true)
     if names = node.names
       if unit.nil?
         refuse_port("import '#{written}' names types of a file that is still being read")
@@ -2994,6 +3006,25 @@ pub class TopLevelVisitor < Visitor
             refuse_port("undefined constant #{name} in '#{written}'")
           end
           @program.current_import_defs[name] = defs.as(Array(Def))
+        end
+      end
+    end
+    # `import a/b::*` brings every name the unit exports (hosted UsingDecl with no name
+    # list: UsingModule#exports? answers each `pub` name). An unexported declaration is
+    # private here (iyi_unexported?), so it stays the unit's own.
+    if node.glob
+      if unit.nil?
+        refuse_port("import '#{written}::*' names types of a file that is still being read")
+      end
+      unit.as(ModuleType).types.each do |name, found|
+        unless found.private? || @program.current_imports.has_key?(name)
+          @program.current_imports[name] = found
+        end
+      end
+      unit.as(ModuleType).defs.each do |name, defs|
+        public_defs = defs.reject { |d| d.visibility == Visibility::Private }
+        unless public_defs.empty? || @program.current_import_defs.has_key?(name)
+          @program.current_import_defs[name] = public_defs
         end
       end
     end
@@ -3034,14 +3065,17 @@ pub class TopLevelVisitor < Visitor
   # the file declares with its `module` header, or nil for a file with none. The
   # file's imports belong to the file, so the program's import table is swapped for
   # the visit and restored after it.
-  def load_file(file : String) : ModuleType?
+  def load_file(file : String, imported : Bool = false) : ModuleType?
     if @program.loaded_files.includes?(file)
       return @program.loaded_units[file]?
     end
     @program.loaded_files.add(file)
     # The pipeline holds the file's normalised tree when it declared the units. Reading that tree keeps one tree per file.
     nodes = @program.unit_tree_or_parse(file)
-    inner = TopLevelVisitor.new(@program, file, true)
+    inner = TopLevelVisitor.new(@program, file)
+    inner.imported_unit = imported
+    inner.defer_class_vars = @defer_class_vars
+    inner.defer_instance_vars = @defer_instance_vars
     saved = @program.current_imports
     saved_defs = @program.current_import_defs
     @program.current_imports = Hash(String, Type).new
@@ -3663,7 +3697,7 @@ pub class TopLevelVisitor < Visitor
     wrapped_def.members
   end
 
-  # Enum branches use the compilation's target flags, or the host when no target was supplied.
+  # Enum macro conditions see the same flags as every other macro site.
   def iyi_host_flag?(name : String) : Bool
     if flags = @program.normalizer.macro_flags
       return flags.includes?(name)
@@ -4087,14 +4121,12 @@ pub class TopLevelVisitor < Visitor
       if @current_type.is_a?(SemanticProgram)
         raise("can't use class variables at the top level")
       end
-      # The hosted declaration pass does not resolve an imported file's class-variable
-      # restriction until it is needed. Keep the written type for re-resolution rather
-      # than refusing a bare entry that only imports the file.
-      decl_type = if @imported
-                    @program.lookup_type_node?(node.declared_type, @current_type) || UnresolvedType.new(@program, node.declared_type.to_s)
-                  else
-                    @program.lookup_type_node(node.declared_type, @current_type)
-                  end
+      if @imported_unit || @defer_class_vars
+        thread_local = annotations.any? { |ann| ann.path.names.last == "ThreadLocal" }
+        @program.deferred_cvars << DeferredClassVar.new(@current_type, node.var.as(ClassVar).name, node.declared_type, node.value, @program.current_imports, thread_local)
+        return false
+      end
+      decl_type = @program.lookup_type_node(node.declared_type, @current_type)
       cvar_name = node.var.as(ClassVar).name
       mv = MetaTypeVar.new(cvar_name, decl_type, node.value)
       mv.owner = @current_type
@@ -4103,7 +4135,6 @@ pub class TopLevelVisitor < Visitor
       end
       @current_type.class_vars[cvar_name] = mv
       @program.declared_cvars << DeclaredIvar.new(@current_type, cvar_name, node.declared_type, node.value, true, @program.current_imports)
-      @program.deferred_class_vars = true if decl_type.is_a?(UnresolvedType)
     end
     false
   end

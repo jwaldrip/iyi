@@ -449,6 +449,12 @@ ptrtoint_check() {
   out=$("$bin" verify bench/fixtures/ir/bad/ptrtoint_aggregate.ir 2>&1) && return 1
   echo "$out" | grep -q 'error\[types\].*ptrtoint needs a pointer operand and integer result'
 }
+# The same-width trunc fixture must be refused under types. Non-zero when it is accepted or refused another way.
+trunc_same_width_check() {
+  local bin="$1" out
+  out=$("$bin" verify bench/fixtures/ir/bad/review_trunc_same_width.ir 2>&1) && return 1
+  echo "$out" | grep -q 'error\[types\].*trunc must narrow an integer'
+}
 
 
 # The named-struct C-convention fixture must be refused under cc-lowered. Non-zero when it is accepted or refused another way.
@@ -580,13 +586,19 @@ done
 echo "checked $count valid fixtures"
 
 # ---- 4. builder-constructed modules ------------------------------------------------------------
-echo "== 4. modules built with the Builder print identically after a parse"
+echo "== 4. modules built with the Builder verify as built and print identically after a parse"
 for name in arith memory control calls runtime intrinsics; do
   "$DRV" emit "$name" >"$WORK/$name.ir" || { fail "emit $name"; continue; }
   out=$("$DRV" roundtrip "$(native_path "$WORK/$name.ir")" 2>&1) || { fail "$name: $out"; continue; }
   [ "$out" = "identical" ] || fail "built module $name does not round-trip: $out"
   "$DRV" verify "$(native_path "$WORK/$name.ir")" >"$WORK/verify.out" 2>&1 || fail "built module $name does not verify: $(cat "$WORK/verify.out")"
 done
+# A store's result used as an operand: only the Builder can write it, and the verifier refuses it as built.
+if out=$("$DRV" emit void_use 2>&1); then
+  fail "the built module void_use, which uses a store's result, was accepted"
+elif ! echo "$out" | grep -q 'error\[dominance\]'; then
+  fail "the built module void_use was not refused as dominance: $out"
+fi
 
 echo "== 4b. integer arithmetic folds at its IR width and retains poison-sensitive operations"
 if ./bin/iyi run bench/selfhost_ir_fold_exercise.iyi >"$WORK/folds.out" 2>&1; then
@@ -784,6 +796,25 @@ else
   fi
 fi
 
+# ---- 7c. predicate names against LLVM's reading -------------------------------------------------
+# The round trip cannot see a swap made in both the parser and the printer, since the text then reads and writes back
+# as before. So the names the port's own enum gives each predicate are compared with the names LLVM reads from the same
+# file, for every icmp and fcmp in review_predicates.ir.
+predicate_check() {
+  local bin="$1" fixture
+  fixture=$(native_path "$REPO/bench/fixtures/ir/valid/review_predicates.ir")
+  "$bin" predicates "$fixture" >"$WORK/pred-port.txt" 2>&1 || return 1
+  "$LLVM_DRV" --predicates "$fixture" >"$WORK/pred-llvm.txt" 2>&1 || return 1
+  normalize_oracle "$WORK/pred-llvm.txt" || return 1
+  [ -s "$WORK/pred-llvm.txt" ] && cmp -s "$WORK/pred-port.txt" "$WORK/pred-llvm.txt"
+}
+echo "== 7c. every icmp and fcmp predicate reads as LLVM reads it"
+if predicate_check "$DRV"; then
+  echo "predicates ok: $(wc -l <"$WORK/pred-llvm.txt" | tr -d ' ') predicates, named as LLVM names them"
+else
+  fail "a predicate reads differently from LLVM: $(diff "$WORK/pred-port.txt" "$WORK/pred-llvm.txt" 2>&1 | tr '\n' ' ')"
+fi
+
 # ---- 8. mutation proofs ------------------------------------------------------------------------
 echo "== 8. mutations are each caught"
 prove_mutation "layout: offset_of drops its alignment rounding" \
@@ -836,6 +867,11 @@ prove_mutation "verifier: ptrtoint accepts an aggregate operand" \
   'unless operand_type(i.args[0]).pointer? && i.type.int?' \
   'unless true' \
   ptrtoint_check
+prove_mutation "verifier: a trunc to the width it has is accepted" \
+  src/compiler/ir/verifier.iyi \
+  'i.type.bits < operand_type(i.args[0]).bits' \
+  'i.type.bits <= operand_type(i.args[0]).bits' \
+  trunc_same_width_check
 prove_mutation "verifier: a call no longer kills thread-local values" \
   src/compiler/ir/verifier.iyi \
   '    if i.op == Op::Call || i.op == Op::Invoke' \
@@ -881,6 +917,36 @@ prove_mutation "verifier: a phi incoming is not checked against the dominance of
   '      if db != source && !dom.dominates?(db, source)' \
   '      if db != source && false' \
   phi_dominance_check
+# Builder-made modules, as section 4 checks them: verified as built, then printed text that round-trips and verifies.
+builder_check() {
+  local bin="$1" name out
+  for name in arith memory control calls runtime intrinsics; do
+    "$bin" emit "$name" >"$WORK/proof-$name.ir" 2>/dev/null || return 1
+    out=$("$bin" roundtrip "$(native_path "$WORK/proof-$name.ir")" 2>&1) || return 1
+    [ "$out" = "identical" ] || return 1
+    "$bin" verify "$(native_path "$WORK/proof-$name.ir")" >/dev/null 2>&1 || return 1
+  done
+}
+void_use_check() {
+  local bin="$1" out
+  out=$("$bin" emit void_use 2>&1) && return 1
+  echo "$out" | grep -q 'error\[dominance\]'
+}
+prove_mutation "verifier: a use of a void instruction's result is accepted" \
+  src/compiler/ir/verifier.iyi \
+  '    if placement.nil? || (v.is_a?(Inst) && v.type.void?)' \
+  '    if placement.nil?' \
+  void_use_check
+prove_mutation "inst: an instruction with no targets hands out one list that every such instruction shares" \
+  src/compiler/ir/inst.iyi \
+  $'  def targets : Array(Block)\n    if blocks = @targets\n      return blocks\n    end\n    blocks = [] of Block\n    @targets = blocks\n    blocks\n  end' \
+  $'  @@no_targets = [] of Block\n\n  def targets : Array(Block)\n    if blocks = @targets\n      return blocks\n    end\n    @@no_targets\n  end' \
+  builder_check
+prove_mutation "inst: an operand list made on first use is not kept, so a phi's incoming values are lost" \
+  src/compiler/ir/inst.iyi \
+  $'    words = [] of Value\n    @args = words\n    words' \
+  $'    words = [] of Value\n    words' \
+  builder_check
 prove_mutation "printer: the unwind word of inline asm is not written" \
   src/compiler/ir/printer.iyi \
   '    text += " unwind" if inline_asm.unwind' \
@@ -910,6 +976,21 @@ prove_mutation "values: the float read from a double loses its sign" \
   'return (sign << 31) | ((power + 127_i64) << 23) | top' \
   'return ((power + 127_i64) << 23) | top' \
   llvm_float_check
+prove_mutation "parser: an icmp ult and ule swap their predicate names" \
+  src/compiler/ir/parser.iyi \
+  '"ult", "ule", "sgt"' \
+  '"ule", "ult", "sgt"' \
+  predicate_check
+prove_mutation "parser: an fcmp ogt and oge swap their predicate names" \
+  src/compiler/ir/parser.iyi \
+  '"ogt", "oge"' \
+  '"oge", "ogt"' \
+  predicate_check
+prove_mutation "printer: an fcmp ogt and oge swap their predicate names" \
+  src/compiler/ir/printer.iyi \
+  '"ogt", "oge"' \
+  '"oge", "ogt"' \
+  roundtrip_check
 prove_mutation "unwind: an invoke is left an invoke" \
   src/compiler/ir/inst.iyi \
   '    @op = Op::Call' \

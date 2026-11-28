@@ -23,8 +23,8 @@ pub class InlineMacroSite
   end
 end
 
-# Every inline macro site, in visiting order. A declaration-time failure is
-# keyed by node so body typing cannot retry it with later declarations in scope.
+# Every inline macro site, in visiting order. Declaration-time failures cannot
+# be retried during body typing with later declarations in scope.
 pub class InlineMacroLedger
   @@sites = [] of InlineMacroSite
   @@no_sites = [] of InlineMacroSite
@@ -73,7 +73,6 @@ end
 #
 # `bindings` are the type parameters a site in a def body sees (macro_bindings.iyi): the receiver's
 # and the def's free variables. A site at the top level or in a type body has none.
-# `flag?` reads normalizer.macro_flags, or the host's flags when none were supplied.
 pub def expand_inline_macro(site : ASTNode, scope_name : String, filename : String, in_lib : Bool, normalizer : NormalizerProgram, locals : Array(String) = [] of String, bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil, path_lookup : Proc(Path, ASTNode?)? = nil) : ASTNode?
   report = MacroEngine.new(normalizer.macro_flags, normalizer.host_flags).site_report(site, scope_name, bindings, facts, path_lookup)
   first = report.sites.first
@@ -180,8 +179,7 @@ end
 # expansion (macros.cr 2128-2143) and expand_inline_macro binds that tree to the site
 # (semantic_visitor.cr 2221-2226), so a site that writes nothing is still an expression, typed Nil.
 # `locals` names what is declared before the first node, and grows with each node that declares one.
-# A declarations visitor, when supplied, visits each ordinary node before the next site is
-# expanded. The lookup then sees constants declared earlier, including in an expansion.
+# A declarations visitor visits ordinary nodes before expanding the next site.
 pub def splice_inline_sites(nodes : Array(ASTNode), scope_name : String, filename : String, in_lib : Bool, normalizer : NormalizerProgram, locals : Array(String) = [] of String, bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil, keep_empty : Bool = false, path_lookup : Proc(Path, ASTNode?)? = nil, declarations : Visitor? = nil) : Array(ASTNode)
   out = [] of ASTNode
   nodes.each do |n|

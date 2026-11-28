@@ -3,6 +3,7 @@ import compiler/syntax/ast::{ASTNode, Def, Expressions, ModuleHeader, Path, Prim
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, EnumType, AnnotationType, DeclaredIvar, UnresolvedType, dump_program_declarations, dump_type, dir_of, normalize_path, declared_in?}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/type_nodes::{type_node_system}
+import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/types/types::{GenericClassInstanceType, VirtualType}
 
 # Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
@@ -11,16 +12,20 @@ import compiler/types/types::{GenericClassInstanceType, VirtualType}
 #   selfhost_semantic_declarations_exercise --initial
 #   selfhost_semantic_declarations_exercise --chain <file.iyi>
 #
-# Loads the file through the port's top-level pass, bare (no prelude), with the
-# closure of what it imports and requires: each imported file is read, parsed and
-# declared into the same program. The search path is IYI_PATH, the one the oracle
-# reads. It prints the declarations the file itself makes, the same form the oracle
+# Fixtures run bare. Corpus comparisons load the prelude before the entry,
+# or load the prelude alone when the entry belongs to it. Each imported file is
+# declared into the same program. The search path is IYI_PATH, as for the oracle.
+# It prints the declarations the file itself makes, the same form the oracle
 # prints for the same file. `--initial` dumps the built-in types a new program holds.
 # `--chain` prints the parent chain of a fixed list of types, to a fixed depth.
 module BenchSelfhostSemanticDeclarationsExercise
   def self.search_path : Array(String)
     text = ENV["IYI_PATH"]? || ""
-    text.split(":").select { |entry| !entry.empty? }
+    {% if flag?(:win32) %}
+      text.split(";").select { |entry| !entry.empty? }
+    {% else %}
+      text.split(":").select { |entry| !entry.empty? }
+    {% end %}
   end
 
   # The header root an import is resolved from after the entry's directory: the directory
@@ -45,22 +50,46 @@ module BenchSelfhostSemanticDeclarationsExercise
     nil
   end
 
+  # Whether a path is absolute as the gate gives it: a POSIX `/...` path, or a Windows path with a drive letter, a colon
+  # and a separator (`D:/...` from `cygpath -m`, or `D:\...`). Only a path that is not absolute is read from the working
+  # directory, so an absolute drive path is never prefixed a second time.
+  def self.absolute_path?(path : String) : Bool
+    return true if path.starts_with?("/")
+    return false if path.bytesize < 3
+    letter = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".includes?(path[0, 1])
+    letter && path[1, 1] == ":" && (path[2, 1] == "/" || path[2, 1] == "\\")
+  end
+
   # Loads a file and its closure into a fresh program. Returns the program and the entry.
   def self.load_program(path : String) : {SemanticProgram, String}
     cwd = ENV["PWD"]? || "."
-    absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
+    absolute = absolute_path?(path) ? path : "#{cwd}/#{path}"
     entry = normalize_path(absolute)
     src = File.read(entry)
     parser = Parser.new(src, entry)
     node = parser.parse
     prog = SemanticProgram.new
-    prog.loaded_files.add(entry)
+    mode = ENV["IYI_DECLARATION_MODE"]?
+    if defines = ENV["IYI_DECLARATION_FLAGS"]?
+      prog.normalizer.macro_flags = MacroTargetFlags.host(defines.split)
+    end
+    prog.loaded_files.add(entry) unless mode == "prelude"
     prog.search_path = search_path
     prog.project_root = project_root(node, entry)
+    if mode == "entry"
+      node = prog.normalizer.normalize(node)
+      prelude = TopLevelVisitor.new(prog)
+      prelude_file = prelude.import_file("iyi/prelude")
+      raise "cannot find iyi/prelude" if prelude_file.nil?
+      prelude.load_file(prelude_file.as(String))
+      prelude.finish
+    end
     prog.entry_dir = dir_of(entry)
-    visitor = TopLevelVisitor.new(prog, entry)
-    node.accept(visitor)
-    visitor.finish
+    unless mode == "prelude"
+      visitor = TopLevelVisitor.new(prog, entry)
+      node.accept(visitor)
+      visitor.finish
+    end
     declare_guessed_instance_vars(prog)
     {prog, entry}
   end
@@ -77,7 +106,7 @@ module BenchSelfhostSemanticDeclarationsExercise
   # (type_node_system before the prelude, matching the hosted prelude-first declaration pass).
   def self.load_typed_program(path : String) : {SemanticProgram, String}
     cwd = ENV["PWD"]? || "."
-    absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
+    absolute = absolute_path?(path) ? path : "#{cwd}/#{path}"
     entry = normalize_path(absolute)
     src = File.read(entry)
     parser = Parser.new(src, entry)
@@ -163,7 +192,7 @@ module BenchSelfhostSemanticDeclarationsExercise
   # print a dump: it completes, or the port refuses the file.
   def self.load_whole(path : String, typed : Bool = false) : SemanticProgram
     cwd = ENV["PWD"]? || "."
-    absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
+    absolute = absolute_path?(path) ? path : "#{cwd}/#{path}"
     entry = normalize_path(absolute)
     src = File.read(entry)
     parser = Parser.new(src, entry)
@@ -246,6 +275,14 @@ end
 if Program.args.empty?
   # A self-check for `iyi run` with no arguments: the built-in types load and print.
   print BenchSelfhostSemanticDeclarationsExercise.dump_initial
+elsif Program.args[0] == "--absolute-path"
+  Program.args.each do |p|
+    unless p == "--absolute-path"
+      print "#{p} => #{BenchSelfhostSemanticDeclarationsExercise.absolute_path?(p)}\n"
+    end
+  end
+elsif Program.args[0] == "--search-path"
+  BenchSelfhostSemanticDeclarationsExercise.search_path.each { |entry| puts entry }
 elsif Program.args[0] == "--initial"
   print BenchSelfhostSemanticDeclarationsExercise.dump_initial
 elsif Program.args[0] == "--chain"

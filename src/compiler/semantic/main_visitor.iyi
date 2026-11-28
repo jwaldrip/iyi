@@ -525,6 +525,7 @@ pub class MainVisitor < TypeNodeHost
   @literal_expander : LiteralExpander
 
   def initialize(@program : SemanticProgram, @speculation : SpeculationLedger = SpeculationLedger.new)
+    @program.resolve_deferred_class_vars
     @literal_expander = LiteralExpander.new(@program.normalizer)
     # The generated `new` methods are completed before any body is typed: the
     # declarations pass has recorded the expansions, and this consumes them (idempotent).
@@ -926,6 +927,12 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # The declarations pass has already loaded the required file.
+  def visit(node : Require) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
   def visit(node : Alias) : Bool
     set_type(node, @program.nil_type)
     false
@@ -1072,7 +1079,16 @@ pub class MainVisitor < TypeNodeHost
   def expand_literal(node : ASTNode) : Bool
     tree = @expansions[node]?
     if tree.nil?
-      tree = node.transform(@literal_expander)
+      # Hosted expands one logical node at a time, then visits its expansion.
+      # Eagerly transforming the whole tree erases nested And/Or nodes before
+      # their own visit can bind the type of the written expression.
+      if node.is_a?(Or)
+        tree = @literal_expander.expand_or(node.as(Or))
+      elsif node.is_a?(And)
+        tree = @literal_expander.expand_and(node.as(And))
+      else
+        tree = node.transform(@literal_expander)
+      end
       @expansions[node] = tree
     end
     tree.accept(self)
@@ -2175,18 +2191,20 @@ pub class MainVisitor < TypeNodeHost
     !@current_def.nil? || !@fun_inline_file.nil?
   end
 
-  # The names a macro site in the def being typed sees as locals: the def's arguments, and each variable its body has
-  # declared by the time the site is visited (`@vars`). A site in a nested body (an `until`, `if` or `while` body) reads
-  # these, as the hosted parser reads a site's scope (macros.cr 170). A name the body declares after the site is not yet
-  # in `@vars`, and the site does not see it.
+  # The names a site in the body being typed sees before that body's first statement: the def's
+  # arguments, and every local typed so far. Hosted seeds the expansion's parser with the visitor's
+  # variables (semantic_visitor.cr expand_macro: local_vars from @vars), so a site in a loop's or a
+  # branch's body knows the locals the enclosing bodies declared before it (inline_macros.iyi adds
+  # the ones this body declares before the site).
   def def_inline_locals : Array(String)
-    names = @vars.keys
+    names = [] of String
     if cd = @current_def
       cd.args.each { |arg| names << arg.name }
       if ba = cd.block_arg
         names << ba.name
       end
     end
+    @vars.keys.each { |name| names << name unless names.includes?(name) }
     names
   end
 
@@ -4239,15 +4257,18 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # Non-generic bodies resolve names from their defining type, separately from dynamic self
-  # (hosted call.cr: path_lookup). Parameterized owners still need the receiver's bindings;
-  # resolving their instantiated ancestor or trait scope is not implemented here.
+  # (hosted call.cr: path_lookup = match.context.defining_type). A trait's default method
+  # does too, so a name its unit declares (TakeIterator in std/iterator) resolves for an
+  # implementer in another unit; its parameters and associated types still bind from the
+  # receiver (lookup_under: current_trait_instance). Other parameterized owners still need
+  # the receiver's bindings; resolving their instantiated ancestor is not implemented here.
   def body_lookup_owner(owner : ModuleType, rec_type : Type) : Type
     declared : Type = owner
     if declared.is_a?(MetaclassType)
       declared = declared.as(MetaclassType).instance_type
     end
     return rec_type if declared.is_a?(SemanticProgram) || declared.is_a?(LibType)
-    return owner if declared.is_a?(NonGenericClassType) || declared.is_a?(NonGenericModuleType)
+    return owner if declared.is_a?(NonGenericClassType) || declared.is_a?(NonGenericModuleType) || declared.is_a?(TraitType)
     rec_type
   end
 
@@ -6221,6 +6242,48 @@ pub class MainVisitor < TypeNodeHost
 
   def visit(node : Self) : Bool
     visit_self(self, node)
+  end
+
+  # A proc pointer, typed as the hosted MainVisitor#visit(ProcPointer) decides (main_visitor.cr 1462-1499): a
+  # receiver-less pointer and a pointer on a path that is not a lib are expanded into a proc literal that calls
+  # the target, and the pointer takes the expansion's type. Refused by name, not ported: a pointer that closes
+  # over a variable (its closure is refused in cleanup_transformer.cr 2297-2330, not ported), a lib function
+  # (main_visitor.cr 1501-1547), any other receiver, and the macro refusal (1474-1481).
+  def visit(node : ProcPointer) : Bool
+    obj = node.obj
+    if obj
+      obj.accept(self)
+    end
+    if obj.nil?
+      return proc_pointer_expansion(node)
+    end
+    if obj.is_a?(Var) || obj.is_a?(InstanceVar) || obj.is_a?(ClassVar)
+      return refuse(node, "a proc pointer that closes over a variable is not ported yet: #{node.name}")
+    end
+    if obj.is_a?(Path)
+      owner = child_type(obj)
+      return false if owner.nil?
+      if owner.is_a?(LibType)
+        return refuse(node, "a proc pointer to a lib function is not ported yet: #{node.name}")
+      end
+      return proc_pointer_expansion(node)
+    end
+    refuse(node, "a proc pointer on this receiver is not ported yet: #{node.name}")
+  end
+
+  # The expansion of a proc pointer (literal_expander.cr 1225-1251), visited in place of the pointer, which takes
+  # its type from the expansion as the MacroIf arm does (visit(MacroIf) above).
+  def proc_pointer_expansion(node : ProcPointer) : Bool
+    expanded = @expansions[node]?
+    if expanded.nil?
+      expanded = LiteralExpander.new(@program.normalizer).expand_proc_pointer(node)
+      @expansions[node] = expanded
+    end
+    expanded.accept(self)
+    if et = child_type(expanded)
+      set_type(node, et)
+    end
+    false
   end
 
   def visit(node : PointerOf) : Bool

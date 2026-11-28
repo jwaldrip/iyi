@@ -813,6 +813,7 @@ for fixture in \
   "$REPO"/bench/fixtures/syntax_op_assign_targets.iyi \
   "$REPO"/bench/fixtures/syntax_call_arg_starts.iyi \
   "$REPO"/bench/fixtures/syntax_string_keys.iyi \
+  "$REPO"/bench/fixtures/syntax_macro_escaped_close.iyi \
   "$REPO"/bench/fixtures/syntax_implicit_rescue.iyi; do
   fixture_name="${fixture#"$REPO/"}"
   fixture_native="$(native_path "$fixture")"
@@ -957,6 +958,120 @@ prove_mutation "require loses its source location" "$PARSER" \
 prove_mutation "empty array loses its source location" "$PARSER" \
   'ArrayLiteral.new([] of ASTNode, of_type).at(location)' \
   'ArrayLiteral.new([] of ASTNode, of_type)' -- check_require_locations || status=1
+echo
+echo "== Or end locations against the hosted parser"
+# The golden dump prints a location for a call and for nothing else, and no other check reads where an `||` ends. `a || b`
+# ends where `b` does, so a port that gave an Or the end of its left side, or none, passed everything above. The probe
+# prints the start and the end of every Or, nested ones included, in the order the visitor meets them, and the hosted
+# parser's output is the oracle.
+cat > "$WORK/or_locations.iyi" <<'IYI_OR_LOCATIONS'
+import compiler/syntax/ast::{ASTNode, Or}
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/visitor::{Visitor}
+class OrLocations < Visitor
+  def visit(node : Or) : Bool
+    if loc = node.location
+      first = "#{loc.line_number}:#{loc.column_number}"
+    else
+      first = "missing"
+    end
+    if loc = node.end_location
+      last = "#{loc.line_number}:#{loc.column_number}"
+    else
+      last = "missing"
+    end
+    puts "#{first} #{last}"
+    true
+  end
+end
+node = Parser.new(File.read(Program.args[0]), Program.args[0]).parse
+node.accept(OrLocations.new)
+IYI_OR_LOCATIONS
+cat > "$WORK/or_locations.cr" <<'HOSTED_OR_LOCATIONS'
+require "compiler/iyi/syntax"
+class OrLocations < Iyi::Visitor
+  def visit(node)
+    true
+  end
+  def visit(node : Iyi::Or)
+    if loc = node.location
+      first = "#{loc.line_number}:#{loc.column_number}"
+    else
+      first = "missing"
+    end
+    if loc = node.end_location
+      last = "#{loc.line_number}:#{loc.column_number}"
+    else
+      last = "missing"
+    end
+    puts "#{first} #{last}"
+    true
+  end
+end
+parser = Iyi::Parser.new(File.read(ARGV[0]))
+parser.filename = ARGV[0]
+parser.parse.accept(OrLocations.new)
+HOSTED_OR_LOCATIONS
+# An `||` in every place the parser reaches one from: bare, chained, after an assignment, in call arguments, across a line
+# break, after a parenthesised left side, before an `&&`, and before a call with arguments. It is written here, not kept as
+# a fixture, as the require input is. There is no parenthesised right side: for `a || (b)` the port ends the parenthesised
+# expression at `b` and the hosted parser at the closing parenthesis, which is a difference of that expression, not of the Or.
+cat > "$WORK/or_input.iyi" <<'OR_INPUT'
+a || b
+x = c || d || e
+f(g || h)
+i ||
+  j
+(k || l) || m
+n || o && p
+q || r.s(1, 2)
+OR_INPUT
+CRYSTAL_PATH="$REPO_NATIVE/src" "$HOSTED_COMPILER" build -o "$WORK_NATIVE/or_hosted$EXE" "$WORK_NATIVE/or_locations.cr"
+"$WORK/or_hosted$EXE" "$WORK_NATIVE/or_input.iyi" > "$WORK/or_hosted.out"
+# Each operator is one Or. A hosted dump with another count would leave the comparison below with nothing to compare.
+or_operators="$(grep -o '||' "$WORK/or_input.iyi" | wc -l | tr -d ' ')"
+or_hosted_nodes="$(wc -l < "$WORK/or_hosted.out" | tr -d ' ')"
+if [ "$or_hosted_nodes" != "$or_operators" ]; then
+  echo "  the hosted parser reports $or_hosted_nodes Or nodes for $or_operators operators"
+  status=1
+fi
+# check_or_locations: the port's start and end of every Or are the hosted parser's. Its first difference is the decisive line.
+check_or_locations() {
+  if ! "$IYI" build -o "$WORK_NATIVE/or_port$EXE" "$WORK_NATIVE/or_locations.iyi" > "$WORK/or_build.log" 2>&1; then
+    invalid_mutant "Or location probe did not build"
+    return $?
+  fi
+  if ! "$WORK/or_port$EXE" "$WORK_NATIVE/or_input.iyi" > "$WORK/or_port.out" 2> "$WORK/or_port.err"; then
+    invalid_mutant "Or location probe did not run"
+    return $?
+  fi
+  if cmp -s "$WORK/or_hosted.out" "$WORK/or_port.out"; then
+    return 0
+  fi
+  awk 'NR == FNR { want[FNR] = $0; wanted = FNR; next } { got[FNR] = $0; gotn = FNR }
+       END { for (i = 1; i <= wanted || i <= gotn; i++) if (want[i] != got[i]) {
+               printf "decisive: Or %d starts and ends at %s in the port and %s in the hosted parser\n", i, (i in got) ? got[i] : "nothing", (i in want) ? want[i] : "nothing"
+               exit } }' "$WORK/or_hosted.out" "$WORK/or_port.out" | tee "$WORK/or_decisive.txt"
+  return 1
+}
+if check_or_locations; then
+  echo "  every Or starts and ends where the hosted parser puts it ($or_operators operators)"
+else
+  echo "  the port's Or locations differ from the hosted parser"
+  status=1
+fi
+# or_end_proof LABEL OLD NEW: a mutation proof that also prints the first difference its check found.
+or_end_proof() {
+  : > "$WORK/or_decisive.txt"
+  prove_mutation "$1" "$PARSER" "$2" "$3" -- check_or_locations || status=1
+  awk '/^decisive: / { print "      " $0; exit }' "$WORK/or_decisive.txt"
+}
+or_end_proof "an Or ends where its left side does" \
+  'left = Or.new(left, right).at(location).at_end(right)' \
+  'left = Or.new(left, right).at(location).at_end(left)'
+or_end_proof "an Or has no end location" \
+  'left = Or.new(left, right).at(location).at_end(right)' \
+  'left = Or.new(left, right).at(location)'
 
 echo
 echo "== 4. Malformed-input and boundary rejection checks"
@@ -1713,6 +1828,41 @@ prove_mutation "unparenthesized named arguments cannot precede a forwarded block
         next if @token.type == TokenKind::OP_AMP' \
   '        # The unparenthesized form permits the same trailing &block.
         nil' -- named_forward_syntax_matches || status=1
+
+# bench/fixtures/syntax_macro_escaped_close.iyi: an escaped closing delimiter keeps a percent literal open in a macro
+# body, so the `end` inside it does not close the macro. The port's AST must stay the hosted parser's.
+escaped_close_syntax_matches() {
+  local rc
+  if ! build_mutant_exercise; then
+    invalid_mutant "parser exercise failed to build"
+    return $?
+  fi
+  if ! "$WORK/dump_hosted$EXE" "$REPO_NATIVE/bench/fixtures/syntax_macro_escaped_close.iyi" > "$WORK/escaped_close.hosted"; then
+    invalid_mutant "hosted parser failed on the escaped-close fixture"
+    return $?
+  fi
+  if ! "$WORK/mut-exercise$EXE" "$REPO_NATIVE/bench/fixtures/syntax_macro_escaped_close.iyi" > "$WORK/escaped_close.port" 2> "$WORK/escaped_close.err"; then
+    if grep -qF "Syntax error" "$WORK/escaped_close.err"; then return 1; fi
+    cat "$WORK/escaped_close.err"
+    invalid_mutant "parser exercise failed without a syntax error"
+    return $?
+  fi
+  if diff -u "$WORK/escaped_close.hosted" "$WORK/escaped_close.port"; then
+    return 0
+  else
+    rc=$?
+    if [ "$rc" -eq 1 ]; then return 1; fi
+    invalid_mutant "could not compare escaped-close ASTs"
+    return $?
+  fi
+}
+escaped_close_syntax_matches || status=1
+prove_mutation "an escaped closing delimiter in a macro body is matched against the opening one" \
+  "$REPO/src/compiler/syntax/lexer.iyi" \
+  '          if delimiter_matches_char?(ds.the_end, char)
+            char = next_char' \
+  '          if delimiter_matches_char?(ds.nest, char)
+            char = next_char' -- escaped_close_syntax_matches || status=1
 
 # Mutation 1: break operator precedence in parse_add_or_sub
 run_proof "mutation 1: altering operator precedence in parse_add_or_sub" \

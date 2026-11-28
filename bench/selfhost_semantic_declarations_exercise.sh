@@ -2,10 +2,11 @@
 # Burn-down gate for declaration parity between the iyi semantic port and the
 # hosted front end's top-level pass (specification S1b).
 #
-# Every file is analysed bare (no prelude), with the closure of what it imports
-# and requires, by the hosted front end's top-level pass
-# (bench/selfhost_semantic_declarations_oracle.cr) and by the iyi port
-# (bench/selfhost_semantic_declarations_exercise.iyi). Both search IYI_PATH, set
+# Fixtures are analysed bare. Corpus files are analysed bare, as their floors
+# were measured, and a file the bare analysis refuses (one that imports the
+# prelude's names) is analysed the way a build loads it, the prelude first.
+# The hosted pass (bench/selfhost_semantic_declarations_oracle.cr) and the iyi port
+# (bench/selfhost_semantic_declarations_exercise.iyi) both search IYI_PATH, set
 # below to this checkout's src/. Both print one text dump of the declarations the
 # file itself makes: defs, types, nested types, their visibility, superclasses,
 # type variables, enum members, aliases and constants. A declaration belongs to
@@ -23,12 +24,16 @@
 #        (src/iyi), std (src/std) and the samples (samples/iyi). Each file's
 #        agreeing-record count is checked against the committed floor
 #        (bench/selfhost_semantic_declarations.floor), which may only rise. A
-#        file the oracle cannot analyse is reported ORACLE with its reason and
-#        is not measured. A file the port rejects counts zero and is reported PORT.
+#        file the oracle cannot analyse fails the gate with its reason.
+#        A file the port rejects counts zero and is reported PORT.
+#        One case is not a fall: a file that itself lost declarations, so that
+#        the oracle reports fewer than the floor and the port agrees with every
+#        one. That is FILE SHRANK, and the raise command writes the row down to
+#        the file's own count with a note (section 4b proves both sides).
 #   6. Guarded mutation proofs on the fixtures (bench/lib/mutation.sh).
 #
 # Environment:
-#   SEMDECL_RAISE=1         write the floor up to the measured counts (never lower)
+#   SEMDECL_RAISE=1         write the floor up to the measured counts (a row falls only for FILE SHRANK)
 #   SEMDECL_FILES=<f>       measure only the repo-relative paths listed in <f>
 #   SEMDECL_FLOOR=<f>       read and write this floor file instead of the default
 #
@@ -65,6 +70,11 @@ status=0
 : > "$RESULTS"
 
 . "$REPO/bench/lib/mutation.sh"
+# The gate's own environment decides what the driver and the oracle see: a define set by the caller would make
+# every fixture run below carry it, and a proof that depends on its absence would pass or fail by accident.
+unset IYI_DECLARATION_FLAGS IYI_DECLARATION_MODE
+llvm_bridge_text=$(llvm_bridge_build_args) || { echo "FAILED to discover LLVM bridge build arguments"; exit 1; }
+IYI_DECLARATION_FLAGS=$(printf '%s\n' "$llvm_bridge_text" | awk '/^-D/ { sub(/^-D/, ""); printf "%s ", $0 }')
 
 # Splits a dump into records, one per "Type:", "Def:", "Ivar:" or "IvarOrder:" header line,
 # each with its own property lines, joined onto one line with the record separator \036.
@@ -91,6 +101,35 @@ LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" CRYSTAL_PATH="$R
 "$IYI" build -o "$WORK_NATIVE/port$EXE" "$REPO_NATIVE/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/port_build.log" 2>&1 \
   || { cat "$WORK/port_build.log"; echo "FAILED to build the port's declaration driver"; exit 1; }
 echo "  built: oracle, port driver"
+
+echo "== 1b. The absolute-path rule: a drive path is read as given, never prefixed with the working directory"
+ABS_EXPECT="$WORK/absolute_path.expect"
+printf '%s\n' "/x => true" "bench/x => false" "D:/a/b => true" 'D:\a => true' "d:/a => true" "D:x => false" "C: => false" " => false" "9:/a => false" "/ => true" > "$ABS_EXPECT"
+MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$WORK/port$EXE" --absolute-path "/x" "bench/x" "D:/a/b" 'D:\a' "d:/a" "D:x" "C:" "" "9:/a" "/" > "$WORK/absolute_path.out" 2>&1
+if cmp -s "$ABS_EXPECT" "$WORK/absolute_path.out"; then
+  echo "  absolute path rule: 10 of 10 cases"
+else
+  echo "  absolute path rule: DIVERGED from the expected answers"
+  diff -u "$ABS_EXPECT" "$WORK/absolute_path.out"
+  status=1
+fi
+
+echo "== 1c. IYI_PATH preserves drive letters and splits host path lists"
+if [ "$HOST_OS" = windows ]; then
+  path_list='C:/first;D:/second'
+  printf '%s\n' 'C:/first' 'D:/second' > "$WORK/search_path.expect"
+else
+  path_list='/first:/second'
+  printf '%s\n' '/first' '/second' > "$WORK/search_path.expect"
+fi
+IYI_PATH="$path_list" "$PORT" --search-path > "$WORK/search_path.out" 2>&1
+if cmp -s "$WORK/search_path.expect" "$WORK/search_path.out"; then
+  echo "  search path: both entries preserved"
+else
+  echo "  search path: DIVERGED from the expected entries"
+  diff -u "$WORK/search_path.expect" "$WORK/search_path.out"
+  status=1
+fi
 
 echo
 echo "== 2. Fixtures: every declaration dumped identically by both sides"
@@ -128,30 +167,19 @@ for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi "$REPO"/bench/fixtures/semde
 done
 echo "  Parity summary: $((fixture_count - fixture_bad))/$fixture_count fixtures identical ($total_matched declarations compared)"
 
-echo "== 2a. An unresolved class-variable type in the entry still refuses"
-if "$ORACLE" "$REPO_NATIVE/src/std/lazy.iyi" > "$WORK/lazy_o.txt" 2> "$WORK/lazy_oe.txt"; then
-  echo "  FAIL: the oracle accepted bare std/lazy.iyi"; status=1
-elif ! grep -Fq 'undefined constant Atomic' "$WORK/lazy_oe.txt"; then
-  echo "  FAIL: the oracle refused bare std/lazy.iyi for another reason"; status=1
-elif "$PORT" "$REPO_NATIVE/src/std/lazy.iyi" > "$WORK/lazy_p.txt" 2> "$WORK/lazy_pe.txt"; then
-  echo "  FAIL: the port accepted bare std/lazy.iyi"; status=1
-elif ! grep -Fq 'undefined constant Atomic' "$WORK/lazy_pe.txt"; then
-  echo "  FAIL: the port refused bare std/lazy.iyi for another reason"; status=1
-else
-  echo "  bare std/lazy.iyi: both refuse undefined constant Atomic"
-fi
-imported_cv_ok=0
-if ! "$PORT" --imported-classvar "$REPO_NATIVE/bench/fixtures/semdecl_imported_class_var.iyi" > "$WORK/imported_cv.txt" 2>&1; then
-  echo "  FAIL: deferred imported class-variable type did not resolve"
-  cat "$WORK/imported_cv.txt"
+echo "== Entry class-variable types are still checked in the declaration phase"
+missing_cvar="$REPO_NATIVE/bench/fixtures/cvar_import/missing_entry.iyi"
+oracle_rc=0
+port_rc=0
+"$ORACLE" "$missing_cvar" > "$WORK/cvar_missing_o" 2> "$WORK/cvar_missing_oe" || oracle_rc=$?
+"$PORT" "$missing_cvar" > "$WORK/cvar_missing_p" 2> "$WORK/cvar_missing_pe" || port_rc=$?
+if [ "$oracle_rc" -ne 2 ] || [ "$port_rc" -eq 0 ] ||
+   ! grep -q '^ERROR: undefined constant MissingClassVarType' "$WORK/cvar_missing_oe" ||
+   ! grep -q 'undefined constant MissingClassVarType' "$WORK/cvar_missing_pe"; then
+  echo "  entry class variable: oracle and port did not both reject the missing type"
   status=1
-elif grep -qx 'imported class variable resolved after its type was declared' "$WORK/imported_cv.txt"; then
-  imported_cv_ok=1
-  echo "  imported class variable resolves once its type is declared"
 else
-  echo "  FAIL: imported class-variable probe gave unexpected output"
-  cat "$WORK/imported_cv.txt"
-  status=1
+  echo "  entry class variable: both reject the missing type"
 fi
 
 echo "== 2b. Lib fun records once the type system is installed: generic argument types resolved"
@@ -325,11 +353,17 @@ measure() {
   corpus="$1"
   rel="$2"
   abs="$REPO_NATIVE/$2"
-  if "$ORACLE" "$abs" > "$WORK/o.txt" 2> "$WORK/o.err"; then
+  mode=bare
+  note="-"
+  if ! IYI_DECLARATION_MODE=bare IYI_DECLARATION_FLAGS="$IYI_DECLARATION_FLAGS" "$ORACLE" "$abs" > "$WORK/o.txt" 2> "$WORK/o.err"; then
+    # Bare refuses a file that uses the prelude's names: it is analysed with the prelude loaded first.
+    note="entry: bare refused it: $(head -n 1 "$WORK/o.err" | tr '\t' ' ')"
+    mode=entry
+  fi
+  if IYI_DECLARATION_MODE="$mode" IYI_DECLARATION_FLAGS="$IYI_DECLARATION_FLAGS" "$ORACLE" "$abs" > "$WORK/o.txt" 2> "$WORK/o.err"; then
     nodes=$(records "$WORK/o.txt" | wc -l | tr -d ' ')
-    if "$PORT" "$abs" > "$WORK/p.txt" 2> "$WORK/p.err"; then
+    if IYI_DECLARATION_MODE="$mode" IYI_DECLARATION_FLAGS="$IYI_DECLARATION_FLAGS" "$PORT" "$abs" > "$WORK/p.txt" 2> "$WORK/p.err"; then
       matched=$(agreeing "$WORK/o.txt" "$WORK/p.txt")
-      note="-"
     else
       matched=0
       note="PORT: $(head -n 1 "$WORK/p.err" | tr '\t' ' ')"
@@ -405,69 +439,121 @@ fi
 
 echo
 echo "== 4. Checking each file against its committed floor"
+# verdicts [results] [verdicts] [floor file]: one verdict row per measured file.
 verdicts() {
-awk -F'\t' -v floorfile="$FLOOR_FILE" '
+awk -F'\t' -v floorfile="${3:-$FLOOR_FILE}" -v refusalfile="$REPO/bench/selfhost_semantic_declarations.refusals" -v host="$HOST_OS" '
   BEGIN {
     while ((getline line < floorfile) > 0) {
       if (line ~ /^[ \t]*#/ || line ~ /^[ \t]*$/) continue
       split(line, a, /[ \t]+/)
       floor[a[1]] = a[2] + 0
     }
+    while ((getline line < refusalfile) > 0) {
+      if (line ~ /^[ \t]*#/ || line ~ /^[ \t]*$/) continue
+      split(line, r, /[ \t]+/)
+      known[r[1]] = 1
+    }
   }
   {
     corpus = $1; rel = $2; nodes = $3 + 0; matched = $4 + 0; note = $5
+    key = rel
+    if ((rel "@" host) in floor) key = rel "@" host
     if (note ~ /^ORACLE/) verdict = "ORACLE"
-    else if (!(rel in floor)) verdict = "NO FLOOR"
-    else if (matched < floor[rel]) verdict = "BELOW FLOOR"
-    else if (matched > floor[rel]) verdict = "RAISE THE FLOOR"
+    else if (note ~ /^PORT/ && !(rel in known)) verdict = "PORT"
+    else if (note !~ /^PORT/ && (rel in known)) verdict = "STALE REFUSAL"
+    else if (!(key in floor)) verdict = "NO FLOOR"
+    else if (matched < floor[key] && nodes > 0 && matched == nodes) verdict = "FILE SHRANK"
+    else if (matched < floor[key]) verdict = "BELOW FLOOR"
+    else if (matched > floor[key]) verdict = "RAISE THE FLOOR"
     else verdict = "ok"
-    fl = (rel in floor) ? floor[rel] : "-"
+    fl = (key in floor) ? floor[key] : "-"
     printf "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n", verdict, corpus, rel, nodes, matched, \
       (nodes > 0 ? sprintf("%.1f%%", 100 * matched / nodes) : "n/a"), fl, note
-  }' "$RESULTS" > "$VERDICTS"
+  }' "${1:-$RESULTS}" > "${2:-$VERDICTS}"
 }
 verdicts
 
-if [ "$RAISE" = 1 ]; then
-  "$PY" - "$(native_path "$VERDICTS")" "$(native_path "$FLOOR_FILE")" <<'PY'
+# write_floor <verdicts> <floor file>: the floor written up to the measured counts. A FILE SHRANK row is written down to
+# its file's own count, with a note.
+write_floor() {
+  "$PY" - "$1" "$2" "$HOST_OS" <<'PY'
 import sys
-verdicts, floor_path = sys.argv[1], sys.argv[2]
+verdicts, floor_path, host = sys.argv[1], sys.argv[2], sys.argv[3]
 floor = {}
+# A comment line below the two-line header is a note on the row that follows it
+# (which platform arm a host-specific row is for), and is written back with it.
+notes = {}
+pending = []
 try:
-    for line in open(floor_path, encoding="utf-8"):
-        if line.strip() and not line.startswith("#"):
+    for number, line in enumerate(open(floor_path, encoding="utf-8")):
+        if line.startswith("#"):
+            if number >= 2:
+                pending.append(line)
+        elif line.strip():
             path, count = line.split()
             floor[path] = int(count)
+            if pending:
+                notes[path] = pending
+                pending = []
 except FileNotFoundError:
     pass
 raised = 0
+shrunk = 0
+SHRANK = "# file shrank: "
 for line in open(verdicts, encoding="utf-8"):
     cols = line.rstrip("\n").split("\t")
     verdict, rel, matched = cols[0], cols[2], int(cols[4])
-    if verdict == "BELOW FLOOR":
+    if verdict in ("BELOW FLOOR", "ORACLE", "PORT", "STALE REFUSAL"):
         continue
-    old = floor.get(rel, 0)
-    if matched > old:
-        floor[rel] = matched
+    key = f"{rel}@{host}" if f"{rel}@{host}" in floor else rel
+    old = floor.get(key, 0)
+    if verdict == "FILE SHRANK":
+        # The file holds fewer declarations than the row says and the port agrees with every one: the row follows the file.
+        floor[key] = matched
+        kept = [note for note in notes.get(key, []) if not note.startswith(SHRANK)]
+        notes[key] = kept + [f"{SHRANK}the file holds {matched} declarations and every one agrees; this row was {old} while the file held more\n"]
+        shrunk += 1
+    elif matched > old:
+        floor[key] = matched
         raised += 1
-    elif rel not in floor:
-        floor[rel] = old
+    elif key not in floor:
+        floor[key] = old
 with open(floor_path, "w", encoding="utf-8", newline="\n") as out:
-    out.write("# semantic declaration floors: <repo-relative file> <agreeing declarations>.\n")
-    out.write("# A count may only rise. Raise with: SEMDECL_RAISE=1 bash bench/selfhost_semantic_declarations_exercise.sh\n")
+    out.write("# semantic declaration floors: <repo-relative file> <agreeing declarations>, and <repo-relative file>@<host>\n")
+    out.write("# <agreeing declarations> for a file a host measures differently (its platform arms are other code). A count may only rise; a row above what its file now holds, every declaration agreeing, is written down to the file and noted (file shrank). Raise with: SEMDECL_RAISE=1 bash bench/selfhost_semantic_declarations_exercise.sh\n")
     for rel in sorted(floor):
+        for note in notes.get(rel, []):
+            out.write(note)
         out.write(f"{rel} {floor[rel]}\n")
-print(f"  floor written: {len(floor)} entries, {raised} raised")
+    for note in pending:
+        out.write(note)
+print(f"  floor written: {len(floor)} entries, {raised} raised" + (f", {shrunk} written down to a file that shrank" if shrunk else ""))
 PY
-verdicts
-  fails=$(awk -F'\t' '$1 == "BELOW FLOOR"' "$VERDICTS" | wc -l | tr -d ' ')
-else
-  fails=$(awk -F'\t' '$1 == "BELOW FLOOR" || $1 == "RAISE THE FLOOR" || $1 == "NO FLOOR"' "$VERDICTS" | wc -l | tr -d ' ')
+}
+
+# gate_fails <verdicts> <raise 0|1>: how many rows fail the gate. The raise command rewrites the verdicts from the floor
+# it wrote, so after it only what it cannot settle is left.
+gate_fails() {
+  if [ "$2" = 1 ]; then
+    awk -F'\t' '$1 == "BELOW FLOOR" || $1 == "FILE SHRANK" || $1 == "ORACLE" || $1 == "PORT" || $1 == "STALE REFUSAL"' "$1" | wc -l | tr -d ' '
+  else
+    awk -F'\t' '$1 == "BELOW FLOOR" || $1 == "FILE SHRANK" || $1 == "RAISE THE FLOOR" || $1 == "NO FLOOR" || $1 == "ORACLE" || $1 == "PORT" || $1 == "STALE REFUSAL"' "$1" | wc -l | tr -d ' '
+  fi
+}
+
+if [ "$RAISE" = 1 ]; then
+  write_floor "$(native_path "$VERDICTS")" "$(native_path "$FLOOR_FILE")"
+  verdicts
 fi
+fails=$(gate_fails "$VERDICTS" "$RAISE")
 awk -F'\t' '
   $1 == "BELOW FLOOR"     { printf "  BELOW FLOOR: %s matched %s, floor %s. A regression: restore the declaration or lower nothing.\n", $3, $5, $7 }
+  $1 == "FILE SHRANK"     { printf "  FILE SHRANK: %s holds %s declarations and the port agrees with every one; its floor says %s. The file lost declarations: write the row down to the file (SEMDECL_RAISE=1).\n", $3, $4, $7 }
   $1 == "RAISE THE FLOOR" { printf "  RAISE THE FLOOR: %s matched %s, floor %s. Raise the floor in bench/selfhost_semantic_declarations.floor (SEMDECL_RAISE=1).\n", $3, $5, $7 }
   $1 == "NO FLOOR"        { printf "  NO FLOOR: %s has no floor entry. Add it (SEMDECL_RAISE=1).\n", $3 }
+  $1 == "ORACLE"          { printf "  ORACLE FAILED: %s: %s\n", $3, $8 }
+  $1 == "PORT"            { printf "  PORT FAILED: %s: %s (a file the port refuses is listed with its reason in bench/selfhost_semantic_declarations.refusals)\n", $3, $8 }
+  $1 == "STALE REFUSAL"   { printf "  STALE REFUSAL: %s is listed in bench/selfhost_semantic_declarations.refusals and the port no longer refuses it. Remove its row.\n", $3 }
 ' "$VERDICTS"
 while IFS= read -r rel; do
   echo "  Declaration differences for $rel (first 20 lines; < oracle, > port):"
@@ -482,6 +568,38 @@ while IFS= read -r rel; do
 done < <(awk -F'\t' '$1 == "BELOW FLOOR" { print $3 }' "$VERDICTS")
 echo "  $fails file(s) below or missing their floor"
 if [ "$fails" -gt 0 ]; then
+  status=1
+fi
+
+echo
+echo "== 4b. A row above what its file holds: FILE SHRANK when every declaration agrees, BELOW FLOOR otherwise"
+SHR_RESULTS="$WORK/shrank_results.tsv"
+SHR_VERDICTS="$WORK/shrank_verdicts.tsv"
+SHR_FLOOR="$WORK/shrank.floor"
+# Four invented files: one that lost a declaration and agrees on all it holds, one the port lost a declaration of, one
+# with nothing left (settled by hand, never automatically), and one at its floor.
+printf 'compiler\tshrank/all_agree.iyi\t25\t25\t\ncompiler\tshrank/one_lost.iyi\t26\t25\t\ncompiler\tshrank/emptied.iyi\t0\t0\t\ncompiler\tshrank/steady.iyi\t25\t25\t\n' > "$SHR_RESULTS"
+printf '# header\n# header\nshrank/all_agree.iyi 26\nshrank/emptied.iyi 3\nshrank/one_lost.iyi 26\nshrank/steady.iyi 25\n' > "$SHR_FLOOR"
+verdicts "$SHR_RESULTS" "$SHR_VERDICTS" "$SHR_FLOOR"
+shr_got=$(awk -F'\t' '{ printf "%s=%s; ", $3, $1 }' "$SHR_VERDICTS")
+shr_want="shrank/all_agree.iyi=FILE SHRANK; shrank/one_lost.iyi=BELOW FLOOR; shrank/emptied.iyi=BELOW FLOOR; shrank/steady.iyi=ok; "
+shr_plain=$(gate_fails "$SHR_VERDICTS" 0)
+if [ "$shr_got" = "$shr_want" ] && [ "$shr_plain" = 3 ]; then
+  echo "  verdicts: a file holding 25, all agreeing, under a floor of 26 is FILE SHRANK; 25 of 26 agreeing is BELOW FLOOR; a file with nothing left is BELOW FLOOR; all three fail a plain run"
+else
+  echo "  FAILED: verdicts were [$shr_got], expected [$shr_want]; rows failing a plain run $shr_plain, expected 3"
+  status=1
+fi
+write_floor "$(native_path "$SHR_VERDICTS")" "$(native_path "$SHR_FLOOR")" > "$WORK/shrank_write.log" 2>&1
+shr_rows=$(awk '!/^#/ { printf "%s=%s; ", $1, $2 }' "$SHR_FLOOR")
+shr_rows_want="shrank/all_agree.iyi=25; shrank/emptied.iyi=3; shrank/one_lost.iyi=26; shrank/steady.iyi=25; "
+shr_noted=$(awk '{ if ($1 == "shrank/all_agree.iyi") print (note ? 1 : 0); note = ($0 ~ /^# file shrank: /) }' "$SHR_FLOOR")
+shr_notes=$(awk '/^# file shrank: / { n++ } END { print n + 0 }' "$SHR_FLOOR")
+if [ "$shr_rows" = "$shr_rows_want" ] && [ "$shr_noted" = 1 ] && [ "$shr_notes" = 1 ]; then
+  echo "  the raise command writes only the shrunken file's row down (26 -> 25) and notes it; the row the port fell below stays 26"
+else
+  echo "  FAILED: rows after the raise command were [$shr_rows], expected [$shr_rows_want]; shrink notes $shr_notes, on the row $shr_noted"
+  cat "$WORK/shrank_write.log"
   status=1
 fi
 
@@ -600,6 +718,20 @@ check_enum_annotations_diverge() {
   "$probe" --enum-annotations "$REPO_NATIVE/bench/fixtures/semdecl_enum_annotations.iyi" > "$WORK/mut_enum_annotations" 2>/dev/null || { echo "INVALID MUTANT: declaration oracle or driver failed"; return 0; }
   cmp -s "$WORK/mut_enum_annotations" "$WORK/enum_annotations_oracle"
 }
+# The define fixture dumped by a mutant driver, with and without the define, against the oracle's dump.
+check_define_flags_diverge() {
+  local probe="$WORK/mut_flags_port$EXE" rc defines
+  "$IYI" build -o "$(native_path "$probe")" "$REPO_NATIVE/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || { echo "INVALID MUTANT: declaration driver did not build"; cat "$WORK/mut_build.log"; return 0; }
+  DECL_DIED=""
+  for defines in "" "semdecl_probe"; do
+    IYI_DECLARATION_FLAGS="$defines" "$ORACLE" "$flag_fixture" > "$WORK/mut_fo.txt" 2>/dev/null || { echo "INVALID MUTANT: declaration oracle failed on the define fixture"; return 0; }
+    IYI_DECLARATION_FLAGS="$defines" "$probe" "$flag_fixture" > "$WORK/mut_fp.txt" 2> "$WORK/mut_fp.err"
+    rc=$?
+    _decl_outcome "the define fixture with defines '$defines'" "$WORK/mut_fo.txt" "$rc" "$WORK/mut_fp.txt" "$WORK/mut_fp.err" || return 1
+  done
+  [ -z "$DECL_DIED" ] || echo "INVALID MUTANT: the mutant died on $DECL_DIED"
+  return 0
+}
 check_lib_starstar_diverge() {
   local probe="$WORK/mut_lib_starstar_port$EXE"
   "$IYI" build -o "$(native_path "$probe")" "$REPO_NATIVE/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || { echo "INVALID MUTANT: declaration driver did not build"; cat "$WORK/mut_build.log"; return 0; }
@@ -712,22 +844,31 @@ check_reresolve_diverge() {
   return 0
 }
 
-check_imported_classvar_diverge() {
-  local probe="$WORK/mut_imported_cv$EXE" rc
-  "$IYI" build -o "$(native_path "$probe")" "$REPO_NATIVE/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || { echo "INVALID: declaration driver did not build"; cat "$WORK/mut_build.log"; return 2; }
-  "$probe" --imported-classvar "$REPO_NATIVE/bench/fixtures/semdecl_imported_class_var.iyi" > "$WORK/mut_imported_cv.out" 2>&1
-  rc=$?
-  [ "$rc" -eq 0 ] && return 0
-  if [ "$rc" -eq 1 ] && grep -Fq 'imported class variable did not resolve:' "$WORK/mut_imported_cv.out"; then
-    return 1
+echo "== 6b. A -D define reaches the port's enum body conditions"
+flag_fixture="$REPO_NATIVE/bench/fixtures/semdecl_define_flags.iyi"
+flag_bad=0
+for defines in "" "semdecl_probe"; do
+  tag="${defines:-none}"
+  if ! IYI_DECLARATION_FLAGS="$defines" "$ORACLE" "$flag_fixture" > "$WORK/flag_o_$tag.txt" 2> "$WORK/flag_oe.txt"; then
+    echo "  oracle refused the define fixture: $(head -n 1 "$WORK/flag_oe.txt")"; flag_bad=1; continue
   fi
-  echo "INVALID: imported class-variable probe failed for another reason"
-  cat "$WORK/mut_imported_cv.out"
-  return 2
-}
+  if ! IYI_DECLARATION_FLAGS="$defines" "$PORT" "$flag_fixture" > "$WORK/flag_p_$tag.txt" 2> "$WORK/flag_pe.txt"; then
+    echo "  port refused the define fixture with defines '$tag': $(head -n 1 "$WORK/flag_pe.txt")"; flag_bad=1; continue
+  fi
+  if cmp -s "$WORK/flag_o_$tag.txt" "$WORK/flag_p_$tag.txt"; then
+    echo "  defines '$tag': port and oracle dump identically"
+  else
+    echo "  defines '$tag': port and oracle DIVERGED"; diff "$WORK/flag_o_$tag.txt" "$WORK/flag_p_$tag.txt" | head -n 10; flag_bad=1
+  fi
+done
+if [ "$flag_bad" -eq 0 ] && cmp -s "$WORK/flag_o_none.txt" "$WORK/flag_o_semdecl_probe.txt"; then
+  echo "  the define changes nothing in the oracle's dump: the fixture proves nothing"; flag_bad=1
+fi
+[ "$flag_bad" -eq 0 ] || status=1
 
 echo
 echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
+echo
 MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
 MUT_IVARS="$REPO/src/compiler/semantic/instance_vars.iyi"
 MUTATIONS_RUN=0
@@ -738,6 +879,12 @@ if [ "$fixture_bad" -ne 0 ] || [ "$link_oracle_ok" -ne 1 ] || ! grep -qx 'class 
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
+
+prove_mutation "imported class variables resolve eagerly" "$MUT_SEM" \
+  "if @imported_unit || @defer_class_vars" \
+  "if @defer_class_vars" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation_all "struct default superclass switches to Reference" "$MUT_SEM" \
   "superclass = node.struct ? @program.struct_type : @program.reference_type" \
@@ -820,18 +967,6 @@ prove_mutation_all "a file's imports are never consulted when a name is looked u
   "      t = nil" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "an imported class-variable type is resolved before its importer is declared" "$MUT_SEM" \
-  "      decl_type = if @imported" \
-  "      decl_type = if false" \
-  -- check_decl_fixtures_diverge || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-if [ "$imported_cv_ok" -eq 1 ]; then
-  prove_mutation "a deferred imported class-variable type is never re-resolved" "$MUT_SEM" \
-    '    @program.resolve_deferred_class_vars' \
-    '    nil' \
-    -- check_imported_classvar_diverge || status=1
-  MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-fi
 prove_mutation "a location-less builtin keeps its name over an import of that name" "$MUT_SEM" \
   "if found.locations.nil?" \
   "if false" \
@@ -849,8 +984,8 @@ prove_mutation "a file's own directory is never searched for an import" "$MUT_SE
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "explicit instance variables are recorded in reverse declaration order" "$MUT_IVARS" \
-  "        program.pending_ivars.each do |pi|" \
-  "        program.pending_ivars.reversed.each do |pi|" \
+  "        owned.each do |pi|" \
+  "        owned.reversed.each do |pi|" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "guessed variables are recorded before explicit variables" "$MUT_IVARS" \
@@ -914,6 +1049,28 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic class's guessed instance variables are not declared on the generic" "$MUT_IVARS" \
   "if og.owner.is_a?(NonGenericClassType) || og.owner.is_a?(GenericClassType)" \
   "if og.owner.is_a?(NonGenericClassType)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a call on an instance variable does not infer the variable's type" "$MUT_IVARS" \
+  '    if obj && !obj.is_a?(Path) && !obj.is_a?(Generic) && !node.global' \
+  '    if obj && !obj.is_a?(Path) && !obj.is_a?(Generic) && node.global' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a call that takes a block is guessed anyway" "$MUT_IVARS" \
+  '    return nil if node.block || node.block_arg' \
+  '    nil' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an argument whose type is not guessed is taken as Int32" "$MUT_IVARS" \
+  '      return nil if found.nil?
+      arg_types << found.as(Type)' \
+  '      found = @program.int32_type if found.nil?
+      arg_types << found.as(Type)' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a call on a union is looked up on its members, not on Value" "$MUT_IVARS" \
+  '    if receiver.is_a?(UnionType)' \
+  '    if false' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an explicit generic instance variable keeps the unbound generic" "$MUT_IVARS" \
@@ -1084,6 +1241,16 @@ prove_mutation "only the last annotation is read for a primitive" "$MUT_SEM" \
   "    if ann = @pending_annotations.last?" \
   -- check_primitive_annotations_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+if [ "$flag_bad" -eq 0 ]; then
+  prove_mutation "an enum body's macro condition ignores the build's defines" "$MUT_SEM" \
+    '      return flags.includes?(name)' \
+    '      return !flags.includes?(name)' \
+    -- check_define_flags_diverge || status=1
+  MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+else
+  echo "  NOT RUN: the define fixture does not agree with the oracle"
+  status=1
+fi
 prove_mutation "enum host flags select the wrong platform branch" "$MUT_SEM" \
   '    MacroTargetFlags.for_triple(MacroTargetFlags.compile_time_triple, [] of String).includes?(name)' \
   '    !MacroTargetFlags.for_triple(MacroTargetFlags.compile_time_triple, [] of String).includes?(name)' \

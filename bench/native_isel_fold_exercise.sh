@@ -23,6 +23,7 @@ trap 'exit 143' TERM
 failed=0
 fail() { echo "FAIL: $*"; failed=1; }
 . bench/lib/native_signature.sh
+. bench/lib/bounded_run.sh
 . bench/lib/mutation.sh
 export NATIVE_SIGNATURE_FAILURE_FILE="$WORK/signature-failure"
 FIX=bench/fixtures/native_isel_fold
@@ -30,40 +31,6 @@ DRV="$WORK/native_cg$EXE"
 
 build_driver() {
   ./bin/iyi build -o "$(native_path "$1")" "$(native_path src/compiler/tools/native_cg.iyi)" >"$WORK/build.$(basename "$1").log" 2>&1
-}
-
-# Exit 1 denotes a timeout, 2 an unobservable execution.
-bounded_run() {
-  local exe=$1 prefix=$2 status
-  rm -f "$prefix.timeout" "$prefix.exec-error" "$prefix.done" || return 2
-  perl -e '
-    my ($timeout, $error, $done, $exe) = @ARGV;
-    my $pid = fork();
-    defined($pid) or die "fork: $!";
-    if ($pid == 0) {
-      alarm 20;
-      exec { $exe } $exe;
-      open my $fh, ">", $error or die "exec and error marker failed: $!";
-      print $fh "exec failed: $!\n";
-      close $fh or die "error marker: $!";
-      exit 127;
-    }
-    my $waited = waitpid($pid, 0);
-    my $status = $?;
-    $waited == $pid or die "waitpid: $!";
-    if (($status & 127) == 14) {
-      open my $fh, ">", $timeout or die "timeout marker: $!";
-      close $fh or die "timeout marker: $!";
-    }
-    open my $fh, ">", $done or die "completion marker: $!";
-    close $fh or die "completion marker: $!";
-    exit (($status & 127) ? 128 + ($status & 127) : $status >> 8);
-  ' "$prefix.timeout" "$prefix.exec-error" "$prefix.done" "$exe" </dev/null >"$prefix.out" 2>/dev/null
-  status=$?
-  echo "$status" >"$prefix.status" || return 2
-  [ -e "$prefix.done" ] && [ ! -e "$prefix.exec-error" ] || return 2
-  [ ! -e "$prefix.timeout" ] || return 1
-  return 0
 }
 
 emit_obj() {
@@ -78,7 +45,7 @@ run_obj() {
   local prefix=$1
   cc "$prefix.o" bench/fixtures/native_cg/rt_stub.c -o "$prefix.bin" >"$prefix.link.log" 2>&1 || return 2
   native_signature_ok "$prefix.bin" || return 2
-  bounded_run "$prefix.bin" "$prefix"
+  bounded_run 20 "$prefix.bin" "$prefix"
 }
 
 # A mismatch or a timeout is a detected behavioral defect; setup failures are invalid.
@@ -278,6 +245,70 @@ echo "== 2. assert folded and retained MIR shapes"
 if ! "$PY" "$(native_path "$WORK/check_mir.py")" "$(native_path "$DRV")" "$(native_path "$FIX")"; then
   fail "MIR shape checks"
 fi
+# For each width, the shift must consume the zero-extension, not the signed input.
+check_unsigned_shift_shape() {
+  "$PY" - "$(native_path "$1")" "$(native_path "$FIX/unsigned_shift.ir")" <<'PY'
+import os
+import re
+import subprocess
+import sys
+
+driver, fixture = sys.argv[1:]
+checks = 0
+for clean in ("0", "1"):
+    for bits in (8, 16, 32):
+        name = f"shift{bits}"
+        try:
+            proc = subprocess.run([driver, "mir", fixture, name],
+                                  env=dict(os.environ, IYI_NATIVE_MIR_CLEAN=clean,
+                                           IYI_NATIVE_REGALLOC="linear"),
+                                  capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"INVALID {name}: {exc}")
+            sys.exit(2)
+        if proc.returncode or not proc.stdout.startswith(f"function {name}\n"):
+            print(f"INVALID {name}: {proc.stderr or proc.stdout}")
+            sys.exit(2)
+        lines = proc.stdout.splitlines()
+        shifts = [(index, re.fullmatch(r"  LsrImm/64 x\d+, (x\d+) #imm=1", line))
+                  for index, line in enumerate(lines)]
+        shifts = [(index, match) for index, match in shifts if match]
+        if len(shifts) != 1:
+            print(f"decisive: {name} clean={clean} expected one immediate shift")
+            sys.exit(1)
+        index, shift = shifts[0]
+        expected = rf"  Ubfm/64 {shift.group(1)}, x\d+ #imm={bits}"
+        if index == 0 or not re.fullmatch(expected, lines[index - 1]):
+            print(f"decisive: {name} clean={clean} shift input is not zero-extended from {bits} bits")
+            sys.exit(1)
+        checks += 1
+print(f"unsigned narrow shifts: {checks} zero-extension data-flow checks")
+PY
+}
+
+if ! check_unsigned_shift_shape "$DRV"; then
+  fail "unsigned immediate shift shape"
+fi
+
+if [ "$HOST_ID" = darwin-arm64 ]; then
+  if ! ./bin/iyi build -o "$(native_path "$WORK/unsigned_shift.hosted$EXE")" \
+      "$(native_path "$FIX/unsigned_shift.iyi")" >"$WORK/unsigned_shift.hosted.log" 2>&1; then
+    cat "$WORK/unsigned_shift.hosted.log"
+    fail "unsigned_shift: hosted twin did not build"
+  elif ! bounded_run 20 "$WORK/unsigned_shift.hosted$EXE" "$WORK/expected.unsigned_shift" ||
+       [ "$(cat "$WORK/expected.unsigned_shift.status")" != 0 ]; then
+    fail "unsigned_shift: hosted twin could not be observed"
+  else
+    for mode in 0 1; do
+      if ! check_output "$DRV" "$mode" unsigned_shift; then
+        fail "unsigned_shift: clean=$mode differs from hosted negative-input twin"
+      else
+        echo "parity: unsigned_shift negative inputs (clean=$mode)"
+      fi
+    done
+  fi
+fi
+
 
 echo "== 3. compare native execution with hosted twins"
 if [ "$HOST_ID" = darwin-arm64 ]; then
@@ -294,7 +325,7 @@ if [ "$HOST_ID" = darwin-arm64 ]; then
       fail "$key: hosted twin did not build"
       continue
     fi
-    if ! bounded_run "$WORK/$key.hosted$EXE" "$WORK/expected.$key"; then
+    if ! bounded_run 20 "$WORK/$key.hosted$EXE" "$WORK/expected.$key"; then
       fail "$key: hosted twin could not be observed"
       continue
     fi
@@ -351,6 +382,30 @@ prove_fold_mutation() {
   fi
   [ ! -e "$MUTATION_INVALID" ] || fail "mutation check had invalid setup: $label"
 }
+
+check_unsigned_shift_mutant() {
+  local mutant="$WORK/mutant.shift$EXE" rc=0
+  if ! build_driver "$mutant"; then
+    cat "$WORK/build.$(basename "$mutant").log"
+    touch "$MUTATION_INVALID"
+    return 0
+  fi
+  check_unsigned_shift_shape "$mutant" || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    touch "$MUTATION_INVALID"
+    return 0
+  fi
+  return "$rc"
+}
+
+if ! prove_mutation "unsigned immediate shift: omit zero-extension" \
+    src/compiler/native/aarch64/isel.iyi \
+    '    a = zext(a, i.type) if op == Op::LShr' \
+    '    a = zext(a, i.type) if false' \
+    -- check_unsigned_shift_mutant; then
+  fail "unsigned immediate shift mutation was not caught"
+fi
+[ ! -e "$MUTATION_INVALID" ] || fail "unsigned immediate shift mutation had invalid setup"
 
 echo "== 4. mutation proofs"
 if [ "$HOST_ID" = darwin-arm64 ]; then
