@@ -17,15 +17,7 @@ pub class BuildRequest
   getter probe_phase : Bool
   getter triple : String
 
-  def initialize(
-    @output_filename : String,
-    @obj_path : String,
-    @keep_obj : Bool,
-    @emit_obj_only : Bool,
-    @verbose : Bool,
-    @probe_phase : Bool,
-    @triple : String,
-  )
+  def initialize(@output_filename : String, @obj_path : String, @keep_obj : Bool, @emit_obj_only : Bool, @verbose : Bool, @probe_phase : Bool, @triple : String)
   end
 end
 

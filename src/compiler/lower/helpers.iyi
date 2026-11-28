@@ -121,26 +121,14 @@ pub def build_string_constant(low : Lowerer, str : String, global_name : String?
     g = low.module.add_global(name, ty)
     g.linkage = Linkage::Private
     g.global_constant = true
-    g.initializer = b.const_struct([
-      b.const_int(header, low.string_type_id.to_i64 << 32),
-      b.const_struct([
-        b.const_int(i32, str.bytesize.to_i64),
-        b.const_int(i32, str.size.to_i64),
-        b.const_string(str),
-      ] of Value, false),
-    ] of Value, false)
+    g.initializer = b.const_struct([b.const_int(header, low.string_type_id.to_i64 << 32), b.const_struct([b.const_int(i32, str.bytesize.to_i64), b.const_int(i32, str.size.to_i64), b.const_string(str)] of Value, false)] of Value, false)
     pointer = b.const_gep(ty, g, [b.const_int(i32, 0_i64), b.const_int(i32, 1_i64)] of Value, true)
   else
     ty = types.struct_of([i32, i32, i32, bytes] of IrType, false)
     g = low.module.add_global(name, ty)
     g.linkage = Linkage::Private
     g.global_constant = true
-    g.initializer = b.const_struct([
-      b.const_int(i32, low.string_type_id.to_i64),
-      b.const_int(i32, str.bytesize.to_i64),
-      b.const_int(i32, str.size.to_i64),
-      b.const_string(str),
-    ] of Value, false)
+    g.initializer = b.const_struct([b.const_int(i32, low.string_type_id.to_i64), b.const_int(i32, str.bytesize.to_i64), b.const_int(i32, str.size.to_i64), b.const_string(str)] of Value, false)
     pointer = g
   end
   low.strings[str] = pointer

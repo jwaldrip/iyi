@@ -58,20 +58,7 @@ pub struct CompilerConfig
   property stub_refused : Bool
   property stub_also : Array(String)
 
-  def initialize(
-    @output_filename : String = "a.out",
-    @emit_obj_only : Bool = false,
-    @obj_output_filename : String? = nil,
-    @verbose : Bool = false,
-    @target_triple : String? = nil,
-    @probe_phase : Bool = false,
-    @single_file : Bool = false,
-    @probe_verify : Bool = false,
-    @typed_pipeline : Bool = false,
-    @keep_going : Bool = false,
-    @stub_refused : Bool = false,
-    @stub_also : Array(String) = [] of String,
-  )
+  def initialize(@output_filename : String = "a.out", @emit_obj_only : Bool = false, @obj_output_filename : String? = nil, @verbose : Bool = false, @target_triple : String? = nil, @probe_phase : Bool = false, @single_file : Bool = false, @probe_verify : Bool = false, @typed_pipeline : Bool = false, @keep_going : Bool = false, @stub_refused : Bool = false, @stub_also : Array(String) = [] of String)
   end
 end
 
@@ -81,11 +68,7 @@ pub class CompileResult
   property object_filename : String
   property resolved_modules : Array(ModuleInfo)
 
-  def initialize(
-    @output_filename : String,
-    @object_filename : String,
-    @resolved_modules : Array(ModuleInfo),
-  )
+  def initialize(@output_filename : String, @object_filename : String, @resolved_modules : Array(ModuleInfo))
   end
 end
 
@@ -700,16 +683,7 @@ pub class Compiler
     end
   end
 
-  pub def self.extract_declarations(
-    node : ASTNode,
-    classes : Array(ClassDef),
-    funs : Array(FunDef),
-    defs : Hash(String, Def),
-    libs : Array(LibDef),
-    top_level : Array(ASTNode) = [] of ASTNode,
-    flags : Array(String)? = nil,
-    host_flags : Array(String)? = nil,
-  ) : Nil
+  pub def self.extract_declarations(node : ASTNode, classes : Array(ClassDef), funs : Array(FunDef), defs : Hash(String, Def), libs : Array(LibDef), top_level : Array(ASTNode) = [] of ASTNode, flags : Array(String)? = nil, host_flags : Array(String)? = nil) : Nil
     shared_host = host_flags || MacroTargetFlags.host([] of String)
     target_flags = flags || shared_host
     if node.is_a?(Expressions)
