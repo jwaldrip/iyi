@@ -1335,9 +1335,8 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     codegen_node(low, else_node)
     return
   end
-  blocks = low.new_blocks(["then", "else"])
-  then_block = blocks[0]
-  else_block = blocks[1]
+  then_block = low.new_block("then")
+  else_block = low.new_block("else")
 
   low.needs_value = true
   codegen_node(low, cond_node)
@@ -1539,10 +1538,9 @@ pub def codegen_while(low : Lowerer, node : While) : Nil
     low.loop_target = saved_target
     return
   end
-  blocks = low.new_blocks(["while", "body", "fail"])
-  while_block = blocks[0]
-  body_block = blocks[1]
-  fail_block = blocks[2]
+  while_block = low.new_block("while")
+  body_block = low.new_block("body")
+  fail_block = low.new_block("fail")
 
   low.loop_next = while_block
   low.loop_break = nil
@@ -1828,9 +1826,8 @@ pub def codegen_cast(low : Lowerer, node : Cast) : Nil
     end
     tid = type_id_of_value(low, node.obj, down_value, obj_type)
     cmp = match_type_id(low, obj_type, resulting_type, tid)
-    blocks = low.new_blocks(["matches", "doesnt_match"])
-    matches_block = blocks[0]
-    doesnt_match_block = blocks[1]
+    matches_block = low.new_block("matches")
+    doesnt_match_block = low.new_block("doesnt_match")
     low.builder.cond_br(cmp, matches_block, doesnt_match_block)
     low.builder.position_at_end(doesnt_match_block)
     raise_cast_failed(low, tid, to_type, node)
@@ -1887,9 +1884,8 @@ pub def codegen_nilable_cast(low : Lowerer, node : NilableCast) : Nil
       merge_type = union_join ? low.module.types.ptr(0) : low.typer.llvm_type(resulting_type)
     end
     phi = LowerPhi.new(wants, merge_type, resulting_type)
-    blocks = low.new_blocks(["matches", "doesnt_match"])
-    matches_block = blocks[0]
-    doesnt_match_block = blocks[1]
+    matches_block = low.new_block("matches")
+    doesnt_match_block = low.new_block("doesnt_match")
     low.builder.cond_br(cmp, matches_block, doesnt_match_block)
 
     low.builder.position_at_end(doesnt_match_block)
