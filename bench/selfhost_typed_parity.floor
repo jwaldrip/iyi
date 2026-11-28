@@ -54,7 +54,7 @@ src/compiler/ir/opt/analysis.iyi 85
 src/compiler/ir/opt/barrier.iyi 103
 src/compiler/ir/opt/callgraph.iyi 24
 src/compiler/ir/opt/cfg_simplify.iyi 34
-src/compiler/ir/opt/cse.iyi 48
+src/compiler/ir/opt/cse.iyi 84
 src/compiler/ir/opt/dce.iyi 14
 src/compiler/ir/opt/deadfn.iyi 15
 src/compiler/ir/opt/edit.iyi 42
