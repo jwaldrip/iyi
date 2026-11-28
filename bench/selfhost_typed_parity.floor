@@ -115,7 +115,7 @@ src/compiler/lower/symbols.iyi 24
 src/compiler/lower/type_id.iyi 31
 src/compiler/lower/typer.iyi 56
 src/compiler/lower/unions.iyi 7
-src/compiler/macros/answers.iyi 16
+src/compiler/macros/answers.iyi 18
 src/compiler/macros/ast.iyi 37
 src/compiler/macros/confinement.iyi 31
 src/compiler/macros/engine.iyi 51
